@@ -20,7 +20,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 ## Still required
 
 - Remove the remaining UI-specific parser, checker, IR, and backend paths,
-  including legacy widget fallback and old style/app/route structures. Finish
+  including old style/app/route structures. Finish
   general typed block calls, named blocks, callable child slots, and imports
   for ordinary libraries. Current block-call coverage is a small leaf subset.
 - Replace the `.zir` diagnostic dump with a versioned writer, validating

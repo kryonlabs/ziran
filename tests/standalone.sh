@@ -88,6 +88,7 @@ ${CC:-cc} -Iinclude -I"$work/blocks" "$work/blocks/blocklib.c" \
 "$work/blocks/app"
 "$ziran" build --target=go --strict --pkg main --root "$work" \
     -o "$work/blocks-go" "$work/blocklib.zi" "$work/blockapp.zi"
+grep -Fq 'Blocklib_Button(' "$work/blocks-go/blockapp.go"
 cat > "$work/blocks-go/main.go" <<'EOF'
 package main
 func main() { if Blockapp_Answer() != 42 { panic("wrong result") } }
@@ -116,3 +117,18 @@ if "$ziran" check --root "$work" "$work/ui_mode.zi" \
     exit 1
 fi
 grep -Fq '#ui is not a Ziran modifier' "$work/ui_mode.err"
+
+cat > "$work/unknown_block.zi" <<'EOF'
+#module "unknown_block"
+Main :: () {
+    Missing: {
+        value = 41
+    }
+}
+EOF
+if "$ziran" check --root "$work" "$work/unknown_block.zi" \
+    2> "$work/unknown_block.err"; then
+    echo 'unknown block call unexpectedly passed' >&2
+    exit 1
+fi
+grep -Fq 'unknown block-call declaration: Missing' "$work/unknown_block.err"

@@ -128,7 +128,6 @@ typedef struct KirStmt {
     char callee[KIR_NAME_MAX];
     char args[KIR_TEXT_MAX];
     int declared_block_call; /* typed block invocation, resolved after imports */
-    int block_fallback; /* legacy unresolved block path, pending removal */
     int is_instance; /* typed record binding retained by its explicit key */
     int expr_root;      /* index into enclosing function exprs, or -1 */
     int lhs_root;       /* structured assignment destination, or -1 */

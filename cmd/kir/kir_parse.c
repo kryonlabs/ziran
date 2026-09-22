@@ -468,27 +468,27 @@ parse_direct_call_statement(const char *text, char *name, size_t name_size,
     return 1;
 }
 
-typedef struct WidgetBlock {
+typedef struct BlockCall {
     char callee[KIR_NAME_MAX];
     KirSourceSpan span;
     char props[KIR_TEXT_MAX];
     int close_depth;
     int statement_index;
     int opened;
-} WidgetBlock;
+} BlockCall;
 
 typedef struct SlotParseFrame {
     int function_index;
     int depth;
     int root_anonymous_count;
     int block_count;
-    WidgetBlock *blocks;
+    BlockCall *blocks;
     int body_count;
     int body_depth[8];
 } SlotParseFrame;
 
 static int
-parse_widget_block_header(const char *text, char *widget, size_t widget_size,
+parse_block_call_header(const char *text, char *callee, size_t callee_size,
                       char *name, size_t name_size)
 {
     const char *p = text;
@@ -501,12 +501,12 @@ parse_widget_block_header(const char *text, char *widget, size_t widget_size,
     while(isalnum((unsigned char)*p) || *p == '_')
         p++;
     n = (size_t)(p - start);
-    if(n == 0 || n >= widget_size)
+    if(n == 0 || n >= callee_size)
         return 0;
-    memcpy(widget, start, n);
-    widget[n] = '\0';
-    /* Switch labels share the colon-and-brace shape of a widget block. */
-    if(strcmp(widget, "case") == 0 || strcmp(widget, "default") == 0)
+    memcpy(callee, start, n);
+    callee[n] = '\0';
+    /* Switch labels share the colon-and-brace shape of a block call. */
+    if(strcmp(callee, "case") == 0 || strcmp(callee, "default") == 0)
         return 0;
     while(*p == ' ' || *p == '\t')
         p++;
@@ -533,7 +533,7 @@ parse_widget_block_header(const char *text, char *widget, size_t widget_size,
 }
 
 static int
-parse_widget_prop_line(char *text, char *field, size_t field_size,
+parse_block_field_line(char *text, char *field, size_t field_size,
                    char *value, size_t value_size)
 {
     char *eq;
@@ -565,18 +565,18 @@ parse_widget_prop_line(char *text, char *field, size_t field_size,
 }
 
 static void
-widget_block_append_prop(WidgetBlock *block, const char *field, const char *value,
+block_call_append_field(BlockCall *block, const char *field, const char *value,
                      KirSourceSpan span)
 {
     size_t used = strlen(block->props);
     int length = snprintf(block->props + used, sizeof(block->props) - used,
                           ".%s = %s, ", field, value);
     if(length < 0 || (size_t)length >= sizeof(block->props) - used)
-        die_at(span, "widget properties exceed the declaration size limit: %s", block->callee);
+        die_at(span, "block-call fields exceed the declaration size limit: %s", block->callee);
 }
 
 static void
-widget_block_open(KirFunction *fn, WidgetBlock *block, KirSourceSpan span, int closing)
+block_call_open(KirFunction *fn, BlockCall *block, KirSourceSpan span, int closing)
 {
     KirSourceSpan source_span;
     KirStmt *statement;
@@ -596,7 +596,7 @@ widget_block_open(KirFunction *fn, WidgetBlock *block, KirSourceSpan span, int c
 }
 
 static KirSourceSpan
-widget_block_close_span(const WidgetBlock *block, const char *path, int line_no,
+block_call_close_span(const BlockCall *block, const char *path, int line_no,
                     const char *line)
 {
     KirSourceSpan start = block != NULL && block->span.path[0] != '\0'
@@ -1786,14 +1786,14 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
     int body_mdepth[8];
     int body_mcount = 0;
     int in_block_comment = 0;
-    enum { WIDGET_BLOCK_CAP = 64 };
-    WidgetBlock *widget_blocks = calloc(WIDGET_BLOCK_CAP, sizeof(*widget_blocks));
-    int widget_block_count = 0;
-    int root_anonymous_widget_count = 0;
+    enum { BLOCK_CALL_CAP = 64 };
+    BlockCall *block_calls = calloc(BLOCK_CALL_CAP, sizeof(*block_calls));
+    int block_call_count = 0;
+    int root_anonymous_block_count = 0;
     SlotParseFrame slot_frames[64];
     int slot_frame_count = 0;
 
-    if(widget_blocks == NULL)
+    if(block_calls == NULL)
         die("out of memory");
     memset(&consts, 0, sizeof(consts));
     cur_guard[0] = '\0';
@@ -1868,8 +1868,8 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                  * expression braces). */
                 {
                     char nc = pending[wl];
-                    char uiw[KIR_NAME_MAX];
-                    char uin[KIR_NAME_MAX];
+                    char block_callee[KIR_NAME_MAX];
+                    char block_name[KIR_NAME_MAX];
                     char slot_binding[KIR_TEXT_MAX], slot_arguments[KIR_TEXT_MAX];
 
                     header_line =
@@ -1877,8 +1877,9 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                         strcmp(pending, "{") == 0 ||   /* bare scope-open */
                         parse_slot_header(pending, slot_binding, sizeof(slot_binding),
                                           slot_arguments, sizeof(slot_arguments)) ||
-                        parse_widget_block_header(pending, uiw, sizeof(uiw),
-                                              uin, sizeof(uin)) ||
+                        parse_block_call_header(pending, block_callee,
+                                                sizeof(block_callee), block_name,
+                                                sizeof(block_name)) ||
                         /* 'name :: Type = {' carries an initializer, not a
                          * body: its braces are expression braces so the
                          * logical line continues until they balance. Header
@@ -2227,8 +2228,8 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                 if(has_body && !is_extern) {
                     mode = FUNCTION;
                     depth = 1;
-                    widget_block_count = 0;
-                    root_anonymous_widget_count = 0;
+                    block_call_count = 0;
+                    root_anonymous_block_count = 0;
                 } else {
                     /* extern / body-less prototype: no body follows */
                     fn = NULL;
@@ -2556,31 +2557,31 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                                    KirSpan(rel, line_no, 1));
             } else if(t[0] == '#') {
                 /* comment inside a body — skip (directives are top-level) */
-            } else if(t[0] == '}' && slot_frame_count > 0 && depth == 1 && widget_block_count == 0) {
+            } else if(t[0] == '}' && slot_frame_count > 0 && depth == 1 && block_call_count == 0) {
                 if(*kir_skip_ws(t + 1))
                     die_at(KirSpan(rel, line_no, 1), "slot body closing brace must be on its own line");
                 SlotParseFrame *frame = &slot_frames[--slot_frame_count];
                 fn = &module->functions[frame->function_index];
                 depth = frame->depth;
-                root_anonymous_widget_count = frame->root_anonymous_count;
-                widget_block_count = frame->block_count;
-                if(widget_block_count)
-                    memcpy(widget_blocks, frame->blocks, (size_t)widget_block_count * sizeof(*widget_blocks));
+                root_anonymous_block_count = frame->root_anonymous_count;
+                block_call_count = frame->block_count;
+                if(block_call_count)
+                    memcpy(block_calls, frame->blocks, (size_t)block_call_count * sizeof(*block_calls));
                 free(frame->blocks);
                 frame->blocks = NULL;
                 body_mcount = frame->body_count;
                 memcpy(body_mdepth, frame->body_depth, sizeof(body_mdepth));
-            } else if(t[0] == '}' && widget_block_count > 0 &&
-                      depth == widget_blocks[widget_block_count - 1].close_depth) {
-                WidgetBlock *block = &widget_blocks[widget_block_count - 1];
-                KirSourceSpan block_span = widget_block_close_span(block, rel,
+            } else if(t[0] == '}' && block_call_count > 0 &&
+                      depth == block_calls[block_call_count - 1].close_depth) {
+                BlockCall *block = &block_calls[block_call_count - 1];
+                KirSourceSpan block_span = block_call_close_span(block, rel,
                                                                line_no, t);
 
-                widget_block_open(fn, block, block_span, 1);
+                block_call_open(fn, block, block_span, 1);
                 if(block->statement_index >= 0 &&
                    block->statement_index < fn->stmt_count)
                     fn->stmts[block->statement_index].span = block_span;
-                widget_block_count--;
+                block_call_count--;
                 if(depth > 0)
                     depth--;
             } else if(t[0] == '}') {
@@ -2609,7 +2610,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                         mode = TOP;
                         cond_frame_settle(tframes, tframe_count);
                         fn = NULL;
-                        widget_block_count = 0;
+                        block_call_count = 0;
                     } else {
                         KirFunctionAddStmt(fn, KIR_STMT_BLOCK_CLOSE, t, "",
                                            KirSpan(rel, line_no, 1));
@@ -2617,10 +2618,8 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                 }
             } else {
                 KirStmtKind kind = classify_stmt(t);
-                char widget[KIR_NAME_MAX] = "";
-                char widget_args[KIR_TEXT_MAX] = "";
                 int brace_delta = net_block_braces(t);
-                char block_widget[KIR_NAME_MAX];
+                char block_callee[KIR_NAME_MAX];
                 char block_name[KIR_NAME_MAX];
                 char prop_field[KIR_NAME_MAX];
                 char prop_value[KIR_TEXT_MAX];
@@ -2634,16 +2633,16 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                     SlotParseFrame *frame = &slot_frames[slot_frame_count++];
                     frame->function_index = (int)(fn - module->functions);
                     frame->depth = depth;
-                    frame->root_anonymous_count = root_anonymous_widget_count;
+                    frame->root_anonymous_count = root_anonymous_block_count;
                     frame->body_count = body_mcount;
                     memcpy(frame->body_depth, body_mdepth, sizeof(body_mdepth));
                     char name[KIR_NAME_MAX];
                     snprintf(name, sizeof(name), "slot_body_%d_%d", module->function_count, line_no);
                     KirSourceSpan span = KirSpan(rel, line_no, 1);
-                    if(widget_block_count > 0 && !widget_blocks[widget_block_count - 1].opened &&
-                       depth == widget_blocks[widget_block_count - 1].close_depth &&
+                    if(block_call_count > 0 && !block_calls[block_call_count - 1].opened &&
+                       depth == block_calls[block_call_count - 1].close_depth &&
                        is_identifier_text(slot_binding)) {
-                        widget_block_append_prop(&widget_blocks[widget_block_count - 1], slot_binding, name, span);
+                        block_call_append_field(&block_calls[block_call_count - 1], slot_binding, name, span);
                     } else {
                         char initializer[KIR_TEXT_MAX];
                         int written = snprintf(initializer, sizeof(initializer),
@@ -2653,65 +2652,65 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                         KirFunctionAddStmt(fn, strchr(slot_binding, ':') ? KIR_STMT_DECL : KIR_STMT_ASSIGN,
                                            initializer, "", span);
                     }
-                    frame->block_count = widget_block_count;
-                    frame->blocks = widget_block_count ? malloc((size_t)widget_block_count * sizeof(*widget_blocks)) : NULL;
-                    if(widget_block_count && frame->blocks == NULL)
+                    frame->block_count = block_call_count;
+                    frame->blocks = block_call_count ? malloc((size_t)block_call_count * sizeof(*block_calls)) : NULL;
+                    if(block_call_count && frame->blocks == NULL)
                         die("out of memory parsing slot body");
-                    if(widget_block_count)
-                        memcpy(frame->blocks, widget_blocks, (size_t)widget_block_count * sizeof(*widget_blocks));
+                    if(block_call_count)
+                        memcpy(frame->blocks, block_calls, (size_t)block_call_count * sizeof(*block_calls));
                     fn = KirModuleAddFunction(module, name, slot_arguments, "void", 0, span);
                     fn->is_closure = 1;
                     kir_copy(fn->guard, sizeof(fn->guard), cur_guard);
                     depth = 1;
-                    root_anonymous_widget_count = 0;
-                    widget_block_count = body_mcount = 0;
+                    root_anonymous_block_count = 0;
+                    block_call_count = body_mcount = 0;
                     continue;
                 }
-                if(parse_widget_block_header(t, block_widget,
-                                         sizeof(block_widget),
+                if(parse_block_call_header(t, block_callee,
+                                         sizeof(block_callee),
                                          block_name, sizeof(block_name))) {
-                    WidgetBlock *block;
+                    BlockCall *block;
 
                     if(block_name[0] != '\0')
                         die_at(KirSpan(rel, line_no, 1),
                                "named block calls are not supported yet");
-                    if(widget_block_count > 0)
-                        widget_block_open(fn, &widget_blocks[widget_block_count - 1],
+                    if(block_call_count > 0)
+                        block_call_open(fn, &block_calls[block_call_count - 1],
                                       KirSpan(rel, line_no,
                                               pending_start_column), 0);
-                    if(widget_block_count >= WIDGET_BLOCK_CAP)
-                        die_at(KirSpan(rel, line_no, 1), "too many nested widget blocks");
-                    block = &widget_blocks[widget_block_count++];
+                    if(block_call_count >= BLOCK_CALL_CAP)
+                        die_at(KirSpan(rel, line_no, 1), "too many nested block calls");
+                    block = &block_calls[block_call_count++];
                     memset(block, 0, sizeof(*block));
                     block->statement_index = -1;
                     block->span = KirSpanEnd(rel, pending_start_line,
                                              pending_start_column, line_no,
                                              pending_end_column);
                     snprintf(block->callee, sizeof(block->callee), "%s",
-                             block_widget);
+                             block_callee);
                     block->close_depth = depth + 1;
                     depth++;
                     continue;
                 }
 
                 kir_copy(prop_line, sizeof(prop_line), t);
-                if(widget_block_count > 0 &&
-                   !widget_blocks[widget_block_count - 1].opened &&
-                   depth == widget_blocks[widget_block_count - 1].close_depth &&
-                   parse_widget_prop_line(prop_line, prop_field,
+                if(block_call_count > 0 &&
+                   !block_calls[block_call_count - 1].opened &&
+                   depth == block_calls[block_call_count - 1].close_depth &&
+                   parse_block_field_line(prop_line, prop_field,
                                       sizeof(prop_field), prop_value,
                                       sizeof(prop_value))) {
-                    WidgetBlock *block = &widget_blocks[widget_block_count - 1];
-                    widget_block_append_prop(block, prop_field, prop_value,
+                    BlockCall *block = &block_calls[block_call_count - 1];
+                    block_call_append_field(block, prop_field, prop_value,
                                              KirSpan(rel, line_no, 1));
                     continue;
                 }
 
 
-                if(widget_block_count > 0 &&
-                   !widget_blocks[widget_block_count - 1].opened &&
-                   depth == widget_blocks[widget_block_count - 1].close_depth)
-                    widget_block_open(fn, &widget_blocks[widget_block_count - 1],
+                if(block_call_count > 0 &&
+                   !block_calls[block_call_count - 1].opened &&
+                   depth == block_calls[block_call_count - 1].close_depth)
+                    block_call_open(fn, &block_calls[block_call_count - 1],
                                   KirSpan(rel, line_no, pending_start_column),
                                   0);
 
@@ -2776,13 +2775,13 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
             if(!KirLowerCleanup(&program->modules[mi].functions[fi])) {
                 KirProgramFree(program);
                 free(consts.items);
-                free(widget_blocks);
+                free(block_calls);
                 return NULL;
             }
             KirStructureFunction(&program->modules[mi].functions[fi], &program->modules[mi]);
         }
     free(consts.items);
-    free(widget_blocks);
+    free(block_calls);
     return program;
 }
 

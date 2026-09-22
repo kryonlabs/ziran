@@ -58,18 +58,10 @@ error(Checker *c, KirSourceSpan span, const char *message, const char *detail)
 }
 
 static void
-signature_error(Checker *c, const KirFunction *callee, KirSourceSpan span,
+signature_error(Checker *c, KirSourceSpan span,
                 const char *message, const char *name)
 {
-    int previous_strict = c->strict;
-    /* A declared UI contract applies to ordinary calls as well as blocks.
-     * Unknown host calls retain the existing permissive checking policy. */
-    if(callee != NULL && callee->is_ui) {
-        c->strict = 1;
-        c->failed = 1;
-    }
     error(c, span, message, name);
-    c->strict = previous_strict;
 }
 
 static void
@@ -711,7 +703,7 @@ expression_type(Checker *c, int index)
                 if(colon)
                     check_borrowed_string(c, kir_skip_ws(colon + 1), child);
                 if(colon && !compatible(kir_skip_ws(colon + 1), arg_type))
-                    signature_error(c, callee, c->fn->exprs[child].span,
+                    signature_error(c, c->fn->exprs[child].span,
                                     "argument type mismatch", e->name);
                 if(colon && (!strcmp(arg_type, "integer") || !strcmp(arg_type, "real"))) {
                     const char *context = KirScalarType(kir_skip_ws(colon + 1));
@@ -726,7 +718,7 @@ expression_type(Checker *c, int index)
         if(args) {
             type = return_type;
             if(actual != expected)
-                signature_error(c, callee, e->span, "argument count mismatch", e->name);
+                signature_error(c, e->span, "argument count mismatch", e->name);
         } else if(!module_uses_c(c))
             error(c, e->span, "unresolved function", e->name);
         if(slot_contract && c->errors != errors_before_slot)
@@ -1018,7 +1010,7 @@ check_type_declarations(const KirModule *module, int strict)
 }
 
 static KirStmt *
-widget_statement(KirFunction *body, KirStmtKind kind, KirSourceSpan span,
+block_statement(KirFunction *body, KirStmtKind kind, KirSourceSpan span,
                   const char *format, ...)
 {
     char text[KIR_TEXT_MAX];
@@ -1036,7 +1028,7 @@ widget_statement(KirFunction *body, KirStmtKind kind, KirSourceSpan span,
 }
 
 static void
-inherit_widget_block_metadata(KirStmt *statement, const KirStmt *source)
+inherit_block_call_metadata(KirStmt *statement, const KirStmt *source)
 {
     char text[KIR_TEXT_MAX];
     char args[KIR_TEXT_MAX];
@@ -1052,16 +1044,15 @@ inherit_widget_block_metadata(KirStmt *statement, const KirStmt *source)
     kir_copy(statement->text, sizeof(statement->text), text);
     kir_copy(statement->args, sizeof(statement->args), args);
     statement->declared_block_call = 1;
-    statement->block_fallback = 0;
     statement->expr_root = -1;
     statement->lhs_root = -1;
 }
 
 /* A block initializes props and callable arguments in source order, then calls
  * the same declaration as ordinary function syntax. Captured child bodies can
- * later enter this path as slot values without another backend widget path. */
+ * later enter this path as slot values without another backend block-call path. */
 static int
-lower_widget_block(Checker *c, int index, const KirModule *owner,
+lower_block_call(Checker *c, int index, const KirModule *owner,
                       const KirType *props, const char *temporary,
                       char parameters[][KIR_TEXT_MAX], int parameter_count)
 {
@@ -1072,14 +1063,14 @@ lower_widget_block(Checker *c, int index, const KirModule *owner,
     char slot_names[64][KIR_NAME_MAX] = {{0}};
     const char *slot_types[64] = {0};
     int supplied[64] = {0};
-    const char *diagnostic = "widget properties exceed the lowering size limit";
+    const char *diagnostic = "block-call fields exceed the lowering size limit";
     int field_count = *kir_skip_ws(source->args) ?
         kir_split_top(source->args, fields[0], 64, sizeof(fields[0])) : 0;
     if(field_count == 64)
         goto failed;
     for(int parameter = 1; parameter < parameter_count; parameter++) {
         char *colon = strchr(parameters[parameter], ':');
-        diagnostic = "widget parameters after props must be typed slots";
+        diagnostic = "block-call parameters after props must be typed slots";
         if(colon == NULL)
             goto failed;
         *colon++ = '\0';
@@ -1088,16 +1079,16 @@ lower_widget_block(Checker *c, int index, const KirModule *owner,
         const KirType *slot = KirFindType(owner, colon, NULL);
         if(slot == NULL || !slot->is_slot)
             goto failed;
-        diagnostic = "widget slot type is shadowed or not directly imported";
+        diagnostic = "block-call slot type is shadowed or not directly imported";
         if(KirFindType(c->module, colon, NULL) != slot)
             goto failed;
         slot_types[parameter] = colon;
         int length = snprintf(slot_names[parameter], sizeof(slot_names[parameter]),
                               "%s_slot_%d", temporary, parameter);
-        diagnostic = "widget slot binding exceeds the lowering size limit";
+        diagnostic = "block-call slot binding exceeds the lowering size limit";
         if(length < 0 || (size_t)length >= sizeof(slot_names[parameter]))
             goto failed;
-        diagnostic = "widget slot name conflicts with a props field or another slot";
+        diagnostic = "block-call slot name conflicts with a props field or another slot";
         size_t offset = 0;
         KirTypeField field;
         while(KirTypeNextField(props, &offset, &field) == 1)
@@ -1107,32 +1098,32 @@ lower_widget_block(Checker *c, int index, const KirModule *owner,
             if(!strcmp(parameters[previous], parameters[parameter]))
                 goto failed;
     }
-    diagnostic = "widget properties exceed the lowering size limit";
-    if(widget_statement(&lowered, KIR_STMT_DECL, span, "%s: %s", temporary, props->name) == NULL)
+    diagnostic = "block-call fields exceed the lowering size limit";
+    if(block_statement(&lowered, KIR_STMT_DECL, span, "%s: %s", temporary, props->name) == NULL)
         goto failed;
     for(int property = 0; property < field_count; property++) {
         char *field = fields[property];
         if(!*field)
             continue;
         char *equals = strchr(field, '=');
-        diagnostic = "invalid widget property";
+        diagnostic = "invalid block-call field";
         if(field[0] != '.' || equals == NULL)
             goto failed;
         *equals++ = '\0';
         kir_trim_in_place(field);
         const char *name = field + 1;
         for(int previous = 0; previous < property; previous++) {
-            diagnostic = "duplicate widget property or slot";
+            diagnostic = "duplicate block-call field or slot";
             if(!strcmp(fields[previous], field))
                 goto failed;
         }
         int parameter = 1;
         while(parameter < parameter_count && strcmp(parameters[parameter], name))
             parameter++;
-        diagnostic = "widget properties exceed the lowering size limit";
+        diagnostic = "block-call fields exceed the lowering size limit";
         if(parameter < parameter_count) {
             supplied[parameter] = 1;
-            if(widget_statement(&lowered, KIR_STMT_DECL, span, "%s: %s = %s",
+            if(block_statement(&lowered, KIR_STMT_DECL, span, "%s: %s = %s",
                                 slot_names[parameter], slot_types[parameter],
                                 equals) == NULL)
                 goto failed;
@@ -1149,11 +1140,11 @@ lower_widget_block(Checker *c, int index, const KirModule *owner,
                     break;
                 }
             }
-            diagnostic = "unknown widget property or slot";
+            diagnostic = "unknown block-call field or slot";
             if(!found)
                 goto failed;
-            diagnostic = "widget properties exceed the lowering size limit";
-            if(widget_statement(&lowered, KIR_STMT_ASSIGN, span,
+            diagnostic = "block-call fields exceed the lowering size limit";
+            if(block_statement(&lowered, KIR_STMT_ASSIGN, span,
                                 "%s.%s = %s%s", temporary, name, prefix,
                                 kir_skip_ws(equals)) == NULL)
                 goto failed;
@@ -1162,21 +1153,21 @@ lower_widget_block(Checker *c, int index, const KirModule *owner,
     char arguments[KIR_TEXT_MAX];
     size_t length = (size_t)snprintf(arguments, sizeof(arguments), "%s", temporary);
     for(int parameter = 1; parameter < parameter_count; parameter++) {
-        diagnostic = "missing required widget slot";
+        diagnostic = "missing required block-call slot";
         if(!supplied[parameter])
             goto failed;
         int added = snprintf(arguments + length, sizeof(arguments) - length, ", %s", slot_names[parameter]);
-        diagnostic = "widget arguments exceed the lowering size limit";
+        diagnostic = "block-call arguments exceed the lowering size limit";
         if(added < 0 || (size_t)added >= sizeof(arguments) - length)
             goto failed;
         length += (size_t)added;
     }
     {
-        KirStmt *call = widget_statement(&lowered, KIR_STMT_EXPR, span,
+        KirStmt *call = block_statement(&lowered, KIR_STMT_EXPR, span,
                                          "%s(%s)", source->callee, arguments);
         if(call == NULL)
             goto failed;
-        inherit_widget_block_metadata(call, source);
+        inherit_block_call_metadata(call, source);
     }
     int replacement_count = lowered.stmt_count;
     int total = c->fn->stmt_count - 1 + replacement_count;
@@ -1198,7 +1189,7 @@ failed:
 }
 
 static int
-resolve_widget_blocks(Checker *c)
+resolve_block_calls(Checker *c)
 {
     int changed = 0;
     for(int i = 0; i < c->fn->stmt_count; i++) {
@@ -1215,11 +1206,6 @@ resolve_widget_blocks(Checker *c)
             }
             continue;
         }
-        if(resolved == 0 && statement->block_fallback) {
-            statement->declared_block_call = 0;
-            statement->block_fallback = 0;
-            continue;
-        }
         char parameters[64][KIR_TEXT_MAX];
         int count = declaration ? kir_split_top(declaration->args, parameters[0], 64, sizeof(parameters[0])) : 0;
         char *type = count > 0 ? strchr(parameters[0], ':') : NULL;
@@ -1230,13 +1216,13 @@ resolve_widget_blocks(Checker *c)
         const KirType *props = type ? KirFindType(owner, type, NULL) : NULL;
         const char *diagnostic = NULL;
         if(resolved < 0)
-            diagnostic = "ambiguous widget declaration";
+            diagnostic = "ambiguous block-call declaration";
         else if(resolved == 0)
-            diagnostic = "unknown widget declaration";
+            diagnostic = "unknown block-call declaration";
         else if(declaration->is_extern)
             diagnostic = "block calls require a Ziran function declaration";
         else if(count < 1 || count == 64 || props == NULL || props->is_enum || props->is_slot)
-            diagnostic = "widget declaration requires one typed record parameter";
+            diagnostic = "block-call declaration requires one typed record parameter";
         if(diagnostic != NULL) {
             KirDiagnostic(statement->span, "check.callee", "%s: %s", diagnostic, statement->callee);
             c->failed = 1;
@@ -1244,38 +1230,22 @@ resolve_widget_blocks(Checker *c)
         }
         if(KirFindType(c->module, type, NULL) != props) {
             KirDiagnostic(statement->span, "check.callee_type",
-                          "widget props type is shadowed or not directly imported: %s", type);
+                          "block-call record type is shadowed or not directly imported: %s", type);
             c->failed = 1;
             return 0;
-        }
-        if(statement->block_fallback) {
-            /* Host props were provisional. Reuse only the block's field
-             * values; the resolved declaration owns the actual record type. */
-            char *begin = strchr(statement->args, '{');
-            char *end = strrchr(statement->args, '}');
-            if(begin == NULL || end == NULL || end <= begin) {
-                KirDiagnostic(statement->span, "check.callee", "invalid leaf widget properties: %s",
-                              statement->callee);
-                c->failed = 1;
-                return 0;
-            }
-            size_t length = (size_t)(end - begin - 1);
-            memmove(statement->args, begin + 1, length);
-            statement->args[length] = '\0';
-            statement->block_fallback = 0;
         }
         char temporary[KIR_NAME_MAX];
         int serial = i;
         int collision;
         do {
-            snprintf(temporary, sizeof(temporary), "widget_value_%d", serial++);
+            snprintf(temporary, sizeof(temporary), "block_value_%d", serial++);
             collision = strstr(c->fn->args, temporary) != NULL;
             for(int s = 0; s < c->fn->stmt_count; s++) {
                 collision |= strstr(c->fn->stmts[s].text, temporary) != NULL ||
                              strstr(c->fn->stmts[s].args, temporary) != NULL;
             }
         } while(collision);
-        int added = lower_widget_block(c, i, owner, props, temporary, parameters, count);
+        int added = lower_block_call(c, i, owner, props, temporary, parameters, count);
         if(added < 0)
             return 0;
         i += added - 1;
@@ -1361,7 +1331,7 @@ check_function(Checker *c, KirFunction *fn)
     /* Imports are linked now. Rebuild expressions so imported types
      * participate in cast/grouping decisions before type checking. */
     KirStructureFunction(c->fn, c->module);
-    if(!resolve_widget_blocks(c)) {
+    if(!resolve_block_calls(c)) {
         return 0;
     }
     n = *kir_skip_ws(c->fn->args) ? kir_split_top(c->fn->args, params[0], 64, sizeof(params[0])) : 0;
