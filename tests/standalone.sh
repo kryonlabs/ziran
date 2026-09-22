@@ -36,7 +36,7 @@ GO111MODULE=off go run "$work/go/hello.go" "$work/go/main.go"
 
 cat > "$work/library.zi" <<'EOF'
 #module "library"
-Increment :: (value: i32) -> i32 #export {
+Button :: (value: i32) -> i32 #export {
     return value + 1
 }
 EOF
@@ -44,7 +44,7 @@ cat > "$work/app.zi" <<'EOF'
 #module "app"
 #import "library"
 Answer :: () -> i32 #export {
-    return Increment(41)
+    return Button(41)
 }
 EOF
 "$ziran" build --target=c --strict --root "$work" -o "$work/modules" \
@@ -56,3 +56,14 @@ EOF
 ${CC:-cc} -Iinclude -I"$work/modules" "$work/modules/library.c" \
     "$work/modules/app.c" "$work/modules/main.c" -o "$work/modules/app"
 "$work/modules/app"
+
+cat > "$work/bad.zi" <<'EOF'
+#module "bad"
+#assert 0, "expected failure"
+EOF
+if "$ziran" check --diagnostics=json --root "$work" "$work/bad.zi" \
+    2> "$work/diagnostic.json"; then
+    echo 'invalid source unexpectedly passed' >&2
+    exit 1
+fi
+python3 -m json.tool "$work/diagnostic.json" > /dev/null

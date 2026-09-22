@@ -1,14 +1,14 @@
 # Ziran
 
-Ziran is an independent language toolchain. Its source extension is `.zi`.
-The compiler's intermediate representation uses `.zir`. Kryon will be an
-optional UI library. This extraction no longer embeds Kryon's runtime type
-declarations, but widget-specific parser and backend code still needs to move
-out of Ziran.
+Ziran is a general-purpose programming language. Source files use `.zi`,
+checked intermediate representation uses `.zir`, and portable linked programs
+use `.zib`. None of these formats requires a UI. Kryon is a separate UI
+library written in Ziran and imported like any other library.
 
-Build the current compiler tools with `make`, then run `make check` for
-standalone programs that do not import Kryon, including a two-module program.
+The intended architecture is specified in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+[docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) records what the
+current toolchain actually implements. The split is underway; the current
+compiler is not yet a complete implementation of the architecture.
 
-The toolchain split is in progress. The current `.zir` writer is a diagnostic
-dump; the reader, linker, portable `.zib` format, and Kryon library migration
-are still required before the replacement is complete.
+For the current standalone compiler subset, run `make` and `make check`.
+The smoke test compiles non-UI `.zi` modules to C and native Go and runs them.

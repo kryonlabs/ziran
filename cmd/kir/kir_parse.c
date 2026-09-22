@@ -487,60 +487,6 @@ parse_direct_call_statement(const char *text, char *name, size_t name_size,
     return 1;
 }
 
-static int
-parse_widget_statement(const char *text, char *name, size_t name_size,
-                       char *args, size_t args_size)
-{
-    static const char *const widgets[] = {
-        "AppBackground", "Background", "Text", "Paragraph",
-        "Abbreviation", "Address", "Area", "Article", "Aside", "Base",
-        "Box", "Line", "Bevel", "Icon", "Image", "Button", "Card", "Selectable",
-        "Audio", "BidirectionalIsolate", "BidirectionalOverride",
-        "BlockQuote", "Bold", "Cite", "Code", "CodeBlock",
-        "Data", "DataList", "Deleted",
-        "DescriptionDetails", "DescriptionList", "DescriptionTerm",
-        "Details", "Dialog", "Embed", "Emphasis",
-        "Figcaption", "Figure", "Footer", "Form", "Header", "HGroup",
-        "IFrame", "Inserted", "Italic",
-        "ImageMap", "Keyboard", "Label", "Legend", "LineBreak", "ListItem", "Main",
-        "Mark", "Meta", "Meter", "Navigation", "NoScript", "EmbeddedObject", "OrderedList",
-        "OptionGroup", "Option", "Output", "Param", "Pre", "Quote",
-        "Ruby", "RubyParenthesis", "RubyText", "Sample", "Script", "Search", "Select",
-        "Slot", "Small", "Source", "Strong", "StyleElement", "Subscript", "Summary",
-        "Superscript", "Table", "TableBody", "TableCaption",
-        "TableColumn", "TableColumnGroup", "TableFoot",
-        "TableHead", "TableRow", "Template", "Time", "Title",
-        "Track", "UnorderedList", "Variable", "Video",
-        "WordBreakOpportunity",
-        "Bullet", "Separator",
-        "Link", "TextField", "TextArea", "Dropdown", "SegmentedControl",
-        "Slider", "Menu",
-        "Toggle", "Checkbox", "Radio", "Progress", "Plot",
-        "Drag", "Input", "Spinbox",
-        "DragDrop",
-        "Screen", "Page", "Section", "Heading", "ParagraphText",
-        "Column", "Row", "Stack", "Flow", "Grid", "Scroll", "End",
-        "Modal", "TitleBar", "TabBar",
-        "NavigationBar",
-        "Toolbar", "Toast", "Fieldset",
-		"PanedView", "Collapsible", "ListBox", "TreeView", "TableView",
-		"ColorPicker", "CanvasGrid"
-    };
-    size_t length;
-    size_t i;
-    int known = 0;
-
-    if(!parse_direct_call_statement(text, name, name_size, args, args_size))
-        return 0;
-    length = strlen(name);
-    for(i = 0; i < sizeof(widgets) / sizeof(widgets[0]); i++)
-        if(strcmp(name, widgets[i]) == 0) {
-            known = 1;
-            break;
-        }
-    return known && length > 0;
-}
-
 static const char *
 authored_scope_hook_name(const char *text)
 {
@@ -1954,11 +1900,7 @@ widget_stmt_apply_expression_metadata(KirStmt *statement,
     } else {
         return;
     }
-    if(fn->is_ui && parse_widget_statement(expr, widget, sizeof(widget),
-                                            args, sizeof(args)))
-        widget_stmt_apply_source_metadata(statement, fn, parent,
-                                      root_anonymous_count, widget, span);
-    else if(parse_direct_call_statement(expr, widget, sizeof(widget), args,
+    if(parse_direct_call_statement(expr, widget, sizeof(widget), args,
                                         sizeof(args))) {
         const char *node_widget = NULL;
 
@@ -4516,25 +4458,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                                   KirSpan(rel, line_no, pending_start_column),
                                   0);
 
-                if(kind == KIR_STMT_EXPR && fn->is_ui &&
-                   parse_widget_statement(t, widget, sizeof(widget),
-                                          widget_args,
-                                          sizeof(widget_args)))
-                    kind = KIR_STMT_WIDGET;
-                if(kind == KIR_STMT_WIDGET) {
-                    KirStmt *st;
-                    KirSourceSpan span = KirSpanEnd(rel, pending_start_line,
-                                                    pending_start_column,
-                                                    line_no,
-                                                    pending_end_column);
-
-                    st = KirFunctionAddWidget(fn, widget, widget_args, t,
-                                              span);
-                    widget_stmt_apply_source_metadata(st, fn,
-                        widget_block_count > 0 ? &widget_blocks[widget_block_count - 1] : NULL,
-                        &root_anonymous_widget_count,
-                        widget, span);
-                } else {
+                {
                     KirStmt *st;
                     KirSourceSpan span = KirSpanEnd(rel, pending_start_line,
                                                     pending_start_column,

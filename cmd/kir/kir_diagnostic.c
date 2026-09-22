@@ -1,10 +1,28 @@
 #include "kir_diagnostic.h"
-#include "kry_json.h"
-
 #include <stdlib.h>
 #include <string.h>
 
 static int diagnostic_json = -1;
+
+static void
+json_string(FILE *out, const char *value)
+{
+    const unsigned char *cursor = (const unsigned char *)value;
+
+    fputc('"', out);
+    while(*cursor != '\0') {
+        if(*cursor == '"' || *cursor == '\\') {
+            fputc('\\', out);
+            fputc(*cursor, out);
+        } else if(*cursor < 0x20) {
+            fprintf(out, "\\u%04x", *cursor);
+        } else {
+            fputc(*cursor, out);
+        }
+        cursor++;
+    }
+    fputc('"', out);
+}
 
 int
 KirSetDiagnosticFormat(const char *format)
@@ -25,34 +43,26 @@ KirDiagnosticV(KirSourceSpan span, const char *code, const char *format, va_list
 
     vsnprintf(message, sizeof(message), format, args);
     if(diagnostic_json < 0) {
-        const char *environment = getenv("KRYON_DIAGNOSTICS");
+        const char *environment = getenv("ZIRAN_DIAGNOSTICS");
 
         diagnostic_json = environment != NULL && strcmp(environment, "json") == 0;
     }
     if(diagnostic_json) {
-        KryJsonBuf json = {0};
-
-        kry_json_buf_raw(&json, "{\"severity\":\"error\",\"code\":");
-        kry_json_buf_str(&json, code);
-        kry_json_buf_raw(&json, ",\"message\":");
-        kry_json_buf_str(&json, message);
-        kry_json_buf_raw(&json, ",\"path\":");
-        kry_json_buf_str(&json, span.path);
-        kry_json_buf_raw(&json, ",\"line\":");
-        kry_json_buf_num(&json, span.line);
-        kry_json_buf_raw(&json, ",\"column\":");
-        kry_json_buf_num(&json, span.column);
-        kry_json_buf_raw(&json, ",\"end_line\":");
-        kry_json_buf_num(&json, span.end_line > 0 ? span.end_line : span.line);
-        kry_json_buf_raw(&json, ",\"end_column\":");
-        kry_json_buf_num(&json, span.end_column > 0 ? span.end_column : span.column);
-        kry_json_buf_raw(&json, "}");
-        fprintf(stderr, "%s\n", kry_json_buf_finish(&json));
-        kry_json_buf_free(&json);
+        fputs("{\"severity\":\"error\",\"code\":", stderr);
+        json_string(stderr, code);
+        fputs(",\"message\":", stderr);
+        json_string(stderr, message);
+        fputs(",\"path\":", stderr);
+        json_string(stderr, span.path);
+        fprintf(stderr, ",\"line\":%d,\"column\":%d,"
+                "\"end_line\":%d,\"end_column\":%d}\n",
+                span.line, span.column,
+                span.end_line > 0 ? span.end_line : span.line,
+                span.end_column > 0 ? span.end_column : span.column);
     } else if(span.path[0] != '\0') {
         fprintf(stderr, "%s:%d:%d: %s\n", span.path, span.line, span.column, message);
     } else {
-        fprintf(stderr, "kry: %s\n", message);
+        fprintf(stderr, "ziran: %s\n", message);
     }
 }
 

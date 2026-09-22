@@ -8,8 +8,8 @@ FRONTEND := cmd/kir/kir.c cmd/kir/kir_parse.c cmd/kir/kir_text.c \
     cmd/kir/kir_token.c cmd/kir/kir_cleanup.c cmd/kir/kir_expr.c \
     cmd/kir/kir_check.c cmd/kir/kir_borrow.c cmd/kir/kir_laws.c \
     cmd/kir/kir_emit.c cmd/kir/kir_style_imports.c \
-    cmd/kir/kir_diagnostic.c src/kry_std/kry_json.c
-HEADERS := $(wildcard cmd/kir/*.h) include/kry_json.h src/core/kry_alloc.h
+    cmd/kir/kir_diagnostic.c
+HEADERS := $(wildcard cmd/kir/*.h)
 
 .PHONY: all check clean
 all: $(BIN_DIR)/ziran $(BIN_DIR)/ziran-ir $(BIN_DIR)/ziran-c $(BIN_DIR)/ziran-go
