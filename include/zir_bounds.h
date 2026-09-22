@@ -13,8 +13,8 @@ extern "C" {
 #ifdef ZIRAN_BOUNDS_CHECK
 #include <stdio.h>
 #include <stdlib.h>
-static inline size_t ZiranBoundsCheck(size_t length, size_t index,
-                                       const char *what)
+static inline size_t BoundsCheck(size_t length, size_t index,
+                                 const char *what)
 {
     if(index >= length) {
         fprintf(stderr, "ziran: index %zu out of bounds for %s (length %zu)\n",
@@ -24,7 +24,7 @@ static inline size_t ZiranBoundsCheck(size_t length, size_t index,
     return index;
 }
 #define ZIRAN_INDEX(base, length, index) \
-    ((base)[ZiranBoundsCheck((size_t)(length), (size_t)(index), #base)])
+    ((base)[BoundsCheck((size_t)(length), (size_t)(index), #base)])
 #else
 #define ZIRAN_INDEX(base, length, index) ((base)[(index)])
 #endif
