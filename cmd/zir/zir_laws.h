@@ -4,5 +4,5 @@
 
 /* Enforce named post-check Ziran IR invariants before backend lowering.
  * Violations carry stable law names in diagnostics. */
-int ZirCheckLaws(ZirProgram **programs, int count);
+int CheckLaws(ZirProgram **programs, int count);
 #endif

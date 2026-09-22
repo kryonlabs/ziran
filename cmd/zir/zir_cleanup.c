@@ -26,9 +26,9 @@ mentions(const char *text, const char *name)
 {
     ZirLexer lexer;
     ZirToken token;
-    ZirLexerInit(&lexer, text, "");
+    LexerInit(&lexer, text, "");
     do {
-        token = ZirLexerNext(&lexer);
+        token = LexerNext(&lexer);
         if(token.kind == ZIR_TOKEN_IDENT && !strcmp(token.text, name)) return 1;
     } while(token.kind != ZIR_TOKEN_EOF);
     return 0;
@@ -42,15 +42,15 @@ action_kind(const char *text, ZirStmt *action)
     ZirFunction temporary = {0};
     int valid;
     action->kind = ZIR_STMT_EXPR;
-    ZirLexerInit(&lexer, text, action->span.path);
-    token = ZirLexerNext(&lexer);
+    LexerInit(&lexer, text, action->span.path);
+    token = LexerNext(&lexer);
     if(!strcmp(token.text, "return") || !strcmp(token.text, "break") ||
        !strcmp(token.text, "continue") || !strcmp(token.text, "goto") ||
        !strcmp(token.text, "defer") || !strcmp(token.text, "if") ||
        !strcmp(token.text, "while") || !strcmp(token.text, "for")) return 0;
-    ZirLexerInit(&lexer, text, action->span.path);
+    LexerInit(&lexer, text, action->span.path);
     do {
-        token = ZirLexerNext(&lexer);
+        token = LexerNext(&lexer);
         if(!strcmp(token.text, "=") || !strcmp(token.text, "+=") ||
            !strcmp(token.text, "-=") || !strcmp(token.text, "*=") ||
            !strcmp(token.text, "/=") || !strcmp(token.text, "%=") ||
@@ -58,9 +58,9 @@ action_kind(const char *text, ZirStmt *action)
            !strcmp(token.text, "^=") || !strcmp(token.text, "<<=") || !strcmp(token.text, ">>="))
             action->kind = ZIR_STMT_ASSIGN;
     } while(token.kind != ZIR_TOKEN_EOF);
-    zir_copy(action->text, sizeof(action->text), text);
+    copy_text(action->text, sizeof(action->text), text);
     if(!append(&temporary, action)) return 0;
-    ZirStructureFunction(&temporary, NULL);
+    StructureFunction(&temporary, NULL);
     valid = temporary.stmts[0].expr_root >= 0 &&
             temporary.exprs[temporary.stmts[0].expr_root].kind != ZIR_EXPR_UNKNOWN;
     free(temporary.stmts); free(temporary.exprs);
@@ -70,7 +70,7 @@ action_kind(const char *text, ZirStmt *action)
 static int
 append(ZirFunction *out, const ZirStmt *st)
 {
-    ZirStmt *copy = ZirFunctionAddStmt(out, st->kind, st->text, st->callee,
+    ZirStmt *copy = FunctionAddStmt(out, st->kind, st->text, st->callee,
                                       st->span);
     if(!copy)
         return 0;
@@ -128,7 +128,7 @@ falls_through(const ZirFunction *fn, int start, int end)
                 while(close + 1 < end && fn->stmts[close + 1].kind == ZIR_STMT_IF &&
                       strncmp(fn->stmts[close + 1].text, "else", 4) == 0) {
                     int next = close + 1;
-                    has_else = strncmp(zir_skip_ws(fn->stmts[next].text + 4), "if", 2) != 0;
+                    has_else = strncmp(skip_ws(fn->stmts[next].text + 4), "if", 2) != 0;
                     close = end_block(fn, next, end);
                     falls |= falls_through(fn, next + 1, close);
                 }
@@ -141,7 +141,7 @@ falls_through(const ZirFunction *fn, int start, int end)
 }
 
 int
-ZirLowerCleanup(ZirFunction *fn)
+LowerCleanup(ZirFunction *fn)
 {
     int has_cleanup = 0, depth = 0, count = 0, serial = 0, ok = 0;
     Cleanup *entries;
@@ -175,8 +175,8 @@ ZirLowerCleanup(ZirFunction *fn)
         if(st->kind == ZIR_STMT_DECL) {
             ZirLexer lexer;
             ZirToken name;
-            ZirLexerInit(&lexer, st->text, st->span.path);
-            name = ZirLexerNext(&lexer);
+            LexerInit(&lexer, st->text, st->span.path);
+            name = LexerNext(&lexer);
             for(int d = 0; d < count; d++) {
                 if(mentions(entries[d].statement.text, name.text)) {
                     fail(st, "a declaration cannot shadow a name referenced by an active defer");
@@ -188,9 +188,9 @@ ZirLowerCleanup(ZirFunction *fn)
             for(int d = 0; d < count; d++) {
                 ZirLexer lexer;
                 ZirToken token;
-                ZirLexerInit(&lexer, st->text, st->span.path);
+                LexerInit(&lexer, st->text, st->span.path);
                 do {
-                    token = ZirLexerNext(&lexer);
+                    token = LexerNext(&lexer);
                     if(token.kind == ZIR_TOKEN_IDENT &&
                        mentions(entries[d].statement.text, token.text)) {
                         fail(st, "a for header cannot reuse a name referenced by an active defer; use a while loop");
@@ -200,7 +200,7 @@ ZirLowerCleanup(ZirFunction *fn)
             }
         }
         if(st->kind == ZIR_STMT_DEFER) {
-            const char *body = zir_skip_ws(st->text + 5);
+            const char *body = skip_ws(st->text + 5);
             ZirStmt *action = &entries[count].statement;
             if(scopes[depth] == ZIR_STMT_SWITCH) {
                 fail(st, "defer in a switch case requires an explicit block");
@@ -214,13 +214,13 @@ ZirLowerCleanup(ZirFunction *fn)
                 goto done;
             }
             action->expr_root = -1;
-            zir_copy(action->text, sizeof(action->text), body);
+            copy_text(action->text, sizeof(action->text), body);
             entries[count++].depth = depth;
             continue;
         }
         if(st->kind == ZIR_STMT_RETURN && count) {
             ZirStmt result = *st;
-            const char *value = zir_skip_ws(st->text + 6);
+            const char *value = skip_ws(st->text + 6);
             if(*value && strcmp(value, ";")) {
                 char name[ZIR_NAME_MAX];
                 int collision;

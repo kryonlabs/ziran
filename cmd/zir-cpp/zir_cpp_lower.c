@@ -1,5 +1,5 @@
 /*
- * zir_cpp_lower.c - Zir → C++ backend. Lowers a ZirProgram to .cpp/.hpp
+ * zir_cpp_lower.c - ZIR to C++ backend. Lowers a ZirProgram to .cpp/.hpp
  * source files that call the C Kryon runtime. Emitted declarations keep
  * C linkage (extern "C") so zir_cpp output interops with k2c modules and the
  * plain-C kryon_project files.
@@ -120,7 +120,7 @@ resolve_module_fn(const ZirModule *m, const char *ident, size_t len,
         return 0;
     memcpy(name, ident, len);
     name[len] = '\0';
-    if(ZirResolveFunction(m, name, &owner, &fn) == 1) {
+    if(ResolveFunction(m, name, &owner, &fn) == 1) {
         function_c_name(owner, fn, dst, dst_size);
         return strlen(dst);
     }
@@ -218,7 +218,7 @@ rewrite_named_initializer(const ZirModule *m, const ZirCppModuleSyms *restab,
                           int restab_count, const char *src, char *dst,
                           size_t dst_size, const char *shadow)
 {
-    const char *p = zir_skip_ws(src + 1);
+    const char *p = skip_ws(src + 1);
     const char *type_start = p;
     const char *body;
     char type[LOWER_NAME_MAX];
@@ -234,15 +234,15 @@ rewrite_named_initializer(const ZirModule *m, const ZirCppModuleSyms *restab,
 
     if(!isalpha((unsigned char)*p) && *p != '_')
         return NULL;
-    while(zir_is_ident_char((unsigned char)*p) || *p == '.')
+    while(is_ident_char((unsigned char)*p) || *p == '.')
         p++;
     length = (size_t)(p - type_start);
-    if(length >= sizeof(type) || *zir_skip_ws(p) != ')')
+    if(length >= sizeof(type) || *skip_ws(p) != ')')
         return NULL;
     memcpy(type, type_start, length);
     type[length] = '\0';
-    p = zir_skip_ws(zir_skip_ws(p) + 1);
-    if(*p != '{' || *zir_skip_ws(p + 1) != '.')
+    p = skip_ws(skip_ws(p) + 1);
+    if(*p != '{' || *skip_ws(p + 1) != '.')
         return NULL;
     body = ++p;
     while(*p && depth > 0) {
@@ -268,7 +268,7 @@ rewrite_named_initializer(const ZirModule *m, const ZirCppModuleSyms *restab,
         return NULL;
     memcpy(raw, body, length);
     raw[length] = '\0';
-    count = zir_split_top(raw, parts[0], 33, sizeof(parts[0]));
+    count = split_top_level(raw, parts[0], 33, sizeof(parts[0]));
     if(count >= 33) {
         fprintf(stderr, "zir_cpp: too many named initializer fields\n");
         exit(1);
@@ -280,7 +280,7 @@ rewrite_named_initializer(const ZirModule *m, const ZirCppModuleSyms *restab,
     append_initializer(dst, dst_size, &used, "([%s]() { %s %s{}; ",
                        shadow ? "&" : "", mapped_type, temporary);
     for(int i = 0; i < count; i++) {
-        char *field = zir_trim(parts[i]);
+        char *field = trim(parts[i]);
         char *equals = strchr(field, '=');
         char value[LOWER_TEXT_MAX];
 
@@ -291,8 +291,8 @@ rewrite_named_initializer(const ZirModule *m, const ZirCppModuleSyms *restab,
             exit(1);
         }
         *equals = '\0';
-        zir_trim_in_place(field);
-        rewrite_body2(m, restab, restab_count, zir_skip_ws(equals + 1),
+        trim_in_place(field);
+        rewrite_body2(m, restab, restab_count, skip_ws(equals + 1),
                       value, sizeof(value), shadow);
         append_initializer(dst, dst_size, &used, "%s%s = %s; ", temporary, field, value);
     }
@@ -351,9 +351,9 @@ rewrite_body2(const ZirModule *m, const ZirCppModuleSyms *restab,
                     const char *scalar, *mapped;
                     memcpy(id, p, ilen);
                     id[ilen] = '\0';
-                    scalar = ZirScalarType(id);
+                    scalar = ScalarType(id);
                     if(*scalar && !strcmp(scalar, id)) {
-                        mapped = ZirTargetType(id, ZIR_C);
+                        mapped = TargetType(id, ZIR_C);
                         if(mapped != NULL) {
                             size_t mlen = strlen(mapped);
                             if(n + mlen < dst_size) {
@@ -493,7 +493,7 @@ function_c_name(const ZirModule *m, const ZirFunction *fn,
 }
 
 void
-zir_cpp_function_c_name(const ZirModule *m, const ZirFunction *fn,
+cpp_function_name(const ZirModule *m, const ZirFunction *fn,
                     char *dst, size_t dst_size)
 {
     function_c_name(m, fn, dst, dst_size);
@@ -521,14 +521,14 @@ static void
 strip_alias_type(const ZirModule *m, const char *type,
                  char *dst, size_t dst_size)
 {
-    if(ZirSliceElementType(type, NULL, 0)) {
-        zir_copy(dst, dst_size, "Slice");
+    if(SliceElementType(type, NULL, 0)) {
+        copy_text(dst, dst_size, "Slice");
         return;
     }
     const char *dot = strchr(type, '.');
-    const char *scalar = ZirScalarType(type);
-    if(*scalar && !strcmp(scalar,type) && ZirTargetType(type,ZIR_C)) {
-        snprintf(dst,dst_size,"%s",ZirTargetType(type,ZIR_C)); return;
+    const char *scalar = ScalarType(type);
+    if(*scalar && !strcmp(scalar,type) && TargetType(type,ZIR_C)) {
+        snprintf(dst,dst_size,"%s",TargetType(type,ZIR_C)); return;
     }
 
     if(dot != NULL) {
@@ -604,7 +604,7 @@ convert_args(const ZirModule *m, const char *args, char *dst, size_t dst_size)
                         split_array_type(type, pbase, sizeof(pbase),
                                          psuffix, sizeof(psuffix));
                         strip_alias_type(m, pbase, type, sizeof(type));
-                        zir_copy(pbase, sizeof(pbase), type);
+                        copy_text(pbase, sizeof(pbase), type);
                         if(!first && n + 2 < dst_size)
                             dst[n++] = ',';
                         if(!first && n + 1 < dst_size)
@@ -762,7 +762,7 @@ static void
 lower_body(FILE *c, const ZirModule *m, const ZirCppModuleSyms *restab, int restab_count, const ZirFunction *fn)
 {
     BodySymbols symbols = {m, restab, restab_count};
-    if(ZirEmitBody(c, m, fn, ZIR_CPP, resolve_body_symbol, &symbols, "", NULL)) return;
+    if(EmitBody(c, m, fn, ZIR_CPP, resolve_body_symbol, &symbols, "", NULL)) return;
     int indent = 1;
     int j;
     char shadow[LOWER_TEXT_MAX];   /* param + local names shadow functions */
@@ -846,7 +846,7 @@ lower_body(FILE *c, const ZirModule *m, const ZirCppModuleSyms *restab, int rest
             char cond[LOWER_TEXT_MAX];
 
             snprintf(cond, sizeof(cond), "%s", rw);
-            zir_strip_block_brace(cond);
+            strip_block_brace(cond);
             if(strncmp(cond, "guard ", 6) == 0) {
                 /* 'guard cond' exits when the condition is true. */
                 memmove(cond, cond + 6, strlen(cond + 6) + 1);
@@ -880,7 +880,7 @@ lower_body(FILE *c, const ZirModule *m, const ZirCppModuleSyms *restab, int rest
             char cond[LOWER_TEXT_MAX];
 
             snprintf(cond, sizeof(cond), "%s", rw);
-            zir_strip_block_brace(cond);
+            strip_block_brace(cond);
             if(strncmp(cond, "while ", 6) == 0)
                 memmove(cond, cond + 6, strlen(cond + 6) + 1);
             emit_indent(c, indent);
@@ -894,7 +894,7 @@ lower_body(FILE *c, const ZirModule *m, const ZirCppModuleSyms *restab, int rest
             const char *kw = (st->kind == ZIR_STMT_FOR) ? "for" : "switch";
 
             snprintf(head, sizeof(head), "%s", rw);
-            zir_strip_block_brace(head);
+            strip_block_brace(head);
             if(strncmp(head, kw, strlen(kw)) == 0 && head[strlen(kw)] == ' ')
                 memmove(head, head + strlen(kw) + 1,
                         strlen(head + strlen(kw) + 1) + 1);
@@ -1130,7 +1130,7 @@ lower_body(FILE *c, const ZirModule *m, const ZirCppModuleSyms *restab, int rest
                 if(st->kind == ZIR_STMT_RAW) {
                     char esc[ZIR_PATH_MAX * 2];
 
-                    zir_escape_c_string(m->source_path, esc, sizeof(esc));
+                    escape_c_string(m->source_path, esc, sizeof(esc));
                     emit_indent(c, indent);
                     fprintf(c, "/* kry: raw-c %s:%d */\n", esc, st->span.line);
                 }
@@ -1354,7 +1354,7 @@ emit_extern_prototype(FILE *c, const ZirModule *m, const ZirImport *imp)
 
     extract_extern_signature(imp, ret, sizeof(ret), cargs, sizeof(cargs));
     strip_alias_type(m, ret, return_type, sizeof(return_type));
-    zir_copy(ret, sizeof(ret), return_type);
+    copy_text(ret, sizeof(ret), return_type);
     convert_args(m, cargs, conv, sizeof(conv));
     if(c_extern_symbol(imp, symbol, sizeof(symbol))) {
         cname = symbol;
@@ -1400,9 +1400,9 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
     fprintf(h, "/* Generated by zir_cpp from %s. */\n", m->source_path);
     fprintf(h, "#ifndef %s\n#define %s\n\n#include <stdint.h>\n#include <stdbool.h>\n", guard, guard);
     fputs("#include \"zir_bounds.h\"\n", h);
-    if(ZirModuleUsesSlices(m))
+    if(ModuleUsesSlices(m))
         fputs("#include \"zir_slice.h\"\n", h);
-    ZirEmitStringType(h);
+    EmitStringType(h);
     for(i = 0; i < m->import_count; i++) {
         const ZirImport *imp = &m->imports[i];
 
@@ -1572,7 +1572,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
         if(!slot->is_slot)
             continue;
         emit_guard_open(h, slot->guard);
-        ZirEmitSlotType(h, slot, ZIR_CPP, NULL, NULL);
+        EmitSlotType(h, slot, ZIR_CPP, NULL, NULL);
         emit_guard_close(h, slot->guard);
     }
     /* #global variables have external linkage: declare extern in the header,
@@ -1614,9 +1614,9 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
             continue;   /* private functions are file-static */
         function_c_name(m, fn, cname, sizeof(cname));
         char abi_args[ZIR_TEXT_MAX];
-        ZirArrayAbiArgs(fn, abi_args, sizeof(abi_args));
+        ArrayAbiArgs(fn, abi_args, sizeof(abi_args));
         convert_args(m, abi_args, cargs, sizeof(cargs));
-        strip_alias_type(m, ZirArrayElementType(fn->return_type, NULL, 0, NULL) ? "void" : fn->return_type,
+        strip_alias_type(m, ArrayElementType(fn->return_type, NULL, 0, NULL) ? "void" : fn->return_type,
                          cret, sizeof(cret));
         emit_guard_open(h, fn->guard);
         fprintf(h, "%s %s(%s);\n",
@@ -1636,10 +1636,10 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
     fprintf(c, "#include <stdio.h>\n");
     int needs_inspection = 0;
     for(int fi = 0; fi < m->function_count; fi++)
-        if(!m->functions[fi].is_extern && !ZirCanEmitBody(m, &m->functions[fi])) needs_inspection = 1;
+        if(!m->functions[fi].is_extern && !CanEmitBody(m, &m->functions[fi])) needs_inspection = 1;
     if(needs_inspection)
         fprintf(c, "#include \"ui_inspect_props.generated.h\"\n");
-    ZirEmitNumbers(c, m, ZIR_CPP);
+    EmitNumbers(c, m, ZIR_CPP);
     /* '#private' imports include here (implementation-only). */
     for(i = 0; i < m->import_count; i++) {
         const ZirImport *imp = &m->imports[i];
@@ -1704,9 +1704,9 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
             continue;
         function_c_name(m, fn, cname, sizeof(cname));
         char abi_args[ZIR_TEXT_MAX];
-        ZirArrayAbiArgs(fn, abi_args, sizeof(abi_args));
+        ArrayAbiArgs(fn, abi_args, sizeof(abi_args));
         convert_args(m, abi_args, cargs, sizeof(cargs));
-        strip_alias_type(m, ZirArrayElementType(fn->return_type, NULL, 0, NULL) ? "void" : fn->return_type,
+        strip_alias_type(m, ArrayElementType(fn->return_type, NULL, 0, NULL) ? "void" : fn->return_type,
                          cret, sizeof(cret));
         emit_guard_open(c, fn->guard);
         fprintf(c, "static ZIRAN_PRIVATE_UNUSED %s %s(%s);\n",
@@ -1738,7 +1738,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
             char initw[LOWER_TEXT_MAX];
 
             /* initializers carry 'nil' and module-local function refs */
-            if(!ZirScalarLiteral(g->type, g->init, ZIR_CPP, g->span, initw, sizeof(initw)))
+            if(!ScalarLiteral(g->type, g->init, ZIR_CPP, g->span, initw, sizeof(initw)))
                 rewrite_body2(m, NULL, 0, g->init, initw, sizeof(initw), NULL);
             emit_guard_open(c, g->guard);
             fprintf(c, "%s%s %s%s = %s;\n", g->is_static ? "static " : "",
@@ -1755,7 +1755,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
         split_array_type(f->type, base, sizeof(base), suffix, sizeof(suffix));
         char mapped[LOWER_NAME_MAX], init[LOWER_TEXT_MAX];
         strip_alias_type(m,base,mapped,sizeof(mapped));
-        if(!ZirScalarLiteral(f->type,f->init[0]?f->init:"0",ZIR_CPP,f->span,init,sizeof(init)))
+        if(!ScalarLiteral(f->type,f->init[0]?f->init:"0",ZIR_CPP,f->span,init,sizeof(init)))
             snprintf(init,sizeof(init),"%s",f->init[0]?f->init:"{0}");
         emit_guard_open(c, f->guard);
         fprintf(c, "static %s %s%s = %s;\n", mapped, f->name, suffix, init);
@@ -1771,9 +1771,9 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
 
         function_c_name(m, fn, cname, sizeof(cname));
         char abi_args[ZIR_TEXT_MAX];
-        ZirArrayAbiArgs(fn, abi_args, sizeof(abi_args));
+        ArrayAbiArgs(fn, abi_args, sizeof(abi_args));
         convert_args(m, abi_args, cargs, sizeof(cargs));
-        strip_alias_type(m, ZirArrayElementType(fn->return_type, NULL, 0, NULL) ? "void" : fn->return_type,
+        strip_alias_type(m, ArrayElementType(fn->return_type, NULL, 0, NULL) ? "void" : fn->return_type,
                          cret, sizeof(cret));
         if(fn->is_extern) {
             /* extern: prototype only, no body */
@@ -1787,7 +1787,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
         fprintf(c, "\n");
         emit_guard_open(c, fn->guard);
         BodySymbols symbols = {m, restab, restab_count};
-        ZirEmitSlotWrappers(c, m, fn, ZIR_CPP, resolve_body_symbol, &symbols);
+        EmitSlotWrappers(c, m, fn, ZIR_CPP, resolve_body_symbol, &symbols);
         if(fn->is_public)
             fprintf(c, "%s\n%s(%s)\n{\n", cret[0] ? cret : "void",
                     cname, cargs);
@@ -1803,7 +1803,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
 }
 
 void
-zir_cpp_lower(const ZirProgram *program, const char *root, const char *out_dir, const ZirCppModuleSyms *restab, int restab_count)
+cpp_lower(const ZirProgram *program, const char *root, const char *out_dir, const ZirCppModuleSyms *restab, int restab_count)
 {
     int i;
 
@@ -1815,7 +1815,7 @@ zir_cpp_lower(const ZirProgram *program, const char *root, const char *out_dir, 
 }
 
 void
-zir_cpp_build_syms(const ZirProgram *program, ZirCppModuleSyms *out)
+cpp_build_syms(const ZirProgram *program, ZirCppModuleSyms *out)
 {
     int i, j;
 

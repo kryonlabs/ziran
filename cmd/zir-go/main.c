@@ -42,7 +42,7 @@ main(int argc, char **argv)
 
     for(i = 1; i < argc; i++) {
         if(strncmp(argv[i], "--diagnostics=", 14) == 0) {
-            if(!ZirSetDiagnosticFormat(argv[i] + 14)) {
+            if(!SetDiagnosticFormat(argv[i] + 14)) {
                 usage();
                 return 1;
             }
@@ -78,7 +78,7 @@ main(int argc, char **argv)
         fprintf(stderr, "ziran-go: --runtime-implementation requires --no-main\n");
         return 1;
     }
-    ZirEmitUseMinifiedOutput(minify);
+    EmitUseMinifiedOutput(minify);
 
     file_count = argc - first_file;
     progs = calloc((size_t)file_count, sizeof(*progs));
@@ -87,30 +87,30 @@ main(int argc, char **argv)
         return 1;
     }
     for(i = 0; i < file_count; i++) {
-        all_ir &= ZirPathIsZir(argv[first_file + i]);
-        progs[i] = ZirProgramLoad(argv[first_file + i], root);
+        all_ir &= PathIsZir(argv[first_file + i]);
+        progs[i] = ProgramLoad(argv[first_file + i], root);
         if(progs[i] == NULL) {
             fprintf(stderr, "ziran-go: failed to parse %s\n", argv[first_file + i]);
             return 1;
         }
     }
-    check_ok = all_ir ? ZirLinkImports(progs, file_count) :
-                        ZirCheckPrograms(progs, file_count, strict);
-    laws_ok = ZirCheckLaws(progs, file_count);
+    check_ok = all_ir ? LinkImports(progs, file_count) :
+                        CheckPrograms(progs, file_count, strict);
+    laws_ok = CheckLaws(progs, file_count);
     if(!check_ok || !laws_ok) {
-        for(i = 0; i < file_count; i++) ZirProgramFree(progs[i]);
+        for(i = 0; i < file_count; i++) ProgramFree(progs[i]);
         free(progs);
         return 1;
     }
-    if(zir_go_lower((const ZirProgram *const *)progs, file_count, root, out_dir,
+    if(go_lower((const ZirProgram *const *)progs, file_count, root, out_dir,
                  pkg, no_main, runtime_implementation) != 0) {
         for(i = 0; i < file_count; i++)
-            ZirProgramFree(progs[i]);
+            ProgramFree(progs[i]);
         free(progs);
         return 1;
     }
     for(i = 0; i < file_count; i++)
-        ZirProgramFree(progs[i]);
+        ProgramFree(progs[i]);
     free(progs);
     return 0;
 }

@@ -3,7 +3,7 @@
 #include "zir_diagnostic.h"
 
 int
-ZirCheckLaws(ZirProgram **programs, int count)
+CheckLaws(ZirProgram **programs, int count)
 {
     int violations = 0;
     for(int p = 0; p < count; p++) {
@@ -17,7 +17,7 @@ ZirCheckLaws(ZirProgram **programs, int count)
                     ZirStmt *statement = &fn->stmts[s];
                     if(statement->kind != ZIR_STMT_BLOCK_CALL)
                         continue;
-                    ZirDiagnostic(statement->span, "ir.block_call.lowered",
+                    Diagnostic(statement->span, "ir.block_call.lowered",
                                   "law ir.block_call.lowered: unresolved block call %s",
                                   statement->callee);
                     violations++;

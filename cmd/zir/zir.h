@@ -215,12 +215,12 @@ typedef struct ZirTypeField {
 
 /* Start offset at zero. Returns 1 for a field, 0 at end, -1 for malformed
  * record syntax. Names/types are trimmed without truncating source tokens. */
-int ZirTypeNextField(const ZirType *record, size_t *offset, ZirTypeField *field);
+int TypeNextField(const ZirType *record, size_t *offset, ZirTypeField *field);
 
 /* Parse a fixed-capacity array type text "[N]element". Returns 1 with the
  * element type copied out and the capacity stored, 0 for any other type. */
-int ZirSliceElementType(const char *type, char *element, size_t element_size);
-int ZirArrayElementType(const char *type, char *element, size_t element_size,
+int SliceElementType(const char *type, char *element, size_t element_size);
+int ArrayElementType(const char *type, char *element, size_t element_size,
                         int *capacity);
 
 typedef struct ZirModule {
@@ -258,55 +258,55 @@ typedef struct ZirProgram {
 
 /* Local records and direct unqualified Kry imports; owner supplies field scope. */
 /* Local declarations shadow imports. Returns 1 found, 0 absent, -1 ambiguous. */
-int ZirResolveFunction(const ZirModule *module, const char *name,
+int ResolveFunction(const ZirModule *module, const char *name,
                        const ZirModule **owner, const ZirFunction **function);
 /* Runtime contracts are parsed from embedded declaration sources. */
-const ZirType *ZirFindRuntimeEnumMember(const char *name);
-const ZirType *ZirFindRuntimeType(const char *name, const ZirModule **owner);
-const ZirType *ZirFindType(const ZirModule *module, const char *name,
+const ZirType *FindRuntimeEnumMember(const char *name);
+const ZirType *FindRuntimeType(const char *name, const ZirModule **owner);
+const ZirType *FindType(const ZirModule *module, const char *name,
                           const ZirModule **owner);
-int ZirResolveEnumMember(const ZirModule *module, const char *name,
+int ResolveEnumMember(const ZirModule *module, const char *name,
                          const ZirModule **owner, const ZirType **type);
 
-ZirProgram *ZirProgramNew(void);
-void ZirProgramFree(ZirProgram *program);
-void zir_copy(char *dst, size_t dst_size, const char *src);
-ZirSourceSpan ZirSpan(const char *path, int line, int column);
-ZirSourceSpan ZirSpanEnd(const char *path, int line, int column,
+ZirProgram *ProgramNew(void);
+void ProgramFree(ZirProgram *program);
+void copy_text(char *dst, size_t dst_size, const char *src);
+ZirSourceSpan Span(const char *path, int line, int column);
+ZirSourceSpan SpanEnd(const char *path, int line, int column,
                          int end_line, int end_column);
-ZirModule *ZirProgramAddModule(ZirProgram *program, const char *name,
+ZirModule *ProgramAddModule(ZirProgram *program, const char *name,
                                const char *source_path, ZirSourceSpan span);
-ZirStateField *ZirModuleAddStateField(ZirModule *module, const char *name,
+ZirStateField *ModuleAddStateField(ZirModule *module, const char *name,
                                       const char *type, const char *init,
                                       ZirSourceSpan span);
-ZirImport *ZirModuleAddImport(ZirModule *module, ZirImportKind kind,
+ZirImport *ModuleAddImport(ZirModule *module, ZirImportKind kind,
                               const char *name, const char *target,
                               const char *signature, int required,
                               ZirSourceSpan span);
-ZirFunction *ZirModuleAddFunction(ZirModule *module, const char *name,
+ZirFunction *ModuleAddFunction(ZirModule *module, const char *name,
                                   const char *args, const char *return_type,
                                   int exported, ZirSourceSpan span);
-void ZirModuleAddGlobal(ZirModule *module, const char *name, const char *type,
+void ModuleAddGlobal(ZirModule *module, const char *name, const char *type,
                         const char *init, ZirSourceSpan span);
-void ZirModuleAddStatic(ZirModule *module, const char *name, const char *type,
+void ModuleAddStatic(ZirModule *module, const char *name, const char *type,
                         const char *init, ZirSourceSpan span);
-ZirDefine *ZirModuleAddDefine(ZirModule *module, const char *name,
+ZirDefine *ModuleAddDefine(ZirModule *module, const char *name,
                               const char *value, ZirSourceSpan span);
-ZirAssert *ZirModuleAddAssert(ZirModule *module, const char *condition,
+ZirAssert *ModuleAddAssert(ZirModule *module, const char *condition,
                               const char *message, ZirSourceSpan span);
-ZirType *ZirModuleAddType(ZirModule *module, const char *name,
+ZirType *ModuleAddType(ZirModule *module, const char *name,
                           ZirSourceSpan span);
-ZirStmt *ZirFunctionAddStmt(ZirFunction *fn, ZirStmtKind kind,
+ZirStmt *FunctionAddStmt(ZirFunction *fn, ZirStmtKind kind,
                             const char *text, const char *callee,
                             ZirSourceSpan span);
-ZirStmt *ZirFunctionAddBlockCall(ZirFunction *fn, const char *callee,
+ZirStmt *FunctionAddBlockCall(ZirFunction *fn, const char *callee,
                               const char *args, const char *text,
                               ZirSourceSpan span);
-const char *ZirImportKindName(ZirImportKind kind);
-const char *ZirStmtKindName(ZirStmtKind kind);
-const char *ZirExprKindName(ZirExprKind kind);
-ZirExpr *ZirFunctionAddExpr(ZirFunction *fn, ZirExprKind kind,
+const char *ImportKindName(ZirImportKind kind);
+const char *StmtKindName(ZirStmtKind kind);
+const char *ExprKindName(ZirExprKind kind);
+ZirExpr *FunctionAddExpr(ZirFunction *fn, ZirExprKind kind,
                             const char *text, ZirSourceSpan span);
-void ZirProgramDump(const ZirProgram *program, FILE *out);
+void ProgramDump(const ZirProgram *program, FILE *out);
 
 #endif /* ZIRAN_ZIR_H */

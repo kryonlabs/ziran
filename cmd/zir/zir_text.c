@@ -5,13 +5,13 @@
 #include <string.h>
 
 int
-zir_is_ident_char(int c)
+is_ident_char(int c)
 {
     return isalnum((unsigned char)c) || c == '_';
 }
 
 const char *
-zir_skip_ws(const char *s)
+skip_ws(const char *s)
 {
     while(s != NULL && isspace((unsigned char)*s))
         s++;
@@ -19,7 +19,7 @@ zir_skip_ws(const char *s)
 }
 
 const char *
-zir_skip_inline_ws(const char *s)
+skip_inline_ws(const char *s)
 {
     while(s != NULL && (*s == ' ' || *s == '\t'))
         s++;
@@ -27,7 +27,7 @@ zir_skip_inline_ws(const char *s)
 }
 
 char *
-zir_trim(char *s)
+trim(char *s)
 {
     char *e;
 
@@ -42,20 +42,20 @@ zir_trim(char *s)
 }
 
 char *
-zir_trim_in_place(char *s)
+trim_in_place(char *s)
 {
     char *p;
 
     if(s == NULL)
         return NULL;
-    p = zir_trim(s);
+    p = trim(s);
     if(p != s)
         memmove(s, p, strlen(p) + 1);
     return s;
 }
 
 void
-zir_strip_block_brace(char *s)
+strip_block_brace(char *s)
 {
     size_t n;
 
@@ -72,7 +72,7 @@ zir_strip_block_brace(char *s)
 }
 
 void
-zir_camel_ident(const char *s, char *dst, size_t dst_size)
+camel_ident(const char *s, char *dst, size_t dst_size)
 {
     size_t n = 0;
     int up = 1;
@@ -98,7 +98,7 @@ zir_camel_ident(const char *s, char *dst, size_t dst_size)
 }
 
 void
-zir_go_field_ident(const char *s, char *dst, size_t dst_size)
+go_field_ident(const char *s, char *dst, size_t dst_size)
 {
     static const struct {
         const char *camel;
@@ -114,7 +114,7 @@ zir_go_field_ident(const char *s, char *dst, size_t dst_size)
 
     if(dst_size == 0)
         return;
-    zir_camel_ident(s, dst, dst_size);
+    camel_ident(s, dst, dst_size);
     for(size_t i = 0; i < sizeof(initialisms) / sizeof(initialisms[0]); i++) {
         if(strcmp(dst, initialisms[i].camel) == 0) {
             snprintf(dst, dst_size, "%s", initialisms[i].go);
@@ -128,7 +128,7 @@ zir_go_field_ident(const char *s, char *dst, size_t dst_size)
  * surrounding literal. Returns the number of chars written; dst always holds
  * a NUL-terminated prefix of the escaped text when dst_size > 0. */
 size_t
-zir_escape_c_string(const char *s, char *dst, size_t dst_size)
+escape_c_string(const char *s, char *dst, size_t dst_size)
 {
     size_t n = 0;
 
@@ -166,7 +166,7 @@ zir_escape_c_string(const char *s, char *dst, size_t dst_size)
 }
 
 int
-zir_split_top(const char *s, char *parts, int max, size_t part_size)
+split_top_level(const char *s, char *parts, int max, size_t part_size)
 {
     int depth = 0;
     int n = 0;
@@ -191,7 +191,7 @@ zir_split_top(const char *s, char *parts, int max, size_t part_size)
 
                 memcpy(part, start, len);
                 part[len] = '\0';
-                zir_trim_in_place(part);
+                trim_in_place(part);
                 n++;
             }
             if(*p == '\0')

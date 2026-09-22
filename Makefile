@@ -9,10 +9,11 @@ FRONTEND := cmd/zir/zir.c cmd/zir/zir_parse.c cmd/zir/zir_text.c \
     cmd/zir/zir_check.c cmd/zir/zir_borrow.c cmd/zir/zir_laws.c \
     cmd/zir/zir_emit.c cmd/zir/zir_serial.c \
     cmd/zir/zir_diagnostic.c
+PORTABLE := cmd/zir/zir_bundle.c cmd/zir/zir_vm.c
 HEADERS := $(wildcard cmd/zir/*.h)
 
 .PHONY: all check clean
-all: $(BIN_DIR)/ziran $(BIN_DIR)/zi-fmt $(BIN_DIR)/ziran-ir $(BIN_DIR)/ziran-c $(BIN_DIR)/ziran-go $(BIN_DIR)/ziran-cpp
+all: $(BIN_DIR)/ziran $(BIN_DIR)/zi-fmt $(BIN_DIR)/ziran-ir $(BIN_DIR)/ziran-c $(BIN_DIR)/ziran-go $(BIN_DIR)/ziran-cpp $(BIN_DIR)/ziran-zib
 
 $(BIN_DIR):
 	mkdir -p $@
@@ -37,6 +38,9 @@ $(BIN_DIR)/ziran-go: cmd/zir-go/main.c cmd/zir-go/zir_go_lower.c $(FRONTEND) $(H
 
 $(BIN_DIR)/ziran-cpp: cmd/zir-cpp/main.c cmd/zir-cpp/zir_cpp_lower.c $(FRONTEND) $(HEADERS) | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ cmd/zir-cpp/main.c cmd/zir-cpp/zir_cpp_lower.c $(FRONTEND)
+
+$(BIN_DIR)/ziran-zib: cmd/zir-zib/main.c $(FRONTEND) $(PORTABLE) $(HEADERS) | $(BIN_DIR)
+	$(CC) $(CFLAGS) -o $@ cmd/zir-zib/main.c $(FRONTEND) $(PORTABLE)
 
 check: all
 	sh tests/standalone.sh $(BIN_DIR)/ziran

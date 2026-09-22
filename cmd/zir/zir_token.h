@@ -33,8 +33,8 @@ typedef struct ZirLexer {
     int column;
 } ZirLexer;
 
-void ZirLexerInit(ZirLexer *lx, const char *src, const char *path);
-ZirToken ZirLexerNext(ZirLexer *lx);
-const char *ZirTokenKindName(ZirTokenKind kind);
+void LexerInit(ZirLexer *lx, const char *src, const char *path);
+ZirToken LexerNext(ZirLexer *lx);
+const char *TokenKindName(ZirTokenKind kind);
 
 #endif /* ZIRAN_ZIR_TOKEN_H */

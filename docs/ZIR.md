@@ -1,7 +1,7 @@
 # Ziran intermediate representation (`.zir`)
 
 This is the target contract. An experimental binary version 3 now exists for
-the tested C/C++/Go subset. It is not yet the complete contract below; see
+the tested C/C++/Go and portable scalar subsets. It is not yet the complete contract below; see
 [Implementation status](IMPLEMENTATION_STATUS.md).
 
 `.zir` is a versioned, checked, serializable module representation. It is the
@@ -36,6 +36,7 @@ integers are encoded explicitly; process pointers and C struct padding are
 not serialized. The reader rejects wrong versions, truncated records,
 oversized fields, invalid references, and trailing bytes. The C, C++, and native Go
 commands can build saved `.zir` modules, including an imported two-module
-block-call example. The reader still needs full semantic verification, and
-the portable backend does not consume this format yet. Version 3 is
+block-call example. The experimental `.zib` bundler also consumes saved `.zir`
+for its restricted scalar subset. The reader still needs full semantic
+verification. Version 3 is
 experimental and has no compatibility promise.

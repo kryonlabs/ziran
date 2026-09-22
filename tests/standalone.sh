@@ -93,6 +93,63 @@ ${CC:-cc} -Iinclude -I"$work/modules" "$work/modules/library.c" \
     "$work/modules/app.c" "$work/modules/main.c" -o "$work/modules/app"
 "$work/modules/app"
 
+"$ziran" bundle --root "$work" --entry app:Answer -o "$work/app.zib" \
+    "$work/library.zi" "$work/app.zi"
+test "$("$ziran" run "$work/app.zib")" = 42
+"$ziran" ir --root "$work" -o "$work/modules-ir" \
+    "$work/library.zi" "$work/app.zi"
+"$ziran" bundle --root "$work" --entry app:Answer -o "$work/app-from-ir.zib" \
+    "$work/modules-ir/library.zir" "$work/modules-ir/app.zir"
+cmp "$work/app.zib" "$work/app-from-ir.zib"
+test "$("$ziran" run "$work/app-from-ir.zib")" = 42
+cat > "$work/local-bundle.zi" <<'EOF'
+#module "local_bundle"
+Answer :: () -> i32 #export {
+    value: i32 = 40
+    value = value + 2
+    return value
+}
+EOF
+"$ziran" bundle --root "$work" --entry local_bundle:Answer \
+    -o "$work/local-bundle.zib" "$work/local-bundle.zi"
+test "$("$ziran" run "$work/local-bundle.zib")" = 42
+python3 - "$work/app.zib" "$work/bad-bundle.zib" "$work/old-bundle.zib" <<'PY'
+from pathlib import Path
+import sys
+data = Path(sys.argv[1]).read_bytes()
+assert data[:8] == b'ZIB\0\x01\0\0\0', data[:8]
+Path(sys.argv[2]).write_bytes(data[:17])
+old = bytearray(data)
+old[4] = 2
+Path(sys.argv[3]).write_bytes(old)
+PY
+if "$ziran" run "$work/bad-bundle.zib" 2> "$work/bad-bundle.err"; then
+    echo 'truncated bundle unexpectedly ran' >&2
+    exit 1
+fi
+grep -Fq 'invalid or truncated bundle' "$work/bad-bundle.err"
+if "$ziran" run "$work/old-bundle.zib" 2> "$work/old-bundle.err"; then
+    echo 'unsupported bundle version unexpectedly ran' >&2
+    exit 1
+fi
+grep -Fq 'unsupported ZIB version' "$work/old-bundle.err"
+cat > "$work/unsupported-bundle.zi" <<'EOF'
+#module "unsupported_bundle"
+Answer :: () -> i32 #export {
+    while false {
+    }
+    return 42
+}
+EOF
+if "$ziran" bundle --root "$work" --entry unsupported_bundle:Answer \
+    -o "$work/unsupported-bundle.zib" "$work/unsupported-bundle.zi" \
+    2> "$work/unsupported-bundle.err"; then
+    echo 'unsupported portable control flow unexpectedly bundled' >&2
+    exit 1
+fi
+grep -Fq 'outside the portable scalar subset' "$work/unsupported-bundle.err"
+test ! -e "$work/unsupported-bundle.zib"
+
 cat > "$work/blocklib.zi" <<'EOF'
 #module "blocklib"
 Props :: struct {

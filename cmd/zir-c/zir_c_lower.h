@@ -16,15 +16,15 @@ typedef struct ZirCModuleSyms {
 
 /* Lower a ZirProgram to C source (.c/.h). restab/restab_count resolve
  * cross-module calls; pass NULL/0 to resolve same-module only. */
-void zir_c_lower(const ZirProgram *program, const char *root,
+void c_lower(const ZirProgram *program, const char *root,
                const char *out_dir, const ZirCModuleSyms *restab,
                int restab_count);
 
 /* Build the symbol table entry for one program into out. */
-void zir_c_build_syms(const ZirProgram *program, ZirCModuleSyms *out);
+void c_build_syms(const ZirProgram *program, ZirCModuleSyms *out);
 
 /* Full C name for a function (module prefix unless exported). */
-void zir_c_function_c_name(const ZirModule *m, const ZirFunction *fn,
+void c_function_name(const ZirModule *m, const ZirFunction *fn,
                          char *dst, size_t dst_size);
 
 #endif

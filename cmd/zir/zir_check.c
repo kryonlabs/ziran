@@ -30,7 +30,7 @@ typedef struct Checker {
 } Checker;
 
 const char *
-ZirScalarType(const char *type)
+ScalarType(const char *type)
 {
     static const struct { const char *source, *type; } types[] = {
         {"int", "i32"}, {"unsigned int", "u32"}, {"unsigned", "u32"},
@@ -53,7 +53,7 @@ error(Checker *c, ZirSourceSpan span, const char *message, const char *detail)
 {
     c->errors++;
     if(!c->strict) return;
-    ZirDiagnostic(span, "check.type", "%s%s%s",
+    Diagnostic(span, "check.type", "%s%s%s",
             message, detail && *detail ? ": " : "", detail ? detail : "");
 }
 
@@ -79,8 +79,8 @@ bind(Checker *c, const char *name, const char *type, ZirSourceSpan span)
         if(!next) { c->errors++; c->failed=1; return; }
         c->bindings = next; c->capacity = size;
     }
-    zir_copy(c->bindings[c->count].name, ZIR_NAME_MAX, name);
-    zir_copy(c->bindings[c->count].type, ZIR_NAME_MAX, type);
+    copy_text(c->bindings[c->count].name, ZIR_NAME_MAX, name);
+    copy_text(c->bindings[c->count].type, ZIR_NAME_MAX, type);
     c->bindings[c->count].is_instance = 0;
     c->bindings[c->count++].depth = c->depth;
 }
@@ -90,7 +90,7 @@ function(Checker *c, const char *name, ZirSourceSpan span)
 {
     const ZirModule *owner = NULL;
     const ZirFunction *found = NULL;
-    if(ZirResolveFunction(c->module, name, &owner, &found) < 0) {
+    if(ResolveFunction(c->module, name, &owner, &found) < 0) {
         error(c, span, "ambiguous imported function", name);
         c->failed = 1;
     }
@@ -128,8 +128,8 @@ lookup_lexical(Checker *c, const char *name)
     }
     c->fn->captures = captures;
     ZirCapture *capture = &captures[c->fn->capture_count++];
-    zir_copy(capture->name, sizeof(capture->name), name);
-    zir_copy(capture->type, sizeof(capture->type), type);
+    copy_text(capture->name, sizeof(capture->name), name);
+    copy_text(capture->type, sizeof(capture->type), type);
     capture->is_instance = lexical_instance(c->parent, name);
     return capture->type;
 }
@@ -146,7 +146,7 @@ lookup(Checker *c, const char *name)
         if(!strcmp(c->module->globals[i].name, name)) return c->module->globals[i].type;
     const ZirModule *owner = NULL;
     const ZirType *type = NULL;
-    int resolved = ZirResolveEnumMember(c->module, name, &owner, &type);
+    int resolved = ResolveEnumMember(c->module, name, &owner, &type);
     if(resolved < 0) {
         error(c, c->fn->span, "ambiguous enum member", name);
         c->failed = 1;
@@ -160,13 +160,13 @@ static int
 numeric(const char *type)
 {
     return !strcmp(type, "integer") || !strcmp(type, "real") ||
-           (*type && strchr("iuf", type[0]) && *ZirScalarType(type)) || !strcmp(type, "char");
+           (*type && strchr("iuf", type[0]) && *ScalarType(type)) || !strcmp(type, "char");
 }
 
 static int
 integer_type(const char *type)
 {
-    const char *scalar = ZirScalarType(type);
+    const char *scalar = ScalarType(type);
     return !strcmp(type, "integer") || !strcmp(scalar, "char") ||
            scalar[0] == 'i' || scalar[0] == 'u';
 }
@@ -261,7 +261,7 @@ bound_constant(const ZirModule *module, const char *name, int depth, int64_t *va
     if(definition == NULL)
         return 0;
     ZirFunction expression = {0};
-    int index = ZirParseExpr(&expression, owner, definition->value, definition->span);
+    int index = ParseExpr(&expression, owner, definition->value, definition->span);
     int status = bound_expression(owner, &expression, index, depth + 1, value);
     free(expression.exprs);
     return status;
@@ -270,7 +270,7 @@ bound_constant(const ZirModule *module, const char *name, int depth, int64_t *va
 static int
 array_capacity(const ZirModule *module, const char *type, int *capacity)
 {
-    if(!ZirArrayElementType(type, NULL, 0, capacity))
+    if(!ArrayElementType(type, NULL, 0, capacity))
         return -1;
     if(*capacity >= 0)
         return 1;
@@ -293,34 +293,34 @@ normalize_array(const ZirModule *module, char *type, size_t size)
 {
     char element[ZIR_NAME_MAX];
     int capacity;
-    if(ZirArrayElementType(type, element, sizeof(element), NULL) &&
+    if(ArrayElementType(type, element, sizeof(element), NULL) &&
        array_capacity(module, type, &capacity) == 1) {
         char normalized[ZIR_NAME_MAX];
         int length = snprintf(normalized, sizeof(normalized), "[%d]%s", capacity, element);
         if(length >= 0 && (size_t)length < sizeof(normalized))
-            zir_copy(type, size, normalized);
+            copy_text(type, size, normalized);
     }
 }
 
 static int
 compatible(const char *to, const char *from)
 {
-    const char *canonical = ZirScalarType(to);
+    const char *canonical = ScalarType(to);
     if(*canonical) to = canonical;
     if(!*to || !*from) return 1;
     if(!strcmp(to, from)) return 1;
-    if(ZirSliceElementType(to, NULL, 0) || ZirSliceElementType(from, NULL, 0)) {
+    if(SliceElementType(to, NULL, 0) || SliceElementType(from, NULL, 0)) {
         char a[ZIR_NAME_MAX], b[ZIR_NAME_MAX];
-        if(!ZirSliceElementType(to, a, sizeof(a)) || !ZirSliceElementType(from, b, sizeof(b)))
+        if(!SliceElementType(to, a, sizeof(a)) || !SliceElementType(from, b, sizeof(b)))
             return 0;
-        const char *ca = ZirScalarType(a), *cb = ZirScalarType(b);
+        const char *ca = ScalarType(a), *cb = ScalarType(b);
         return !strcmp(*ca ? ca : a, *cb ? cb : b);
     }
     if(to[0] == '[' || from[0] == '[') {
         char to_element[ZIR_NAME_MAX], from_element[ZIR_NAME_MAX];
         int to_capacity, from_capacity;
-        if(!ZirArrayElementType(to, to_element, sizeof(to_element), &to_capacity) ||
-           !ZirArrayElementType(from, from_element, sizeof(from_element), &from_capacity))
+        if(!ArrayElementType(to, to_element, sizeof(to_element), &to_capacity) ||
+           !ArrayElementType(from, from_element, sizeof(from_element), &from_capacity))
             return 0;
         if(to_capacity != from_capacity)
             return 0;
@@ -329,8 +329,8 @@ compatible(const char *to, const char *from)
             if(length != (size_t)(strchr(from, ']') - from) || strncmp(to, from, length))
                 return 0;
         }
-        const char *to_scalar = ZirScalarType(to_element);
-        const char *from_scalar = ZirScalarType(from_element);
+        const char *to_scalar = ScalarType(to_element);
+        const char *from_scalar = ScalarType(from_element);
         return !strcmp(*to_scalar ? to_scalar : to_element,
                        *from_scalar ? from_scalar : from_element);
     }
@@ -376,7 +376,7 @@ readonly_text_destination(const ZirFunction *fn, int index)
         return 0;
     e = &fn->exprs[index];
     if(e->kind == ZIR_EXPR_MEMBER && !strcmp(e->name, "length") &&
-       ZirSliceElementType(fn->exprs[e->left].type, NULL, 0))
+       SliceElementType(fn->exprs[e->left].type, NULL, 0))
         return 1;
     if(e->kind == ZIR_EXPR_INDEX || e->kind == ZIR_EXPR_MEMBER) {
         if(fn->exprs[e->left].kind == ZIR_EXPR_IDENT &&
@@ -396,7 +396,7 @@ static void
 contextual_slot(Checker *c, int index, const char *expected)
 {
     const ZirModule *slot_owner = NULL;
-    const ZirType *slot = ZirFindType(c->module, expected, &slot_owner);
+    const ZirType *slot = FindType(c->module, expected, &slot_owner);
     if(index < 0 || slot == NULL || !slot->is_slot)
         return;
     ZirExpr *value = &c->fn->exprs[index];
@@ -409,14 +409,14 @@ contextual_slot(Checker *c, int index, const char *expected)
         return;
     const ZirModule *owner = NULL;
     const ZirFunction *declaration = NULL;
-    int resolved = ZirResolveFunction(c->module, value->name, &owner, &declaration);
+    int resolved = ResolveFunction(c->module, value->name, &owner, &declaration);
     int matches = resolved == 1 && !declaration->is_extern &&
                   !strcmp(declaration->return_type, "void");
     char actual[64][ZIR_TEXT_MAX], wanted[64][ZIR_TEXT_MAX];
-    int actual_count = matches && *zir_skip_ws(declaration->args) ?
-        zir_split_top(declaration->args, actual[0], 64, sizeof(actual[0])) : 0;
-    int wanted_count = *zir_skip_ws(slot->body) ?
-        zir_split_top(slot->body, wanted[0], 64, sizeof(wanted[0])) : 0;
+    int actual_count = matches && *skip_ws(declaration->args) ?
+        split_top_level(declaration->args, actual[0], 64, sizeof(actual[0])) : 0;
+    int wanted_count = *skip_ws(slot->body) ?
+        split_top_level(slot->body, wanted[0], 64, sizeof(wanted[0])) : 0;
     matches &= actual_count == wanted_count;
     for(int i = 0; matches && i < wanted_count; i++) {
         const char *actual_type = strchr(actual[i], ':');
@@ -425,21 +425,21 @@ contextual_slot(Checker *c, int index, const char *expected)
             matches = 0;
             break;
         }
-        actual_type = zir_skip_ws(actual_type + 1);
-        wanted_type = zir_skip_ws(wanted_type + 1);
-        const char *actual_scalar = ZirScalarType(actual_type);
-        const char *wanted_scalar = ZirScalarType(wanted_type);
+        actual_type = skip_ws(actual_type + 1);
+        wanted_type = skip_ws(wanted_type + 1);
+        const char *actual_scalar = ScalarType(actual_type);
+        const char *wanted_scalar = ScalarType(wanted_type);
         if(*actual_scalar || *wanted_scalar) {
             matches = !strcmp(actual_scalar, wanted_scalar);
         } else {
-            const ZirType *actual_record = ZirFindType(owner, actual_type, NULL);
-            const ZirType *wanted_record = ZirFindType(slot_owner, wanted_type, NULL);
+            const ZirType *actual_record = FindType(owner, actual_type, NULL);
+            const ZirType *wanted_record = FindType(slot_owner, wanted_type, NULL);
             matches = actual_record || wanted_record ? actual_record == wanted_record :
                 !strcmp(actual_type, wanted_type);
         }
     }
     if(!matches) {
-        ZirDiagnostic(value->span, "check.slot_signature",
+        Diagnostic(value->span, "check.slot_signature",
                       "function does not match slot signature %s: %s", expected, value->name);
         c->errors++;
         c->failed = 1;
@@ -459,7 +459,7 @@ contextual_slot(Checker *c, int index, const char *expected)
         free(child.bindings);
     }
     value->is_function_value = 1;
-    zir_copy(value->type, sizeof(value->type), expected);
+    copy_text(value->type, sizeof(value->type), expected);
 }
 
 /* Modules that import C headers interoperate with C: calls and names the
@@ -491,7 +491,7 @@ expression_type(Checker *c, int index)
     if(e->right >= 0) right = expression_type(c, e->right);
     switch(e->kind) {
     case ZIR_EXPR_COMPOUND: {
-        if(ZirSliceElementType(e->name, NULL, 0)) {
+        if(SliceElementType(e->name, NULL, 0)) {
             error(c, e->span, "slice literals require a backing range", e->name);
             break;
         }
@@ -504,7 +504,7 @@ expression_type(Checker *c, int index)
                 break;
             }
             normalize_array(c->module, e->name, sizeof(e->name));
-            ZirArrayElementType(e->name, element, sizeof(element), &capacity);
+            ArrayElementType(e->name, element, sizeof(element), &capacity);
             if(capacity < 0)
                 error(c, e->span, "array literals require a resolved capacity", e->name);
             int count = 0;
@@ -516,7 +516,7 @@ expression_type(Checker *c, int index)
                 if(!compatible(element, value_type))
                     error(c, entry->span, "array initializer element type mismatch", element);
                 check_borrowed_string(c, element, entry->right);
-                zir_copy(entry->type, sizeof(entry->type), element);
+                copy_text(entry->type, sizeof(entry->type), element);
                 count++;
             }
             if(capacity >= 0 && count > capacity)
@@ -525,7 +525,7 @@ expression_type(Checker *c, int index)
             break;
         }
         const ZirModule *record_owner = NULL;
-        const ZirType *record = ZirFindType(c->module, e->name, &record_owner);
+        const ZirType *record = FindType(c->module, e->name, &record_owner);
         int ordinal = 0;
         int mode = -1;
         if(record == NULL || record->is_enum || record->is_slot) {
@@ -542,7 +542,7 @@ expression_type(Checker *c, int index)
             ZirTypeField field;
             int position = 0;
             int found = 0;
-            while(ZirTypeNextField(record, &offset, &field) == 1) {
+            while(TypeNextField(record, &offset, &field) == 1) {
                 if(named ? !strcmp(field.name, entry->name) : position == ordinal) {
                     found = 1;
                     break;
@@ -565,8 +565,8 @@ expression_type(Checker *c, int index)
                 if(!strcmp(c->fn->exprs[previous].name, field.name))
                     error(c, entry->span, "duplicate initializer field", field.name);
             }
-            zir_copy(entry->name, sizeof(entry->name), field.name);
-            zir_copy(entry->type, sizeof(entry->type), field.type);
+            copy_text(entry->name, sizeof(entry->name), field.name);
+            copy_text(entry->type, sizeof(entry->type), field.type);
             if(!compatible(field.type, value_type))
                 error(c, entry->span, "initializer field type mismatch", field.name);
             check_borrowed_string(c, field.type, entry->right);
@@ -577,8 +577,8 @@ expression_type(Checker *c, int index)
     }
     case ZIR_EXPR_MEMBER: {
         const ZirModule *record_owner = NULL;
-        const ZirType *record = ZirFindType(c->module, left, &record_owner);
-        if(record == NULL && (!strcmp(left, "string") || ZirSliceElementType(left, NULL, 0)) &&
+        const ZirType *record = FindType(c->module, left, &record_owner);
+        if(record == NULL && (!strcmp(left, "string") || SliceElementType(left, NULL, 0)) &&
            !strcmp(e->name, "length")) {
             /* Byte length of a borrowed string value; read-only. */
             type = "i32";
@@ -587,9 +587,9 @@ expression_type(Checker *c, int index)
         if(record != NULL && !record->is_enum) {
             size_t offset = 0;
             ZirTypeField field;
-            while(ZirTypeNextField(record, &offset, &field) == 1) {
+            while(TypeNextField(record, &offset, &field) == 1) {
                 if(!strcmp(field.name, e->name)) {
-                    zir_copy(member_type, sizeof(member_type), field.type);
+                    copy_text(member_type, sizeof(member_type), field.type);
                     normalize_array(record_owner, member_type, sizeof(member_type));
                     break;
                 }
@@ -601,8 +601,8 @@ expression_type(Checker *c, int index)
     }
     case ZIR_EXPR_SLICE: {
         char element[ZIR_NAME_MAX];
-        int array = ZirArrayElementType(left, element, sizeof(element), NULL);
-        if(!array && !ZirSliceElementType(left, element, sizeof(element))) {
+        int array = ArrayElementType(left, element, sizeof(element), NULL);
+        if(!array && !SliceElementType(left, element, sizeof(element))) {
             error(c, e->span, "slice source requires an array or slice", e->text);
             break;
         }
@@ -627,15 +627,15 @@ expression_type(Checker *c, int index)
         if(!strcmp(left, "string")) {
             if(!integer_type(right))
                 error(c, e->span, "string index requires an integer operand", e->text);
-            zir_copy(element, sizeof(element), "u8");
-        } else if(!ZirArrayElementType(left, element, sizeof(element), NULL) &&
-                  !ZirSliceElementType(left, element, sizeof(element))) {
+            copy_text(element, sizeof(element), "u8");
+        } else if(!ArrayElementType(left, element, sizeof(element), NULL) &&
+                  !SliceElementType(left, element, sizeof(element))) {
             error(c, e->span, "index requires a fixed array or string", e->text);
-            zir_copy(element, sizeof(element), "i32");
+            copy_text(element, sizeof(element), "i32");
         } else if(!integer_type(right)) {
             error(c, e->span, "array index requires an integer operand", e->text);
         }
-        zir_copy(member_type, sizeof(member_type), element);
+        copy_text(member_type, sizeof(member_type), element);
         type = member_type;
         break;
     }
@@ -646,16 +646,16 @@ expression_type(Checker *c, int index)
     case ZIR_EXPR_IDENT:
         if(!strcmp(e->name, "true") || !strcmp(e->name, "false")) type = "bool";
         else type = lookup(c, e->name);
-        if(!*type && ZirFindRuntimeEnumMember(e->name) != NULL)
+        if(!*type && FindRuntimeEnumMember(e->name) != NULL)
             type = "integer";   /* runtime enum member; the emitter resolves it */
         if(!*type) error(c, e->span, "unresolved name", e->name);
         break;
     case ZIR_EXPR_CALL: {
         const char *binding = lookup(c, e->name);
-        const ZirType *slot = ZirFindType(c->module, binding, NULL);
+        const ZirType *slot = FindType(c->module, binding, NULL);
         if(slot != NULL && !slot->is_slot)
             slot = NULL;
-        zir_copy(e->slot_type, sizeof(e->slot_type), slot ? binding : "");
+        copy_text(e->slot_type, sizeof(e->slot_type), slot ? binding : "");
         const ZirFunction *callee = *binding ? NULL : function(c, e->name, e->span);
         if(callee != NULL && callee->is_extern && callee->extern_kind == ZIR_EXTERN_HOST)
             c->fn->uses_host = 1;
@@ -679,16 +679,16 @@ expression_type(Checker *c, int index)
                 args = imp->args; return_type = imp->return_type; break;
             }
         }
-        expected = args && *zir_skip_ws(args) ? zir_split_top(args, parts[0], 64, sizeof(parts[0])) : 0;
+        expected = args && *skip_ws(args) ? split_top_level(args, parts[0], 64, sizeof(parts[0])) : 0;
         const ZirModule *signature_owner = c->module;
         if(callee != NULL) {
             const ZirFunction *resolved = NULL;
-            ZirResolveFunction(c->module, e->name, &signature_owner, &resolved);
+            ResolveFunction(c->module, e->name, &signature_owner, &resolved);
         }
         for(int parameter = 0; parameter < expected; parameter++) {
             const char *colon = strchr(parts[parameter], ':');
             const ZirType *parameter_type = colon ?
-                ZirFindType(signature_owner, zir_skip_ws(colon + 1), NULL) : NULL;
+                FindType(signature_owner, skip_ws(colon + 1), NULL) : NULL;
             slot_contract |= parameter_type != NULL && parameter_type->is_slot;
         }
         if(slot_contract)
@@ -696,22 +696,22 @@ expression_type(Checker *c, int index)
         for(int child = e->first_child; child >= 0; child = c->fn->exprs[child].next_sibling) {
             const char *expected_type = actual < expected ? strchr(parts[actual], ':') : NULL;
             if(expected_type != NULL)
-                contextual_slot(c, child, zir_skip_ws(expected_type + 1));
+                contextual_slot(c, child, skip_ws(expected_type + 1));
             const char *arg_type = expression_type(c, child);
             if(args && actual < expected) {
                 char *colon = strchr(parts[actual], ':');
                 if(colon)
-                    check_borrowed_string(c, zir_skip_ws(colon + 1), child);
-                if(colon && !compatible(zir_skip_ws(colon + 1), arg_type))
+                    check_borrowed_string(c, skip_ws(colon + 1), child);
+                if(colon && !compatible(skip_ws(colon + 1), arg_type))
                     signature_error(c, c->fn->exprs[child].span,
                                     "argument type mismatch", e->name);
                 if(colon && (!strcmp(arg_type, "integer") || !strcmp(arg_type, "real"))) {
-                    const char *context = ZirScalarType(zir_skip_ws(colon + 1));
-                    if(*context) zir_copy(c->fn->exprs[child].type, ZIR_NAME_MAX, context);
+                    const char *context = ScalarType(skip_ws(colon + 1));
+                    if(*context) copy_text(c->fn->exprs[child].type, ZIR_NAME_MAX, context);
                 }
                 if(colon && c->fn->exprs[child].kind == ZIR_EXPR_STRING &&
-                   !strcmp(zir_skip_ws(colon + 1), "const char*"))
-                    zir_copy(c->fn->exprs[child].type, ZIR_NAME_MAX, "const char*");
+                   !strcmp(skip_ws(colon + 1), "const char*"))
+                    copy_text(c->fn->exprs[child].type, ZIR_NAME_MAX, "const char*");
             }
             actual++;
         }
@@ -730,8 +730,8 @@ expression_type(Checker *c, int index)
     case ZIR_EXPR_BINARY: {
         if(left[0] == '[' || right[0] == '[')
             error(c, e->span, "array values do not support binary operations", e->op);
-        const ZirType *left_slot = ZirFindType(c->module, left, NULL);
-        const ZirType *right_slot = ZirFindType(c->module, right, NULL);
+        const ZirType *left_slot = FindType(c->module, left, NULL);
+        const ZirType *right_slot = FindType(c->module, right, NULL);
         if((left_slot && left_slot->is_slot) || (right_slot && right_slot->is_slot))
             error(c, e->span, "slot values do not support binary operations", e->op);
         if((text_type(left) || text_type(right)) &&
@@ -774,8 +774,8 @@ expression_type(Checker *c, int index)
     case ZIR_EXPR_CAST: {
         if(right[0] == '[' || e->name[0] == '[')
             error(c, e->span, "array casts are not supported", e->name);
-        const ZirType *destination = ZirFindType(c->module, e->name, NULL);
-        const ZirType *source = ZirFindType(c->module, right, NULL);
+        const ZirType *destination = FindType(c->module, e->name, NULL);
+        const ZirType *source = FindType(c->module, right, NULL);
         if(destination != NULL && destination->is_enum &&
            !numeric(right) && strcmp(right, "bool") &&
            (source == NULL || !source->is_enum))
@@ -800,8 +800,8 @@ expression_type(Checker *c, int index)
     }
     default: error(c, e->span, "expression is not supported by strict checking", e->text); break;
     }
-    if(*ZirScalarType(type)) type = ZirScalarType(type);
-    zir_copy(e->type, sizeof(e->type), type);
+    if(*ScalarType(type)) type = ScalarType(type);
+    copy_text(e->type, sizeof(e->type), type);
     normalize_array(c->module, e->type, sizeof(e->type));
     return e->type;
 }
@@ -810,7 +810,7 @@ static int
 record_declaration_error(const ZirType *record, const char *message,
                          const char *field)
 {
-    ZirDiagnostic(record->span, "check.record", "%s: %s%s%s",
+    Diagnostic(record->span, "check.record", "%s: %s%s%s",
             message, record->name, field && *field ? "." : "",
             field ? field : "");
     return 0;
@@ -853,18 +853,18 @@ storage_type_error(const ZirModule *module, const char *source,
     const ZirType *record;
     int capacity;
 
-    zir_copy(type, sizeof(type), source);
-    zir_trim_in_place(type);
+    copy_text(type, sizeof(type), source);
+    trim_in_place(type);
     if(!strcmp(type, "void"))
         return indirect ? NULL : "stored values cannot have void type";
-    if(ZirSliceElementType(type, NULL, 0))
+    if(SliceElementType(type, NULL, 0))
         return "slice descriptors cannot be stored in aggregates or globals";
-    if(*ZirScalarType(type) != '\0' || ZirTargetType(type, ZIR_C) != NULL)
+    if(*ScalarType(type) != '\0' || TargetType(type, ZIR_C) != NULL)
         return NULL;
     if(type[0] == '[') {
         if(type[1] == ']')
             return "slices do not yet have portable storage semantics";
-        if(!ZirArrayElementType(type, element, sizeof(element), &capacity))
+        if(!ArrayElementType(type, element, sizeof(element), &capacity))
             return "malformed fixed array type";
         if(capacity == 0)
             return "fixed arrays require a positive capacity";
@@ -882,12 +882,12 @@ storage_type_error(const ZirModule *module, const char *source,
     size_t length = strlen(type);
     if(length > 0 && type[length - 1] == '*') {
         type[length - 1] = '\0';
-        zir_trim_in_place(type);
+        trim_in_place(type);
         if(!strncmp(type, "const ", 6))
             memmove(type, type + 6, strlen(type + 6) + 1);
         return storage_type_error(module, type, path, 1, checked);
     }
-    record = ZirFindType(module, type, &owner);
+    record = FindType(module, type, &owner);
     if(record == NULL)
         return has_foreign_types(module) ? NULL : "unknown stored type";
     if(record->is_slot)
@@ -908,7 +908,7 @@ storage_type_error(const ZirModule *module, const char *source,
     ZirTypeField field;
     size_t offset = 0;
     int status;
-    while((status = ZirTypeNextField(record, &offset, &field)) == 1) {
+    while((status = TypeNextField(record, &offset, &field)) == 1) {
         const char *error = storage_type_error(owner, field.type, &current, 0, checked);
         if(error != NULL)
             return error;
@@ -928,7 +928,7 @@ local_storage_error(const ZirModule *module, const char *type)
 {
     ValidatedRecords checked = {0};
     char element[ZIR_NAME_MAX];
-    int slice = ZirSliceElementType(type, element, sizeof(element));
+    int slice = SliceElementType(type, element, sizeof(element));
     const char *problem;
     if(slice && (element[0] == '[' || !strcmp(element, "char") || !strcmp(element, "const char")))
         problem = "unsupported slice element type";
@@ -960,18 +960,18 @@ check_type_declarations(const ZirModule *module, int strict)
             continue;
         if(record->is_slot) {
             char parameters[64][ZIR_TEXT_MAX];
-            int count = *zir_skip_ws(record->body) ?
-                zir_split_top(record->body, parameters[0], 64, sizeof(parameters[0])) : 0;
+            int count = *skip_ws(record->body) ?
+                split_top_level(record->body, parameters[0], 64, sizeof(parameters[0])) : 0;
             for(int parameter = 0; parameter < count; parameter++) {
                 char *colon = strchr(parameters[parameter], ':');
                 if(colon == NULL)
                     return record_declaration_error(record, "slot parameters require name: type", NULL);
                 *colon++ = '\0';
-                zir_trim_in_place(parameters[parameter]);
-                zir_trim_in_place(colon);
-                const ZirType *type = ZirFindType(module, colon, NULL);
+                trim_in_place(parameters[parameter]);
+                trim_in_place(colon);
+                const ZirType *type = FindType(module, colon, NULL);
                 if(!*parameters[parameter] || !strcmp(colon, "void") ||
-                   (ZirTargetType(colon, ZIR_C) == NULL && type == NULL) || (type && type->is_slot))
+                   (TargetType(colon, ZIR_C) == NULL && type == NULL) || (type && type->is_slot))
                     return record_declaration_error(record, "invalid slot parameter", parameters[parameter]);
                 for(int previous = 0; previous < parameter; previous++)
                     if(!strcmp(parameters[previous], parameters[parameter]))
@@ -979,7 +979,7 @@ check_type_declarations(const ZirModule *module, int strict)
             }
             continue;
         }
-        while((status = ZirTypeNextField(record, &offset, &field)) == 1) {
+        while((status = TypeNextField(record, &offset, &field)) == 1) {
             size_t previous_offset = 0;
             ZirTypeField previous;
 
@@ -987,10 +987,10 @@ check_type_declarations(const ZirModule *module, int strict)
                 return record_declaration_error(record, "slice descriptors cannot be stored in aggregates", field.name);
             if(strcmp(field.type, "void") == 0)
                 return record_declaration_error(record, "record field cannot have void type", field.name);
-            const ZirType *field_type = ZirFindType(module, field.type, NULL);
+            const ZirType *field_type = FindType(module, field.type, NULL);
             if(field_type != NULL && field_type->is_slot)
                 return record_declaration_error(record, "slot values cannot be stored in records", field.name);
-            while(ZirTypeNextField(record, &previous_offset, &previous) == 1 &&
+            while(TypeNextField(record, &previous_offset, &previous) == 1 &&
                   previous_offset < offset) {
                 if(strcmp(previous.name, field.name) == 0)
                     return record_declaration_error(record, "duplicate record field", field.name);
@@ -1020,7 +1020,7 @@ block_statement(ZirFunction *body, ZirStmtKind kind, ZirSourceSpan span,
     va_end(arguments);
     if(length < 0 || (size_t)length >= sizeof(text))
         return NULL;
-    ZirStmt *statement = ZirFunctionAddStmt(body, kind, text, "", span);
+    ZirStmt *statement = FunctionAddStmt(body, kind, text, "", span);
     if(statement == NULL)
         return NULL;
     statement->declared_block_call = 1;
@@ -1037,12 +1037,12 @@ inherit_block_call_metadata(ZirStmt *statement, const ZirStmt *source)
     if(statement == NULL || source == NULL)
         return;
     kind = statement->kind;
-    zir_copy(text, sizeof(text), statement->text);
-    zir_copy(args, sizeof(args), statement->args);
+    copy_text(text, sizeof(text), statement->text);
+    copy_text(args, sizeof(args), statement->args);
     *statement = *source;
     statement->kind = kind;
-    zir_copy(statement->text, sizeof(statement->text), text);
-    zir_copy(statement->args, sizeof(statement->args), args);
+    copy_text(statement->text, sizeof(statement->text), text);
+    copy_text(statement->args, sizeof(statement->args), args);
     statement->declared_block_call = 1;
     statement->expr_root = -1;
     statement->lhs_root = -1;
@@ -1064,8 +1064,8 @@ lower_block_call(Checker *c, int index, const ZirModule *owner,
     const char *slot_types[64] = {0};
     int supplied[64] = {0};
     const char *diagnostic = "block-call fields exceed the lowering size limit";
-    int field_count = *zir_skip_ws(source->args) ?
-        zir_split_top(source->args, fields[0], 64, sizeof(fields[0])) : 0;
+    int field_count = *skip_ws(source->args) ?
+        split_top_level(source->args, fields[0], 64, sizeof(fields[0])) : 0;
     if(field_count == 64)
         goto failed;
     for(int parameter = 1; parameter < parameter_count; parameter++) {
@@ -1074,13 +1074,13 @@ lower_block_call(Checker *c, int index, const ZirModule *owner,
         if(colon == NULL)
             goto failed;
         *colon++ = '\0';
-        zir_trim_in_place(parameters[parameter]);
-        zir_trim_in_place(colon);
-        const ZirType *slot = ZirFindType(owner, colon, NULL);
+        trim_in_place(parameters[parameter]);
+        trim_in_place(colon);
+        const ZirType *slot = FindType(owner, colon, NULL);
         if(slot == NULL || !slot->is_slot)
             goto failed;
         diagnostic = "block-call slot type is shadowed or not directly imported";
-        if(ZirFindType(c->module, colon, NULL) != slot)
+        if(FindType(c->module, colon, NULL) != slot)
             goto failed;
         slot_types[parameter] = colon;
         int length = snprintf(slot_names[parameter], sizeof(slot_names[parameter]),
@@ -1091,7 +1091,7 @@ lower_block_call(Checker *c, int index, const ZirModule *owner,
         diagnostic = "block-call slot name conflicts with a props field or another slot";
         size_t offset = 0;
         ZirTypeField field;
-        while(ZirTypeNextField(props, &offset, &field) == 1)
+        while(TypeNextField(props, &offset, &field) == 1)
             if(!strcmp(field.name, parameters[parameter]))
                 goto failed;
         for(int previous = 1; previous < parameter; previous++)
@@ -1110,7 +1110,7 @@ lower_block_call(Checker *c, int index, const ZirModule *owner,
         if(field[0] != '.' || equals == NULL)
             goto failed;
         *equals++ = '\0';
-        zir_trim_in_place(field);
+        trim_in_place(field);
         const char *name = field + 1;
         for(int previous = 0; previous < property; previous++) {
             diagnostic = "duplicate block-call field or slot";
@@ -1132,10 +1132,10 @@ lower_block_call(Checker *c, int index, const ZirModule *owner,
             size_t offset = 0;
             ZirTypeField field_type;
             int found = 0;
-            while(ZirTypeNextField(props, &offset, &field_type) == 1) {
+            while(TypeNextField(props, &offset, &field_type) == 1) {
                 if(!strcmp(field_type.name, name)) {
                     found = 1;
-                    if(*zir_skip_ws(equals) == '{')
+                    if(*skip_ws(equals) == '{')
                         snprintf(prefix, sizeof(prefix), "(%s)", field_type.type);
                     break;
                 }
@@ -1146,7 +1146,7 @@ lower_block_call(Checker *c, int index, const ZirModule *owner,
             diagnostic = "block-call fields exceed the lowering size limit";
             if(block_statement(&lowered, ZIR_STMT_ASSIGN, span,
                                 "%s.%s = %s%s", temporary, name, prefix,
-                                zir_skip_ws(equals)) == NULL)
+                                skip_ws(equals)) == NULL)
                 goto failed;
         }
     }
@@ -1182,7 +1182,7 @@ lower_block_call(Checker *c, int index, const ZirModule *owner,
     free(lowered.stmts);
     return replacement_count;
 failed:
-    ZirDiagnostic(span, "check.callee", "%s: %s", diagnostic, source->callee);
+    Diagnostic(span, "check.callee", "%s: %s", diagnostic, source->callee);
     free(lowered.stmts);
     c->failed = 1;
     return -1;
@@ -1198,21 +1198,21 @@ resolve_block_calls(Checker *c)
             continue;
         const ZirModule *owner = NULL;
         const ZirFunction *declaration = NULL;
-        int resolved = ZirResolveFunction(c->module, statement->callee, &owner, &declaration);
+        int resolved = ResolveFunction(c->module, statement->callee, &owner, &declaration);
         if(!statement->declared_block_call) {
-            ZirDiagnostic(statement->span, "check.block_call",
+            Diagnostic(statement->span, "check.block_call",
                           "block call has no declared syntax: %s", statement->callee);
             c->failed = 1;
             return 0;
         }
         char parameters[64][ZIR_TEXT_MAX];
-        int count = declaration ? zir_split_top(declaration->args, parameters[0], 64, sizeof(parameters[0])) : 0;
+        int count = declaration ? split_top_level(declaration->args, parameters[0], 64, sizeof(parameters[0])) : 0;
         char *type = count > 0 ? strchr(parameters[0], ':') : NULL;
         if(type != NULL) {
             type++;
-            zir_trim_in_place(type);
+            trim_in_place(type);
         }
-        const ZirType *props = type ? ZirFindType(owner, type, NULL) : NULL;
+        const ZirType *props = type ? FindType(owner, type, NULL) : NULL;
         const char *diagnostic = NULL;
         if(resolved < 0)
             diagnostic = "ambiguous block-call declaration";
@@ -1223,12 +1223,12 @@ resolve_block_calls(Checker *c)
         else if(count < 1 || count == 64 || props == NULL || props->is_enum || props->is_slot)
             diagnostic = "block-call declaration requires one typed record parameter";
         if(diagnostic != NULL) {
-            ZirDiagnostic(statement->span, "check.callee", "%s: %s", diagnostic, statement->callee);
+            Diagnostic(statement->span, "check.callee", "%s: %s", diagnostic, statement->callee);
             c->failed = 1;
             return 0;
         }
-        if(ZirFindType(c->module, type, NULL) != props) {
-            ZirDiagnostic(statement->span, "check.callee_type",
+        if(FindType(c->module, type, NULL) != props) {
+            Diagnostic(statement->span, "check.callee_type",
                           "block-call record type is shadowed or not directly imported: %s", type);
             c->failed = 1;
             return 0;
@@ -1251,7 +1251,7 @@ resolve_block_calls(Checker *c)
         changed = 1;
     }
     if(changed)
-        ZirStructureFunction(c->fn, c->module);
+        StructureFunction(c->fn, c->module);
     return 1;
 }
 
@@ -1322,25 +1322,25 @@ check_function(Checker *c, ZirFunction *fn)
     int n;
     c->fn = fn; c->count = 0; c->depth = 0;
     c->fn->uses_host = c->fn->is_extern && c->fn->extern_kind == ZIR_EXTERN_HOST;
-    const ZirType *return_slot = ZirFindType(c->module, c->fn->return_type, NULL);
+    const ZirType *return_slot = FindType(c->module, c->fn->return_type, NULL);
     if(return_slot != NULL && return_slot->is_slot) {
-        ZirDiagnostic(c->fn->span, "check.slot_escape", "slot values cannot escape through returns");
+        Diagnostic(c->fn->span, "check.slot_escape", "slot values cannot escape through returns");
         return 0;
     }
     /* Imports are linked now. Rebuild expressions so imported types
      * participate in cast/grouping decisions before type checking. */
-    ZirStructureFunction(c->fn, c->module);
+    StructureFunction(c->fn, c->module);
     if(!resolve_block_calls(c)) {
         return 0;
     }
-    n = *zir_skip_ws(c->fn->args) ? zir_split_top(c->fn->args, params[0], 64, sizeof(params[0])) : 0;
+    n = *skip_ws(c->fn->args) ? split_top_level(c->fn->args, params[0], 64, sizeof(params[0])) : 0;
     for(int a = 0; a < n; a++) {
         char *colon = strchr(params[a], ':');
         if(colon) {
-            *colon++ = 0; zir_trim_in_place(params[a]); zir_trim_in_place(colon);
-            const ZirType *parameter_type = ZirFindType(c->module, colon, NULL);
+            *colon++ = 0; trim_in_place(params[a]); trim_in_place(colon);
+            const ZirType *parameter_type = FindType(c->module, colon, NULL);
             has_slots |= parameter_type != NULL && parameter_type->is_slot;
-            has_arrays |= ZirArrayValueType(colon) || ZirSliceElementType(colon, NULL, 0);
+            has_arrays |= ArrayValueType(colon) || SliceElementType(colon, NULL, 0);
             bind(c, params[a], colon, c->fn->span);
         } else error(c, c->fn->span, "strict parameters require name: type", params[a]);
     }
@@ -1367,14 +1367,14 @@ check_function(Checker *c, ZirFunction *fn)
             st->kind = ZIR_STMT_EXPR;
         if(st->kind == ZIR_STMT_DECL) {
             if(st->is_instance) {
-                const ZirType *record = ZirFindType(c->module, st->type, NULL);
+                const ZirType *record = FindType(c->module, st->type, NULL);
                 if(record == NULL || record->is_enum || record->is_slot)
                     error(c, st->span, "instance state requires a declared record type", st->type);
-                const char *key_type = ZirScalarType(type);
+                const char *key_type = ScalarType(type);
                 if(st->expr_root < 0 || (strcmp(type, "integer") &&
                    key_type[0] != 'i' && key_type[0] != 'u'))
                     error(c, st->span, "instance key requires an integer", st->name);
-            } else if(!*st->type) zir_copy(st->type, sizeof(st->type),
+            } else if(!*st->type) copy_text(st->type, sizeof(st->type),
                 !strcmp(type, "integer") ? "int" : !strcmp(type, "real") ? "double" : type);
             else if(!compatible(st->type, type)) error(c, st->span, "initializer type mismatch", st->name);
             if(st->type[0] == '[') {
@@ -1382,11 +1382,11 @@ check_function(Checker *c, ZirFunction *fn)
                 if(problem != NULL)
                     error(c, st->span, problem, st->name);
             }
-            const ZirType *local_type = ZirFindType(c->module, st->type, NULL);
+            const ZirType *local_type = FindType(c->module, st->type, NULL);
             if(local_type != NULL && local_type->is_slot) {
                 has_slots = 1;
                 if(st->expr_root < 0) {
-                    ZirDiagnostic(st->span, "check.slot_initializer", "slot bindings require an initializer");
+                    Diagnostic(st->span, "check.slot_initializer", "slot bindings require an initializer");
                     c->failed = 1;
                 }
             }
@@ -1397,7 +1397,7 @@ check_function(Checker *c, ZirFunction *fn)
                 c->bindings[c->count - 1].is_instance = st->is_instance;
         } else if(st->kind == ZIR_STMT_ASSIGN) {
             const char *lhs = expression_type(c, st->lhs_root);
-            const ZirType *destination = ZirFindType(c->module, lhs, NULL);
+            const ZirType *destination = FindType(c->module, lhs, NULL);
             if(lhs[0] == '[' && strcmp(st->assignment_op, "="))
                 error(c, st->span, "array compound assignment is not supported", st->assignment_op);
             if(destination != NULL && destination->is_slot) {
@@ -1406,7 +1406,7 @@ check_function(Checker *c, ZirFunction *fn)
                 while(local >= 0 && strcmp(c->bindings[local].name, name))
                     local--;
                 if(local < 0 || c->bindings[local].depth != c->depth) {
-                    ZirDiagnostic(st->span, "check.slot_escape",
+                    Diagnostic(st->span, "check.slot_escape",
                                   "slot assignment cannot escape its lexical block: %s", name);
                     c->failed = 1;
                 }
@@ -1442,22 +1442,22 @@ check_function(Checker *c, ZirFunction *fn)
     }
     for(int i = 0; i < fn->expr_count; i++) {
         const ZirExpr *call = &fn->exprs[i];
-        has_arrays |= ZirSliceElementType(call->type, NULL, 0);
+        has_arrays |= SliceElementType(call->type, NULL, 0);
         if(call->kind != ZIR_EXPR_CALL)
             continue;
         const ZirFunction *callee = NULL;
         const ZirModule *owner = NULL;
-        if(ZirResolveFunction(c->module, call->name, &owner, &callee) <= 0 ||
+        if(ResolveFunction(c->module, call->name, &owner, &callee) <= 0 ||
            callee == NULL || callee->is_extern)
             continue;
-        has_arrays |= ZirArrayValueType(callee->return_type);
+        has_arrays |= ArrayValueType(callee->return_type);
         char parameters[64][ZIR_TEXT_MAX];
-        int count = *zir_skip_ws(callee->args) ?
-            zir_split_top(callee->args, parameters[0], 64, sizeof(parameters[0])) : 0;
+        int count = *skip_ws(callee->args) ?
+            split_top_level(callee->args, parameters[0], 64, sizeof(parameters[0])) : 0;
         for(int parameter = 0; parameter < count; parameter++) {
             const char *colon = strchr(parameters[parameter], ':');
             if(colon != NULL)
-                has_arrays |= ZirArrayValueType(zir_skip_ws(colon + 1));
+                has_arrays |= ArrayValueType(skip_ws(colon + 1));
         }
     }
     if(!fn->is_extern && fn->return_type[0] == '[' &&
@@ -1470,24 +1470,24 @@ check_function(Checker *c, ZirFunction *fn)
     for(int i = 0; i < c->fn->stmt_count; i++)
         has_instances |= c->fn->stmts[i].is_instance;
     c->fn->uses_host |= has_instances;
-    if(has_instances && (!c->fn->checked || !ZirCanEmitBody(c->module, c->fn))) {
-        ZirDiagnostic(c->fn->span, "check.instance_body",
+    if(has_instances && (!c->fn->checked || !CanEmitBody(c->module, c->fn))) {
+        Diagnostic(c->fn->span, "check.instance_body",
                       "instance state requires a fully checked portable body: %s", c->fn->name);
         c->failed = 1;
     }
     if(has_slots && !c->fn->is_extern &&
-       (!c->fn->checked || !ZirCanEmitBody(c->module, c->fn))) {
-        ZirDiagnostic(c->fn->span, "check.slot_body",
+       (!c->fn->checked || !CanEmitBody(c->module, c->fn))) {
+        Diagnostic(c->fn->span, "check.slot_body",
                       "slot parameters require a fully checked portable body: %s", c->fn->name);
         c->failed = 1;
     }
     if(has_arrays && !fn->is_extern &&
-       (!fn->checked || !ZirCanEmitBody(c->module, fn))) {
-        ZirDiagnostic(fn->span, "check.array_body",
+       (!fn->checked || !CanEmitBody(c->module, fn))) {
+        Diagnostic(fn->span, "check.array_body",
                       "array and slice values require a fully checked portable body: %s", fn->name);
         c->failed = 1;
     }
-    if(strict && c->fn->checked && !c->fn->is_extern && !ZirCanEmitBody(c->module, c->fn)) {
+    if(strict && c->fn->checked && !c->fn->is_extern && !CanEmitBody(c->module, c->fn)) {
         error(c,c->fn->span,"function is not supported by portable scalar emission",c->fn->name);
         c->fn->checked=0;
     }
@@ -1504,8 +1504,8 @@ normalize_function_arrays(const ZirModule *module, ZirFunction *fn)
     char parts[64][ZIR_TEXT_MAX];
     char arguments[sizeof(fn->args)];
     size_t used = 0;
-    int count = *zir_skip_ws(fn->args) ?
-        zir_split_top(fn->args, parts[0], 64, sizeof(parts[0])) : 0;
+    int count = *skip_ws(fn->args) ?
+        split_top_level(fn->args, parts[0], 64, sizeof(parts[0])) : 0;
     arguments[0] = '\0';
     for(int i = -1; i < count; i++) {
         char *type = fn->return_type;
@@ -1513,25 +1513,25 @@ normalize_function_arrays(const ZirModule *module, ZirFunction *fn)
         if(i >= 0) {
             char *colon = strchr(parts[i], ':');
             if(colon == NULL) {
-                ZirDiagnostic(fn->span, "check.signature", "parameters require name: type: %s", parts[i]);
+                Diagnostic(fn->span, "check.signature", "parameters require name: type: %s", parts[i]);
                 return 0;
             }
             type = colon + 1;
-            zir_trim_in_place(type);
+            trim_in_place(type);
             capacity = sizeof(parts[i]) - (size_t)(type - parts[i]);
         }
-        int host_buffer = i >= 0 && ZirArrayElementType(type, NULL, 0, NULL) &&
-                          !ZirArrayValueType(type);
+        int host_buffer = i >= 0 && ArrayElementType(type, NULL, 0, NULL) &&
+                          !ArrayValueType(type);
         if(type[0] == '[' && !host_buffer) {
             const char *problem = local_storage_error(module, type);
             if(problem == NULL && (fn->is_extern || fn->is_closure))
                 problem = "direct array signatures require an ordinary Kry function";
             int bound = -1;
-            if(problem == NULL && !ZirSliceElementType(type, NULL, 0) &&
+            if(problem == NULL && !SliceElementType(type, NULL, 0) &&
                array_capacity(module, type, &bound) != 1)
                 problem = "array signatures require a resolved capacity";
             if(problem != NULL) {
-                ZirDiagnostic(fn->span, "check.array_signature", "%s: %s", problem, type);
+                Diagnostic(fn->span, "check.array_signature", "%s: %s", problem, type);
                 return 0;
             }
             normalize_array(module, type, capacity);
@@ -1540,18 +1540,18 @@ normalize_function_arrays(const ZirModule *module, ZirFunction *fn)
             int length = snprintf(arguments + used, sizeof(arguments) - used,
                                   "%s%s", used ? ", " : "", parts[i]);
             if(length < 0 || (size_t)length >= sizeof(arguments) - used) {
-                ZirDiagnostic(fn->span, "check.array_signature", "function signature exceeds size limit");
+                Diagnostic(fn->span, "check.array_signature", "function signature exceeds size limit");
                 return 0;
             }
             used += (size_t)length;
         }
     }
-    zir_copy(fn->args, sizeof(fn->args), arguments);
+    copy_text(fn->args, sizeof(fn->args), arguments);
     return 1;
 }
 
 int
-ZirLinkImports(ZirProgram **programs, int count)
+LinkImports(ZirProgram **programs, int count)
 {
     /* Link only explicitly imported modules that are present in this build.
      * Host headers remain unresolved; they are not a global type namespace. */
@@ -1563,8 +1563,8 @@ ZirLinkImports(ZirProgram **programs, int count)
                 import->resolved_module = NULL;
                 if(import->kind == ZIR_IMPORT_EXTERN &&
                    (strstr(import->args, "[]") != NULL ||
-                    ZirSliceElementType(import->return_type, NULL, 0))) {
-                    ZirDiagnostic(import->span, "check.slice_signature",
+                    SliceElementType(import->return_type, NULL, 0))) {
+                    Diagnostic(import->span, "check.slice_signature",
                                   "slice signatures require an ordinary Ziran function");
                     return 0;
                 }
@@ -1575,7 +1575,7 @@ ZirLinkImports(ZirProgram **programs, int count)
                         const ZirModule *candidate = &programs[q]->modules[n];
                         char stem[ZIR_PATH_MAX];
                         size_t length;
-                        zir_copy(stem, sizeof(stem), candidate->source_path);
+                        copy_text(stem, sizeof(stem), candidate->source_path);
                         length = strlen(stem);
                         if(length > 3 && strcmp(stem + length - 3, ".zi") == 0)
                             stem[length - 3] = '\0';
@@ -1583,7 +1583,7 @@ ZirLinkImports(ZirProgram **programs, int count)
                            strcmp(import->target, stem) != 0)
                             continue;
                         if(import->resolved_module && import->resolved_module != candidate) {
-                            ZirDiagnostic(import->span, "check.import", "ambiguous Ziran import: %s",
+                            Diagnostic(import->span, "check.import", "ambiguous Ziran import: %s",
                                           import->target);
                             return 0;
                         }
@@ -1597,11 +1597,11 @@ ZirLinkImports(ZirProgram **programs, int count)
 }
 
 int
-ZirCheckPrograms(ZirProgram **programs, int count, int strict)
+CheckPrograms(ZirProgram **programs, int count, int strict)
 {
     Checker c = {0};
     c.programs = programs; c.program_count = count; c.strict = strict;
-    if(!ZirLinkImports(programs, count))
+    if(!LinkImports(programs, count))
         return 0;
     for(int p = 0; p < count; p++) {
         for(int m = 0; m < programs[p]->module_count; m++) {
@@ -1621,7 +1621,7 @@ ZirCheckPrograms(ZirProgram **programs, int count, int strict)
         for(int i = 0; i < c.module->global_count + c.module->state_count; i++) {
             const char *type = i < c.module->global_count ? c.module->globals[i].type :
                 c.module->state_fields[i - c.module->global_count].type;
-            const ZirType *slot = ZirFindType(c.module, type, NULL);
+            const ZirType *slot = FindType(c.module, type, NULL);
             if(strict || strstr(type, "[]") != NULL) {
                 ValidatedRecords checked = {0};
                 const char *error = storage_type_error(c.module, type, NULL, 0, &checked);
@@ -1629,7 +1629,7 @@ ZirCheckPrograms(ZirProgram **programs, int count, int strict)
                 if(error != NULL && (slot == NULL || !slot->is_slot)) {
                     ZirSourceSpan span = i < c.module->global_count ? c.module->globals[i].span :
                         c.module->state_fields[i - c.module->global_count].span;
-                    ZirDiagnostic(span, "check.storage", "%s: %s", error, type);
+                    Diagnostic(span, "check.storage", "%s: %s", error, type);
                     free(c.bindings);
                     return 0;
                 }
@@ -1637,7 +1637,7 @@ ZirCheckPrograms(ZirProgram **programs, int count, int strict)
             if(slot != NULL && slot->is_slot) {
                 ZirSourceSpan span = i < c.module->global_count ? c.module->globals[i].span :
                     c.module->state_fields[i - c.module->global_count].span;
-                ZirDiagnostic(span, "check.slot_escape", "slot values cannot be stored in globals or state");
+                Diagnostic(span, "check.slot_escape", "slot values cannot be stored in globals or state");
                 free(c.bindings);
                 return 0;
             }
@@ -1668,7 +1668,7 @@ ZirCheckPrograms(ZirProgram **programs, int count, int strict)
                         const ZirFunction *callee = NULL;
                         const ZirModule *owner = NULL;
                         if((fn->exprs[x].kind == ZIR_EXPR_CALL || fn->exprs[x].is_function_value) &&
-                           ZirResolveFunction(module, fn->exprs[x].name, &owner, &callee) == 1 &&
+                           ResolveFunction(module, fn->exprs[x].name, &owner, &callee) == 1 &&
                            callee->uses_host) {
                             fn->uses_host = 1;
                             changed = 1;
@@ -1680,5 +1680,5 @@ ZirCheckPrograms(ZirProgram **programs, int count, int strict)
         }
     } while(changed);
     free(c.bindings);
-    return !c.failed && (!strict || c.errors == 0) && ZirCheckSliceLifetimes(programs, count);
+    return !c.failed && (!strict || c.errors == 0) && CheckSliceLifetimes(programs, count);
 }

@@ -25,29 +25,29 @@ format(char *out, size_t size, const char *format_string, ...)
 }
 
 int
-ZirArrayValueType(const char *type)
+ArrayValueType(const char *type)
 {
     char element[ZIR_NAME_MAX];
     /* Host char buffers retain their explicit C-string interop convention. */
-    return ZirArrayElementType(type, element, sizeof(element), NULL) &&
+    return ArrayElementType(type, element, sizeof(element), NULL) &&
            strcmp(element, "char") != 0 && strcmp(element, "const char") != 0;
 }
 
 int
-ZirModuleUsesSlices(const ZirModule *module)
+ModuleUsesSlices(const ZirModule *module)
 {
     for(int i = 0; i < module->function_count; i++) {
         const ZirFunction *fn = &module->functions[i];
-        if(ZirSliceElementType(fn->return_type, NULL, 0) || strstr(fn->args, "[]") != NULL)
+        if(SliceElementType(fn->return_type, NULL, 0) || strstr(fn->args, "[]") != NULL)
             return 1;
         for(int j = 0; j < fn->capture_count; j++)
-            if(ZirSliceElementType(fn->captures[j].type, NULL, 0))
+            if(SliceElementType(fn->captures[j].type, NULL, 0))
                 return 1;
         for(int j = 0; j < fn->stmt_count; j++)
-            if(ZirSliceElementType(fn->stmts[j].type, NULL, 0))
+            if(SliceElementType(fn->stmts[j].type, NULL, 0))
                 return 1;
         for(int j = 0; j < fn->expr_count; j++)
-            if(ZirSliceElementType(fn->exprs[j].type, NULL, 0))
+            if(SliceElementType(fn->exprs[j].type, NULL, 0))
                 return 1;
     }
     return 0;
@@ -56,7 +56,7 @@ ZirModuleUsesSlices(const ZirModule *module)
 /* These names share a deterministic collision check between declarations and
  * bodies. Negative parameter denotes the hidden array result. */
 void
-ZirArrayAbiName(const ZirFunction *fn, int parameter, char *out, size_t size)
+ArrayAbiName(const ZirFunction *fn, int parameter, char *out, size_t size)
 {
     int serial = 0;
     int collision;
@@ -74,29 +74,29 @@ ZirArrayAbiName(const ZirFunction *fn, int parameter, char *out, size_t size)
 }
 
 void
-ZirArrayAbiArgs(const ZirFunction *fn, char *out, size_t size)
+ArrayAbiArgs(const ZirFunction *fn, char *out, size_t size)
 {
     if(fn->return_type[0] != '[' && strchr(fn->args, '[') == NULL) {
-        zir_copy(out, size, fn->args);
+        copy_text(out, size, fn->args);
         return;
     }
     char parameters[64][ZIR_TEXT_MAX];
-    int count = *zir_skip_ws(fn->args) ?
-        zir_split_top(fn->args, parameters[0], 64, sizeof(parameters[0])) : 0;
+    int count = *skip_ws(fn->args) ?
+        split_top_level(fn->args, parameters[0], 64, sizeof(parameters[0])) : 0;
     size_t used = 0;
     out[0] = '\0';
-    if(ZirArrayElementType(fn->return_type, NULL, 0, NULL)) {
+    if(ArrayElementType(fn->return_type, NULL, 0, NULL)) {
         char name[ZIR_NAME_MAX];
-        ZirArrayAbiName(fn, -1, name, sizeof(name));
+        ArrayAbiName(fn, -1, name, sizeof(name));
         used += (size_t)format(out, size, "%s: %s", name, fn->return_type);
     }
     for(int i = 0; i < count; i++) {
         char *colon = strchr(parameters[i], ':');
-        if(colon != NULL && ZirArrayValueType(zir_skip_ws(colon + 1))) {
+        if(colon != NULL && ArrayValueType(skip_ws(colon + 1))) {
             char name[ZIR_NAME_MAX];
-            ZirArrayAbiName(fn, i, name, sizeof(name));
+            ArrayAbiName(fn, i, name, sizeof(name));
             used += (size_t)format(out + used, size - used, "%s%s: %s",
-                                   used ? ", " : "", name, zir_skip_ws(colon + 1));
+                                   used ? ", " : "", name, skip_ws(colon + 1));
         } else {
             used += (size_t)format(out + used, size - used, "%s%s",
                                    used ? ", " : "", parameters[i]);
@@ -107,14 +107,14 @@ ZirArrayAbiArgs(const ZirFunction *fn, char *out, size_t size)
 static const char *
 canonical(const char *type)
 {
-    const char *result = ZirScalarType(type);
+    const char *result = ScalarType(type);
     if(!strcmp(type, "integer")) return "i32";
     if(!strcmp(type, "real")) return "f64";
     return *result ? result : type;
 }
 
 const char *
-ZirTargetType(const char *type, ZirTarget target)
+TargetType(const char *type, ZirTarget target)
 {
     static const struct { const char *type, *c, *go; } map[] = {
         {"i8", "int8_t", "int8"}, {"i16", "int16_t", "int16"},
@@ -127,7 +127,7 @@ ZirTargetType(const char *type, ZirTarget target)
         {"const char*", "const char*", "string"}, {NULL, NULL, NULL}
     };
     type = canonical(type);
-    if(ZirSliceElementType(type, NULL, 0) && (target == ZIR_C || target == ZIR_CPP))
+    if(SliceElementType(type, NULL, 0) && (target == ZIR_C || target == ZIR_CPP))
         return "Slice";
     for(int i = 0; map[i].type; i++)
         if(!strcmp(type, map[i].type)) return target == ZIR_GO ? map[i].go : map[i].c;
@@ -135,12 +135,12 @@ ZirTargetType(const char *type, ZirTarget target)
 }
 
 void
-ZirEmitSlotType(FILE *out, const ZirType *slot, ZirTarget target,
+EmitSlotType(FILE *out, const ZirType *slot, ZirTarget target,
                 ZirResolveTarget resolve_type, void *context)
 {
     char parameters[64][ZIR_TEXT_MAX];
-    int count = *zir_skip_ws(slot->body) ?
-        zir_split_top(slot->body, parameters[0], 64, sizeof(parameters[0])) : 0;
+    int count = *skip_ws(slot->body) ?
+        split_top_level(slot->body, parameters[0], 64, sizeof(parameters[0])) : 0;
     if(target == ZIR_JS)
         return;
     if(target == ZIR_GO)
@@ -150,9 +150,9 @@ ZirEmitSlotType(FILE *out, const ZirType *slot, ZirTarget target,
     for(int i = 0; i < count; i++) {
         char *colon = strchr(parameters[i], ':');
         char type[ZIR_NAME_MAX];
-        const char *source = zir_skip_ws(colon + 1);
-        const char *scalar = ZirTargetType(source, target);
-        zir_copy(type, sizeof(type), scalar ? scalar : source);
+        const char *source = skip_ws(colon + 1);
+        const char *scalar = TargetType(source, target);
+        copy_text(type, sizeof(type), scalar ? scalar : source);
         if(resolve_type)
             resolve_type(context, source, type, sizeof(type));
         fprintf(out, "%s%s", i || target != ZIR_GO ? ", " : "", type);
@@ -169,19 +169,19 @@ static int signed_type(const char *type) { return *type == 'i'; }
 static int
 enum_type(const ZirModule *module, const char *type)
 {
-    const ZirType *declared = ZirFindType(module, type, NULL);
+    const ZirType *declared = FindType(module, type, NULL);
     return declared != NULL && declared->is_enum;
 }
 
 static int
 record_type(const ZirModule *module, const char *type)
 {
-    const ZirType *declared = ZirFindType(module, type, NULL);
+    const ZirType *declared = FindType(module, type, NULL);
     return declared != NULL && !declared->is_enum && !declared->is_slot;
 }
 
 void
-ZirEmitStringType(FILE *out)
+EmitStringType(FILE *out)
 {
     fputs("\n#ifndef ZIR_STRING_VALUE_DEFINED\n#define ZIR_STRING_VALUE_DEFINED\n"
           "#include <stddef.h>\n#include <string.h>\n"
@@ -197,7 +197,7 @@ ZirEmitStringType(FILE *out)
 static const char *
 zero_value(const char *type, ZirTarget target)
 {
-    if(ZirSliceElementType(type, NULL, 0))
+    if(SliceElementType(type, NULL, 0))
         return target == ZIR_GO ? "nil" : "{0}";
     if(type[0] == '[')
         return "";
@@ -225,28 +225,28 @@ portable_type_path(const ZirModule *module, const char *type, const TypePath *pa
     int status;
 
     char slice_element[ZIR_NAME_MAX];
-    if(ZirSliceElementType(type, slice_element, sizeof(slice_element)))
+    if(SliceElementType(type, slice_element, sizeof(slice_element)))
         return portable_type_path(module, slice_element, path);
-    if(ZirTargetType(type, ZIR_C)) return 1;
+    if(TargetType(type, ZIR_C)) return 1;
     if(strchr(type, '*') != NULL) return 1;
     {
         char element[ZIR_NAME_MAX];
 
-        if(ZirArrayElementType(type, element, sizeof(element), NULL))
+        if(ArrayElementType(type, element, sizeof(element), NULL))
             return portable_type_path(module, element, path);
     }
-    record = ZirFindType(module, type, &owner);
+    record = FindType(module, type, &owner);
     if(record == NULL)
         return 0;
     if(record->is_enum)
         return 1;
     if(record->is_slot) {
         char parameters[64][ZIR_TEXT_MAX];
-        int count = *zir_skip_ws(record->body) ?
-            zir_split_top(record->body, parameters[0], 64, sizeof(parameters[0])) : 0;
+        int count = *skip_ws(record->body) ?
+            split_top_level(record->body, parameters[0], 64, sizeof(parameters[0])) : 0;
         for(int i = 0; i < count; i++) {
             char *colon = strchr(parameters[i], ':');
-            if(colon == NULL || !portable_type_path(owner, zir_skip_ws(colon + 1), path))
+            if(colon == NULL || !portable_type_path(owner, skip_ws(colon + 1), path))
                 return 0;
         }
         return 1;
@@ -256,7 +256,7 @@ portable_type_path(const ZirModule *module, const char *type, const TypePath *pa
             return 0;
     }
     TypePath current = {record, path};
-    while((status = ZirTypeNextField(record, &offset, &field)) == 1) {
+    while((status = TypeNextField(record, &offset, &field)) == 1) {
         if(!portable_type_path(owner, field.type, &current) || !strcmp(field.type, "void"))
             return 0;
         fields++;
@@ -279,7 +279,7 @@ supported_expression(const ZirModule *module, const ZirFunction *fn, int index)
     if(!portable_type(module, e->type)) return 0;
     switch(e->kind) {
     case ZIR_EXPR_COMPOUND:
-        if(!record_type(module, e->name) && !ZirArrayElementType(e->name, NULL, 0, NULL)) return 0;
+        if(!record_type(module, e->name) && !ArrayElementType(e->name, NULL, 0, NULL)) return 0;
         break;
     case ZIR_EXPR_FIELD_INIT: break;
     case ZIR_EXPR_INT: case ZIR_EXPR_FLOAT: case ZIR_EXPR_IDENT: case ZIR_EXPR_STRING: break;
@@ -290,7 +290,7 @@ supported_expression(const ZirModule *module, const ZirFunction *fn, int index)
         break;
     case ZIR_EXPR_POSTFIX: break;
     case ZIR_EXPR_CAST:
-        if(!ZirTargetType(e->name, ZIR_C) && !enum_type(module, e->name)) return 0;
+        if(!TargetType(e->name, ZIR_C) && !enum_type(module, e->name)) return 0;
         break;
     case ZIR_EXPR_CALL: if(!e->name[0]) return 0; break;
     default: return 0;
@@ -303,7 +303,7 @@ supported_expression(const ZirModule *module, const ZirFunction *fn, int index)
 }
 
 int
-ZirCanEmitBody(const ZirModule *module, const ZirFunction *fn)
+CanEmitBody(const ZirModule *module, const ZirFunction *fn)
 {
     char params[64][ZIR_TEXT_MAX];
     int count;
@@ -311,10 +311,10 @@ ZirCanEmitBody(const ZirModule *module, const ZirFunction *fn)
      * bypass shared semantics when every operation is portable. Host calls
      * and unsupported composition still fail the normal eligibility checks. */
     if(!fn->checked || fn->is_extern || !portable_type(module, fn->return_type)) return 0;
-    count = *zir_skip_ws(fn->args) ? zir_split_top(fn->args, params[0], 64, sizeof(params[0])) : 0;
+    count = *skip_ws(fn->args) ? split_top_level(fn->args, params[0], 64, sizeof(params[0])) : 0;
     for(int i = 0; i < count; i++) {
         char *colon = strchr(params[i], ':');
-        if(!colon || !portable_type(module, zir_skip_ws(colon + 1))) return 0;
+        if(!colon || !portable_type(module, skip_ws(colon + 1))) return 0;
     }
     for(int i = 0; i < fn->stmt_count; i++) {
         const ZirStmt *st = &fn->stmts[i];
@@ -346,11 +346,11 @@ number_prefix(const ZirModule *module, char *out, size_t size)
 }
 
 void
-ZirEmitNumbers(FILE *out, const ZirModule *module, ZirTarget target)
+EmitNumbers(FILE *out, const ZirModule *module, ZirTarget target)
 {
     char p[64];
     int used = 0;
-    for(int i = 0; i < module->function_count; i++) used |= ZirCanEmitBody(module, &module->functions[i]);
+    for(int i = 0; i < module->function_count; i++) used |= CanEmitBody(module, &module->functions[i]);
     if(!used) return;
     if(target == ZIR_C || target == ZIR_CPP) {
         int instances = 0;
@@ -363,11 +363,11 @@ ZirEmitNumbers(FILE *out, const ZirModule *module, ZirTarget target)
             fputs("#include \"ui_instance_props.generated.h\"\n", out);
     }
     number_prefix(module, p, sizeof(p));
-    ZirEmitNumberSupport(out, target, p);
+    EmitNumberSupport(out, target, p);
 }
 
 void
-ZirEmitNumberSupport(FILE *out, ZirTarget target, const char *p)
+EmitNumberSupport(FILE *out, ZirTarget target, const char *p)
 {
     if(target == ZIR_C || target == ZIR_CPP) {
         fprintf(out, "#include <stdint.h>\n#include <stdbool.h>\n#include <stdlib.h>\n\n");
@@ -478,14 +478,14 @@ static int zir_minify_output;
 /* Debug escape hatch: ZIR_NO_FOLD=1 restores the pre-folding temp-per-
  * expression output for A/B verification of the folded codegen. */
 static int
-zir_disable_folding(void)
+disable_folding(void)
 {
     const char *disable = getenv("ZIR_NO_FOLD");
     return disable != NULL && disable[0] != '\0' && strcmp(disable, "0") != 0;
 }
 
 void
-ZirEmitUseMinifiedOutput(int enabled)
+EmitUseMinifiedOutput(int enabled)
 {
     zir_minify_output = enabled != 0;
 }
@@ -510,7 +510,7 @@ go_folds_text(const Emitter *e, const char *text)
 {
     if(e->target != ZIR_GO)
         return 0;
-    if(zir_disable_folding())
+    if(disable_folding())
         return 0;
     if(plain_identifier(text))
         return 1;
@@ -558,21 +558,21 @@ js_record_value(FILE *out, const ZirModule *module, const char *type, const char
 {
     fputc('{', out);
     const ZirModule *owner = NULL;
-    const ZirType *record = ZirFindType(module, type, &owner);
+    const ZirType *record = FindType(module, type, &owner);
     if(record != NULL) {
         size_t offset = 0;
         int count = 0;
         ZirTypeField field;
         int capacity = 0;
 
-        while(ZirTypeNextField(record, &offset, &field) == 1) {
+        while(TypeNextField(record, &offset, &field) == 1) {
             const char *field_type = canonical(field.type);
             char path[ZIR_TEXT_MAX];
             char element[ZIR_NAME_MAX];
             fprintf(out, "%s%s: ", count++ ? ", " : "", field.name);
             if(source != NULL)
                 format(path, sizeof(path), "%s.%s", source, field.name);
-            if(ZirArrayElementType(field_type, element, sizeof(element), &capacity)) {
+            if(ArrayElementType(field_type, element, sizeof(element), &capacity)) {
                 /* Fixed-capacity array field: element-wise copies keep C and
                  * Go value semantics; 'index' binds inside the callback. */
                 fprintf(out, "Array.from({length: %d}, (_, index) => ", capacity);
@@ -607,7 +607,7 @@ js_record_value(FILE *out, const ZirModule *module, const char *type, const char
 }
 
 int
-ZirEmitJsRecordValue(FILE *out, const ZirModule *module, const char *type, const char *source)
+EmitJsRecordValue(FILE *out, const ZirModule *module, const char *type, const char *source)
 {
     if(!record_type(module, type) || !portable_type(module, type))
         return 0;
@@ -628,9 +628,9 @@ js_record_fields(Emitter *e, const ZirModule *module, const char *type, const ch
     for(int i = 0; i < e->indent; i++)
         fputs("    ", e->out);
     fprintf(e->out, "let %s = ", destination);
-    ZirEmitJsRecordValue(e->out, module, type, source);
+    EmitJsRecordValue(e->out, module, type, source);
     fputs(";\n", e->out);
-    zir_copy(out, size, destination);
+    copy_text(out, size, destination);
 }
 
 static void
@@ -649,7 +649,7 @@ js_record_copy(Emitter *e, const char *type, const char *value,
 static void
 assign_value(Emitter *e, const char *destination, const char *type, const char *source)
 {
-    if(ZirArrayElementType(type, NULL, 0, NULL) &&
+    if(ArrayElementType(type, NULL, 0, NULL) &&
        (e->target == ZIR_C || e->target == ZIR_CPP)) {
         line(e, "memmove(%s, %s, sizeof(%s));", destination, source, destination);
     } else {
@@ -665,10 +665,10 @@ declare_array(Emitter *e, const char *name, const char *type, const char *value)
     char bound[ZIR_NAME_MAX];
     int capacity;
 
-    ZirArrayElementType(type, element, sizeof(element), &capacity);
-    const char *scalar = ZirTargetType(element, e->target);
+    ArrayElementType(type, element, sizeof(element), &capacity);
+    const char *scalar = TargetType(element, e->target);
     if(scalar != NULL)
-        zir_copy(target_element, sizeof(target_element), scalar);
+        copy_text(target_element, sizeof(target_element), scalar);
     else
         e->resolve(e->context, element, target_element, sizeof(target_element));
     if(capacity >= 0) {
@@ -689,7 +689,7 @@ declare_array(Emitter *e, const char *name, const char *type, const char *value)
         if(value != NULL && *value)
             assign_value(e, name, type, value);
     } else {
-        ZirDiagnostic(e->fn->span, "emit.array_target", "array values are supported only by native targets");
+        Diagnostic(e->fn->span, "emit.array_target", "array values are supported only by native targets");
         exit(1);
     }
 }
@@ -697,11 +697,11 @@ declare_array(Emitter *e, const char *name, const char *type, const char *value)
 static void
 declare(Emitter *e, const char *name, const char *type, const char *value)
 {
-    if(ZirArrayElementType(type, NULL, 0, NULL)) {
+    if(ArrayElementType(type, NULL, 0, NULL)) {
         declare_array(e, name, type, value);
         return;
     }
-    const char *target_type = ZirTargetType(type, e->target);
+    const char *target_type = TargetType(type, e->target);
     char resolved_type[ZIR_NAME_MAX * 2];
     if((e->target == ZIR_C || e->target == ZIR_CPP) && type[0] == '*') {
         const char *pointee = type;
@@ -710,9 +710,9 @@ declare(Emitter *e, const char *name, const char *type, const char *value)
         while(pointee[pointer_depth] == '*')
             pointer_depth++;
         pointee += pointer_depth;
-        const char *scalar = ZirTargetType(pointee, e->target);
+        const char *scalar = TargetType(pointee, e->target);
         if(scalar != NULL)
-            zir_copy(base_type, sizeof(base_type), scalar);
+            copy_text(base_type, sizeof(base_type), scalar);
         else
             e->resolve(e->context, pointee, base_type, sizeof(base_type));
         format(resolved_type, sizeof(resolved_type), "%s", base_type);
@@ -774,7 +774,7 @@ resolve(Emitter *e, const char *name, char *out, size_t size)
             if(e->locals[i].is_instance)
                 format(out, size, e->target == ZIR_JS ? "%s.value" : "(*%s)", name);
             else
-                zir_copy(out, size, name);
+                copy_text(out, size, name);
             return;
         }
     for(int i = 0; i < e->fn->capture_count; i++) {
@@ -788,7 +788,7 @@ resolve(Emitter *e, const char *name, char *out, size_t size)
         } else if(capture->is_instance) {
             format(out, size, e->target == ZIR_JS ? "%s.value" : "(*%s)", name);
         } else {
-            zir_copy(out, size, name);
+            copy_text(out, size, name);
         }
         return;
     }
@@ -810,13 +810,13 @@ number(Emitter *e, const char *type, const char *a, const char *b, int op, char 
     int w = width(type), sign = signed_type(type);
     if(e->target == ZIR_GO) {
         format(bits,sizeof(bits),"%s_bits(uint64(%s),uint64(%s),%d,%s,%d)",e->numbers,a,b,w,sign?"true":"false",op);
-        format(out,size,"%s(%s)",ZirTargetType(type,e->target),bits);
+        format(out,size,"%s(%s)",TargetType(type,e->target),bits);
     } else if(e->target == ZIR_JS) {
         format(out,size,"%s_bits(%s,%s,%d,%s,%d)",e->numbers,a,b,w,sign?"true":"false",op);
     } else {
         format(bits,sizeof(bits),"%s_bits((uint64_t)(%s),(uint64_t)(%s),%d,%d,%d)",e->numbers,a,b,w,sign,op);
-        if(sign) format(out,size,"(%s)%s_signed(%s,%d)",ZirTargetType(type,e->target),e->numbers,bits,w);
-        else format(out,size,"(%s)(%s)",ZirTargetType(type,e->target),bits);
+        if(sign) format(out,size,"(%s)%s_signed(%s,%d)",TargetType(type,e->target),e->numbers,bits,w);
+        else format(out,size,"(%s)(%s)",TargetType(type,e->target),bits);
     }
 }
 
@@ -832,10 +832,10 @@ slice_index(Emitter *e, const char *type, const char *base, const char *index,
         return;
     }
     char element[ZIR_NAME_MAX], mapped[ZIR_NAME_MAX];
-    ZirSliceElementType(type, element, sizeof(element));
-    const char *scalar = ZirTargetType(element, e->target);
+    SliceElementType(type, element, sizeof(element));
+    const char *scalar = TargetType(element, e->target);
     if(scalar != NULL)
-        zir_copy(mapped, sizeof(mapped), scalar);
+        copy_text(mapped, sizeof(mapped), scalar);
     else
         e->resolve(e->context, element, mapped, sizeof(mapped));
     format(out, size, "((%s *)%s.data)[SliceIndex(%s, (int64_t)%s)]", mapped, base, base, index);
@@ -853,8 +853,8 @@ emit_destination(Emitter *e, int index, char *out, size_t size)
     if(expr->kind == ZIR_EXPR_MEMBER) {
         char base[ZIR_TEXT_MAX], field[ZIR_NAME_MAX];
         emit_destination(e, expr->left, base, sizeof(base));
-        if(e->target == ZIR_GO) zir_go_field_ident(expr->name, field, sizeof(field));
-        else zir_copy(field, sizeof(field), expr->name);
+        if(e->target == ZIR_GO) go_field_ident(expr->name, field, sizeof(field));
+        else copy_text(field, sizeof(field), expr->name);
         format(out, size, "%s.%s", base, field);
         e->pure = 1;
         return;
@@ -864,7 +864,7 @@ emit_destination(Emitter *e, int index, char *out, size_t size)
 
         if(!strcmp(e->fn->exprs[expr->left].type, "string"))
             fatal(expr, "string bytes are read-only");
-        if(ZirSliceElementType(e->fn->exprs[expr->left].type, NULL, 0))
+        if(SliceElementType(e->fn->exprs[expr->left].type, NULL, 0))
             emit_expr(e, expr->left, e->fn->exprs[expr->left].type, base, sizeof(base));
         else
             emit_destination(e, expr->left, base, sizeof(base));
@@ -873,10 +873,10 @@ emit_destination(Emitter *e, int index, char *out, size_t size)
             emit_expr(e, expr->right, "i32", index, sizeof(index));
             e->pure = base_pure && e->pure;
         }
-        if(ZirSliceElementType(e->fn->exprs[expr->left].type, NULL, 0))
+        if(SliceElementType(e->fn->exprs[expr->left].type, NULL, 0))
             slice_index(e, e->fn->exprs[expr->left].type, base, index, out, size);
         else if((e->target == ZIR_C || e->target == ZIR_CPP) &&
-           ZirArrayElementType(e->fn->exprs[expr->left].type, NULL, 0, NULL))
+           ArrayElementType(e->fn->exprs[expr->left].type, NULL, 0, NULL))
             format(out, size, "ZIRAN_INDEX(%s, sizeof(%s) / sizeof(%s[0]), %s)",
                    base, base, base, index);
         else
@@ -1015,17 +1015,17 @@ string_literal(const ZirExpr *expr, ZirTarget target, int terminated, char *out,
 }
 
 int
-ZirScalarLiteral(const char *type, const char *text, ZirTarget target,
+ScalarLiteral(const char *type, const char *text, ZirTarget target,
                   ZirSourceSpan span, char *out, size_t size)
 {
     ZirFunction fn={0};Emitter e={0};int ok=0;
     type=canonical(type);e.target=target;
     if(!*type)return 0;
     if(!strcmp(type,"bool")) {
-        if(!strcmp(text,"true") || !strcmp(text,"false")) {zir_copy(out,size,text);return 1;}
+        if(!strcmp(text,"true") || !strcmp(text,"false")) {copy_text(out,size,text);return 1;}
         return 0;
     }
-    int index=ZirParseExpr(&fn,NULL,text,span);
+    int index=ParseExpr(&fn,NULL,text,span);
     if(index>=0) {
         ZirExpr *expr=&fn.exprs[index];
         if(expr->kind == ZIR_EXPR_STRING &&
@@ -1035,7 +1035,7 @@ ZirScalarLiteral(const char *type, const char *text, ZirTarget target,
             if(!strcmp(type, "string") && (target == ZIR_C || target == ZIR_CPP))
                 format(out, size, "{%s, sizeof(%s) - 1}", value, value);
             else
-                zir_copy(out, size, value);
+                copy_text(out, size, value);
             ok = 1;
         } else if(expr->kind==ZIR_EXPR_INT && width(type)) {
             literal(&e,expr,type,0,out,size);ok=1;
@@ -1043,7 +1043,7 @@ ZirScalarLiteral(const char *type, const char *text, ZirTarget target,
                   fn.exprs[expr->right].kind==ZIR_EXPR_INT && width(type)) {
             literal(&e,&fn.exprs[expr->right],type,1,out,size);ok=1;
         } else if((expr->kind==ZIR_EXPR_FLOAT || expr->kind==ZIR_EXPR_INT) && type[0]=='f') {
-            zir_copy(out,size,text);size_t n=strlen(out);
+            copy_text(out,size,text);size_t n=strlen(out);
             if(n && (out[n-1]=='f'||out[n-1]=='F'))out[n-1]=0;
             ok=1;
         }
@@ -1087,14 +1087,14 @@ emit_call(Emitter *e, const ZirExpr *expr, const char *array_result, char *out, 
             char captured[ZIR_NAME_MAX];
             fresh(e, captured);
             declare(e, captured, e->fn->exprs[child].type, argument);
-            zir_copy(argument, sizeof(argument), captured);
+            copy_text(argument, sizeof(argument), captured);
         }
         n+=(size_t)format(text+n,sizeof(text)-n,"%s%s",count?",":"",argument);
         count++;
     }
     format(text+n,sizeof(text)-n,")");
     if(*expr->slot_type)
-        zir_copy(out, size, text);
+        copy_text(out, size, text);
     else
         e->resolve(e->context,text,out,size);
 }
@@ -1111,21 +1111,21 @@ slot_wrapper_name(const ZirModule *module, const ZirFunction *fn, int index,
 /* C has no lexical function values. A file-scope adapter supplies the uniform
  * borrowed-context slot ABI while ordinary .kry functions keep their own ABI. */
 void
-ZirEmitSlotWrappers(FILE *out, const ZirModule *module, const ZirFunction *fn,
+EmitSlotWrappers(FILE *out, const ZirModule *module, const ZirFunction *fn,
                     ZirTarget target, ZirResolveTarget resolver, void *context)
 {
-    if((target != ZIR_C && target != ZIR_CPP) || !ZirCanEmitBody(module, fn))
+    if((target != ZIR_C && target != ZIR_CPP) || !CanEmitBody(module, fn))
         return;
     for(int index = 0; index < fn->expr_count; index++) {
         const ZirExpr *value = &fn->exprs[index];
         if(!value->is_function_value)
             continue;
-        const ZirType *slot = ZirFindType(module, value->type, NULL);
+        const ZirType *slot = FindType(module, value->type, NULL);
         const ZirModule *owner = NULL;
         const ZirFunction *body = NULL;
-        ZirResolveFunction(module, value->name, &owner, &body);
+        ResolveFunction(module, value->name, &owner, &body);
         if(body != NULL && body->is_closure) {
-            ZirEmitSlotWrappers(out, module, body, target, resolver, context);
+            EmitSlotWrappers(out, module, body, target, resolver, context);
             char wrapper[ZIR_NAME_MAX], capture_name[ZIR_NAME_MAX];
             slot_wrapper_name(module, fn, index, wrapper, sizeof(wrapper));
             capture_context_name(body, capture_name, sizeof(capture_name));
@@ -1135,17 +1135,17 @@ ZirEmitSlotWrappers(FILE *out, const ZirModule *module, const ZirFunction *fn,
                     const ZirCapture *field = &body->captures[capture];
                     char element[ZIR_NAME_MAX];
                     int capacity;
-                    if(ZirArrayElementType(field->type, element, sizeof(element), &capacity)) {
+                    if(ArrayElementType(field->type, element, sizeof(element), &capacity)) {
                         char bound[ZIR_NAME_MAX];
                         if(capacity >= 0)
                             format(bound, sizeof(bound), "%d", capacity);
                         else
                             format(bound, sizeof(bound), "%.*s",
                                    (int)(strchr(field->type, ']') - field->type - 1), field->type + 1);
-                        const char *scalar = ZirTargetType(element, target);
+                        const char *scalar = TargetType(element, target);
                         fprintf(out, "    %s (*%s)[%s];\n", scalar ? scalar : element, field->name, bound);
                     } else {
-                        const char *scalar = ZirTargetType(field->type, target);
+                        const char *scalar = TargetType(field->type, target);
                         fprintf(out, "    %s *%s;\n", scalar ? scalar : field->type, field->name);
                     }
                 }
@@ -1153,14 +1153,14 @@ ZirEmitSlotWrappers(FILE *out, const ZirModule *module, const ZirFunction *fn,
             }
             fprintf(out, "static void %s(void *%s_opaque", wrapper, capture_name);
             char arguments[64][ZIR_TEXT_MAX];
-            int count = *zir_skip_ws(body->args) ?
-                zir_split_top(body->args, arguments[0], 64, sizeof(arguments[0])) : 0;
+            int count = *skip_ws(body->args) ?
+                split_top_level(body->args, arguments[0], 64, sizeof(arguments[0])) : 0;
             for(int argument = 0; argument < count; argument++) {
                 char *colon = strchr(arguments[argument], ':');
                 *colon++ = '\0';
-                zir_trim_in_place(arguments[argument]);
-                zir_trim_in_place(colon);
-                const char *scalar = ZirTargetType(colon, target);
+                trim_in_place(arguments[argument]);
+                trim_in_place(colon);
+                const char *scalar = TargetType(colon, target);
                 fprintf(out, ", %s %s", scalar ? scalar : colon, arguments[argument]);
             }
             fputs(")\n{\n", out);
@@ -1169,20 +1169,20 @@ ZirEmitSlotWrappers(FILE *out, const ZirModule *module, const ZirFunction *fn,
                         wrapper, capture_name, wrapper, capture_name);
             else
                 fprintf(out, "    (void)%s_opaque;\n", capture_name);
-            ZirEmitBody(out, module, body, target, resolver, context, "", NULL);
+            EmitBody(out, module, body, target, resolver, context, "", NULL);
             fputs("}\n", out);
             continue;
         }
         char parameters[64][ZIR_TEXT_MAX];
-        int count = *zir_skip_ws(slot->body) ?
-            zir_split_top(slot->body, parameters[0], 64, sizeof(parameters[0])) : 0;
+        int count = *skip_ws(slot->body) ?
+            split_top_level(slot->body, parameters[0], 64, sizeof(parameters[0])) : 0;
         char wrapper[ZIR_NAME_MAX], call[ZIR_TEXT_MAX], resolved[ZIR_TEXT_MAX];
         slot_wrapper_name(module, fn, index, wrapper, sizeof(wrapper));
         fprintf(out, "static void %s(void *context", wrapper);
         size_t length = (size_t)format(call, sizeof(call), "%s(", value->name);
         for(int argument = 0; argument < count; argument++) {
-            const char *source = zir_skip_ws(strchr(parameters[argument], ':') + 1);
-            const char *scalar = ZirTargetType(source, target);
+            const char *source = skip_ws(strchr(parameters[argument], ':') + 1);
+            const char *scalar = TargetType(source, target);
             fprintf(out, ", %s slot_arg_%d", scalar ? scalar : source, argument);
             length += (size_t)format(call + length, sizeof(call) - length,
                                       "%sslot_arg_%d", argument ? ", " : "", argument);
@@ -1199,7 +1199,7 @@ emit_function_value(Emitter *e, int index, char *out, size_t size)
     const ZirExpr *value = &e->fn->exprs[index];
     const ZirModule *owner = NULL;
     const ZirFunction *body = NULL;
-    ZirResolveFunction(e->module, value->name, &owner, &body);
+    ResolveFunction(e->module, value->name, &owner, &body);
     if(body != NULL && body->is_closure) {
         char temporary[ZIR_NAME_MAX];
         fresh(e, temporary);
@@ -1223,19 +1223,19 @@ emit_function_value(Emitter *e, int index, char *out, size_t size)
             return;
         }
         char arguments[64][ZIR_TEXT_MAX], signature[ZIR_TEXT_MAX] = "";
-        int count = *zir_skip_ws(body->args) ?
-            zir_split_top(body->args, arguments[0], 64, sizeof(arguments[0])) : 0;
+        int count = *skip_ws(body->args) ?
+            split_top_level(body->args, arguments[0], 64, sizeof(arguments[0])) : 0;
         size_t length = 0;
         for(int argument = 0; argument < count; argument++) {
             char *colon = strchr(arguments[argument], ':');
             *colon++ = '\0';
-            zir_trim_in_place(arguments[argument]);
-            zir_trim_in_place(colon);
+            trim_in_place(arguments[argument]);
+            trim_in_place(colon);
             char type[ZIR_NAME_MAX] = "";
             if(e->target == ZIR_GO) {
-                const char *scalar = ZirTargetType(colon, ZIR_GO);
+                const char *scalar = TargetType(colon, ZIR_GO);
                 if(scalar)
-                    zir_copy(type, sizeof(type), scalar);
+                    copy_text(type, sizeof(type), scalar);
                 else
                     e->resolve(e->context, colon, type, sizeof(type));
             }
@@ -1246,10 +1246,10 @@ emit_function_value(Emitter *e, int index, char *out, size_t size)
             line(e, "%s := func(%s) {", temporary, signature);
         else
             line(e, "const %s = (%s) => {", temporary, signature);
-        ZirEmitBody(e->out, e->module, body, e->target, e->resolve, e->context,
+        EmitBody(e->out, e->module, body, e->target, e->resolve, e->context,
                     e->instance_host, e->numbers);
         line(e, e->target == ZIR_GO ? "}" : "};");
-        zir_copy(out, size, temporary);
+        copy_text(out, size, temporary);
         return;
     }
     if(e->target == ZIR_C || e->target == ZIR_CPP) {
@@ -1258,10 +1258,10 @@ emit_function_value(Emitter *e, int index, char *out, size_t size)
         format(out, size, "(%s){NULL, %s}", value->type, wrapper);
         return;
     }
-    const ZirType *slot = ZirFindType(e->module, value->type, NULL);
+    const ZirType *slot = FindType(e->module, value->type, NULL);
     char parameters[64][ZIR_TEXT_MAX];
-    int count = *zir_skip_ws(slot->body) ?
-        zir_split_top(slot->body, parameters[0], 64, sizeof(parameters[0])) : 0;
+    int count = *skip_ws(slot->body) ?
+        split_top_level(slot->body, parameters[0], 64, sizeof(parameters[0])) : 0;
     char arguments[ZIR_TEXT_MAX] = "", signature[ZIR_TEXT_MAX] = "";
     char call[ZIR_TEXT_MAX], resolved[ZIR_TEXT_MAX];
     size_t length = 0, signature_length = 0;
@@ -1271,11 +1271,11 @@ emit_function_value(Emitter *e, int index, char *out, size_t size)
         length += (size_t)format(arguments + length, sizeof(arguments) - length,
                                   "%s%s", argument ? ", " : "", parameter);
         if(e->target == ZIR_GO) {
-            const char *source = zir_skip_ws(strchr(parameters[argument], ':') + 1);
-            const char *scalar = ZirTargetType(source, ZIR_GO);
+            const char *source = skip_ws(strchr(parameters[argument], ':') + 1);
+            const char *scalar = TargetType(source, ZIR_GO);
             char type[ZIR_NAME_MAX];
             if(scalar)
-                zir_copy(type, sizeof(type), scalar);
+                copy_text(type, sizeof(type), scalar);
             else
                 e->resolve(e->context, source, type, sizeof(type));
             signature_length += (size_t)format(signature + signature_length,
@@ -1315,7 +1315,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
     }
     switch(expr->kind) {
     case ZIR_EXPR_COMPOUND: {
-        if(ZirArrayElementType(type, NULL, 0, NULL)) {
+        if(ArrayElementType(type, NULL, 0, NULL)) {
             fresh(e, temp);
             declare(e, temp, type, NULL);
             int ordinal = 0;
@@ -1325,7 +1325,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
                 format(b, sizeof(b), "%s[%d]", temp, ordinal++);
                 assign_value(e, b, entry->type, a);
             }
-            zir_copy(out, size, temp);
+            copy_text(out, size, temp);
             e->pure = 1;
             return;
         }
@@ -1336,14 +1336,14 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             const ZirExpr *field = &e->fn->exprs[child];
             char field_name[ZIR_NAME_MAX];
             if(e->target == ZIR_GO)
-                zir_go_field_ident(field->name, field_name, sizeof(field_name));
+                go_field_ident(field->name, field_name, sizeof(field_name));
             else
-                zir_copy(field_name, sizeof(field_name), field->name);
+                copy_text(field_name, sizeof(field_name), field->name);
             emit_expr(e, field->right, field->type, a, sizeof(a));
             format(b, sizeof(b), "%s.%s", temp, field_name);
             assign_value(e, b, field->type, a);
         }
-        zir_copy(out, size, temp);
+        copy_text(out, size, temp);
         e->pure = 1;
         return;
     }
@@ -1358,7 +1358,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             emit_expr(e, expr->left, e->fn->exprs[expr->left].type, a, sizeof(a));
         base_pure = e->pure;
         if((!strcmp(e->fn->exprs[expr->left].type, "string") ||
-            ZirSliceElementType(e->fn->exprs[expr->left].type, NULL, 0)) &&
+            SliceElementType(e->fn->exprs[expr->left].type, NULL, 0)) &&
            !strcmp(expr->name, "length")) {
             if(e->target == ZIR_GO)
                 format(result, sizeof(result), "int32(len(%s))", a);
@@ -1369,8 +1369,8 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             pure = base_pure;
             break;
         }
-        if(e->target == ZIR_GO) zir_go_field_ident(expr->name, field, sizeof(field));
-        else zir_copy(field, sizeof(field), expr->name);
+        if(e->target == ZIR_GO) go_field_ident(expr->name, field, sizeof(field));
+        else copy_text(field, sizeof(field), expr->name);
         format(result, sizeof(result), "%s.%s", a, field);
         pure = base_pure;
         break;
@@ -1384,11 +1384,11 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         int base_pure;
         int low_pure = 1;
         int high_pure = 1;
-        int array = ZirArrayElementType(base_type, element, sizeof(element), &capacity);
+        int array = ArrayElementType(base_type, element, sizeof(element), &capacity);
         if(array) {
             emit_destination(e, expr->left, source, sizeof(source));
         } else {
-            ZirSliceElementType(base_type, element, sizeof(element));
+            SliceElementType(base_type, element, sizeof(element));
             emit_expr(e, expr->left, base_type, source, sizeof(source));
         }
         base_pure = e->pure;
@@ -1405,7 +1405,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             low_pure = e->pure;
         }
         else
-            zir_copy(low, sizeof(low), "0");
+            copy_text(low, sizeof(low), "0");
         if(expr->third >= 0) {
             emit_expr(e, expr->third, "i64", high, sizeof(high));
             high_pure = e->pure;
@@ -1418,9 +1418,9 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
                  low, high, low, high, view);
             format(result, sizeof(result), "%s[int64(%s):int64(%s):int64(%s)]", view, low, high, high);
         } else {
-            const char *scalar = ZirTargetType(element, e->target);
+            const char *scalar = TargetType(element, e->target);
             if(scalar != NULL)
-                zir_copy(mapped, sizeof(mapped), scalar);
+                copy_text(mapped, sizeof(mapped), scalar);
             else
                 e->resolve(e->context, element, mapped, sizeof(mapped));
             format(result, sizeof(result), "SliceRange(%s, (int64_t)%s, (int64_t)%s, sizeof(%s))",
@@ -1440,8 +1440,8 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         base_pure = e->pure;
         emit_expr(e, expr->right, "i32", b, sizeof(b));
         pure = base_pure && e->pure;
-        ZirArrayElementType(base_type, NULL, 0, &capacity);
-        if(ZirSliceElementType(base_type, NULL, 0)) {
+        ArrayElementType(base_type, NULL, 0, &capacity);
+        if(SliceElementType(base_type, NULL, 0)) {
             slice_index(e, base_type, a, b, result, sizeof(result));
         } else if(!strcmp(base_type, "string")) {
             if(e->target == ZIR_JS)
@@ -1466,9 +1466,9 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         }
         resolve(e, expr->name, result, sizeof(result));
         if(e->target == ZIR_GO &&
-           ZirFindRuntimeEnumMember(expr->name) != NULL) {
-            const char *target = ZirTargetType(type, ZIR_GO);
-            zir_copy(a, sizeof(a), result);
+           FindRuntimeEnumMember(expr->name) != NULL) {
+            const char *target = TargetType(type, ZIR_GO);
+            copy_text(a, sizeof(a), result);
             format(result, sizeof(result), "%s(%s)", target != NULL ? target : type, a);
         }
         pure = 1;
@@ -1480,24 +1480,24 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         if(strcmp(type, "const char*") && (e->target == ZIR_C || e->target == ZIR_CPP))
             format(result, sizeof(result), "StringView(%s, sizeof(%s) - 1)", a, a);
         else
-            zir_copy(result, sizeof(result), a);
+            copy_text(result, sizeof(result), a);
         pure = 1;
         break;
     case ZIR_EXPR_INT: literal(e,expr,type,0,result,sizeof(result));pure=1;break;
     case ZIR_EXPR_FLOAT: {
-        zir_copy(result,sizeof(result),expr->text);size_t n=strlen(result);
+        copy_text(result,sizeof(result),expr->text);size_t n=strlen(result);
         if(n && (result[n-1]=='f' || result[n-1]=='F')) result[n-1]=0;
         pure = 1;
         break;
     }
     case ZIR_EXPR_CALL:
         if((e->target == ZIR_C || e->target == ZIR_CPP) &&
-           ZirArrayElementType(type, NULL, 0, NULL)) {
+           ArrayElementType(type, NULL, 0, NULL)) {
             fresh(e, temp);
             declare_array(e, temp, type, NULL);
             emit_call(e, expr, temp, result, sizeof(result));
             line(e, "%s;", result);
-            zir_copy(out, size, temp);
+            copy_text(out, size, temp);
             e->pure = 1;
             return;
         }
@@ -1506,16 +1506,16 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         break;
     case ZIR_EXPR_CONDITIONAL:
         emit_expr(e,expr->left,"bool",a,sizeof(a));fresh(e,temp);
-        const ZirType *declared = ZirFindType(e->module, type, NULL);
+        const ZirType *declared = FindType(e->module, type, NULL);
         if(declared != NULL && declared->is_slot) {
             if(e->target == ZIR_C || e->target == ZIR_CPP)
                 format(b, sizeof(b), "(%s){0}", type);
             else
-                zir_copy(b, sizeof(b), e->target == ZIR_GO ? "nil" : "null");
+                copy_text(b, sizeof(b), e->target == ZIR_GO ? "nil" : "null");
         } else if(record_type(e->module, type))
             zero_record(e, type, b, sizeof(b));
         else
-            zir_copy(b, sizeof(b), zero_value(type, e->target));
+            copy_text(b, sizeof(b), zero_value(type, e->target));
         declare(e, temp, type, b);
         line(e, e->target == ZIR_GO ? "if %s {" : "if (%s) {", a);
         e->indent++;
@@ -1528,7 +1528,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         assign_value(e, temp, type, b);
         e->indent--;
         line(e, "}");
-        zir_copy(out, size, temp);
+        copy_text(out, size, temp);
         e->pure = 1;
         return;
     case ZIR_EXPR_BINARY: {
@@ -1546,7 +1546,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             fresh(e,temp);declare(e,temp,"bool",a);
             line(e,e->target==ZIR_GO?"if %s%s {":"if (%s%s) {",!strcmp(expr->op,"||")?"!":"",temp);e->indent++;
             emit_expr(e,expr->right,"bool",b,sizeof(b));line(e,"%s = %s%s",temp,b,e->target==ZIR_GO?"":";");
-            e->indent--;line(e,"}");zir_copy(out,size,temp);e->pure=1;return;
+            e->indent--;line(e,"}");copy_text(out,size,temp);e->pure=1;return;
         }
         emit_expr(e,expr->right,(!strcmp(expr->op,"<<")||!strcmp(expr->op,">>"))?"i32":operand_type,b,sizeof(b));
         pure = left_pure && e->pure;
@@ -1569,7 +1569,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             if(width(type)) number(e,type,a,"1",expr->op[0]=='+'?1:2,result,sizeof(result));
             else format(result,sizeof(result),e->target==ZIR_JS&&!strcmp(type,"f32")?"Math.fround(%s %c 1)":"(%s %c 1)",a,expr->op[0]);
             line(e,"%s = %s%s",a,result,e->target==ZIR_GO?"":";");
-            zir_copy(result,sizeof(result),a);pure=1;break;
+            copy_text(result,sizeof(result),a);pure=1;break;
         }
         emit_expr(e,expr->right,type,a,sizeof(a));
         pure = e->pure;
@@ -1582,7 +1582,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         emit_destination(e, expr->left, a, sizeof(a));fresh(e,temp);declare(e,temp,type,a);
         if(width(type)) number(e,type,a,"1",expr->op[0]=='+'?1:2,result,sizeof(result));
         else format(result,sizeof(result),e->target==ZIR_JS&&!strcmp(type,"f32")?"Math.fround(%s %c 1)":"(%s %c 1)",a,expr->op[0]);
-        line(e,"%s = %s%s",a,result,e->target==ZIR_GO?"":";");zir_copy(out,size,temp);e->pure=1;return;
+        line(e,"%s = %s%s",a,result,e->target==ZIR_GO?"":";");copy_text(out,size,temp);e->pure=1;return;
     case ZIR_EXPR_CAST: {
         const char *declared_type = type;
         int right_pure;
@@ -1592,7 +1592,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         right_pure = e->pure;
         pure = right_pure;
         if(!strcmp(type, "string") || !strcmp(type, "const char*")) {
-            zir_copy(result, sizeof(result), a);
+            copy_text(result, sizeof(result), a);
         } else if(!strcmp(type,"bool")) {
             format(result,sizeof(result),"%s != %s",a,!strcmp(canonical(e->fn->exprs[expr->right].type),"bool")?"false":"0");
             atom=0;
@@ -1602,7 +1602,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             line(e,"%s = %s%s",temp,e->target==ZIR_JS&&width(type)>32?"1n":"1",e->target==ZIR_GO?"":";");
             e->indent--;
             line(e, "}");
-            zir_copy(result, sizeof(result), temp);
+            copy_text(result, sizeof(result), temp);
         } else if(width(type)) {
             if(canonical(e->fn->exprs[expr->right].type)[0]=='f') {
                 if(e->target==ZIR_GO) format(b,sizeof(b),"%s_float(float64(%s),%d,%s)",e->numbers,a,width(type),signed_type(type)?"true":"false");
@@ -1611,20 +1611,20 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             } else number(e,type,a,"0",0,result,sizeof(result));
         }
         else if(e->target==ZIR_JS) format(result,sizeof(result),"%s(%s)",!strcmp(type,"f32")?"Math.fround":!strcmp(type,"bool")?"Boolean":"Number",a);
-        else if(e->target==ZIR_GO) format(result,sizeof(result),"%s(%s)",ZirTargetType(type,e->target),a);
-        else format(result,sizeof(result),"(%s)(%s)",ZirTargetType(type,e->target),a);
+        else if(e->target==ZIR_GO) format(result,sizeof(result),"%s(%s)",TargetType(type,e->target),a);
+        else format(result,sizeof(result),"(%s)(%s)",TargetType(type,e->target),a);
         type = declared_type;
         break;
     }
     default: fatal(expr,"unsupported structured expression");
     }
-    if(e->target==ZIR_JS && !strcmp(type,"f32")) {zir_copy(a,sizeof(a),result);format(result,sizeof(result),"Math.fround(%s)",a);}
+    if(e->target==ZIR_JS && !strcmp(type,"f32")) {copy_text(a,sizeof(a),result);format(result,sizeof(result),"Math.fround(%s)",a);}
     e->pure = pure;
     if(go_folds_text(e, result)) {
         /* declare() applies this cast for named enum types; inlined text has
          * to carry it so Go sees matching operand types. */
         if(!plain_identifier(result) && enum_type(e->module, type)) {
-            const char *scalar = ZirTargetType(type, e->target);
+            const char *scalar = TargetType(type, e->target);
             char resolved[ZIR_NAME_MAX * 2];
             if(scalar == NULL) {
                 e->resolve(e->context, type, resolved, sizeof(resolved));
@@ -1632,14 +1632,14 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             }
             format(out, size, "%s(%s)", scalar, result);
         } else if(atom) {
-            zir_copy(out, size, result);
+            copy_text(out, size, result);
         } else {
             format(out, size, "(%s)", result);
         }
         e->pure = plain_identifier(result) ? 1 : pure;
         return;
     }
-    fresh(e,temp);declare(e,temp,type,result);zir_copy(out,size,temp);
+    fresh(e,temp);declare(e,temp,type,result);copy_text(out,size,temp);
     e->pure = 1;
 }
 
@@ -1667,7 +1667,7 @@ zero_record(Emitter *e, const char *type, char *out, size_t size)
         return;
     }
     if(e->target != ZIR_JS) {
-        zir_copy(out, size, e->target == ZIR_CPP ? "{}" : "{0}");
+        copy_text(out, size, e->target == ZIR_CPP ? "{}" : "{0}");
         return;
     }
     js_record_fields(e, e->module, type, NULL, out, size);
@@ -1702,7 +1702,7 @@ emit_sequence(Emitter *e,int begin,int end)
         case ZIR_STMT_DECL:
             if(st->is_instance) {
                 char instance_type[ZIR_NAME_MAX];
-                zir_copy(instance_type, sizeof(instance_type), st->type);
+                copy_text(instance_type, sizeof(instance_type), st->type);
                 if(e->target == ZIR_GO && e->resolve)
                     e->resolve(e->context, st->type, instance_type, sizeof(instance_type));
                 const ZirExpr *key = &e->fn->exprs[st->expr_root];
@@ -1719,7 +1719,7 @@ emit_sequence(Emitter *e,int begin,int end)
                         fputs("    ", e->out);
                     fprintf(e->out, "const %s = kryon.instanceState($rt, \"%s\", %s, () => (",
                             st->name, st->type, value);
-                    ZirEmitJsRecordValue(e->out, e->module, st->type, NULL);
+                    EmitJsRecordValue(e->out, e->module, st->type, NULL);
                     fputs("));\n", e->out);
                 } else
                     line(e, "%s *%s = (%s *)InstanceState(\"%s\", (uint64_t)%s, sizeof(%s));",
@@ -1728,11 +1728,11 @@ emit_sequence(Emitter *e,int begin,int end)
             else if(record_type(e->module, st->type)) {
                 zero_record(e, st->type, value, sizeof(value));
             }
-            else zir_copy(value, sizeof(value), zero_value(st->type, e->target));
+            else copy_text(value, sizeof(value), zero_value(st->type, e->target));
             if(!st->is_instance)
                 declare(e,st->name,st->type,value);
             e->locals[e->local_count].is_instance = st->is_instance;
-            zir_copy(e->locals[e->local_count].name,ZIR_NAME_MAX,st->name);e->locals[e->local_count++].depth=e->depth;
+            copy_text(e->locals[e->local_count].name,ZIR_NAME_MAX,st->name);e->locals[e->local_count++].depth=e->depth;
             break;
         case ZIR_STMT_ASSIGN:
             emit_destination(e, st->lhs_root, lhs, sizeof(lhs));
@@ -1740,13 +1740,13 @@ emit_sequence(Emitter *e,int begin,int end)
                 char old[ZIR_NAME_MAX];fresh(e,old);
                 declare(e,old,e->fn->exprs[st->lhs_root].type,lhs);
                 emit_expr(e,st->expr_root,e->fn->exprs[st->lhs_root].type,value,sizeof(value));
-                char op[4];zir_copy(op,sizeof(op),st->assignment_op);op[strlen(op)-1]=0;
+                char op[4];copy_text(op,sizeof(op),st->assignment_op);op[strlen(op)-1]=0;
                 const char *type=canonical(e->fn->exprs[st->lhs_root].type);
                 if(width(type))number(e,type,old,value,operation(op),result,sizeof(result));
                 else format(result,sizeof(result),e->target==ZIR_JS&&!strcmp(type,"f32")?"Math.fround(%s %s %s)":"%s %s %s",old,op,value);
             } else {
                 emit_expr(e,st->expr_root,e->fn->exprs[st->lhs_root].type,value,sizeof(value));
-                zir_copy(result,sizeof(result),value);
+                copy_text(result,sizeof(result),value);
             }
             if(e->target == ZIR_JS && record_type(e->module, e->fn->exprs[st->lhs_root].type)) {
                 char copy[ZIR_TEXT_MAX];
@@ -1760,9 +1760,9 @@ emit_sequence(Emitter *e,int begin,int end)
             if(st->expr_root >= 0) {
                 emit_expr(e, st->expr_root, e->fn->return_type, value, sizeof(value));
                 if((e->target == ZIR_C || e->target == ZIR_CPP) &&
-                   ZirArrayElementType(e->fn->return_type, NULL, 0, NULL)) {
+                   ArrayElementType(e->fn->return_type, NULL, 0, NULL)) {
                     char output[ZIR_NAME_MAX];
-                    ZirArrayAbiName(e->fn, -1, output, sizeof(output));
+                    ArrayAbiName(e->fn, -1, output, sizeof(output));
                     /* value is a captured true array; output is an ABI pointer. */
                     line(e, "memmove(%s, %s, sizeof(%s));", output, value, value);
                     line(e, "return;");
@@ -1798,30 +1798,30 @@ emit_sequence(Emitter *e,int begin,int end)
 }
 
 int
-ZirEmitBody(FILE *out,const ZirModule *module,const ZirFunction *fn,ZirTarget target,
+EmitBody(FILE *out,const ZirModule *module,const ZirFunction *fn,ZirTarget target,
             ZirResolveTarget resolver,void *context,const char *instance_host,
             const char *number_support)
 {
     Emitter e={0};char params[64][ZIR_TEXT_MAX];int count;
-    if(!ZirCanEmitBody(module, fn))return 0;
+    if(!CanEmitBody(module, fn))return 0;
     e.out=out;e.module=module;e.fn=fn;e.target=target;e.resolve=resolver;e.context=context;e.indent=1;
     e.instance_host = instance_host;
     e.minify = zir_minify_output;
     e.locals=calloc((size_t)fn->stmt_count+65,sizeof(*e.locals));
     if(!e.locals) { fprintf(stderr,"out of memory during scalar emission\n"); exit(1); }
     if(number_support && *number_support)
-        zir_copy(e.numbers, sizeof(e.numbers), number_support);
+        copy_text(e.numbers, sizeof(e.numbers), number_support);
     else
         number_prefix(module,e.numbers,sizeof(e.numbers));
-    count=*zir_skip_ws(fn->args)?zir_split_top(fn->args,params[0],64,sizeof(params[0])):0;
+    count=*skip_ws(fn->args)?split_top_level(fn->args,params[0],64,sizeof(params[0])):0;
     for(int i=0;i<count;i++) {
-        char *colon=strchr(params[i],':');*colon++=0;zir_trim_in_place(params[i]);
-        zir_copy(e.locals[e.local_count++].name,ZIR_NAME_MAX,params[i]);
-        const char *type=canonical(zir_skip_ws(colon));
+        char *colon=strchr(params[i],':');*colon++=0;trim_in_place(params[i]);
+        copy_text(e.locals[e.local_count++].name,ZIR_NAME_MAX,params[i]);
+        const char *type=canonical(skip_ws(colon));
         if((target == ZIR_C || target == ZIR_CPP) &&
-           ZirArrayValueType(type)) {
+           ArrayValueType(type)) {
             char incoming[ZIR_NAME_MAX];
-            ZirArrayAbiName(fn, i, incoming, sizeof(incoming));
+            ArrayAbiName(fn, i, incoming, sizeof(incoming));
             declare_array(&e, params[i], type, incoming);
         }
         if(target == ZIR_JS && enum_type(module, type))

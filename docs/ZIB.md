@@ -1,7 +1,24 @@
 # Ziran portable bundle (`.zib`)
 
-This is the target contract. No `.zib` writer, loader, or runtime ships yet;
-see [Implementation status](IMPLEMENTATION_STATUS.md).
+This describes the target contract and the experimental subset that ships now.
+See [Implementation status](IMPLEMENTATION_STATUS.md) for the remaining work.
+
+## Experimental version 1
+
+`ziran bundle --root DIR --entry module:function -o FILE file.zi|file.zir ...`
+links explicitly supplied modules. `ziran run FILE` validates and executes
+zero-argument scalar entry functions on a portable interpreter. The bundle is
+`ZIB` plus a zero byte, a little-endian version, length-prefixed entry module
+and function names, a host capability count (currently zero), and a
+length-prefixed version 3 `.zir` payload. It includes all supplied modules.
+The reader rejects unsupported versions, truncated or trailing data, malformed
+embedded IR, unresolved imports, unsupported capabilities, and functions
+outside the current scalar execution subset. Source and saved-IR bundle bytes
+match in the two-module test. Version 1 is experimental and has no compatibility
+promise. Host imports, graphical programs, and most Ziran data and control
+flow remain unsupported.
+
+## Target contract
 
 A `.zib` is a versioned, portable executable bundle linked from checked
 `.zir` modules. Its format identifier is `ZIB`. It contains the program's

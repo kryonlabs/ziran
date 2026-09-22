@@ -3,7 +3,7 @@
 #include "zir.h"
 
 /* Parse with token precedence; unsupported syntax is an explicit unknown node. */
-int ZirParseExpr(ZirFunction *fn, const ZirModule *module, const char *text,
+int ParseExpr(ZirFunction *fn, const ZirModule *module, const char *text,
                  ZirSourceSpan span);
-void ZirStructureFunction(ZirFunction *fn, const ZirModule *module);
+void StructureFunction(ZirFunction *fn, const ZirModule *module);
 #endif

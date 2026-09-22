@@ -3,5 +3,5 @@
 #include "zir.h"
 
 /* Lower lexical cleanup once, before backend emission. Returns zero on error. */
-int ZirLowerCleanup(ZirFunction *fn);
+int LowerCleanup(ZirFunction *fn);
 #endif

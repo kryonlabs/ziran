@@ -25,7 +25,7 @@ json_string(FILE *out, const char *value)
 }
 
 int
-ZirSetDiagnosticFormat(const char *format)
+SetDiagnosticFormat(const char *format)
 {
     if(strcmp(format, "json") == 0)
         diagnostic_json = 1;
@@ -37,7 +37,7 @@ ZirSetDiagnosticFormat(const char *format)
 }
 
 void
-ZirDiagnosticV(ZirSourceSpan span, const char *code, const char *format, va_list args)
+DiagnosticV(ZirSourceSpan span, const char *code, const char *format, va_list args)
 {
     char message[ZIR_TEXT_MAX * 2];
 
@@ -67,11 +67,11 @@ ZirDiagnosticV(ZirSourceSpan span, const char *code, const char *format, va_list
 }
 
 void
-ZirDiagnostic(ZirSourceSpan span, const char *code, const char *format, ...)
+Diagnostic(ZirSourceSpan span, const char *code, const char *format, ...)
 {
     va_list args;
 
     va_start(args, format);
-    ZirDiagnosticV(span, code, format, args);
+    DiagnosticV(span, code, format, args);
     va_end(args);
 }

@@ -12,24 +12,24 @@
  * single-line prototypes. */
 
 /* Add a directory scanned (recursively, .h files) for prototypes when
- * resolving __auto_type initializers. Call before zir_c_lower. */
-void zir_c_plan9_add_include_dir(const char *dir);
+ * resolving __auto_type initializers. Call before c_lower. */
+void c_plan9_add_include_dir(const char *dir);
 
 /* Enable --plan9 output post-processing (off by default; the default
  * output is unchanged). */
-void zir_c_plan9_set_enabled(int enabled);
-int zir_c_plan9_enabled(void);
+void c_plan9_set_enabled(int enabled);
+int c_plan9_enabled(void);
 
 /* Rewrite one generated C source for 8c. Returns a malloc'd buffer; the
  * caller frees. Returns NULL on out-of-memory (caller keeps original). */
-char *zir_c_plan9_rewrite(const char *text);
+char *c_plan9_rewrite(const char *text);
 
 /* Rewrite a generated file in place when the plan9 pass is enabled.
  * Returns 0 on success. */
-int zir_c_plan9_rewrite_file(const char *path);
+int c_plan9_rewrite_file(const char *path);
 
 /* Number of __auto_type declarations left unresolved by the last
- * zir_c_plan9_rewrite call (reported once per run by main). */
-int zir_c_plan9_unresolved(void);
+ * c_plan9_rewrite call (reported once per run by main). */
+int c_plan9_unresolved(void);
 
 #endif

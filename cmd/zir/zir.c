@@ -6,7 +6,7 @@
 #include <string.h>
 
 int
-ZirTypeNextField(const ZirType *record, size_t *offset, ZirTypeField *field)
+TypeNextField(const ZirType *record, size_t *offset, ZirTypeField *field)
 {
     size_t length = strlen(record->body);
 
@@ -58,7 +58,7 @@ ZirTypeNextField(const ZirType *record, size_t *offset, ZirTypeField *field)
 }
 
 int
-ZirSliceElementType(const char *type, char *element, size_t element_size)
+SliceElementType(const char *type, char *element, size_t element_size)
 {
     if(type == NULL || type[0] != '[' || type[1] != ']')
         return 0;
@@ -80,7 +80,7 @@ ZirSliceElementType(const char *type, char *element, size_t element_size)
 }
 
 int
-ZirArrayElementType(const char *type, char *element, size_t element_size,
+ArrayElementType(const char *type, char *element, size_t element_size,
                     int *capacity)
 {
     const char *cursor;
@@ -155,7 +155,7 @@ enum_has_member(const ZirType *type, const char *name)
 }
 
 int
-ZirResolveEnumMember(const ZirModule *module, const char *name,
+ResolveEnumMember(const ZirModule *module, const char *name,
                      const ZirModule **owner, const ZirType **type)
 {
     *owner = NULL;
@@ -197,7 +197,7 @@ ZirResolveEnumMember(const ZirModule *module, const char *name,
 }
 
 int
-ZirResolveFunction(const ZirModule *module, const char *name,
+ResolveFunction(const ZirModule *module, const char *name,
                    const ZirModule **owner, const ZirFunction **function)
 {
     *owner = NULL;
@@ -230,14 +230,14 @@ ZirResolveFunction(const ZirModule *module, const char *name,
 }
 
 const ZirType *
-ZirFindRuntimeEnumMember(const char *name)
+FindRuntimeEnumMember(const char *name)
 {
     (void)name;
     return NULL;
 }
 
 const ZirType *
-ZirFindRuntimeType(const char *name, const ZirModule **owner)
+FindRuntimeType(const char *name, const ZirModule **owner)
 {
     if(owner != NULL)
         *owner = NULL;
@@ -246,7 +246,7 @@ ZirFindRuntimeType(const char *name, const ZirModule **owner)
 }
 
 const ZirType *
-ZirFindType(const ZirModule *module, const char *name, const ZirModule **owner)
+FindType(const ZirModule *module, const char *name, const ZirModule **owner)
 {
     const ZirType *found = NULL;
     const ZirModule *scope = NULL;
@@ -277,14 +277,14 @@ ZirFindType(const ZirModule *module, const char *name, const ZirModule **owner)
         }
     }
     if(found == NULL)
-        return ZirFindRuntimeType(name, owner);
+        return FindRuntimeType(name, owner);
     if(owner)
         *owner = scope;
     return found;
 }
 
 static void *
-zir_realloc_array(void *ptr, int *cap, int count, size_t elem_size)
+realloc_array(void *ptr, int *cap, int count, size_t elem_size)
 {
     void *next;
     int ncap;
@@ -302,7 +302,7 @@ zir_realloc_array(void *ptr, int *cap, int count, size_t elem_size)
 }
 
 void
-zir_copy(char *dst, size_t dst_size, const char *src)
+copy_text(char *dst, size_t dst_size, const char *src)
 {
     if(dst_size == 0)
         return;
@@ -312,13 +312,13 @@ zir_copy(char *dst, size_t dst_size, const char *src)
 }
 
 ZirProgram *
-ZirProgramNew(void)
+ProgramNew(void)
 {
     return calloc(1, sizeof(ZirProgram));
 }
 
 void
-ZirProgramFree(ZirProgram *program)
+ProgramFree(ZirProgram *program)
 {
     int i;
 
@@ -346,18 +346,18 @@ ZirProgramFree(ZirProgram *program)
 }
 
 ZirSourceSpan
-ZirSpan(const char *path, int line, int column)
+Span(const char *path, int line, int column)
 {
-    return ZirSpanEnd(path, line, column, line, column);
+    return SpanEnd(path, line, column, line, column);
 }
 
 ZirSourceSpan
-ZirSpanEnd(const char *path, int line, int column, int end_line, int end_column)
+SpanEnd(const char *path, int line, int column, int end_line, int end_column)
 {
     ZirSourceSpan span;
 
     memset(&span, 0, sizeof(span));
-    zir_copy(span.path, sizeof(span.path), path);
+    copy_text(span.path, sizeof(span.path), path);
     span.line = line;
     span.column = column;
     span.end_line = end_line;
@@ -366,7 +366,7 @@ ZirSpanEnd(const char *path, int line, int column, int end_line, int end_column)
 }
 
 ZirModule *
-ZirProgramAddModule(ZirProgram *program, const char *name,
+ProgramAddModule(ZirProgram *program, const char *name,
                     const char *source_path, ZirSourceSpan span)
 {
     ZirModule *modules;
@@ -374,21 +374,21 @@ ZirProgramAddModule(ZirProgram *program, const char *name,
 
     if(program == NULL)
         return NULL;
-    modules = zir_realloc_array(program->modules, &program->module_cap,
+    modules = realloc_array(program->modules, &program->module_cap,
                                 program->module_count, sizeof(ZirModule));
     if(modules == NULL)
         return NULL;
     program->modules = modules;
     m = &program->modules[program->module_count++];
     memset(m, 0, sizeof(*m));
-    zir_copy(m->name, sizeof(m->name), name);
-    zir_copy(m->source_path, sizeof(m->source_path), source_path);
+    copy_text(m->name, sizeof(m->name), name);
+    copy_text(m->source_path, sizeof(m->source_path), source_path);
     m->span = span;
     return m;
 }
 
 ZirStateField *
-ZirModuleAddStateField(ZirModule *module, const char *name, const char *type,
+ModuleAddStateField(ZirModule *module, const char *name, const char *type,
                        const char *init, ZirSourceSpan span)
 {
     ZirStateField *fields;
@@ -396,22 +396,22 @@ ZirModuleAddStateField(ZirModule *module, const char *name, const char *type,
 
     if(module == NULL)
         return NULL;
-    fields = zir_realloc_array(module->state_fields, &module->state_cap,
+    fields = realloc_array(module->state_fields, &module->state_cap,
                                module->state_count, sizeof(ZirStateField));
     if(fields == NULL)
         return NULL;
     module->state_fields = fields;
     f = &module->state_fields[module->state_count++];
     memset(f, 0, sizeof(*f));
-    zir_copy(f->name, sizeof(f->name), name);
-    zir_copy(f->type, sizeof(f->type), type);
-    zir_copy(f->init, sizeof(f->init), init);
+    copy_text(f->name, sizeof(f->name), name);
+    copy_text(f->type, sizeof(f->type), type);
+    copy_text(f->init, sizeof(f->init), init);
     f->span = span;
     return f;
 }
 
 ZirImport *
-ZirModuleAddImport(ZirModule *module, ZirImportKind kind, const char *name,
+ModuleAddImport(ZirModule *module, ZirImportKind kind, const char *name,
                    const char *target, const char *signature, int required,
                    ZirSourceSpan span)
 {
@@ -420,7 +420,7 @@ ZirModuleAddImport(ZirModule *module, ZirImportKind kind, const char *name,
 
     if(module == NULL)
         return NULL;
-    imports = zir_realloc_array(module->imports, &module->import_cap,
+    imports = realloc_array(module->imports, &module->import_cap,
                                 module->import_count, sizeof(ZirImport));
     if(imports == NULL)
         return NULL;
@@ -428,16 +428,16 @@ ZirModuleAddImport(ZirModule *module, ZirImportKind kind, const char *name,
     imp = &module->imports[module->import_count++];
     memset(imp, 0, sizeof(*imp));
     imp->kind = kind;
-    zir_copy(imp->name, sizeof(imp->name), name);
-    zir_copy(imp->target, sizeof(imp->target), target);
-    zir_copy(imp->signature, sizeof(imp->signature), signature);
+    copy_text(imp->name, sizeof(imp->name), name);
+    copy_text(imp->target, sizeof(imp->target), target);
+    copy_text(imp->signature, sizeof(imp->signature), signature);
     imp->required = required;
     imp->span = span;
     return imp;
 }
 
 ZirFunction *
-ZirModuleAddFunction(ZirModule *module, const char *name, const char *args,
+ModuleAddFunction(ZirModule *module, const char *name, const char *args,
                      const char *return_type, int exported, ZirSourceSpan span)
 {
     ZirFunction *functions;
@@ -445,56 +445,56 @@ ZirModuleAddFunction(ZirModule *module, const char *name, const char *args,
 
     if(module == NULL)
         return NULL;
-    functions = zir_realloc_array(module->functions, &module->function_cap,
+    functions = realloc_array(module->functions, &module->function_cap,
                                   module->function_count, sizeof(ZirFunction));
     if(functions == NULL)
         return NULL;
     module->functions = functions;
     fn = &module->functions[module->function_count++];
     memset(fn, 0, sizeof(*fn));
-    zir_copy(fn->name, sizeof(fn->name), name);
-    zir_copy(fn->args, sizeof(fn->args), args);
-    zir_copy(fn->return_type, sizeof(fn->return_type), return_type);
+    copy_text(fn->name, sizeof(fn->name), name);
+    copy_text(fn->args, sizeof(fn->args), args);
+    copy_text(fn->return_type, sizeof(fn->return_type), return_type);
     fn->exported = exported;
     fn->span = span;
     return fn;
 }
 
 void
-ZirModuleAddGlobal(ZirModule *module, const char *name, const char *type,
+ModuleAddGlobal(ZirModule *module, const char *name, const char *type,
                    const char *init, ZirSourceSpan span)
 {
     ZirGlobal *globals;
 
     if(module == NULL)
         return;
-    globals = zir_realloc_array(module->globals, &module->global_cap,
+    globals = realloc_array(module->globals, &module->global_cap,
                                 module->global_count, sizeof(ZirGlobal));
     if(globals == NULL)
         return;
     module->globals = globals;
     memset(&module->globals[module->global_count], 0, sizeof(ZirGlobal));
-    zir_copy(module->globals[module->global_count].name,
+    copy_text(module->globals[module->global_count].name,
              sizeof(module->globals[0].name), name);
-    zir_copy(module->globals[module->global_count].type,
+    copy_text(module->globals[module->global_count].type,
              sizeof(module->globals[0].type), type);
-    zir_copy(module->globals[module->global_count].init,
+    copy_text(module->globals[module->global_count].init,
              sizeof(module->globals[0].init), init);
     module->globals[module->global_count].span = span;
     module->global_count++;
 }
 
 void
-ZirModuleAddStatic(ZirModule *module, const char *name, const char *type,
+ModuleAddStatic(ZirModule *module, const char *name, const char *type,
                    const char *init, ZirSourceSpan span)
 {
-    ZirModuleAddGlobal(module, name, type, init, span);
+    ModuleAddGlobal(module, name, type, init, span);
     if(module != NULL && module->global_count > 0)
         module->globals[module->global_count - 1].is_static = 1;
 }
 
 ZirDefine *
-ZirModuleAddDefine(ZirModule *module, const char *name, const char *value,
+ModuleAddDefine(ZirModule *module, const char *name, const char *value,
                    ZirSourceSpan span)
 {
     ZirDefine *defines;
@@ -502,21 +502,21 @@ ZirModuleAddDefine(ZirModule *module, const char *name, const char *value,
 
     if(module == NULL)
         return NULL;
-    defines = zir_realloc_array(module->defines, &module->define_cap,
+    defines = realloc_array(module->defines, &module->define_cap,
                                 module->define_count, sizeof(ZirDefine));
     if(defines == NULL)
         return NULL;
     module->defines = defines;
     d = &module->defines[module->define_count++];
     memset(d, 0, sizeof(*d));
-    zir_copy(d->name, sizeof(d->name), name);
-    zir_copy(d->value, sizeof(d->value), value);
+    copy_text(d->name, sizeof(d->name), name);
+    copy_text(d->value, sizeof(d->value), value);
     d->span = span;
     return d;
 }
 
 ZirAssert *
-ZirModuleAddAssert(ZirModule *module, const char *condition,
+ModuleAddAssert(ZirModule *module, const char *condition,
                    const char *message, ZirSourceSpan span)
 {
     ZirAssert *asserts;
@@ -524,40 +524,40 @@ ZirModuleAddAssert(ZirModule *module, const char *condition,
 
     if(module == NULL)
         return NULL;
-    asserts = zir_realloc_array(module->asserts, &module->assert_cap,
+    asserts = realloc_array(module->asserts, &module->assert_cap,
                                 module->assert_count, sizeof(ZirAssert));
     if(asserts == NULL)
         return NULL;
     module->asserts = asserts;
     a = &module->asserts[module->assert_count++];
     memset(a, 0, sizeof(*a));
-    zir_copy(a->condition, sizeof(a->condition), condition);
-    zir_copy(a->message, sizeof(a->message), message);
+    copy_text(a->condition, sizeof(a->condition), condition);
+    copy_text(a->message, sizeof(a->message), message);
     a->span = span;
     return a;
 }
 
 ZirType *
-ZirModuleAddType(ZirModule *module, const char *name, ZirSourceSpan span)
+ModuleAddType(ZirModule *module, const char *name, ZirSourceSpan span)
 {
     ZirType *types;
 
     if(module == NULL)
         return NULL;
-    types = zir_realloc_array(module->types, &module->type_cap,
+    types = realloc_array(module->types, &module->type_cap,
                               module->type_count, sizeof(ZirType));
     if(types == NULL)
         return NULL;
     module->types = types;
     memset(&module->types[module->type_count], 0, sizeof(ZirType));
-    zir_copy(module->types[module->type_count].name,
+    copy_text(module->types[module->type_count].name,
              sizeof(module->types[0].name), name);
     module->types[module->type_count].span = span;
     return &module->types[module->type_count++];
 }
 
 ZirStmt *
-ZirFunctionAddStmt(ZirFunction *fn, ZirStmtKind kind, const char *text,
+FunctionAddStmt(ZirFunction *fn, ZirStmtKind kind, const char *text,
                    const char *callee, ZirSourceSpan span)
 {
     ZirStmt *stmts;
@@ -565,7 +565,7 @@ ZirFunctionAddStmt(ZirFunction *fn, ZirStmtKind kind, const char *text,
 
     if(fn == NULL)
         return NULL;
-    stmts = zir_realloc_array(fn->stmts, &fn->stmt_cap, fn->stmt_count,
+    stmts = realloc_array(fn->stmts, &fn->stmt_cap, fn->stmt_count,
                               sizeof(ZirStmt));
     if(stmts == NULL)
         return NULL;
@@ -573,8 +573,8 @@ ZirFunctionAddStmt(ZirFunction *fn, ZirStmtKind kind, const char *text,
     st = &fn->stmts[fn->stmt_count++];
     memset(st, 0, sizeof(*st));
     st->kind = kind;
-    zir_copy(st->text, sizeof(st->text), text);
-    zir_copy(st->callee, sizeof(st->callee), callee);
+    copy_text(st->text, sizeof(st->text), text);
+    copy_text(st->callee, sizeof(st->callee), callee);
     st->expr_root = -1;
     st->lhs_root = -1;
     st->span = span;
@@ -582,18 +582,18 @@ ZirFunctionAddStmt(ZirFunction *fn, ZirStmtKind kind, const char *text,
 }
 
 ZirStmt *
-ZirFunctionAddBlockCall(ZirFunction *fn, const char *callee, const char *args,
+FunctionAddBlockCall(ZirFunction *fn, const char *callee, const char *args,
                      const char *text, ZirSourceSpan span)
 {
-    ZirStmt *st = ZirFunctionAddStmt(fn, ZIR_STMT_BLOCK_CALL, text, callee, span);
+    ZirStmt *st = FunctionAddStmt(fn, ZIR_STMT_BLOCK_CALL, text, callee, span);
 
     if(st != NULL)
-        zir_copy(st->args, sizeof(st->args), args);
+        copy_text(st->args, sizeof(st->args), args);
     return st;
 }
 
 ZirExpr *
-ZirFunctionAddExpr(ZirFunction *fn, ZirExprKind kind, const char *text,
+FunctionAddExpr(ZirFunction *fn, ZirExprKind kind, const char *text,
                    ZirSourceSpan span)
 {
     ZirExpr *exprs;
@@ -601,7 +601,7 @@ ZirFunctionAddExpr(ZirFunction *fn, ZirExprKind kind, const char *text,
 
     if(fn == NULL)
         return NULL;
-    exprs = zir_realloc_array(fn->exprs, &fn->expr_cap, fn->expr_count,
+    exprs = realloc_array(fn->exprs, &fn->expr_cap, fn->expr_count,
                               sizeof(ZirExpr));
     if(exprs == NULL)
         return NULL;
@@ -614,13 +614,13 @@ ZirFunctionAddExpr(ZirFunction *fn, ZirExprKind kind, const char *text,
     expr->first_child = -1;
     expr->next_sibling = -1;
     expr->third = -1;
-    zir_copy(expr->text, sizeof(expr->text), text);
+    copy_text(expr->text, sizeof(expr->text), text);
     expr->span = span;
     return expr;
 }
 
 const char *
-ZirImportKindName(ZirImportKind kind)
+ImportKindName(ZirImportKind kind)
 {
     switch(kind) {
     case ZIR_IMPORT_HEADER: return "header";
@@ -634,7 +634,7 @@ ZirImportKindName(ZirImportKind kind)
 }
 
 const char *
-ZirExternKindName(ZirExternKind kind)
+ExternKindName(ZirExternKind kind)
 {
     switch(kind) {
     case ZIR_EXTERN_HOST: return "host";
@@ -645,7 +645,7 @@ ZirExternKindName(ZirExternKind kind)
 }
 
 const char *
-ZirExprKindName(ZirExprKind kind)
+ExprKindName(ZirExprKind kind)
 {
     switch(kind) {
     case ZIR_EXPR_IDENT: return "ident";
@@ -671,7 +671,7 @@ ZirExprKindName(ZirExprKind kind)
 }
 
 const char *
-ZirStmtKindName(ZirStmtKind kind)
+StmtKindName(ZirStmtKind kind)
 {
     switch(kind) {
     case ZIR_STMT_BLOCK_OPEN: return "block_open";
@@ -698,7 +698,7 @@ ZirStmtKindName(ZirStmtKind kind)
 }
 
 static void
-zir_dump_span(FILE *out, ZirSourceSpan span)
+dump_span(FILE *out, ZirSourceSpan span)
 {
     fprintf(out, "%s:%d:%d", span.path, span.line, span.column);
     if(span.end_line > 0 && span.end_column > 0 &&
@@ -707,7 +707,7 @@ zir_dump_span(FILE *out, ZirSourceSpan span)
 }
 
 static void
-zir_dump_expr(const ZirFunction *fn, int index, FILE *out, int indent)
+dump_expr(const ZirFunction *fn, int index, FILE *out, int indent)
 {
     const ZirExpr *expr;
 
@@ -717,23 +717,23 @@ zir_dump_expr(const ZirFunction *fn, int index, FILE *out, int indent)
     for(int i = 0; i < indent; i++)
         fputs("  ", out);
     fprintf(out, "expr %s text %s name %s op %s span ",
-            ZirExprKindName(expr->kind), expr->text, expr->name, expr->op);
-    zir_dump_span(out, expr->span);
+            ExprKindName(expr->kind), expr->text, expr->name, expr->op);
+    dump_span(out, expr->span);
     if(expr->type[0]) fprintf(out, " type %s", expr->type);
     fprintf(out, "\n");
     if(expr->left >= 0)
-        zir_dump_expr(fn, expr->left, out, indent + 1);
+        dump_expr(fn, expr->left, out, indent + 1);
     if(expr->right >= 0)
-        zir_dump_expr(fn, expr->right, out, indent + 1);
+        dump_expr(fn, expr->right, out, indent + 1);
     if(expr->third >= 0)
-        zir_dump_expr(fn, expr->third, out, indent + 1);
+        dump_expr(fn, expr->third, out, indent + 1);
     for(int child = expr->first_child; child >= 0 &&
          child < fn->expr_count; child = fn->exprs[child].next_sibling)
-        zir_dump_expr(fn, child, out, indent + 1);
+        dump_expr(fn, child, out, indent + 1);
 }
 
 void
-ZirProgramDump(const ZirProgram *program, FILE *out)
+ProgramDump(const ZirProgram *program, FILE *out)
 {
     int i;
 
@@ -747,20 +747,20 @@ ZirProgramDump(const ZirProgram *program, FILE *out)
         int j;
 
         fprintf(out, "module %s source %s span ", m->name, m->source_path);
-        zir_dump_span(out, m->span);
+        dump_span(out, m->span);
         fprintf(out, "\n");
         for(j = 0; j < m->import_count; j++) {
             const ZirImport *imp = &m->imports[j];
 
             fprintf(out, "  import %s %s target %s",
-                    ZirImportKindName(imp->kind), imp->name, imp->target);
+                    ImportKindName(imp->kind), imp->name, imp->target);
             if(imp->kind == ZIR_IMPORT_EXTERN)
                 fprintf(out, " extern_kind %s extern_symbol %s",
-                        ZirExternKindName(imp->extern_kind),
+                        ExternKindName(imp->extern_kind),
                         imp->extern_symbol);
             fprintf(out, " required %d signature %s span ",
                     imp->required, imp->signature);
-            zir_dump_span(out, imp->span);
+            dump_span(out, imp->span);
             fprintf(out, "\n");
         }
         for(j = 0; j < m->state_count; j++) {
@@ -768,7 +768,7 @@ ZirProgramDump(const ZirProgram *program, FILE *out)
 
             fprintf(out, "  state %s type %s init %s span ",
                     f->name, f->type, f->init);
-            zir_dump_span(out, f->span);
+            dump_span(out, f->span);
             fprintf(out, "\n");
         }
         for(j = 0; j < m->assert_count; j++) {
@@ -776,7 +776,7 @@ ZirProgramDump(const ZirProgram *program, FILE *out)
 
             fprintf(out, "  assert condition %s known %d value %d message %s span ",
                     a->condition, a->known, a->value, a->message);
-            zir_dump_span(out, a->span);
+            dump_span(out, a->span);
             fprintf(out, "\n");
         }
         for(j = 0; j < m->function_count; j++) {
@@ -785,20 +785,20 @@ ZirProgramDump(const ZirProgram *program, FILE *out)
 
             fprintf(out, "  function %s args %s return %s exported %d span ",
                     fn->name, fn->args, fn->return_type, fn->exported);
-            zir_dump_span(out, fn->span);
+            dump_span(out, fn->span);
             fprintf(out, "\n");
             for(k = 0; k < fn->stmt_count; k++) {
                 const ZirStmt *st = &fn->stmts[k];
 
                 fprintf(out, "    stmt %s callee %s args %s text %s span ",
-                        ZirStmtKindName(st->kind), st->callee, st->args,
+                        StmtKindName(st->kind), st->callee, st->args,
                         st->text);
-                zir_dump_span(out, st->span);
+                dump_span(out, st->span);
                 fprintf(out, "\n");
                 if(st->expr_root >= 0)
-                    zir_dump_expr(fn, st->expr_root, out, 3);
+                    dump_expr(fn, st->expr_root, out, 3);
                 if(st->lhs_root >= 0)
-                    zir_dump_expr(fn, st->lhs_root, out, 3);
+                    dump_expr(fn, st->lhs_root, out, 3);
             }
         }
     }

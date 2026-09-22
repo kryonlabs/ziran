@@ -28,7 +28,7 @@ write_program(const ZirProgram *program, const char *out_dir)
         length -= 3;
     if(snprintf(output, sizeof(output), "%s/%.*s.zir", out_dir,
                 (int)length, source) >= (int)sizeof(output)) {
-        ZirDiagnostic(program->modules[0].span, "zir.output",
+        Diagnostic(program->modules[0].span, "zir.output",
                       "IR output path is too long");
         return 0;
     }
@@ -41,19 +41,19 @@ write_program(const ZirProgram *program, const char *out_dir)
     }
     file = fopen(output, "wb");
     if(file == NULL) {
-        ZirDiagnostic(program->modules[0].span, "zir.output",
+        Diagnostic(program->modules[0].span, "zir.output",
                       "cannot open IR output: %s", output);
         return 0;
     }
-    if(!ZirProgramWriteZir(program, file)) {
-        ZirDiagnostic(program->modules[0].span, "zir.output",
+    if(!ProgramWriteZir(program, file)) {
+        Diagnostic(program->modules[0].span, "zir.output",
                       "cannot serialize checked IR: %s", output);
         fclose(file);
         remove(output);
         return 0;
     }
     if(fclose(file) != 0) {
-        ZirDiagnostic(program->modules[0].span, "zir.output",
+        Diagnostic(program->modules[0].span, "zir.output",
                       "cannot finish IR output: %s", output);
         remove(output);
         return 0;
@@ -74,7 +74,7 @@ main(int argc, char **argv)
 
     for(int i = 1; i < argc; i++) {
         if(strncmp(argv[i], "--diagnostics=", 14) == 0) {
-            if(!ZirSetDiagnosticFormat(argv[i] + 14)) {
+            if(!SetDiagnosticFormat(argv[i] + 14)) {
                 usage();
                 return 1;
             }
@@ -101,11 +101,11 @@ main(int argc, char **argv)
     if(programs == NULL)
         return 1;
     for(int i = 0; i < count; i++) {
-        programs[i] = zir_parse_file(argv[first_file + i], root);
+        programs[i] = parse_file(argv[first_file + i], root);
         if(programs[i] == NULL)
             goto done;
     }
-    if(!ZirCheckPrograms(programs, count, 1) || !ZirCheckLaws(programs, count))
+    if(!CheckPrograms(programs, count, 1) || !CheckLaws(programs, count))
         goto done;
     if(!check_only) {
         for(int i = 0; i < count; i++) {
@@ -117,7 +117,7 @@ main(int argc, char **argv)
     result = 0;
 done:
     for(int i = 0; i < count; i++)
-        ZirProgramFree(programs[i]);
+        ProgramFree(programs[i]);
     free(programs);
     return result;
 }

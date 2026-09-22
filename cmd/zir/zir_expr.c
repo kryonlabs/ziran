@@ -21,7 +21,7 @@ typedef struct ExprParser {
 static void
 next(ExprParser *p)
 {
-    p->token = ZirLexerNext(&p->lexer);
+    p->token = LexerNext(&p->lexer);
     if(p->token.truncated)
         p->failed = 1;   /* a cut token cannot round-trip to source text */
     p->begin = p->lexer.pos - strlen(p->token.text);
@@ -58,12 +58,12 @@ node(ExprParser *p, ZirExprKind kind, size_t start, const char *name,
     if(n >= sizeof(text)) { p->failed = 1; return -1; }
     memcpy(text, p->source + start, n);
     text[n] = 0;
-    zir_trim_in_place(text);
+    trim_in_place(text);
     span.column += (int)start;
-    e = ZirFunctionAddExpr(p->fn, kind, text, span);
+    e = FunctionAddExpr(p->fn, kind, text, span);
     if(!e) { p->failed = 1; return -1; }
-    zir_copy(e->name, sizeof(e->name), name);
-    zir_copy(e->op, sizeof(e->op), op);
+    copy_text(e->name, sizeof(e->name), name);
+    copy_text(e->op, sizeof(e->op), op);
     e->left = left;
     e->right = right;
     return p->fn->expr_count - 1;
@@ -80,7 +80,7 @@ type_name(const ExprParser *p, const char *s)
         "i64", "u8", "u16", "u32", "u64", "isize", "usize", "f32", "f64", "string", NULL
     };
     for(int i = 0; names[i]; i++) if(!strcmp(s, names[i])) return 1;
-    return p->module != NULL && ZirFindType(p->module, s, NULL) != NULL;
+    return p->module != NULL && FindType(p->module, s, NULL) != NULL;
 }
 
 static int expression(ExprParser *p, int minimum);
@@ -91,7 +91,7 @@ record_initializer(ExprParser *p, size_t start, const char *type)
     int first = -1;
     int last = -1;
     int ordinal = 0;
-    const ZirType *record = p->module ? ZirFindType(p->module, type, NULL) : NULL;
+    const ZirType *record = p->module ? FindType(p->module, type, NULL) : NULL;
     expect(p, "{");
     while(!p->failed && !is(p, "}") && p->token.kind != ZIR_TOKEN_EOF) {
         size_t field_start = p->begin;
@@ -102,7 +102,7 @@ record_initializer(ExprParser *p, size_t start, const char *type)
                 p->failed = 1;
                 break;
             }
-            zir_copy(name, sizeof(name), p->token.text);
+            copy_text(name, sizeof(name), p->token.text);
             next(p);
             expect(p, "=");
         }
@@ -112,10 +112,10 @@ record_initializer(ExprParser *p, size_t start, const char *type)
             size_t offset = 0;
             int position = 0;
             char field_type[ZIR_NAME_MAX] = "";
-            ZirArrayElementType(type, field_type, sizeof(field_type), NULL);
-            while(record != NULL && ZirTypeNextField(record, &offset, &field) == 1) {
+            ArrayElementType(type, field_type, sizeof(field_type), NULL);
+            while(record != NULL && TypeNextField(record, &offset, &field) == 1) {
                 if(named ? !strcmp(field.name, name) : position == ordinal) {
-                    zir_copy(field_type, sizeof(field_type), field.type);
+                    copy_text(field_type, sizeof(field_type), field.type);
                     break;
                 }
                 position++;
@@ -195,11 +195,11 @@ prefix(ExprParser *p)
             length = p->begin - ts;
             if(length >= sizeof(type)) { p->failed = 1; length = 0; }
             memcpy(type, p->source + ts, length); type[length] = 0;
-            zir_trim_in_place(type);
+            trim_in_place(type);
             expect(p, ")");
-            const ZirType *record = p->module ? ZirFindType(p->module, type, NULL) : NULL;
+            const ZirType *record = p->module ? FindType(p->module, type, NULL) : NULL;
             if(is(p, "{") && ((record != NULL && !record->is_enum) ||
-                               ZirArrayElementType(type, NULL, 0, NULL))) {
+                               ArrayElementType(type, NULL, 0, NULL))) {
                 result = record_initializer(p, start, type);
             } else if(is(p, "{")) {
                 /* Foreign C aggregates retain their backend-owned syntax. */
@@ -261,7 +261,7 @@ prefix(ExprParser *p)
             char name[ZIR_NAME_MAX];
             next(p);
             if(p->token.kind != ZIR_TOKEN_IDENT) p->failed = 1;
-            zir_copy(name, sizeof(name), p->token.text);
+            copy_text(name, sizeof(name), p->token.text);
             next(p);
             result = node(p, pointer ? ZIR_EXPR_POINTER_MEMBER : ZIR_EXPR_MEMBER,
                           start, name, pointer ? "->" : ".", result, -1);
@@ -270,7 +270,7 @@ prefix(ExprParser *p)
             char name[ZIR_NAME_MAX] = "";
             int callee = result;
             if(callee >= 0 && p->fn->exprs[callee].kind == ZIR_EXPR_IDENT)
-                zir_copy(name, sizeof(name), p->fn->exprs[callee].name);
+                copy_text(name, sizeof(name), p->fn->exprs[callee].name);
             if(!is(p, ")")) do {
                 int child = expression(p, 1);
                 if(child < 0) { p->failed = 1; break; }
@@ -282,7 +282,7 @@ prefix(ExprParser *p)
             result = node(p, ZIR_EXPR_CALL, start, name, "", name[0] ? -1 : callee, -1);
             if(result >= 0) p->fn->exprs[result].first_child = first;
         } else if(is(p, "++") || is(p, "--")) {
-            char op[8]; zir_copy(op, sizeof(op), p->token.text); next(p);
+            char op[8]; copy_text(op, sizeof(op), p->token.text); next(p);
             result = node(p, ZIR_EXPR_POSTFIX, start, "", op, result, -1);
         } else break;
     }
@@ -316,7 +316,7 @@ expression(ExprParser *p, int minimum)
     while(!p->failed && (prec = precedence(p->token.text)) >= minimum) {
         char op[8];
         int right;
-        zir_copy(op, sizeof(op), p->token.text);
+        copy_text(op, sizeof(op), p->token.text);
         next(p);
         right = expression(p, !strcmp(op, "?") ? 1 : prec + 1);
         if(!strcmp(op, "?")) {
@@ -332,51 +332,51 @@ expression(ExprParser *p, int minimum)
 }
 
 int
-ZirParseExpr(ZirFunction *fn, const ZirModule *module, const char *text, ZirSourceSpan span)
+ParseExpr(ZirFunction *fn, const ZirModule *module, const char *text, ZirSourceSpan span)
 {
     ExprParser p = {0};
     int initial = fn->expr_count, result;
-    if(!*zir_skip_ws(text)) return -1;
+    if(!*skip_ws(text)) return -1;
     p.fn = fn; p.module = module; p.span = span; p.source = text;
-    ZirLexerInit(&p.lexer, text, span.path);
+    LexerInit(&p.lexer, text, span.path);
     next(&p);
     result = expression(&p, 1);
     take(&p, ";");
     if(p.failed || p.token.kind != ZIR_TOKEN_EOF || result < 0) {
         fn->expr_count = initial;
-        if(!ZirFunctionAddExpr(fn, ZIR_EXPR_UNKNOWN, text, span)) return -1;
+        if(!FunctionAddExpr(fn, ZIR_EXPR_UNKNOWN, text, span)) return -1;
         return fn->expr_count - 1;
     }
     return result;
 }
 
 void
-ZirStructureFunction(ZirFunction *fn, const ZirModule *module)
+StructureFunction(ZirFunction *fn, const ZirModule *module)
 {
     free(fn->exprs); fn->exprs = NULL; fn->expr_count = fn->expr_cap = 0;
     for(int i = 0; i < fn->stmt_count; i++) {
         ZirStmt *st = &fn->stmts[i];
         char text[ZIR_TEXT_MAX];
         char *value = NULL;
-        zir_copy(text, sizeof(text), st->text);
+        copy_text(text, sizeof(text), st->text);
         st->expr_root = st->lhs_root = -1;
         st->is_instance = 0;
         if(st->kind == ZIR_STMT_DECL) {
             char *colon = strchr(text, ':');
             if(colon) {
-                *colon++ = 0; zir_trim_in_place(text);
-                zir_copy(st->name, sizeof(st->name), text);
+                *colon++ = 0; trim_in_place(text);
+                copy_text(st->name, sizeof(st->name), text);
                 char *annotation = strstr(colon, "#instance");
                 char *assignment = strchr(colon, '=');
                 if(annotation != NULL && (assignment == NULL || annotation < assignment)) {
                     char *key = annotation + strlen("#instance");
                     char *end = strrchr(key, ')');
-                    const char *tail = end != NULL ? zir_skip_ws(end + 1) : "";
+                    const char *tail = end != NULL ? skip_ws(end + 1) : "";
                     if(*tail == ';')
-                        tail = zir_skip_ws(tail + 1);
-                    key = (char *)zir_skip_ws(key);
+                        tail = skip_ws(tail + 1);
+                    key = (char *)skip_ws(key);
                     if(*key != '(' || end == NULL || *tail != '\0') {
-                        ZirDiagnostic(st->span, "parse.instance", "expected #instance(key) after a record type");
+                        Diagnostic(st->span, "parse.instance", "expected #instance(key) after a record type");
                         exit(1);
                     }
                     *annotation = '\0';
@@ -387,23 +387,23 @@ ZirStructureFunction(ZirFunction *fn, const ZirModule *module)
                     value = assignment;
                     if(value) *value++ = 0;
                 }
-                zir_trim_in_place(colon);
-                zir_copy(st->type, sizeof(st->type), colon);
+                trim_in_place(colon);
+                copy_text(st->type, sizeof(st->type), colon);
             }
         } else if(st->kind == ZIR_STMT_ASSIGN) {
             ZirLexer lexer; ZirToken tok;
-            ZirLexerInit(&lexer, text, st->span.path);
+            LexerInit(&lexer, text, st->span.path);
             do {
-                tok = ZirLexerNext(&lexer);
+                tok = LexerNext(&lexer);
                 if(!strcmp(tok.text, "=") || !strcmp(tok.text, "+=") ||
                    !strcmp(tok.text, "-=") || !strcmp(tok.text, "*=") ||
                    !strcmp(tok.text, "/=") || !strcmp(tok.text, "%=") ||
                    !strcmp(tok.text, "&=") || !strcmp(tok.text, "|=") ||
                    !strcmp(tok.text, "^=") || !strcmp(tok.text, "<<=") || !strcmp(tok.text, ">>=")) {
                     value = text + lexer.pos;
-                    zir_copy(st->assignment_op, sizeof(st->assignment_op), tok.text);
+                    copy_text(st->assignment_op, sizeof(st->assignment_op), tok.text);
                     text[lexer.pos - strlen(tok.text)] = 0;
-                    st->lhs_root = ZirParseExpr(fn, module, text, st->span);
+                    st->lhs_root = ParseExpr(fn, module, text, st->span);
                     break;
                 }
             } while(tok.kind != ZIR_TOKEN_EOF);
@@ -411,23 +411,23 @@ ZirStructureFunction(ZirFunction *fn, const ZirModule *module)
         else if(st->kind == ZIR_STMT_UNUSED) value = text + 6;
         else if(st->kind == ZIR_STMT_EXPR || st->kind == ZIR_STMT_BLOCK_CALL) value = text;
         else if(st->kind == ZIR_STMT_WHILE || st->kind == ZIR_STMT_IF || st->kind == ZIR_STMT_SWITCH) {
-            zir_strip_block_brace(text);
+            strip_block_brace(text);
             value = text;
-            if(!strncmp(value, "else", 4)) value = (char *)zir_skip_ws(value + 4);
+            if(!strncmp(value, "else", 4)) value = (char *)skip_ws(value + 4);
             while(*value && !isspace((unsigned char)*value) && *value != '(') value++;
         }
-        if(value && strcmp(zir_skip_ws(value), ";")) {
+        if(value && strcmp(skip_ws(value), ";")) {
             if(st->kind == ZIR_STMT_DECL && st->type[0] == '[' &&
-               *zir_skip_ws(value) == '{') {
+               *skip_ws(value) == '{') {
                 char initializer[ZIR_TEXT_MAX];
                 int length = snprintf(initializer, sizeof(initializer), "(%s)%s", st->type, value);
                 if(length < 0 || (size_t)length >= sizeof(initializer)) {
-                    ZirDiagnostic(st->span, "parse.array", "array initializer exceeds expression limit");
+                    Diagnostic(st->span, "parse.array", "array initializer exceeds expression limit");
                     exit(1);
                 }
-                st->expr_root = ZirParseExpr(fn, module, initializer, st->span);
+                st->expr_root = ParseExpr(fn, module, initializer, st->span);
             } else {
-                st->expr_root = ZirParseExpr(fn, module, value, st->span);
+                st->expr_root = ParseExpr(fn, module, value, st->span);
             }
         }
     }

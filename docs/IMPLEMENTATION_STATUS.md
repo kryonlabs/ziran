@@ -7,7 +7,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 
 - The compiler frontend and C/C++/Go backends have been extracted into a separate
   Ziran repository. `build/bin/ziran` exposes `check`, `ir`, and
-  `build --target=c|cpp|go` for `.zi` input.
+  `build --target=c|cpp|go` for `.zi` or saved `.zir` input.
 - `make check` passes standalone non-UI programs, a two-module import, and an
   imported typed record block call named `Button` through generated C, C++,
   and native Go. Source and saved `.zir` builds execute for the tested subset.
@@ -17,6 +17,16 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.zi`; their imports are relinked from serialized module identities. The
   reader rejects malformed headers, versions, truncated data, and invalid
   structural references. Deterministic output is checked on a sample.
+- `ziran bundle --root DIR --entry module:function -o FILE` builds an
+  experimental version 1 `.zib` from source or saved IR. `ziran run FILE`
+  loads and executes the validated scalar subset without a display or Kryon.
+  The test runs an imported two-module call and compares bundle bytes from
+  source and saved IR. The current runner supports zero-argument entry
+  functions, `i32`/`int`/`bool`/`void` functions, scalar parameters and locals,
+  calls, arithmetic, comparisons, assignments, and returns. It rejects host
+  imports and unsupported statements before writing a bundle.
+- Extracted compiler function names no longer carry `Zir` or `zir_` prefixes;
+  IR types retain `Zir` names for now.
 - `#ui`, `#style`, and old app/route forms are rejected. The embedded Kryon
   runtime declarations and copied `src/kry_std` implementation have been
   removed. JSON diagnostics no longer require Kryon code.
@@ -36,9 +46,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   its current model, and make every other supported backend consume
   the same saved IR. Mixed `.zi`/`.zir` builds currently rerun the source
   checker across all modules.
-- Implement the general `.zib` linker, verifier, loader, runtime, and explicit
-  host capability contract. No generic portable output is available today.
-  Kryon's old `.krb` compiler remains in Kryon.
+- Extend the `.zib` linker and verifier beyond the scalar subset: full
+  control flow, records, strings, arrays, slots, state, and all checked
+  expressions. Add a real host capability contract and equivalent behavior
+  for all supported language features. The current bundle embeds checked
+  `.zir` and contains every supplied module; it does not prune unreachable
+  code. Kryon's old `.krb` compiler remains in Kryon.
 - Complete native C++, C, and Go backend parity, FFI, capability checks, and
   language law tests independent of UI assumptions. The current `make check`
   only covers the stated C/C++/Go subset.

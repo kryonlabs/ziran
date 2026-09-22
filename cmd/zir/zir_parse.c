@@ -27,7 +27,7 @@ die(const char *fmt, ...)
     va_list ap;
 
     va_start(ap, fmt);
-    ZirDiagnosticV(ZirSpan("", 0, 0), "parse.fatal", fmt, ap);
+    DiagnosticV(Span("", 0, 0), "parse.fatal", fmt, ap);
     va_end(ap);
     exit(1);
 }
@@ -38,7 +38,7 @@ die_at(ZirSourceSpan span, const char *fmt, ...)
     va_list args;
 
     va_start(args, fmt);
-    ZirDiagnosticV(span, "parse.syntax", fmt, args);
+    DiagnosticV(span, "parse.syntax", fmt, args);
     va_end(args);
     exit(1);
 }
@@ -178,7 +178,7 @@ classify_extern_target(const char *target, char *symbol, size_t symbol_size,
         return ZIR_EXTERN_HOST;
     if(strncmp(target, "c.", 2) == 0) {
         if(!is_c_ident(target + 2))
-            die_at(ZirSpan(path, line_no, 1), "C extern target must be c.<symbol>");
+            die_at(Span(path, line_no, 1), "C extern target must be c.<symbol>");
         snprintf(symbol, symbol_size, "%s", target + 2);
         return ZIR_EXTERN_C;
     }
@@ -404,7 +404,7 @@ unwrap_outer_parentheses(const char *text, char *out, size_t out_size)
         return 0;
     memcpy(out, open + 1, (size_t)(close - open - 1));
     out[close - open - 1] = '\0';
-    zir_trim_in_place(out);
+    trim_in_place(out);
     return out[0] != '\0';
 }
 
@@ -547,8 +547,8 @@ parse_block_field_line(char *text, char *field, size_t field_size,
     if(eq == NULL || eq[1] == '=')
         return 0;
     *eq = '\0';
-    name = zir_trim(text);
-    expr = zir_trim(eq + 1);
+    name = trim(text);
+    expr = trim(eq + 1);
     if(name[0] == '\0' || expr[0] == '\0')
         return 0;
     for(const char *p = name; *p != '\0'; p++)
@@ -557,7 +557,7 @@ parse_block_field_line(char *text, char *field, size_t field_size,
     n = strlen(expr);
     if(n > 0 && expr[n - 1] == ';') {
         expr[n - 1] = '\0';
-        expr = zir_trim(expr);
+        expr = trim(expr);
     }
     snprintf(field, field_size, "%s", name);
     snprintf(value, value_size, "%s", expr);
@@ -586,7 +586,7 @@ block_call_open(ZirFunction *fn, BlockCall *block, ZirSourceSpan span, int closi
     if(!closing)
         die_at(span, "block content requires a declared slot parameter");
     source_span = block->span.path[0] != '\0' ? block->span : span;
-    statement = ZirFunctionAddBlockCall(fn, block->callee, block->props, "",
+    statement = FunctionAddBlockCall(fn, block->callee, block->props, "",
                                      source_span);
     if(statement == NULL)
         die("out of memory parsing block call");
@@ -601,10 +601,10 @@ block_call_close_span(const BlockCall *block, const char *path, int line_no,
 {
     ZirSourceSpan start = block != NULL && block->span.path[0] != '\0'
                             ? block->span
-                            : ZirSpan(path, line_no, 1);
+                            : Span(path, line_no, 1);
     int end_column = (int)strlen(line) + 1;
 
-    return ZirSpanEnd(start.path, start.line, start.column, line_no,
+    return SpanEnd(start.path, start.line, start.column, line_no,
                       end_column > 0 ? end_column : 1);
 }
 
@@ -717,16 +717,16 @@ parse_state_field(ZirModule *module, const char *path, int line_no, char *line)
     if(colon == NULL)
         return;
     *colon = '\0';
-    name = zir_trim(line);
-    type = zir_trim(colon + 1);
+    name = trim(line);
+    type = trim(colon + 1);
     init = "";
     eq = strchr(type, '=');
     if(eq != NULL) {
         *eq = '\0';
-        init = zir_trim(eq + 1);
+        init = trim(eq + 1);
     }
-    ZirModuleAddStateField(module, name, zir_trim(type), init,
-                           ZirSpan(path, line_no, 1));
+    ModuleAddStateField(module, name, trim(type), init,
+                           Span(path, line_no, 1));
 }
 
 static void
@@ -800,20 +800,20 @@ parse_import_line(ZirModule *module, const char *path, int line_no,
      * quotes and control bytes would let a crafted path escape the literal. */
     for(const char *p = target; *p != '\0'; p++)
         if(*p == '"' || *p == '>' || (unsigned char)*p < 0x20)
-            die_at(ZirSpan(path, line_no, 1), "#import target contains a character that cannot "
+            die_at(Span(path, line_no, 1), "#import target contains a character that cannot "
                 "appear in an include path");
     if(parse_symbol_before_colons(line, name, sizeof(name)))
         kind = ZIR_IMPORT_MODULE;
     else {
-        zir_copy(name, sizeof(name), target);
+        copy_text(name, sizeof(name), target);
         kind = ZIR_IMPORT_HEADER;
     }
     /* Signature records the bracket style so backends can keep angled
      * includes angled ("<") instead of quoted. required=0 marks '#private'
      * (include in the .c only, not the header). */
-    ZirModuleAddImport(module, kind, name, target, quoted ? "" : "<",
+    ModuleAddImport(module, kind, name, target, quoted ? "" : "<",
                        strstr(line, "#private") == NULL,
-                       ZirSpan(path, line_no, 1));
+                       Span(path, line_no, 1));
     return 1;
 }
 
@@ -832,7 +832,7 @@ parse_extern_line(ZirModule *module, const char *path, int line_no,
         return 0;
     if(!parse_symbol_before_colons(line, name, sizeof(name)))
         return 0;
-    const char *declaration = zir_skip_ws(strstr(line, "::") + 2);
+    const char *declaration = skip_ws(strstr(line, "::") + 2);
     if(starts_word(declaration, "struct") || starts_word(declaration, "enum"))
         return 0;
     target[0] = '\0';
@@ -859,7 +859,7 @@ parse_extern_line(ZirModule *module, const char *path, int line_no,
             snprintf(backend, sizeof(backend), "%s", b);
         }
         if(strcmp(backend, "web") != 0)
-            die_at(ZirSpan(path, line_no, 1), "unknown intrinsic backend '%s'",
+            die_at(Span(path, line_no, 1), "unknown intrinsic backend '%s'",
                 backend);
         if(arrow != NULL && arrow < intrinsic) {
             size_t n = 0;
@@ -873,11 +873,11 @@ parse_extern_line(ZirModule *module, const char *path, int line_no,
             ret[n] = '\0';
         }
         if(strcmp(ret, "int") != 0)
-            die_at(ZirSpan(path, line_no, 1), "web intrinsic '%s' must return int",
+            die_at(Span(path, line_no, 1), "web intrinsic '%s' must return int",
                 name);
         if(strcmp(name, "web_download_file") != 0 &&
             strcmp(name, "web_context_click_in_bounds") != 0)
-            die_at(ZirSpan(path, line_no, 1), "unknown web intrinsic '%s'", name);
+            die_at(Span(path, line_no, 1), "unknown web intrinsic '%s'", name);
     } else {
         const char *dir = strstr(line, "#extern");
 
@@ -888,11 +888,11 @@ parse_extern_line(ZirModule *module, const char *path, int line_no,
                       ? ZIR_EXTERN_NONE
                       : classify_extern_target(target, symbol, sizeof(symbol),
                                                path, line_no);
-    imp = ZirModuleAddImport(module,
+    imp = ModuleAddImport(module,
                              intrinsic != NULL ? ZIR_IMPORT_INTRINSIC
                                                : ZIR_IMPORT_EXTERN,
                              name, target[0] ? target : name, line, 1,
-                             ZirSpan(path, line_no, 1));
+                             Span(path, line_no, 1));
     if(imp != NULL) {
         char parsed_name[ZIR_NAME_MAX];
         imp->is_public = strstr(line, "#export") != NULL;
@@ -956,7 +956,7 @@ looks_like_function_header(const char *line)
     if(p == NULL)
         return 0;
     snprintf(tmp, sizeof(tmp), "%s", p + 2);
-    body = zir_trim(tmp);
+    body = trim(tmp);
     if(starts_word(body, "#import") || starts_word(body, "#defined") ||
        starts_word(body, "#define") || starts_word(body, "struct") ||
        starts_word(body, "enum"))
@@ -981,15 +981,15 @@ parse_slot_header(const char *text, char *binding, size_t binding_size,
     const char *equals = strchr(text, '=');
     const char *annotation = strstr(text, "#slot");
     if(equals == NULL || annotation == NULL || equals >= annotation ||
-       strcmp(zir_skip_ws(annotation + 5), "{") != 0 ||
-       *zir_skip_ws(equals + 1) != '(')
+       strcmp(skip_ws(annotation + 5), "{") != 0 ||
+       *skip_ws(equals + 1) != '(')
         return 0;
     size_t length = (size_t)(equals - text);
     if(length >= binding_size)
         return 0;
     memcpy(binding, text, length);
     binding[length] = '\0';
-    zir_trim_in_place(binding);
+    trim_in_place(binding);
     char header[ZIR_TEXT_MAX], name[ZIR_NAME_MAX], result[ZIR_NAME_MAX];
     int written = snprintf(header, sizeof(header), "slot_body :: %s", equals + 1);
     if(written < 0 || (size_t)written >= sizeof(header))
@@ -1055,12 +1055,12 @@ parse_cond_start(char *line, char **condition)
     } else {
         return 0;
     }
-    q = zir_trim(q);
+    q = trim(q);
     n = strlen(q);
     if(n == 0 || q[n - 1] != '{')
         return 0;
     q[n - 1] = '\0';
-    q = zir_trim(q);
+    q = trim(q);
     if(q[0] == '\0')
         return 0;
     *condition = q;
@@ -1475,28 +1475,28 @@ parse_compile_check(ZirModule *module, const char *path, int line_no,
 
     if(strncmp(line, "#assert", 7) == 0 &&
        (line[7] == '\0' || isspace((unsigned char)line[7]))) {
-        char *body = zir_trim(line + 7);
+        char *body = trim(line + 7);
         char *comma;
 
         if(body[0] == '\0')
-            die_at(ZirSpan(path, line_no, 1), "#assert needs a condition");
+            die_at(Span(path, line_no, 1), "#assert needs a condition");
         comma = find_top_comma(body);
         if(comma != NULL) {
             *comma = '\0';
-            snprintf(msg, sizeof(msg), "%s", zir_trim(comma + 1));
+            snprintf(msg, sizeof(msg), "%s", trim(comma + 1));
             if(msg[0] == '\0')
                 snprintf(msg, sizeof(msg), "\"Kry #assert failed\"");
         } else {
             snprintf(msg, sizeof(msg), "\"Kry #assert failed\"");
         }
-        expand_compile_expr(cond, sizeof(cond), consts, zir_trim(body));
+        expand_compile_expr(cond, sizeof(cond), consts, trim(body));
         {
             long value = 0;
             int known = eval_const_condition(cond, &value);
 
             if(guard[0] == '\0' && known && !value)
-                die_at(ZirSpan(path, line_no, 1), "#assert failed: %s", msg);
-            a = ZirModuleAddAssert(module, cond, msg, ZirSpan(path, line_no, 1));
+                die_at(Span(path, line_no, 1), "#assert failed: %s", msg);
+            a = ModuleAddAssert(module, cond, msg, Span(path, line_no, 1));
             if(a != NULL) {
                 a->known = known;
                 a->value = value != 0;
@@ -1507,11 +1507,11 @@ parse_compile_check(ZirModule *module, const char *path, int line_no,
     }
     if(strncmp(line, "#error", 6) == 0 &&
        (line[6] == '\0' || isspace((unsigned char)line[6]))) {
-        char *body = zir_trim(line + 6);
+        char *body = trim(line + 6);
 
         if(body[0] == '\0')
-            die_at(ZirSpan(path, line_no, 1), "#error needs a message");
-        a = ZirModuleAddAssert(module, "0", body, ZirSpan(path, line_no, 1));
+            die_at(Span(path, line_no, 1), "#error needs a message");
+        a = ModuleAddAssert(module, "0", body, Span(path, line_no, 1));
         if(a != NULL) {
             a->known = 1;
             a->value = 0;
@@ -1544,7 +1544,7 @@ static void
 format_else_if_guard(char *dst, size_t dst_size, const char *excluded,
                      const char *expanded)
 {
-    zir_copy(dst, dst_size, "!(");
+    copy_text(dst, dst_size, "!(");
     text_append(dst, dst_size, excluded);
     text_append(dst, dst_size, ") && (");
     text_append(dst, dst_size, expanded);
@@ -1554,7 +1554,7 @@ format_else_if_guard(char *dst, size_t dst_size, const char *excluded,
 static void
 format_else_guard(char *dst, size_t dst_size, const char *excluded)
 {
-    zir_copy(dst, dst_size, "!(");
+    copy_text(dst, dst_size, "!(");
     text_append(dst, dst_size, excluded);
     text_append(dst, dst_size, ")");
 }
@@ -1563,7 +1563,7 @@ static void
 format_excluded_guard(char *dst, size_t dst_size, const char *previous,
                       const char *expanded)
 {
-    zir_copy(dst, dst_size, "(");
+    copy_text(dst, dst_size, "(");
     text_append(dst, dst_size, previous);
     text_append(dst, dst_size, ") || (");
     text_append(dst, dst_size, expanded);
@@ -1574,7 +1574,7 @@ static void
 format_preprocessor_cond(char *dst, size_t dst_size, const char *directive,
                          const char *expanded)
 {
-    zir_copy(dst, dst_size, directive);
+    copy_text(dst, dst_size, directive);
     text_append(dst, dst_size, " ");
     text_append(dst, dst_size, expanded);
 }
@@ -1613,11 +1613,11 @@ cond_top_step(char *line, ZirCondFrame *frames, int *count, char *guard,
         char expanded[ZIR_TEXT_MAX];
 
         if(*count >= 8)
-            die_at(ZirSpan(path, line_no, 1), "too many nested #if blocks");
+            die_at(Span(path, line_no, 1), "too many nested #if blocks");
         expand_compile_expr(expanded, sizeof(expanded), consts, cnd);
         fr = &frames[(*count)++];
-        zir_copy(fr->cond, sizeof(fr->cond), expanded);
-        zir_copy(fr->excluded, sizeof(fr->excluded), expanded);
+        copy_text(fr->cond, sizeof(fr->cond), expanded);
+        copy_text(fr->excluded, sizeof(fr->excluded), expanded);
         fr->braces = 1;
         combine_active_guard(guard, guard_size, frames, *count);
         return 1;
@@ -1633,7 +1633,7 @@ cond_top_step(char *line, ZirCondFrame *frames, int *count, char *guard,
         format_else_if_guard(fr->cond, sizeof(fr->cond), fr->excluded,
                              expanded);
         format_excluded_guard(next, sizeof(next), fr->excluded, expanded);
-        zir_copy(fr->excluded, sizeof(fr->excluded), next);
+        copy_text(fr->excluded, sizeof(fr->excluded), next);
         fr->braces = 1;
         combine_active_guard(guard, guard_size, frames, *count);
         return 1;
@@ -1730,7 +1730,7 @@ read_source_line(char *line, size_t size, FILE *file, const char **source,
         if(fgets(line, (int)size, file) == NULL)
             return NULL;
         if(!feof(file) && strchr(line, '\n') == NULL)
-            die_at(ZirSpan(path, line_no + 1, 1), "source line exceeds %d characters", (int)size - 1);
+            die_at(Span(path, line_no + 1, 1), "source line exceeds %d characters", (int)size - 1);
         return line;
     }
     if(**source == '\0')
@@ -1743,7 +1743,7 @@ read_source_line(char *line, size_t size, FILE *file, const char **source,
             break;
     }
     if(**source != '\0' && length > 0 && line[length - 1] != '\n')
-        die_at(ZirSpan(path, line_no + 1, 1), "source line exceeds %d characters", (int)size - 1);
+        die_at(Span(path, line_no + 1, 1), "source line exceeds %d characters", (int)size - 1);
     line[length] = '\0';
     return line;
 }
@@ -1798,11 +1798,11 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
     memset(&consts, 0, sizeof(consts));
     cur_guard[0] = '\0';
     snprintf(rel, sizeof(rel), "%s", relative_path(root, path));
-    program = ZirProgramNew();
+    program = ProgramNew();
     if(program == NULL)
         die("out of memory");
 
-    module = ZirProgramAddModule(program, module_name, rel, ZirSpan(rel, 1, 1));
+    module = ProgramAddModule(program, module_name, rel, Span(rel, 1, 1));
     if(module == NULL)
         die("out of memory");
 
@@ -1815,7 +1815,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
          * queue drains. */
         from_queue = onelineq_count > 0;
         if(onelineq_count > 0) {
-            zir_copy(line, sizeof(line), onelineq[0]);
+            copy_text(line, sizeof(line), onelineq[0]);
             memmove(onelineq[0], onelineq[1],
                     sizeof(onelineq[0]) * (size_t)(onelineq_count - 1));
             onelineq_count--;
@@ -1828,7 +1828,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
         strip_block_comments(line, &in_block_comment);
         snprintf(raw, sizeof(raw), "%s", line);
         {
-            char *trimmed = zir_trim(raw);
+            char *trimmed = trim(raw);
             int trimmed_column = from_queue ? 1 :
                                  source_column_for_trimmed(raw, trimmed);
 
@@ -2029,7 +2029,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                         /* trim in place: the lookahead is appended verbatim,
                          * and a raw fgets line would carry its '\n' into the
                          * joined statement text. */
-                        lt = zir_trim(la);
+                        lt = trim(la);
                         if(lt[0] == '\0') {
                             line_no++;   /* blank lookaheads still count */
                             continue;
@@ -2124,13 +2124,13 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
             /* plain # comment at top level — never a header; real
              * directives (#module/#import/#if...) fall through below */
         } else if(mode == TOP && starts_word(t, "#inspect")) {
-            die_at(ZirSpan(rel, line_no, 1),
+            die_at(Span(rel, line_no, 1),
                    "#inspect is not a Ziran directive");
         } else if(mode == TOP && strncmp(t, "#module", 7) == 0) {
             if(parse_quoted(t, module_name, sizeof(module_name)))
                 snprintf(module->name, sizeof(module->name), "%s", module_name);
         } else if(mode == TOP && strncmp(t, "#style", 6) == 0) {
-            die_at(ZirSpan(rel, line_no, 1),
+            die_at(Span(rel, line_no, 1),
                    "#style is a Kryon concern; import a library instead");
         } else if(mode == TOP &&
                   (parse_import_line(module, rel, line_no, t) ||
@@ -2154,17 +2154,17 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
             }
         } else if(mode == TOP && starts_word(t, "route") &&
                   strchr(t, '{') != NULL) {
-            die_at(ZirSpan(rel, line_no, 1),
+            die_at(Span(rel, line_no, 1),
                    "route blocks are not Ziran declarations");
         } else if(mode == TOP && starts_word(t, "app") &&
                   strchr(t, '{') != NULL) {
-            die_at(ZirSpan(rel, line_no, 1),
+            die_at(Span(rel, line_no, 1),
                    "app blocks are not Ziran declarations");
         } else if(mode == TOP &&
                   (starts_word(t, "screen") || starts_word(t, "preview") ||
                    starts_word(t, "page") || starts_word(t, "frame") ||
                    starts_word(t, "fn"))) {
-            die_at(ZirSpan(rel, line_no, 1), "invalid top-level declaration");
+            die_at(Span(rel, line_no, 1), "invalid top-level declaration");
         } else if(mode == TOP && looks_like_function_header(t)) {
             char name[ZIR_NAME_MAX];
             char args[ZIR_TEXT_MAX];
@@ -2173,21 +2173,21 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
             int has_body = strchr(t, '{') != NULL;
 
             if(strstr(t, "#ui") != NULL)
-                die_at(ZirSpan(rel, line_no, 1),
+                die_at(Span(rel, line_no, 1),
                        "#ui is not a Ziran modifier; import Kryon functions instead");
 
             parse_function_header(name, sizeof(name), args, sizeof(args),
                                   ret, sizeof(ret), t);
             if(strstr(t, "#slot") != NULL) {
                 if(has_body || is_extern || strcmp(ret, "void") != 0)
-                    die_at(ZirSpan(rel, line_no, 1), "slot declarations require a bodyless void signature");
-                ZirType *slot = ZirModuleAddType(module, name, ZirSpan(rel, line_no, 1));
+                    die_at(Span(rel, line_no, 1), "slot declarations require a bodyless void signature");
+                ZirType *slot = ModuleAddType(module, name, Span(rel, line_no, 1));
                 slot->is_slot = 1;
-                zir_copy(slot->body, sizeof(slot->body), args);
-                zir_copy(slot->guard, sizeof(slot->guard), cur_guard);
+                copy_text(slot->body, sizeof(slot->body), args);
+                copy_text(slot->guard, sizeof(slot->guard), cur_guard);
             } else if(name[0] != '\0') {
-                fn = ZirModuleAddFunction(module, name, args, ret, 0,
-                                          ZirSpan(rel, line_no, 1));
+                fn = ModuleAddFunction(module, name, args, ret, 0,
+                                          Span(rel, line_no, 1));
                 snprintf(fn->guard, sizeof(fn->guard), "%s", cur_guard);
                 fn->is_extern = is_extern;
                 /* '#extern "pkg.Fn"' — keep the quoted host symbol so the
@@ -2257,11 +2257,11 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                 gtype[end - ty] = '\0';
             }
             if(eq != NULL)
-                ZirModuleAddStatic(module, gname, gtype, eq + 3,
-                                   ZirSpan(rel, line_no, 1));
+                ModuleAddStatic(module, gname, gtype, eq + 3,
+                                   Span(rel, line_no, 1));
             else
-                ZirModuleAddStatic(module, gname, gtype, "",
-                                   ZirSpan(rel, line_no, 1));
+                ModuleAddStatic(module, gname, gtype, "",
+                                   Span(rel, line_no, 1));
             if(module->global_count > 0)
                 snprintf(module->globals[module->global_count - 1].guard,
                          sizeof(module->globals[0].guard), "%s", cur_guard);
@@ -2306,11 +2306,11 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
             }
             ginit[nn] = '\0';
             if(strstr(t, "#private") != NULL)
-                ZirModuleAddStatic(module, gname, gtype, ginit,
-                                   ZirSpan(rel, line_no, 1));
+                ModuleAddStatic(module, gname, gtype, ginit,
+                                   Span(rel, line_no, 1));
             else
-                ZirModuleAddGlobal(module, gname, gtype, ginit,
-                                   ZirSpan(rel, line_no, 1));
+                ModuleAddGlobal(module, gname, gtype, ginit,
+                                   Span(rel, line_no, 1));
             if(module->global_count > 0)
                 snprintf(module->globals[module->global_count - 1].guard,
                          sizeof(module->globals[0].guard), "%s", cur_guard);
@@ -2331,8 +2331,8 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                   tn + 1 < sizeof(tname))
                 tname[tn++] = *q++;
             tname[tn] = '\0';
-            tty = ZirModuleAddType(module, "#typedef",
-                                   ZirSpan(rel, line_no, 1));
+            tty = ModuleAddType(module, "#typedef",
+                                   Span(rel, line_no, 1));
             if(tty != NULL)
                 snprintf(tty->guard, sizeof(tty->guard), "%s", cur_guard);
             if(tty != NULL && tname[0] != '\0') {
@@ -2381,7 +2381,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                 expr++;
             if(cname[0] != '\0' && *expr != '\0') {
                 if(starts_word(expr, "#define"))
-                    die_at(ZirSpan(rel, line_no, 1), "use '%s :: value'; #define is not Kry syntax", cname);
+                    die_at(Span(rel, line_no, 1), "use '%s :: value'; #define is not Kry syntax", cname);
                 else {
                     char run_value[ZIR_TEXT_MAX];
                     ZirDefine *def;
@@ -2401,9 +2401,9 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                         long value = 0;
 
                         expand_compile_expr(expanded, sizeof(expanded),
-                                            &consts, zir_trim((char *)(expr + 4)));
+                                            &consts, trim((char *)(expr + 4)));
                         if(!eval_const_condition(expanded, &value))
-                            die_at(ZirSpan(rel, line_no, 1), "#run expression is not a constant: %s", expanded);
+                            die_at(Span(rel, line_no, 1), "#run expression is not a constant: %s", expanded);
                         snprintf(run_value, sizeof(run_value), "%ld", value);
                         expr = run_value;
                     }
@@ -2418,8 +2418,8 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                     }
                     if(!starts_word(expr, "#defined") &&
                        (!is_identifier_text(expr) || emitted_alias)) {
-                        def = ZirModuleAddDefine(module, cname, expr,
-                                                 ZirSpan(rel, line_no, 1));
+                        def = ModuleAddDefine(module, cname, expr,
+                                                 Span(rel, line_no, 1));
                         if(def != NULL)
                             snprintf(def->guard, sizeof(def->guard), "%s",
                                      cur_guard);
@@ -2453,13 +2453,13 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                       tn + 1 < sizeof(tname))
                     tname[tn++] = *q++;
                 tname[tn] = '\0';
-                ty = ZirModuleAddType(module, tname,
-                                      ZirSpan(rel, line_no, 1));
+                ty = ModuleAddType(module, tname,
+                                      Span(rel, line_no, 1));
                 if(ty != NULL) {
                     ty->is_enum = strncmp(after, "enum", 4) == 0;
                     ty->is_extern = strstr(after, "#extern") != NULL;
                     if(ty->is_enum && ty->is_extern)
-                        die_at(ZirSpan(rel, line_no, 1), "#extern type contracts require a struct");
+                        die_at(Span(rel, line_no, 1), "#extern type contracts require a struct");
                     snprintf(ty->guard, sizeof(ty->guard), "%s", cur_guard);
                     mode = TYPE;
                 }
@@ -2468,8 +2468,8 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
         } else if((mode == TOP || mode == TYPE) &&
                   strncmp(t, "#enum", 5) == 0) {
             /* #enum { ... } — capture the constants as a type body. */
-            ZirType *ety = ZirModuleAddType(module, "#enum",
-                                            ZirSpan(rel, line_no, 1));
+            ZirType *ety = ModuleAddType(module, "#enum",
+                                            Span(rel, line_no, 1));
 
             if(ety != NULL)
                 snprintf(ety->guard, sizeof(ety->guard), "%s", cur_guard);
@@ -2527,7 +2527,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                     snprintf(raw, sizeof(raw), "#else");
                 } else if(bck == 1) {
                     if(body_mcount >= 8)
-                        die_at(ZirSpan(rel, line_no, 1), "too many nested #if blocks");
+                        die_at(Span(rel, line_no, 1), "too many nested #if blocks");
                     body_mdepth[body_mcount++] = depth;
                     expand_compile_expr(expanded, sizeof(expanded), &consts,
                                         bcnd);
@@ -2539,19 +2539,19 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                     format_preprocessor_cond(raw, sizeof(raw), "#elif",
                                              expanded);
                 }
-                ZirFunctionAddStmt(fn, ZIR_STMT_RAW, raw, "",
-                                   ZirSpan(rel, line_no, 1));
+                FunctionAddStmt(fn, ZIR_STMT_RAW, raw, "",
+                                   Span(rel, line_no, 1));
             } else if(t[0] == '}' && body_mcount > 0 &&
                       depth == body_mdepth[body_mcount - 1]) {
                 /* this '}' closes a body-level '#if' region, not a block */
                 body_mcount--;
-                ZirFunctionAddStmt(fn, ZIR_STMT_RAW, "#endif", "",
-                                   ZirSpan(rel, line_no, 1));
+                FunctionAddStmt(fn, ZIR_STMT_RAW, "#endif", "",
+                                   Span(rel, line_no, 1));
             } else if(t[0] == '#') {
                 /* comment inside a body — skip (directives are top-level) */
             } else if(t[0] == '}' && slot_frame_count > 0 && depth == 1 && block_call_count == 0) {
-                if(*zir_skip_ws(t + 1))
-                    die_at(ZirSpan(rel, line_no, 1), "slot body closing brace must be on its own line");
+                if(*skip_ws(t + 1))
+                    die_at(Span(rel, line_no, 1), "slot body closing brace must be on its own line");
                 SlotParseFrame *frame = &slot_frames[--slot_frame_count];
                 fn = &module->functions[frame->function_index];
                 depth = frame->depth;
@@ -2587,14 +2587,14 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                 while(*eq == ' ' || *eq == '\t')
                     eq++;
                 if(depth > 1 && starts_word(eq, "else")) {
-                    ZirSourceSpan span = ZirSpanEnd(rel, line_no,
+                    ZirSourceSpan span = SpanEnd(rel, line_no,
                                                     pending_start_column +
                                                     (int)(eq - t),
                                                     line_no,
                                                     pending_end_column);
-                    ZirFunctionAddStmt(fn, ZIR_STMT_BLOCK_CLOSE, "}", "",
-                                       ZirSpan(rel, line_no, 1));
-                    ZirFunctionAddStmt(fn, ZIR_STMT_IF, eq, "", span);
+                    FunctionAddStmt(fn, ZIR_STMT_BLOCK_CLOSE, "}", "",
+                                       Span(rel, line_no, 1));
+                    FunctionAddStmt(fn, ZIR_STMT_IF, eq, "", span);
                 } else {
                     if(depth > 0)
                         depth--;
@@ -2604,8 +2604,8 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                         fn = NULL;
                         block_call_count = 0;
                     } else {
-                        ZirFunctionAddStmt(fn, ZIR_STMT_BLOCK_CLOSE, t, "",
-                                           ZirSpan(rel, line_no, 1));
+                        FunctionAddStmt(fn, ZIR_STMT_BLOCK_CLOSE, t, "",
+                                           Span(rel, line_no, 1));
                     }
                 }
             } else {
@@ -2621,7 +2621,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                 if(parse_slot_header(t, slot_binding, sizeof(slot_binding),
                                      slot_arguments, sizeof(slot_arguments))) {
                     if(slot_frame_count == 64)
-                        die_at(ZirSpan(rel, line_no, 1), "too many nested slot bodies");
+                        die_at(Span(rel, line_no, 1), "too many nested slot bodies");
                     SlotParseFrame *frame = &slot_frames[slot_frame_count++];
                     frame->function_index = (int)(fn - module->functions);
                     frame->depth = depth;
@@ -2630,7 +2630,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                     memcpy(frame->body_depth, body_mdepth, sizeof(body_mdepth));
                     char name[ZIR_NAME_MAX];
                     snprintf(name, sizeof(name), "slot_body_%d_%d", module->function_count, line_no);
-                    ZirSourceSpan span = ZirSpan(rel, line_no, 1);
+                    ZirSourceSpan span = Span(rel, line_no, 1);
                     if(block_call_count > 0 && !block_calls[block_call_count - 1].opened &&
                        depth == block_calls[block_call_count - 1].close_depth &&
                        is_identifier_text(slot_binding)) {
@@ -2641,7 +2641,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                                                "%s = %s", slot_binding, name);
                         if(written < 0 || (size_t)written >= sizeof(initializer))
                             die_at(span, "slot initializer is too long");
-                        ZirFunctionAddStmt(fn, strchr(slot_binding, ':') ? ZIR_STMT_DECL : ZIR_STMT_ASSIGN,
+                        FunctionAddStmt(fn, strchr(slot_binding, ':') ? ZIR_STMT_DECL : ZIR_STMT_ASSIGN,
                                            initializer, "", span);
                     }
                     frame->block_count = block_call_count;
@@ -2650,9 +2650,9 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                         die("out of memory parsing slot body");
                     if(block_call_count)
                         memcpy(frame->blocks, block_calls, (size_t)block_call_count * sizeof(*block_calls));
-                    fn = ZirModuleAddFunction(module, name, slot_arguments, "void", 0, span);
+                    fn = ModuleAddFunction(module, name, slot_arguments, "void", 0, span);
                     fn->is_closure = 1;
-                    zir_copy(fn->guard, sizeof(fn->guard), cur_guard);
+                    copy_text(fn->guard, sizeof(fn->guard), cur_guard);
                     depth = 1;
                     root_anonymous_block_count = 0;
                     block_call_count = body_mcount = 0;
@@ -2664,18 +2664,18 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                     BlockCall *block;
 
                     if(block_name[0] != '\0')
-                        die_at(ZirSpan(rel, line_no, 1),
+                        die_at(Span(rel, line_no, 1),
                                "named block calls are not supported yet");
                     if(block_call_count > 0)
                         block_call_open(fn, &block_calls[block_call_count - 1],
-                                      ZirSpan(rel, line_no,
+                                      Span(rel, line_no,
                                               pending_start_column), 0);
                     if(block_call_count >= BLOCK_CALL_CAP)
-                        die_at(ZirSpan(rel, line_no, 1), "too many nested block calls");
+                        die_at(Span(rel, line_no, 1), "too many nested block calls");
                     block = &block_calls[block_call_count++];
                     memset(block, 0, sizeof(*block));
                     block->statement_index = -1;
-                    block->span = ZirSpanEnd(rel, pending_start_line,
+                    block->span = SpanEnd(rel, pending_start_line,
                                              pending_start_column, line_no,
                                              pending_end_column);
                     snprintf(block->callee, sizeof(block->callee), "%s",
@@ -2685,7 +2685,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                     continue;
                 }
 
-                zir_copy(prop_line, sizeof(prop_line), t);
+                copy_text(prop_line, sizeof(prop_line), t);
                 if(block_call_count > 0 &&
                    !block_calls[block_call_count - 1].opened &&
                    depth == block_calls[block_call_count - 1].close_depth &&
@@ -2694,7 +2694,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                                       sizeof(prop_value))) {
                     BlockCall *block = &block_calls[block_call_count - 1];
                     block_call_append_field(block, prop_field, prop_value,
-                                             ZirSpan(rel, line_no, 1));
+                                             Span(rel, line_no, 1));
                     continue;
                 }
 
@@ -2703,16 +2703,16 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                    !block_calls[block_call_count - 1].opened &&
                    depth == block_calls[block_call_count - 1].close_depth)
                     block_call_open(fn, &block_calls[block_call_count - 1],
-                                  ZirSpan(rel, line_no, pending_start_column),
+                                  Span(rel, line_no, pending_start_column),
                                   0);
 
                 {
-                    ZirSourceSpan span = ZirSpanEnd(rel, pending_start_line,
+                    ZirSourceSpan span = SpanEnd(rel, pending_start_line,
                                                     pending_start_column,
                                                     line_no,
                                                     pending_end_column);
 
-                    ZirFunctionAddStmt(fn, kind, t, "", span);
+                    FunctionAddStmt(fn, kind, t, "", span);
                 }
                 depth += brace_delta;
                 if(depth < 0)
@@ -2721,18 +2721,18 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
         }
     }
     if(slot_frame_count)
-        die_at(ZirSpan(rel, line_no, 1), "unterminated slot body");
+        die_at(Span(rel, line_no, 1), "unterminated slot body");
     if(in != NULL)
         fclose(in);
     for(int mi = 0; mi < program->module_count; mi++)
         for(int fi = 0; fi < program->modules[mi].function_count; fi++) {
-            if(!ZirLowerCleanup(&program->modules[mi].functions[fi])) {
-                ZirProgramFree(program);
+            if(!LowerCleanup(&program->modules[mi].functions[fi])) {
+                ProgramFree(program);
                 free(consts.items);
                 free(block_calls);
                 return NULL;
             }
-            ZirStructureFunction(&program->modules[mi].functions[fi], &program->modules[mi]);
+            StructureFunction(&program->modules[mi].functions[fi], &program->modules[mi]);
         }
     free(consts.items);
     free(block_calls);
@@ -2740,16 +2740,16 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
 }
 
 ZirProgram *
-zir_parse_file(const char *path, const char *root)
+parse_file(const char *path, const char *root)
 {
     FILE *in = fopen(path, "rb");
     if(in == NULL)
-        die_at(ZirSpan(path, 0, 0), "open failed: %s", strerror(errno));
+        die_at(Span(path, 0, 0), "open failed: %s", strerror(errno));
     return parse_source(path, root, in, NULL);
 }
 
 ZirProgram *
-zir_parse_source(const char *path, const char *source)
+parse_source_text(const char *path, const char *source)
 {
     return parse_source(path, ".", NULL, source);
 }

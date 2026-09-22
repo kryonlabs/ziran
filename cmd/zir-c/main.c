@@ -44,7 +44,7 @@ main(int argc, char **argv)
 
     for(i = 1; i < argc; i++) {
         if(strncmp(argv[i], "--diagnostics=", 14) == 0) {
-            if(!ZirSetDiagnosticFormat(argv[i] + 14)) {
+            if(!SetDiagnosticFormat(argv[i] + 14)) {
                 usage();
                 return 1;
             }
@@ -57,7 +57,7 @@ main(int argc, char **argv)
         } else if(strcmp(argv[i], "--plan9") == 0) {
             plan9 = 1;
         } else if(strcmp(argv[i], "--include-dir") == 0 && i + 1 < argc) {
-            zir_c_plan9_add_include_dir(argv[++i]);
+            c_plan9_add_include_dir(argv[++i]);
         } else if(strcmp(argv[i], "--strict") == 0) {
             strict = 1;
         } else if(strcmp(argv[i], "--no-strict") == 0) {
@@ -81,36 +81,36 @@ main(int argc, char **argv)
         fprintf(stderr, "ziran-c: out of memory\n");
         return 1;
     }
-    zir_c_plan9_set_enabled(plan9);
+    c_plan9_set_enabled(plan9);
     /* Pass 1: parse every file, build the cross-module symbol table. */
     for(i = 0; i < file_count; i++) {
-        all_ir &= ZirPathIsZir(argv[first_file + i]);
-        progs[i] = ZirProgramLoad(argv[first_file + i], root);
+        all_ir &= PathIsZir(argv[first_file + i]);
+        progs[i] = ProgramLoad(argv[first_file + i], root);
         if(progs[i] == NULL) {
             fprintf(stderr, "ziran-c: failed to parse %s\n",
                     argv[first_file + i]);
             return 1;
         }
-        zir_c_build_syms(progs[i], &syms[i]);
+        c_build_syms(progs[i], &syms[i]);
     }
-    check_ok = all_ir ? ZirLinkImports(progs, file_count) :
-                        ZirCheckPrograms(progs, file_count, strict);
-    laws_ok = ZirCheckLaws(progs, file_count);
+    check_ok = all_ir ? LinkImports(progs, file_count) :
+                        CheckPrograms(progs, file_count, strict);
+    laws_ok = CheckLaws(progs, file_count);
     if(!check_ok || !laws_ok) {
-        for(i = 0; i < file_count; i++) ZirProgramFree(progs[i]);
+        for(i = 0; i < file_count; i++) ProgramFree(progs[i]);
         free(progs);
         free(syms);
         return 1;
     }
     /* Pass 2: lower with full cross-module resolution. */
     for(i = 0; i < file_count; i++)
-        zir_c_lower(progs[i], root, out_dir, syms, file_count);
+        c_lower(progs[i], root, out_dir, syms, file_count);
     (void)no_main;
     for(i = 0; i < file_count; i++)
-        ZirProgramFree(progs[i]);
+        ProgramFree(progs[i]);
     free(progs);
     free(syms);
-    unresolved = zir_c_plan9_unresolved();
+    unresolved = c_plan9_unresolved();
     if(plan9 && unresolved > 0) {
         /* Unresolved declarations are usually inside platform guards the
          * native build compiles out; the in-guest compile is the final

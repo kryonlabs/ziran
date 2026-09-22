@@ -412,7 +412,7 @@ validate_program(const ZirProgram *program)
 }
 
 int
-ZirProgramWriteZir(const ZirProgram *program, FILE *out)
+ProgramWriteZir(const ZirProgram *program, FILE *out)
 {
     static const unsigned char magic[4] = {'Z', 'I', 'R', 0};
     if(program == NULL || out == NULL || !validate_program(program) ||
@@ -427,7 +427,7 @@ ZirProgramWriteZir(const ZirProgram *program, FILE *out)
 }
 
 ZirProgram *
-ZirProgramReadZir(FILE *in, const char *path)
+ProgramReadZir(FILE *in, const char *path)
 {
     unsigned char magic[4];
     uint32_t version, count;
@@ -453,7 +453,7 @@ ZirProgramReadZir(FILE *in, const char *path)
         goto failed;
     }
     reader.budget -= (size_t)count * sizeof(ZirModule);
-    program = ZirProgramNew();
+    program = ProgramNew();
     if(program == NULL) {
         reader.problem = "out of memory reading IR";
         goto failed;
@@ -477,32 +477,32 @@ ZirProgramReadZir(FILE *in, const char *path)
     }
     return program;
 failed:
-    ZirDiagnostic(ZirSpan(path, 1, 1), "zir.invalid", "%s",
+    Diagnostic(Span(path, 1, 1), "zir.invalid", "%s",
                   reader.problem ? reader.problem : "truncated ZIR data");
-    ZirProgramFree(program);
+    ProgramFree(program);
     return NULL;
 }
 
 int
-ZirPathIsZir(const char *path)
+PathIsZir(const char *path)
 {
     size_t length = path ? strlen(path) : 0;
     return length > 4 && strcmp(path + length - 4, ".zir") == 0;
 }
 
 ZirProgram *
-ZirProgramLoad(const char *path, const char *root)
+ProgramLoad(const char *path, const char *root)
 {
     ZirProgram *program;
     FILE *file;
-    if(!ZirPathIsZir(path))
-        return zir_parse_file(path, root);
+    if(!PathIsZir(path))
+        return parse_file(path, root);
     file = fopen(path, "rb");
     if(file == NULL) {
-        ZirDiagnostic(ZirSpan(path, 1, 1), "zir.input", "cannot open IR input");
+        Diagnostic(Span(path, 1, 1), "zir.input", "cannot open IR input");
         return NULL;
     }
-    program = ZirProgramReadZir(file, path);
+    program = ProgramReadZir(file, path);
     fclose(file);
     return program;
 }

@@ -47,14 +47,14 @@ static int unresolved_count;
 static int plan9_enabled;
 
 void
-zir_c_plan9_set_enabled(int enabled)
+c_plan9_set_enabled(int enabled)
 {
     plan9_enabled = enabled;
     unresolved_count = 0;
 }
 
 int
-zir_c_plan9_enabled(void)
+c_plan9_enabled(void)
 {
     return plan9_enabled;
 }
@@ -508,7 +508,7 @@ proto_return_type(const char *name)
 }
 
 void
-zir_c_plan9_add_include_dir(const char *dir)
+c_plan9_add_include_dir(const char *dir)
 {
     if(include_dir_count >= PLAN9_MAX_INCLUDE_DIRS)
         return;
@@ -518,7 +518,7 @@ zir_c_plan9_add_include_dir(const char *dir)
 }
 
 int
-zir_c_plan9_unresolved(void)
+c_plan9_unresolved(void)
 {
     return unresolved_count;
 }
@@ -1441,7 +1441,7 @@ for_decl_split(const char *line, char *type, size_t type_size,
 /* ------------------------------------------------------------------ */
 
 int
-zir_c_plan9_rewrite_file(const char *path)
+c_plan9_rewrite_file(const char *path)
 {
     FILE *f;
     char *text;
@@ -1476,7 +1476,7 @@ zir_c_plan9_rewrite_file(const char *path)
 
     write_text = text;
     rewritten = NULL;
-    rewritten = zir_c_plan9_rewrite(text);
+    rewritten = c_plan9_rewrite(text);
     if(rewritten == NULL) {
         free(text);
         return -1;
@@ -1498,24 +1498,24 @@ zir_c_plan9_rewrite_file(const char *path)
     return 0;
 }
 
-char *zir_c_plan9_rewrite_once(const char *text);
+char *c_plan9_rewrite_once(const char *text);
 
 char *
-zir_c_plan9_rewrite(const char *text)
+c_plan9_rewrite(const char *text)
 {
     char *current;
     char *next;
     int pass;
 
     /* the result is always freshly allocated: callers free it */
-    current = zir_c_plan9_rewrite_once(text);
+    current = c_plan9_rewrite_once(text);
     if(current == NULL)
         return NULL;
 
     /* literals can nest inside call arguments inside positional bodies;
      * iterate until the output stabilizes */
     for(pass = 1; pass < 4; pass++) {
-        next = zir_c_plan9_rewrite_once(current);
+        next = c_plan9_rewrite_once(current);
         if(next == NULL)
             return current;
         if(strcmp(next, current) == 0) {
@@ -1529,7 +1529,7 @@ zir_c_plan9_rewrite(const char *text)
 }
 
 char *
-zir_c_plan9_rewrite_once(const char *text)
+c_plan9_rewrite_once(const char *text)
 {
     Buf out;
     char *line;

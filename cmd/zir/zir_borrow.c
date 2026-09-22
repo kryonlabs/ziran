@@ -64,7 +64,7 @@ static void
 reject(BorrowCheck *check, ZirSourceSpan span, const char *message)
 {
     if(!check->failed)
-        ZirDiagnostic(span, "check.slice_lifetime", "%s", message);
+        Diagnostic(span, "check.slice_lifetime", "%s", message);
     check->failed = 1;
 }
 
@@ -84,7 +84,7 @@ call_origin(BorrowCheck *check, const ZirExpr *expression)
 {
     const ZirModule *owner = NULL;
     const ZirFunction *callee = NULL;
-    if(ZirResolveFunction(check->current->module, expression->name, &owner, &callee) <= 0)
+    if(ResolveFunction(check->current->module, expression->name, &owner, &callee) <= 0)
         return (Origin){0, 0, 1};
     BorrowFunction *summary = NULL;
     for(int i = 0; i < check->count; i++)
@@ -116,7 +116,7 @@ expression_origin(BorrowCheck *check, int index)
             return (Origin){0, 0, 1};
         if(source == NULL)
             return (Origin){0}; /* Typed module-owned array or record storage. */
-        if(ZirSliceElementType(source->type, NULL, 0))
+        if(SliceElementType(source->type, NULL, 0))
             return source->local >= 0 ? check->current->locals[source->local] : source->origin;
         return (Origin){0, source->depth, source->captured == 2};
     }
@@ -128,7 +128,7 @@ expression_origin(BorrowCheck *check, int index)
         return merge(expression_origin(check, expression->right),
                      expression_origin(check, expression->third));
     case ZIR_EXPR_CALL:
-        if(ZirSliceElementType(expression->type, NULL, 0))
+        if(SliceElementType(expression->type, NULL, 0))
             return call_origin(check, expression);
         return (Origin){0, 0, 1}; /* A returned array/record is temporary storage. */
     default:
@@ -158,8 +158,8 @@ add_binding(BorrowCheck *check, const char *name, const char *type,
             Origin origin, int local, int depth, int captured)
 {
     BorrowBinding *item = &check->bindings[check->binding_count++];
-    zir_copy(item->name, sizeof(item->name), name);
-    zir_copy(item->type, sizeof(item->type), type);
+    copy_text(item->name, sizeof(item->name), name);
+    copy_text(item->type, sizeof(item->type), type);
     item->origin = origin;
     item->local = local;
     item->depth = depth;
@@ -184,18 +184,18 @@ check_function(BorrowCheck *check, BorrowFunction *function)
                     capture->is_instance ? 2 : 1);
     }
     char parameters[64][ZIR_TEXT_MAX];
-    int count = *zir_skip_ws(fn->args) ?
-        zir_split_top(fn->args, parameters[0], 64, sizeof(parameters[0])) : 0;
+    int count = *skip_ws(fn->args) ?
+        split_top_level(fn->args, parameters[0], 64, sizeof(parameters[0])) : 0;
     for(int i = 0; i < count; i++) {
         char *colon = strchr(parameters[i], ':');
         if(colon == NULL)
             continue;
         *colon++ = '\0';
-        zir_trim_in_place(parameters[i]);
-        zir_trim_in_place(colon);
+        trim_in_place(parameters[i]);
+        trim_in_place(colon);
         Origin origin = {0};
         int local = -1;
-        if(ZirSliceElementType(colon, NULL, 0)) {
+        if(SliceElementType(colon, NULL, 0)) {
             origin.parameters = UINT64_C(1) << i;
             local = fn->stmt_count + i;
             accumulate(check, &function->locals[local], origin);
@@ -213,7 +213,7 @@ check_function(BorrowCheck *check, BorrowFunction *function)
         check_ranges(check, statement->lhs_root);
         check_ranges(check, statement->expr_root);
         if(statement->kind == ZIR_STMT_DECL) {
-            if(ZirSliceElementType(statement->type, NULL, 0)) {
+            if(SliceElementType(statement->type, NULL, 0)) {
                 Origin source = expression_origin(check, statement->expr_root);
                 accumulate(check, &function->locals[i], source);
                 if(source.invalid || source.depth > check->depth)
@@ -223,7 +223,7 @@ check_function(BorrowCheck *check, BorrowFunction *function)
                         check->depth, statement->is_instance ? 2 : 0);
         } else if(statement->kind == ZIR_STMT_ASSIGN && statement->lhs_root >= 0) {
             const ZirExpr *destination = &fn->exprs[statement->lhs_root];
-            if(ZirSliceElementType(destination->type, NULL, 0)) {
+            if(SliceElementType(destination->type, NULL, 0)) {
                 BorrowBinding *target = destination->kind == ZIR_EXPR_IDENT ?
                     binding(check, destination->name) : NULL;
                 Origin source = expression_origin(check, statement->expr_root);
@@ -233,7 +233,7 @@ check_function(BorrowCheck *check, BorrowFunction *function)
                     accumulate(check, &function->locals[target->local], source);
                 }
             }
-        } else if(statement->kind == ZIR_STMT_RETURN && ZirSliceElementType(fn->return_type, NULL, 0)) {
+        } else if(statement->kind == ZIR_STMT_RETURN && SliceElementType(fn->return_type, NULL, 0)) {
             Origin source = expression_origin(check, statement->expr_root);
             if(source.invalid || source.depth > 0)
                 reject(check, statement->span, "returned slice borrows local or temporary storage");
@@ -248,7 +248,7 @@ check_function(BorrowCheck *check, BorrowFunction *function)
 }
 
 int
-ZirCheckSliceLifetimes(ZirProgram **programs, int count)
+CheckSliceLifetimes(ZirProgram **programs, int count)
 {
     BorrowCheck check = {0};
     for(int p = 0; p < count; p++)

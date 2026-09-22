@@ -41,7 +41,7 @@ token_copy(ZirToken *tok, const char *src, size_t begin, size_t end)
 }
 
 void
-ZirLexerInit(ZirLexer *lx, const char *src, const char *path)
+LexerInit(ZirLexer *lx, const char *src, const char *path)
 {
     memset(lx, 0, sizeof(*lx));
     lx->src = src != NULL ? src : "";
@@ -51,7 +51,7 @@ ZirLexerInit(ZirLexer *lx, const char *src, const char *path)
 }
 
 ZirToken
-ZirLexerNext(ZirLexer *lx)
+LexerNext(ZirLexer *lx)
 {
     ZirToken tok;
     size_t begin;
@@ -66,7 +66,7 @@ ZirLexerNext(ZirLexer *lx)
     start_line = lx->line;
     start_column = lx->column;
     c = (unsigned char)lx->src[lx->pos];
-    tok.span = ZirSpan(lx->path, start_line, start_column);
+    tok.span = Span(lx->path, start_line, start_column);
     if(c == '\0') {
         tok.kind = ZIR_TOKEN_EOF;
         return tok;
@@ -165,7 +165,7 @@ ZirLexerNext(ZirLexer *lx)
 }
 
 const char *
-ZirTokenKindName(ZirTokenKind kind)
+TokenKindName(ZirTokenKind kind)
 {
     switch(kind) {
     case ZIR_TOKEN_EOF: return "eof";
