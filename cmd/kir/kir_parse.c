@@ -137,25 +137,6 @@ parse_quoted(const char *s, char *out, size_t out_size)
 }
 
 static int
-parse_route_header(const char *s, char *out, size_t out_size)
-{
-    const char *p;
-    size_t n = 0;
-
-    if(!starts_word(s, "route"))
-        return 0;
-    p = s + 5;
-    while(*p == ' ' || *p == '\t')
-        p++;
-    while((isalnum((unsigned char)*p) || *p == '_') && n + 1 < out_size)
-        out[n++] = *p++;
-    out[n] = '\0';
-    while(*p == ' ' || *p == '\t')
-        p++;
-    return out[0] != '\0' && strchr(p, '{') != NULL;
-}
-
-static int
 parse_angled(const char *s, char *out, size_t out_size)
 {
     const char *q;
@@ -2360,60 +2341,6 @@ parse_import_line(KirModule *module, const char *path, int line_no,
 }
 
 static int
-parse_style_alias(const char *s, char *out, size_t out_size)
-{
-    const char *p = strstr(s, " as ");
-    size_t n = 0;
-
-    out[0] = '\0';
-    if(p == NULL)
-        return 1;
-    p += 4;
-    while(*p == ' ' || *p == '\t')
-        p++;
-    if(!isalpha((unsigned char)*p) && *p != '_')
-        return 0;
-    while((isalnum((unsigned char)*p) || *p == '_') && n + 1 < out_size)
-        out[n++] = *p++;
-    out[n] = '\0';
-    while(*p == ' ' || *p == '\t' || *p == ';')
-        p++;
-    return out[0] != '\0' && *p == '\0';
-}
-
-static int
-parse_style_line(KirModule *module, const char *path, int line_no,
-                 const char *line)
-{
-    const char *directive;
-    char target[K2KIR_PATH_MAX];
-    char alias[KIR_NAME_MAX];
-    int quoted;
-    KirStyleImport *imp;
-
-    directive = strstr(line, "#style");
-    if(directive == NULL)
-        return 0;
-    target[0] = '\0';
-    alias[0] = '\0';
-    quoted = parse_quoted(directive, target, sizeof(target));
-    if(!quoted && !parse_angled(directive, target, sizeof(target)))
-        die_at(KirSpan(path, line_no, 1), "#style requires \"file.kss\" or <builtin.pack>");
-    for(const char *p = target; *p != '\0'; p++)
-        if(*p == '"' || *p == '>' || (unsigned char)*p < 0x20)
-            die_at(KirSpan(path, line_no, 1), "#style target contains a character that cannot "
-                "appear in a style path");
-    if(!parse_style_alias(directive, alias, sizeof(alias)))
-        die_at(KirSpan(path, line_no, 1), "#style alias must be `as name`");
-    imp = KirModuleAddStyleImport(module,
-        quoted ? KIR_STYLE_IMPORT_FILE : KIR_STYLE_IMPORT_BUILTIN,
-        target, alias, KirSpan(path, line_no, 1));
-    if(imp == NULL)
-        die_at(KirSpan(path, line_no, 1), "out of memory while recording #style");
-    return 1;
-}
-
-static int
 parse_extern_line(KirModule *module, const char *path, int line_no,
                   const char *line)
 {
@@ -3350,12 +3277,11 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
     KirProgram *program;
     KirModule *module;
     KirFunction *fn = NULL;
-    KirRoute *route = NULL;
     char line[K2KIR_LINE_MAX];
     char module_name[KIR_NAME_MAX] = "main";
     char rel[K2KIR_PATH_MAX];
     int line_no = 0;
-    enum { TOP, APP, STATE, ROUTE, TYPE, ENUM, FUNCTION } mode = TOP;
+    enum { TOP, STATE, TYPE, ENUM, FUNCTION } mode = TOP;
     int enum_return = TOP;
     int depth = 0;
     char pending[K2KIR_LINE_MAX * 4];
@@ -3726,12 +3652,9 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
         } else if(mode == TOP && strncmp(t, "#module", 7) == 0) {
             if(parse_quoted(t, module_name, sizeof(module_name)))
                 snprintf(module->name, sizeof(module->name), "%s", module_name);
-        } else if(mode == TOP && parse_style_line(module, rel, line_no, t)) {
-            if(module->style_import_count > 0)
-                snprintf(module->style_imports[module->style_import_count - 1].guard,
-                         sizeof(module->style_imports[0].guard), "%s",
-                         cur_guard);
-            continue;
+        } else if(mode == TOP && strncmp(t, "#style", 6) == 0) {
+            die_at(KirSpan(rel, line_no, 1),
+                   "#style is a Kryon concern; import a library instead");
         } else if(mode == TOP &&
                   (parse_import_line(module, rel, line_no, t) ||
                    parse_extern_line(module, rel, line_no, t))) {
@@ -3754,77 +3677,17 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
             }
         } else if(mode == TOP && starts_word(t, "route") &&
                   strchr(t, '{') != NULL) {
-            char route_id[KIR_NAME_MAX];
-
-            if(!parse_route_header(t, route_id, sizeof(route_id)))
-                die_at(KirSpan(rel, line_no, 1), "route block must be `route name {`");
-            route = KirModuleAddRoute(module, route_id, KirSpan(rel, line_no, 1));
-            if(route != NULL)
-                snprintf(route->guard, sizeof(route->guard), "%s", cur_guard);
-            mode = ROUTE;
-        } else if(mode == ROUTE) {
-            if(t[0] == '}') {
-                route = NULL;
-                mode = TOP;
-                cond_frame_settle(tframes, tframe_count);
-            } else if(route != NULL && starts_word(t, "title")) {
-                parse_quoted(t, route->title, sizeof(route->title));
-            } else if(route != NULL && starts_word(t, "group")) {
-                parse_quoted(t, route->group, sizeof(route->group));
-            } else if(route != NULL && starts_word(t, "page")) {
-                char page[KIR_NAME_MAX];
-
-                page[0] = '\0';
-                sscanf(t, "page %127s", page);
-                if(page[0] != '\0')
-                    snprintf(route->page, sizeof(route->page), "%s", page);
-            } else if(route != NULL && starts_word(t, "path")) {
-                parse_quoted(t, route->path, sizeof(route->path));
-            }
+            die_at(KirSpan(rel, line_no, 1),
+                   "route blocks are not Ziran declarations");
         } else if(mode == TOP && starts_word(t, "app") &&
                   strchr(t, '{') != NULL) {
-            parse_quoted(t, module->app.title, sizeof(module->app.title));
-            module->app.has_app = 1;
-            module->app.width = 800;
-            module->app.height = 600;
-            module->app.fps = 60;
-            mode = APP;
-        } else if(mode == APP) {
-            if(t[0] == '}') {
-                mode = TOP;
-                cond_frame_settle(tframes, tframe_count);
-            } else if(starts_word(t, "size")) {
-                sscanf(t, "size %d %d",
-                       &module->app.width, &module->app.height);
-            } else if(starts_word(t, "fps")) {
-                module->app.fps = atoi(t + 3);
-            } else if(starts_word(t, "theme")) {
-                char m2[32] = "";
-
-                sscanf(t, "theme %127s %31s", module->app.theme, m2);
-                module->app.dark_mode = strcmp(m2, "dark") == 0;
-            } else if(starts_word(t, "font") && strstr(t, "examples")) {
-                module->app.font_examples = 1;
-            } else if(starts_word(t, "frame")) {
-                die_at(KirSpan(rel, line_no, 1), "app frame property is not supported; declare a #ui function");
-            } else if(starts_word(t, "before_window")) {
-                sscanf(t, "before_window %127s", module->app.before_window);
-            } else if(starts_word(t, "init")) {
-                sscanf(t, "init %127s", module->app.init);
-            } else if(starts_word(t, "after_frame")) {
-                sscanf(t, "after_frame %127s", module->app.after_frame);
-            } else if(starts_word(t, "should_continue")) {
-                sscanf(t, "should_continue %127s", module->app.should_continue);
-            } else if(starts_word(t, "scene")) {
-                sscanf(t, "scene %127s", module->app.scene);
-            } else if(starts_word(t, "shutdown")) {
-                sscanf(t, "shutdown %127s", module->app.shutdown);
-            }
+            die_at(KirSpan(rel, line_no, 1),
+                   "app blocks are not Ziran declarations");
         } else if(mode == TOP &&
                   (starts_word(t, "screen") || starts_word(t, "preview") ||
                    starts_word(t, "page") || starts_word(t, "frame") ||
                    starts_word(t, "fn"))) {
-            die_at(KirSpan(rel, line_no, 1), "declare UI with Name :: (...) #ui");
+            die_at(KirSpan(rel, line_no, 1), "invalid top-level declaration");
         } else if(mode == TOP && looks_like_function_header(t)) {
             char name[KIR_NAME_MAX];
             char args[KIR_TEXT_MAX];
@@ -3832,6 +3695,10 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
             int is_extern = strstr(t, "#extern") != NULL;
             int is_ui = strstr(t, "#ui") != NULL;
             int has_body = strchr(t, '{') != NULL;
+
+            if(is_ui)
+                die_at(KirSpan(rel, line_no, 1),
+                       "#ui is not a Ziran modifier; import Kryon functions instead");
 
             parse_function_header(name, sizeof(name), args, sizeof(args),
                                   ret, sizeof(ret), t);

@@ -67,3 +67,14 @@ if "$ziran" check --diagnostics=json --root "$work" "$work/bad.zi" \
     exit 1
 fi
 python3 -m json.tool "$work/diagnostic.json" > /dev/null
+
+cat > "$work/ui_mode.zi" <<'EOF'
+Screen :: () #ui {
+}
+EOF
+if "$ziran" check --root "$work" "$work/ui_mode.zi" \
+    2> "$work/ui_mode.err"; then
+    echo '#ui unexpectedly passed in Ziran' >&2
+    exit 1
+fi
+grep -Fq '#ui is not a Ziran modifier' "$work/ui_mode.err"
