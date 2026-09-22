@@ -16,7 +16,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   input modules together. C, C++, and Go can read saved modules without reparsing
   `.zi`; their imports are relinked from serialized module identities. The
   reader rejects malformed headers, versions, truncated data, and invalid
-  structural references. Deterministic output is checked on a sample.
+  structural references. C, C++, Go, and bundle builds now rerun the language
+  checker on saved IR, and a structurally valid IR file with an invalid return
+  expression is rejected by all four. Deterministic output is checked on a
+  sample.
 - `ziran bundle --root DIR --entry module:function -o FILE` builds an
   experimental version 1 `.zib` from source or saved IR. `ziran run FILE`
   loads and executes the validated scalar subset without a display or Kryon.
@@ -26,7 +29,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   calls, arithmetic, comparisons, assignments, `if`/`else`, `while`, lexical
   blocks, `break`, `continue`, and returns. It rejects host imports and
   unsupported statements before writing a bundle. A loop and branch program
-  is compared against generated C, C++, and Go in `make check`.
+  is compared against generated C, C++, and Go in `make check`. The bundle
+  loader also reruns the language checker and laws before execution.
 - Extracted compiler function names no longer carry `Zir` or `zir_` prefixes;
   IR types retain `Zir` names for now.
 - `#ui`, `#style`, and old app/route forms are rejected. The embedded Kryon
@@ -44,10 +48,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   including Go's legacy Kryon runtime and record conversion branches. Finish
   general typed block calls, named blocks, callable child slots, and imports
   for ordinary libraries. Current block-call coverage is a small leaf subset.
-- Complete semantic verification of loaded `.zir`, remove UI-era fields from
-  its current model, and make every other supported backend consume
-  the same saved IR. Mixed `.zi`/`.zir` builds currently rerun the source
-  checker across all modules.
+- Make structured `.zir` authoritative: the current checker reconstructs
+  expressions from serialized statement text, so it does not yet verify that
+  all stored structured fields agree with that text. Remove UI-era fields from
+  the IR model and make every other supported backend consume the same saved
+  IR. Source, saved-IR, and mixed builds currently rerun the source checker
+  across all modules.
 - Extend the `.zib` linker and verifier beyond the scalar subset: remaining
   control flow, records, strings, arrays, slots, state, and all checked
   expressions. Add a real host capability contract and equivalent behavior

@@ -34,7 +34,6 @@ main(int argc, char **argv)
     int check_ok;
     int laws_ok;
     int runtime_implementation = 0;
-    int all_ir = 1;
     ZirProgram **progs;
     int file_count;
     int i;
@@ -87,15 +86,13 @@ main(int argc, char **argv)
         return 1;
     }
     for(i = 0; i < file_count; i++) {
-        all_ir &= PathIsZir(argv[first_file + i]);
         progs[i] = ProgramLoad(argv[first_file + i], root);
         if(progs[i] == NULL) {
             fprintf(stderr, "ziran-go: failed to parse %s\n", argv[first_file + i]);
             return 1;
         }
     }
-    check_ok = all_ir ? LinkImports(progs, file_count) :
-                        CheckPrograms(progs, file_count, strict);
+    check_ok = CheckPrograms(progs, file_count, strict);
     laws_ok = CheckLaws(progs, file_count);
     if(!check_ok || !laws_ok) {
         for(i = 0; i < file_count; i++) ProgramFree(progs[i]);

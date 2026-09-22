@@ -12,7 +12,8 @@ zero-argument scalar entry functions on a portable interpreter. The bundle is
 and function names, a host capability count (currently zero), and a
 length-prefixed version 3 `.zir` payload. It includes all supplied modules.
 The reader rejects unsupported versions, truncated or trailing data, malformed
-embedded IR, unresolved imports, unsupported capabilities, and functions
+embedded IR, semantic errors in serialized statement text, unresolved imports,
+unsupported capabilities, and functions
 outside the current scalar execution subset. Source and saved-IR bundle bytes
 match in the two-module test. Version 1 is experimental and has no compatibility
 promise. Host imports, graphical programs, records, strings, arrays, slots,

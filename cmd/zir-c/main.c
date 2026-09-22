@@ -35,7 +35,6 @@ main(int argc, char **argv)
     int laws_ok;
     int plan9 = 0;
     int unresolved = 0;
-    int all_ir = 1;
     ZirProgram **progs;
     ZirCModuleSyms *syms;
     int file_count;
@@ -84,7 +83,6 @@ main(int argc, char **argv)
     c_plan9_set_enabled(plan9);
     /* Pass 1: parse every file, build the cross-module symbol table. */
     for(i = 0; i < file_count; i++) {
-        all_ir &= PathIsZir(argv[first_file + i]);
         progs[i] = ProgramLoad(argv[first_file + i], root);
         if(progs[i] == NULL) {
             fprintf(stderr, "ziran-c: failed to parse %s\n",
@@ -93,8 +91,7 @@ main(int argc, char **argv)
         }
         c_build_syms(progs[i], &syms[i]);
     }
-    check_ok = all_ir ? LinkImports(progs, file_count) :
-                        CheckPrograms(progs, file_count, strict);
+    check_ok = CheckPrograms(progs, file_count, strict);
     laws_ok = CheckLaws(progs, file_count);
     if(!check_ok || !laws_ok) {
         for(i = 0; i < file_count; i++) ProgramFree(progs[i]);

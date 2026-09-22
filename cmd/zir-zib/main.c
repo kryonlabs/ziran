@@ -41,7 +41,7 @@ bundle_command(int argc, char **argv)
     const char *output = NULL;
     const char *entry = NULL;
     int first_file = 0;
-    int count, all_ir = 1, result = 1;
+    int count, result = 1;
     char entry_module[ZIR_NAME_MAX], entry_function[ZIR_NAME_MAX];
     ZirProgram **programs = NULL;
     ZirProgram merged = {0};
@@ -74,15 +74,13 @@ bundle_command(int argc, char **argv)
     if(programs == NULL)
         return 1;
     for(int i = 0; i < count; i++) {
-        all_ir &= PathIsZir(argv[first_file + i]);
         programs[i] = ProgramLoad(argv[first_file + i], root);
         if(programs[i] == NULL)
             goto done;
         merged.module_count += programs[i]->module_count;
     }
     if(merged.module_count == 0 ||
-       !(all_ir ? LinkImports(programs, count) :
-                   CheckPrograms(programs, count, 1)) ||
+       !CheckPrograms(programs, count, 1) ||
        !CheckLaws(programs, count))
         goto done;
     merged.modules = calloc((size_t)merged.module_count, sizeof(*merged.modules));

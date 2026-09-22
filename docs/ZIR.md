@@ -37,6 +37,9 @@ not serialized. The reader rejects wrong versions, truncated records,
 oversized fields, invalid references, and trailing bytes. The C, C++, and native Go
 commands can build saved `.zir` modules, including an imported two-module
 block-call example. The experimental `.zib` bundler also consumes saved `.zir`
-for its restricted scalar subset. The reader still needs full semantic
-verification. Version 3 is
-experimental and has no compatibility promise.
+for its restricted scalar subset. Native and bundle builds rerun the language
+checker on saved IR, rejecting invalid expressions in a structural-validity
+test. The checker currently reconstructs expressions from serialized statement
+text; the reader does not yet establish consistency of every structured IR
+field or make those fields authoritative. Version 3 is experimental and has no
+compatibility promise.

@@ -1,6 +1,7 @@
 #include "zir_bundle.h"
 #include "zir_check.h"
 #include "zir_diagnostic.h"
+#include "zir_laws.h"
 #include "zir_serial.h"
 
 #include <stdint.h>
@@ -140,8 +141,8 @@ BundleRead(FILE *in, const char *path,
         problem = "invalid embedded ZIR";
         goto failed;
     }
-    if(!LinkImports(&program, 1)) {
-        problem = "unresolved bundle import";
+    if(!CheckPrograms(&program, 1, 1) || !CheckLaws(&program, 1)) {
+        problem = "embedded ZIR failed semantic checking";
         goto failed;
     }
     fclose(payload);

@@ -170,6 +170,42 @@ test "$("$ziran" run "$work/flow.zib")" = 42
     -o "$work/flow-from-ir.zib" "$work/flow-ir/flow.zir"
 cmp "$work/flow.zib" "$work/flow-from-ir.zib"
 test "$("$ziran" run "$work/flow-from-ir.zib")" = 42
+python3 - "$work/flow-ir/flow.zir" "$work/invalid-flow.zir" <<'PY'
+from pathlib import Path
+import sys
+data = Path(sys.argv[1]).read_bytes()
+assert data.count(b'return 42') == 1
+Path(sys.argv[2]).write_bytes(data.replace(b'return 42', b'return xx', 1))
+PY
+for target in c cpp go; do
+    if "$ziran" build "--target=$target" --strict --root "$work" \
+        -o "$work/invalid-$target" "$work/invalid-flow.zir" \
+        2> "$work/invalid-$target.err"; then
+        echo "invalid saved IR unexpectedly passed $target checking" >&2
+        exit 1
+    fi
+    grep -Eq 'unknown|undeclared|unresolved' "$work/invalid-$target.err"
+done
+if "$ziran" bundle --root "$work" --entry flow:Answer \
+    -o "$work/invalid-flow.zib" "$work/invalid-flow.zir" \
+    2> "$work/invalid-bundle.err"; then
+    echo 'invalid saved IR unexpectedly bundled' >&2
+    exit 1
+fi
+grep -Eq 'unknown|undeclared|unresolved' "$work/invalid-bundle.err"
+python3 - "$work/flow.zib" "$work/invalid-embedded.zib" <<'PY'
+from pathlib import Path
+import sys
+data = Path(sys.argv[1]).read_bytes()
+assert data.count(b'return 42') == 1
+Path(sys.argv[2]).write_bytes(data.replace(b'return 42', b'return xx', 1))
+PY
+if "$ziran" run "$work/invalid-embedded.zib" \
+    2> "$work/invalid-embedded.err"; then
+    echo 'bundle with invalid semantic IR unexpectedly ran' >&2
+    exit 1
+fi
+grep -Fq 'embedded ZIR failed semantic checking' "$work/invalid-embedded.err"
 python3 - "$work/app.zib" "$work/bad-bundle.zib" "$work/old-bundle.zib" <<'PY'
 from pathlib import Path
 import sys
