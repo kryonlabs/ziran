@@ -57,6 +57,36 @@ ${CC:-cc} -Iinclude -I"$work/modules" "$work/modules/library.c" \
     "$work/modules/app.c" "$work/modules/main.c" -o "$work/modules/app"
 "$work/modules/app"
 
+cat > "$work/blocklib.zi" <<'EOF'
+#module "blocklib"
+Props :: struct {
+    value: i32
+}
+Button :: (props: Props) -> i32 #export {
+    return props.value + 1
+}
+EOF
+cat > "$work/blockapp.zi" <<'EOF'
+#module "blockapp"
+#import "blocklib"
+Answer :: () -> i32 #export {
+    Button: {
+        value = 41
+    }
+    return 42
+}
+EOF
+"$ziran" build --target=c --strict --root "$work" -o "$work/blocks" \
+    "$work/blocklib.zi" "$work/blockapp.zi"
+grep -Eq 'Button\(value_[0-9]+\)' "$work/blocks/blockapp.c"
+cat > "$work/blocks/main.c" <<'EOF'
+#include "blockapp.h"
+int main(void) { return Answer() == 42 ? 0 : 1; }
+EOF
+${CC:-cc} -Iinclude -I"$work/blocks" "$work/blocks/blocklib.c" \
+    "$work/blocks/blockapp.c" "$work/blocks/main.c" -o "$work/blocks/app"
+"$work/blocks/app"
+
 cat > "$work/bad.zi" <<'EOF'
 #module "bad"
 #assert 0, "expected failure"

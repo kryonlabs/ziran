@@ -1233,8 +1233,8 @@ resolve_widget_blocks(Checker *c)
             diagnostic = "ambiguous widget declaration";
         else if(resolved == 0)
             diagnostic = "unknown widget declaration";
-        else if(!declaration->is_ui || declaration->is_extern)
-            diagnostic = "widget block requires a #ui declaration";
+        else if(declaration->is_extern)
+            diagnostic = "block calls require a Ziran function declaration";
         else if(count < 1 || count == 64 || props == NULL || props->is_enum || props->is_slot)
             diagnostic = "widget declaration requires one typed record parameter";
         if(diagnostic != NULL) {
