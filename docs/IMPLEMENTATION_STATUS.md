@@ -17,9 +17,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.zi`; their imports are relinked from serialized module identities. The
   reader rejects malformed headers, versions, truncated data, and invalid
   structural references. C, C++, Go, and bundle builds now rerun the language
-  checker on saved IR, and a structurally valid IR file with an invalid return
-  expression is rejected by all four. Deterministic output is checked on a
-  sample.
+  checker on saved IR and compare the resulting serialization byte for byte
+  with the input. They reject invalid return expressions and inconsistent
+  expression nodes. Deterministic output is checked on a sample, and a mixed
+  source/IR C build runs.
 - `ziran bundle --root DIR --entry module:function -o FILE` builds an
   experimental version 1 `.zib` from source or saved IR. `ziran run FILE`
   loads and executes the validated scalar subset without a display or Kryon.
@@ -49,11 +50,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   general typed block calls, named blocks, callable child slots, and imports
   for ordinary libraries. Current block-call coverage is a small leaf subset.
 - Make structured `.zir` authoritative: the current checker reconstructs
-  expressions from serialized statement text, so it does not yet verify that
-  all stored structured fields agree with that text. Remove UI-era fields from
-  the IR model and make every other supported backend consume the same saved
-  IR. Source, saved-IR, and mixed builds currently rerun the source checker
-  across all modules.
+  expressions from serialized statement text, then compares the full checked
+  serialization with the original. This rejects divergent stored fields but
+  backends still reparse text rather than consume the structured expressions
+  directly. Remove UI-era fields from the IR model and make every other
+  supported backend consume the same saved IR. Source, saved-IR, and mixed
+  builds currently rerun the source checker across all modules.
 - Extend the `.zib` linker and verifier beyond the scalar subset: remaining
   control flow, records, strings, arrays, slots, state, and all checked
   expressions. Add a real host capability contract and equivalent behavior

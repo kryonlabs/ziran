@@ -141,7 +141,8 @@ BundleRead(FILE *in, const char *path,
         problem = "invalid embedded ZIR";
         goto failed;
     }
-    if(!CheckPrograms(&program, 1, 1) || !CheckLaws(&program, 1)) {
+    if(!CheckCanonicalPrograms(&program, 1, 1, NULL) ||
+       !CheckLaws(&program, 1)) {
         problem = "embedded ZIR failed semantic checking";
         goto failed;
     }

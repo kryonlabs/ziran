@@ -80,7 +80,8 @@ bundle_command(int argc, char **argv)
         merged.module_count += programs[i]->module_count;
     }
     if(merged.module_count == 0 ||
-       !CheckPrograms(programs, count, 1) ||
+       !CheckCanonicalPrograms(programs, count, 1,
+                               (const char *const *)(argv + first_file)) ||
        !CheckLaws(programs, count))
         goto done;
     merged.modules = calloc((size_t)merged.module_count, sizeof(*merged.modules));

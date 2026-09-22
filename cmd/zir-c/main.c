@@ -91,7 +91,8 @@ main(int argc, char **argv)
         }
         c_build_syms(progs[i], &syms[i]);
     }
-    check_ok = CheckPrograms(progs, file_count, strict);
+    check_ok = CheckCanonicalPrograms(progs, file_count, strict,
+                                      (const char *const *)(argv + first_file));
     laws_ok = CheckLaws(progs, file_count);
     if(!check_ok || !laws_ok) {
         for(i = 0; i < file_count; i++) ProgramFree(progs[i]);

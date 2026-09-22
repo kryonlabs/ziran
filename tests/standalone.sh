@@ -102,6 +102,13 @@ test "$("$ziran" run "$work/app.zib")" = 42
     "$work/modules-ir/library.zir" "$work/modules-ir/app.zir"
 cmp "$work/app.zib" "$work/app-from-ir.zib"
 test "$("$ziran" run "$work/app-from-ir.zib")" = 42
+"$ziran" build --target=c --strict --root "$work" -o "$work/mixed-modules" \
+    "$work/library.zi" "$work/modules-ir/app.zir"
+cp "$work/modules/main.c" "$work/mixed-modules/main.c"
+${CC:-cc} -Iinclude -I"$work/mixed-modules" \
+    "$work/mixed-modules/library.c" "$work/mixed-modules/app.c" \
+    "$work/mixed-modules/main.c" -o "$work/mixed-modules/app"
+"$work/mixed-modules/app"
 cat > "$work/local-bundle.zi" <<'EOF'
 #module "local_bundle"
 Answer :: () -> i32 #export {
@@ -206,6 +213,49 @@ if "$ziran" run "$work/invalid-embedded.zib" \
     exit 1
 fi
 grep -Fq 'embedded ZIR failed semantic checking' "$work/invalid-embedded.err"
+python3 - "$work/flow-ir/flow.zir" "$work/inconsistent-flow.zir" <<'PY'
+from pathlib import Path
+import sys
+data = bytearray(Path(sys.argv[1]).read_bytes())
+assert data.count(b'42') == 2
+position = data.rfind(b'42')
+assert position > data.index(b'return 42') + len(b'return 42')
+data[position:position + 2] = b'43'
+Path(sys.argv[2]).write_bytes(data)
+PY
+for target in c cpp go; do
+    if "$ziran" build "--target=$target" --strict --root "$work" \
+        -o "$work/inconsistent-$target" "$work/inconsistent-flow.zir" \
+        2> "$work/inconsistent-$target.err"; then
+        echo "inconsistent saved IR unexpectedly passed $target checking" >&2
+        exit 1
+    fi
+    grep -Fq 'saved IR does not match the checked program' \
+        "$work/inconsistent-$target.err"
+done
+if "$ziran" bundle --root "$work" --entry flow:Answer \
+    -o "$work/inconsistent-flow.zib" "$work/inconsistent-flow.zir" \
+    2> "$work/inconsistent-bundle.err"; then
+    echo 'inconsistent saved IR unexpectedly bundled' >&2
+    exit 1
+fi
+grep -Fq 'saved IR does not match the checked program' \
+    "$work/inconsistent-bundle.err"
+python3 - "$work/flow.zib" "$work/inconsistent-embedded.zib" <<'PY'
+from pathlib import Path
+import sys
+data = bytearray(Path(sys.argv[1]).read_bytes())
+assert data.count(b'42') == 2
+data[data.rfind(b'42'):data.rfind(b'42') + 2] = b'43'
+Path(sys.argv[2]).write_bytes(data)
+PY
+if "$ziran" run "$work/inconsistent-embedded.zib" \
+    2> "$work/inconsistent-embedded.err"; then
+    echo 'bundle with inconsistent IR unexpectedly ran' >&2
+    exit 1
+fi
+grep -Fq 'saved IR does not match the checked program' \
+    "$work/inconsistent-embedded.err"
 python3 - "$work/app.zib" "$work/bad-bundle.zib" "$work/old-bundle.zib" <<'PY'
 from pathlib import Path
 import sys

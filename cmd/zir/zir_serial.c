@@ -1,4 +1,5 @@
 #include "zir_serial.h"
+#include "zir_check.h"
 #include "zir_diagnostic.h"
 #include "zir_parse.h"
 
@@ -505,4 +506,69 @@ ProgramLoad(const char *path, const char *root)
     program = ProgramReadZir(file, path);
     fclose(file);
     return program;
+}
+
+int
+CheckCanonicalPrograms(ZirProgram **programs, int count, int strict,
+                       const char *const *input_paths)
+{
+    FILE *before = NULL;
+    FILE *after = NULL;
+    unsigned char left[8192], right[8192];
+    int saved_count = 0;
+    int first_saved = -1;
+    int valid = 0;
+    for(int i = 0; i < count; i++) {
+        if(input_paths == NULL || PathIsZir(input_paths[i])) {
+            if(first_saved < 0)
+                first_saved = i;
+            saved_count++;
+        }
+    }
+    if(saved_count == 0)
+        return CheckPrograms(programs, count, strict);
+    before = tmpfile();
+    after = tmpfile();
+    if(before == NULL || after == NULL)
+        goto failed;
+    for(int i = 0; i < count; i++)
+        if((input_paths == NULL || PathIsZir(input_paths[i])) &&
+           !ProgramWriteZir(programs[i], before))
+            goto failed;
+    if(!CheckPrograms(programs, count, strict))
+        goto done;
+    for(int i = 0; i < count; i++)
+        if((input_paths == NULL || PathIsZir(input_paths[i])) &&
+           !ProgramWriteZir(programs[i], after))
+            goto failed;
+    if(fseek(before, 0, SEEK_SET) || fseek(after, 0, SEEK_SET))
+        goto failed;
+    for(;;) {
+        size_t left_count = fread(left, 1, sizeof(left), before);
+        size_t right_count = fread(right, 1, sizeof(right), after);
+        if(left_count != right_count ||
+           memcmp(left, right, left_count) != 0) {
+            Diagnostic(Span(input_paths != NULL ? input_paths[first_saved] : "<bundle>",
+                            1, 1), "zir.noncanonical",
+                       "saved IR does not match the checked program");
+            goto done;
+        }
+        if(left_count == 0) {
+            if(ferror(before) || ferror(after))
+                goto failed;
+            valid = 1;
+            break;
+        }
+    }
+    goto done;
+failed:
+    Diagnostic(Span(input_paths != NULL && first_saved >= 0 ?
+                    input_paths[first_saved] : "<bundle>", 1, 1),
+               "zir.validation", "cannot validate saved IR");
+done:
+    if(before != NULL)
+        fclose(before);
+    if(after != NULL)
+        fclose(after);
+    return valid;
 }
