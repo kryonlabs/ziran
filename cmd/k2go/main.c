@@ -23,7 +23,7 @@ usage(void)
 {
     fprintf(stderr,
             "usage: k2go [--strict] [--no-main] [--runtime-implementation] [--minify] [--pkg NAME] "
-            "[--diagnostics=text|json] --root DIR -o DIR file.kry ...\n");
+            "[--diagnostics=text|json] --root DIR -o DIR file.zi ...\n");
 }
 
 int

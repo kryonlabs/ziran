@@ -1,6 +1,5 @@
 #include "kir.h"
 #include "kir_parse.h"
-#include "runtime_declarations.generated.h"
 
 #include <ctype.h>
 #include <stdlib.h>
@@ -230,46 +229,10 @@ KirResolveFunction(const KirModule *module, const char *name,
     return *function != NULL;
 }
 
-static KirProgram *runtime_programs[sizeof(runtime_sources) / sizeof(runtime_sources[0])];
-static int runtime_parsing[sizeof(runtime_sources) / sizeof(runtime_sources[0])];
-
-static KirProgram *
-runtime_program(size_t source)
-{
-    if(runtime_programs[source] == NULL) {
-        /* A runtime source can reference another runtime type while it is
-         * still being parsed (for example a parenthesized expression whose
-         * first token is an identifier, which the expression parser probes
-         * as a cast type). Parsing the same source re-entrantly would
-         * recurse without bound, so the in-progress source resolves to NULL
-         * until its parse completes. */
-        if(runtime_parsing[source])
-            return NULL;
-        runtime_parsing[source] = 1;
-        runtime_programs[source] = kir_parse_source(runtime_sources[source].path,
-                                                  runtime_sources[source].source);
-        runtime_parsing[source] = 0;
-    }
-    return runtime_programs[source];
-}
-
 const KirType *
 KirFindRuntimeEnumMember(const char *name)
 {
-    if(!*name)
-        return NULL;
-    for(size_t source = 0; source < sizeof(runtime_programs) / sizeof(runtime_programs[0]); source++) {
-        KirProgram *program = runtime_program(source);
-        if(program == NULL)
-            continue;
-        for(int m = 0; m < program->module_count; m++) {
-            const KirModule *module = &program->modules[m];
-            for(int t = 0; t < module->type_count; t++) {
-                if(enum_has_member(&module->types[t], name))
-                    return &module->types[t];
-            }
-        }
-    }
+    (void)name;
     return NULL;
 }
 
@@ -278,21 +241,7 @@ KirFindRuntimeType(const char *name, const KirModule **owner)
 {
     if(owner != NULL)
         *owner = NULL;
-    for(size_t source = 0; source < sizeof(runtime_programs) / sizeof(runtime_programs[0]); source++) {
-        KirProgram *program = runtime_program(source);
-        if(program == NULL)
-            continue;
-        for(int m = 0; m < program->module_count; m++) {
-            const KirModule *module = &program->modules[m];
-            for(int t = 0; t < module->type_count; t++) {
-                if(strcmp(module->types[t].name, name) == 0) {
-                    if(owner != NULL)
-                        *owner = module;
-                    return &module->types[t];
-                }
-            }
-        }
-    }
+    (void)name;
     return NULL;
 }
 
@@ -842,7 +791,7 @@ KirProgramDump(const KirProgram *program, FILE *out)
 
     if(out == NULL)
         return;
-    fprintf(out, "kir 1\n");
+    fprintf(out, "zir 1\n");
     if(program == NULL)
         return;
     for(i = 0; i < program->module_count; i++) {

@@ -140,8 +140,8 @@ stem_from_source(const char *src, char *dst, size_t dst_size)
 
     base = base != NULL ? base + 1 : src;
     n = strlen(base);
-    if(n > 4 && strcmp(base + n - 4, ".kry") == 0)
-        n -= 4;
+    if(n > 3 && strcmp(base + n - 3, ".zi") == 0)
+        n -= 3;
     if(n >= dst_size)
         n = dst_size - 1;
     memcpy(dst, base, n);

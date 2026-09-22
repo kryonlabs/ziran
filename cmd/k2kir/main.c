@@ -1,5 +1,5 @@
 /*
- * k2kir - emit a debuggable KIR text artifact from .kry source.
+ * Emit a debuggable ZIR text artifact from .zi source.
  * Thin wrapper around the shared kir_parse_file frontend.
  */
 #include "kir.h"
@@ -16,7 +16,7 @@
 static void
 usage(void)
 {
-    fprintf(stderr, "usage: k2kir [--diagnostics=text|json] --root DIR -o DIR file.kry ...\n");
+    fprintf(stderr, "usage: ziran ir [--diagnostics=text|json] --root DIR -o DIR file.zi ...\n");
 }
 
 int
@@ -24,6 +24,7 @@ main(int argc, char **argv)
 {
     const char *root = NULL;
     const char *out_dir = NULL;
+    int check_only = 0;
     int check_ok;
     int laws_ok;
     int i;
@@ -38,6 +39,8 @@ main(int argc, char **argv)
             root = argv[++i];
         } else if(strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             out_dir = argv[++i];
+        } else if(strcmp(argv[i], "--check-only") == 0) {
+            check_only = 1;
         } else if(argv[i][0] == '-') {
             usage();
             return 1;
@@ -45,7 +48,7 @@ main(int argc, char **argv)
             break;
         }
     }
-    if(root == NULL || out_dir == NULL || i >= argc) {
+    if(root == NULL || (!check_only && out_dir == NULL) || i >= argc) {
         usage();
         return 1;
     }
@@ -59,7 +62,11 @@ main(int argc, char **argv)
             KirProgramFree(program);
             return 1;
         }
-        /* Write the .kir dump using the module's source_path (relative to root)
+        if(check_only) {
+            KirProgramFree(program);
+            continue;
+        }
+        /* Write the .zir dump using the module's source_path (relative to root)
          * so directory structure is preserved. */
         if(program->module_count > 0) {
             const char *src = program->modules[0].source_path;
@@ -68,13 +75,13 @@ main(int argc, char **argv)
             char out_path[1024];
             FILE *out;
 
-            if(slen > 4 && strcmp(src + slen - 4, ".kry") == 0)
-                slen -= 4;
+            if(slen > 3 && strcmp(src + slen - 3, ".zi") == 0)
+                slen -= 3;
             if(slen >= sizeof(stem))
                 slen = sizeof(stem) - 1;
             memcpy(stem, src, slen);
             stem[slen] = '\0';
-            snprintf(out_path, sizeof(out_path), "%s/%s.kir", out_dir, stem);
+            snprintf(out_path, sizeof(out_path), "%s/%s.zir", out_dir, stem);
             /* mkdir -p */
             {
                 char tmp[1024];

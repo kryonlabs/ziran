@@ -1610,8 +1610,8 @@ KirCheckPrograms(KirProgram **programs, int count, int strict)
                         size_t length;
                         kir_copy(stem, sizeof(stem), candidate->source_path);
                         length = strlen(stem);
-                        if(length > 4 && strcmp(stem + length - 4, ".kry") == 0)
-                            stem[length - 4] = '\0';
+                        if(length > 3 && strcmp(stem + length - 3, ".zi") == 0)
+                            stem[length - 3] = '\0';
                         if(strcmp(import->target, candidate->name) != 0 &&
                            strcmp(import->target, stem) != 0)
                             continue;

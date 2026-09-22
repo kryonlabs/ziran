@@ -39,8 +39,8 @@ stem_from_source(const char *src, char *dst, size_t dst_size)
 {
     size_t n = strlen(src);
 
-    if(n > 4 && strcmp(src + n - 4, ".kry") == 0)
-        n -= 4;
+    if(n > 3 && strcmp(src + n - 3, ".zi") == 0)
+        n -= 3;
     if(n >= dst_size)
         n = dst_size - 1;
     memcpy(dst, src, n);

@@ -20,7 +20,7 @@ usage(void)
 {
     fprintf(stderr,
             "usage: k2c [--strict] [--no-main] [--plan9] [--include-dir DIR] "
-            "[--diagnostics=text|json] --root DIR -o DIR file.kry ...\n");
+            "[--diagnostics=text|json] --root DIR -o DIR file.zi ...\n");
 }
 
 int
@@ -101,7 +101,7 @@ main(int argc, char **argv)
     /* Pass 2: lower with full cross-module resolution. */
     for(i = 0; i < file_count; i++)
         k2c_lower(progs[i], root, out_dir, syms, file_count);
-    k2c_write_project(progs, file_count, root, out_dir, no_main);
+    (void)no_main;
     for(i = 0; i < file_count; i++)
         KirProgramFree(progs[i]);
     free(progs);

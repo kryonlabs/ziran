@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+usage()
+{
+    echo 'usage: ziran check|ir|build --root DIR [-o DIR] file.zi ...' >&2
+    exit 2
+}
+
+test "$#" -gt 0 || usage
+command=$1
+shift
+case "$command" in
+    check) exec "$bin_dir/ziran-ir" --check-only "$@" ;;
+    ir) exec "$bin_dir/ziran-ir" "$@" ;;
+    build)
+        test "$#" -gt 0 || usage
+        case "$1" in
+            --target=c) shift; exec "$bin_dir/ziran-c" --no-main "$@" ;;
+            --target=go) shift; exec "$bin_dir/ziran-go" --no-main "$@" ;;
+            *) usage ;;
+        esac
+        ;;
+    *) usage ;;
+esac
