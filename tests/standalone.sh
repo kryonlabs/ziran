@@ -325,6 +325,11 @@ ${CC:-cc} -Iinclude -I"$work/blocks" "$work/blocks/blocklib.c" \
 "$ziran" build --target=go --strict --pkg main --root "$work" \
     -o "$work/blocks-go" "$work/blocklib.zi" "$work/blockapp.zi"
 grep -Fq 'Blocklib_Button(' "$work/blocks-go/blockapp.go"
+if grep -Fq 'github.com/waozixyz/kryon/go/kryon' \
+    "$work/blocks-go/blocklib.go" "$work/blocks-go/blockapp.go"; then
+    echo 'ordinary Go record call pulled in the legacy Kryon runtime' >&2
+    exit 1
+fi
 cat > "$work/blocks-go/main.go" <<'EOF'
 package main
 func main() { if Blockapp_Answer() != 42 { panic("wrong result") } }

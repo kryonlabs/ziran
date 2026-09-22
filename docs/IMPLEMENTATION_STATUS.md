@@ -34,6 +34,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   loader also reruns the language checker and laws before execution.
 - Extracted compiler function names no longer carry `Zir` or `zir_` prefixes;
   IR types retain `Zir` names for now.
+- Native Go no longer treats ordinary imported record types as types from the
+  legacy Kryon Go runtime. The standalone record-call test asserts that no
+  Kryon package import is generated.
 - `#ui`, `#style`, and old app/route forms are rejected. The embedded Kryon
   runtime declarations and copied `src/kry_std` implementation have been
   removed. JSON diagnostics no longer require Kryon code.

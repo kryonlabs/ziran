@@ -146,26 +146,6 @@ stem_from_source(const char *src, char *dst, size_t dst_size)
     dst[n] = '\0';
 }
 
-static int
-is_runtime_go_type(const char *type)
-{
-    if(FindRuntimeType(type, NULL) != NULL)
-        return 1;
-
-}
-
-static void
-qualify_runtime_go_type(const char *type, char *dst, size_t dst_size)
-{
-    const ZirType *declared = type_scope != NULL ? FindType(type_scope, type, NULL) : NULL;
-    int local = declared != NULL && !declared->is_extern &&
-                declared != FindRuntimeType(type, NULL);
-    if(!runtime_output && !local && is_runtime_go_type(type))
-        snprintf(dst, dst_size, "%s.%s", ZIR_GO_RUNTIME_PKG, type);
-    else
-        snprintf(dst, dst_size, "%s", type);
-}
-
 static int is_module_constant(const ZirModule *module, const char *name);
 
 /* C-ish type -> Go type. Unknown shapes must be diagnosed by the caller. */
@@ -273,7 +253,7 @@ go_type(const char *type, char *dst, size_t dst_size)
     }
     for(int i = 0; map[i].c != NULL; i++) {
         if(strcmp(t, map[i].c) == 0) {
-            qualify_runtime_go_type(map[i].go, dst, dst_size);
+            snprintf(dst, dst_size, "%s", map[i].go);
             return 1;
         }
     }
@@ -302,12 +282,8 @@ go_type(const char *type, char *dst, size_t dst_size)
             for(char *c = base; *c != '\0'; c++)
                 if(!is_ident_char((unsigned char)*c))
                     identish = 0;
-            if(identish && (is_runtime_go_type(base) ||
-                           FindType(type_scope, base, NULL) != NULL)) {
-                char qualified[ZIR_GO_NAME_MAX * 2];
-
-                qualify_runtime_go_type(base, qualified, sizeof(qualified));
-                snprintf(dst, dst_size, "*%s", qualified);
+            if(identish && FindType(type_scope, base, NULL) != NULL) {
+                snprintf(dst, dst_size, "*%s", base);
                 return 1;
             }
         }
@@ -320,9 +296,8 @@ go_type(const char *type, char *dst, size_t dst_size)
         for(char *c = t; *c != '\0'; c++)
             if(!is_ident_char((unsigned char)*c))
                 identish = 0;
-        if(identish && (is_runtime_go_type(t) ||
-                       FindType(type_scope, t, NULL) != NULL)) {
-            qualify_runtime_go_type(t, dst, dst_size);
+        if(identish && FindType(type_scope, t, NULL) != NULL) {
+            snprintf(dst, dst_size, "%s", t);
             return 1;
         }
     }
@@ -1407,7 +1382,7 @@ tx_compound(const ZirModule *m, const char *p, char *dst, size_t *dn)
     if(*p == '{') {
         char qtype[ZIR_GO_NAME_MAX * 2];
 
-        qualify_runtime_go_type(type, qtype, sizeof(qtype));
+        snprintf(qtype, sizeof(qtype), "%s", type);
         p++;
         /* Props/Spec use C designated initializers. Translate them to named
          * Go fields and give the untyped bounds literal its Rectangle type. */
