@@ -5,7 +5,7 @@ bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 usage()
 {
-    echo 'usage: ziran check|ir|build --root DIR [-o DIR] file.zi ...' >&2
+    echo 'usage: ziran check|ir|build|fmt [options] file.zi ...' >&2
     exit 2
 }
 
@@ -15,6 +15,7 @@ shift
 case "$command" in
     check) exec "$bin_dir/ziran-ir" --check-only "$@" ;;
     ir) exec "$bin_dir/ziran-ir" "$@" ;;
+    fmt) exec "$bin_dir/zi-fmt" "$@" ;;
     build)
         test "$#" -gt 0 || usage
         case "$1" in
