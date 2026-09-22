@@ -113,6 +113,63 @@ EOF
 "$ziran" bundle --root "$work" --entry local_bundle:Answer \
     -o "$work/local-bundle.zib" "$work/local-bundle.zi"
 test "$("$ziran" run "$work/local-bundle.zib")" = 42
+cat > "$work/flow.zi" <<'EOF'
+#module "flow"
+Answer :: () -> i32 #export {
+    value: i32 = 0
+    index: i32 = 0
+    while index < 10 {
+        index = index + 1
+        if index < 3 {
+            continue
+        }
+        if index > 5 {
+            break
+        }
+        value = value + index
+    }
+    if value == 0 {
+        return 0
+    } else if value == 12 {
+        return 42
+    } else {
+        return 0
+    }
+}
+EOF
+"$ziran" build --target=c --strict --root "$work" -o "$work/flow-c" \
+    "$work/flow.zi"
+cat > "$work/flow-c/main.c" <<'EOF'
+#include "flow.h"
+int main(void) { return Answer() == 42 ? 0 : 1; }
+EOF
+${CC:-cc} -Iinclude -I"$work/flow-c" "$work/flow-c/flow.c" \
+    "$work/flow-c/main.c" -o "$work/flow-c/app"
+"$work/flow-c/app"
+"$ziran" build --target=cpp --strict --root "$work" -o "$work/flow-cpp" \
+    "$work/flow.zi"
+cat > "$work/flow-cpp/main.cpp" <<'EOF'
+#include "flow.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+EOF
+${CXX:-c++} -Iinclude -I"$work/flow-cpp" "$work/flow-cpp/flow.cpp" \
+    "$work/flow-cpp/main.cpp" -o "$work/flow-cpp/app"
+"$work/flow-cpp/app"
+"$ziran" build --target=go --strict --pkg main --root "$work" \
+    -o "$work/flow-go" "$work/flow.zi"
+cat > "$work/flow-go/main.go" <<'EOF'
+package main
+func main() { if Flow_Answer() != 42 { panic("wrong result") } }
+EOF
+GO111MODULE=off go run "$work/flow-go/flow.go" "$work/flow-go/main.go"
+"$ziran" bundle --root "$work" --entry flow:Answer \
+    -o "$work/flow.zib" "$work/flow.zi"
+test "$("$ziran" run "$work/flow.zib")" = 42
+"$ziran" ir --root "$work" -o "$work/flow-ir" "$work/flow.zi"
+"$ziran" bundle --root "$work" --entry flow:Answer \
+    -o "$work/flow-from-ir.zib" "$work/flow-ir/flow.zir"
+cmp "$work/flow.zib" "$work/flow-from-ir.zib"
+test "$("$ziran" run "$work/flow-from-ir.zib")" = 42
 python3 - "$work/app.zib" "$work/bad-bundle.zib" "$work/old-bundle.zib" <<'PY'
 from pathlib import Path
 import sys
@@ -136,15 +193,15 @@ grep -Fq 'unsupported ZIB version' "$work/old-bundle.err"
 cat > "$work/unsupported-bundle.zi" <<'EOF'
 #module "unsupported_bundle"
 Answer :: () -> i32 #export {
-    while false {
-    }
+    value: string = "hello"
+    unused value
     return 42
 }
 EOF
 if "$ziran" bundle --root "$work" --entry unsupported_bundle:Answer \
     -o "$work/unsupported-bundle.zib" "$work/unsupported-bundle.zi" \
     2> "$work/unsupported-bundle.err"; then
-    echo 'unsupported portable control flow unexpectedly bundled' >&2
+    echo 'unsupported portable data type unexpectedly bundled' >&2
     exit 1
 fi
 grep -Fq 'outside the portable scalar subset' "$work/unsupported-bundle.err"

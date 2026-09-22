@@ -15,8 +15,8 @@ The reader rejects unsupported versions, truncated or trailing data, malformed
 embedded IR, unresolved imports, unsupported capabilities, and functions
 outside the current scalar execution subset. Source and saved-IR bundle bytes
 match in the two-module test. Version 1 is experimental and has no compatibility
-promise. Host imports, graphical programs, and most Ziran data and control
-flow remain unsupported.
+promise. Host imports, graphical programs, records, strings, arrays, slots,
+and control flow beyond `if`/`else` and `while` remain unsupported.
 
 ## Target contract
 

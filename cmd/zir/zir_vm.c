@@ -36,6 +36,14 @@ typedef struct Frame {
     int local_count;
 } Frame;
 
+typedef enum Flow {
+    FLOW_NEXT,
+    FLOW_RETURN,
+    FLOW_BREAK,
+    FLOW_CONTINUE,
+    FLOW_ERROR
+} Flow;
+
 static int
 scalar_type(const char *type)
 {
@@ -223,6 +231,187 @@ find_entry(const ZirProgram *program, const char *module_name,
     return entry;
 }
 
+static int
+is_else_branch(const ZirStmt *statement)
+{
+    return statement->kind == ZIR_STMT_IF &&
+           strncmp(statement->text, "else", 4) == 0 &&
+           (statement->text[4] == 0 || statement->text[4] == ' ' ||
+            statement->text[4] == '\t');
+}
+
+static int
+statement_close(const ZirFunction *function, int begin, int end)
+{
+    int depth = 1;
+    for(int i = begin + 1; i < end; i++) {
+        ZirStmtKind kind = function->stmts[i].kind;
+        if(kind == ZIR_STMT_IF || kind == ZIR_STMT_WHILE ||
+           kind == ZIR_STMT_BLOCK_OPEN)
+            depth++;
+        else if(kind == ZIR_STMT_BLOCK_CLOSE && --depth == 0)
+            return i;
+    }
+    return -1;
+}
+
+static int
+verify_sequence(const ZirModule *module, const ZirFunction *function,
+                int begin, int end, Parameter *bindings, int binding_count,
+                int loop_depth, int depth)
+{
+    if(depth >= VM_MAX_DEPTH)
+        return 0;
+    for(int i = begin; i < end; i++) {
+        const ZirStmt *statement = &function->stmts[i];
+        int close;
+        switch(statement->kind) {
+        case ZIR_STMT_DECL:
+            if(statement->is_instance || !scalar_type(statement->type) ||
+               strcmp(statement->type, "void") == 0 ||
+               statement->name[0] == 0 || binding_count >= VM_MAX_LOCALS ||
+               (statement->expr_root >= 0 &&
+                !verify_expression(module, function, bindings, binding_count,
+                                   statement->expr_root, 0)))
+                return 0;
+            copy_text(bindings[binding_count].name,
+                      sizeof(bindings[binding_count].name), statement->name);
+            copy_text(bindings[binding_count].type,
+                      sizeof(bindings[binding_count].type), statement->type);
+            binding_count++;
+            break;
+        case ZIR_STMT_ASSIGN:
+            if(statement->lhs_root < 0 ||
+               function->exprs[statement->lhs_root].kind != ZIR_EXPR_IDENT ||
+               binding_index(bindings, binding_count,
+                             function->exprs[statement->lhs_root].name) < 0 ||
+               strcmp(statement->assignment_op, "=") != 0 ||
+               statement->expr_root < 0 ||
+               !verify_expression(module, function, bindings, binding_count,
+                                  statement->expr_root, 0))
+                return 0;
+            break;
+        case ZIR_STMT_RETURN:
+            if((statement->expr_root < 0) !=
+               (strcmp(function->return_type, "void") == 0))
+                return 0;
+            if(statement->expr_root >= 0 &&
+               !verify_expression(module, function, bindings, binding_count,
+                                  statement->expr_root, 0))
+                return 0;
+            break;
+        case ZIR_STMT_EXPR:
+        case ZIR_STMT_UNUSED:
+            if(statement->expr_root < 0 ||
+               !verify_expression(module, function, bindings, binding_count,
+                                  statement->expr_root, 0))
+                return 0;
+            break;
+        case ZIR_STMT_IF: {
+            int branch = i;
+            int saw_else = 0;
+            if(is_else_branch(statement))
+                return 0;
+            do {
+                const ZirStmt *head = &function->stmts[branch];
+                close = statement_close(function, branch, end);
+                if(close < 0 || (saw_else && branch != i) ||
+                   (head->expr_root < 0 && !is_else_branch(head)))
+                    return 0;
+                if(head->expr_root < 0)
+                    saw_else = 1;
+                else if(!verify_expression(module, function, bindings,
+                                           binding_count, head->expr_root, 0))
+                    return 0;
+                if(!verify_sequence(module, function, branch + 1, close,
+                                    bindings, binding_count, loop_depth,
+                                    depth + 1))
+                    return 0;
+                branch = close + 1;
+            } while(branch < end &&
+                    is_else_branch(&function->stmts[branch]));
+            i = branch - 1;
+            break;
+        }
+        case ZIR_STMT_WHILE:
+            close = statement_close(function, i, end);
+            if(close < 0 || statement->expr_root < 0 ||
+               !verify_expression(module, function, bindings, binding_count,
+                                  statement->expr_root, 0) ||
+               !verify_sequence(module, function, i + 1, close, bindings,
+                                binding_count, loop_depth + 1, depth + 1))
+                return 0;
+            i = close;
+            break;
+        case ZIR_STMT_BLOCK_OPEN:
+            close = statement_close(function, i, end);
+            if(close < 0 || !verify_sequence(module, function, i + 1, close,
+                                             bindings, binding_count,
+                                             loop_depth, depth + 1))
+                return 0;
+            i = close;
+            break;
+        case ZIR_STMT_BREAK:
+        case ZIR_STMT_CONTINUE:
+            if(loop_depth == 0)
+                return 0;
+            break;
+        default:
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+sequence_guarantees_return(const ZirFunction *function, int begin, int end,
+                           int depth)
+{
+    if(depth >= VM_MAX_DEPTH)
+        return 0;
+    for(int i = begin; i < end; i++) {
+        const ZirStmt *statement = &function->stmts[i];
+        int close;
+        if(statement->kind == ZIR_STMT_RETURN)
+            return 1;
+        if(statement->kind == ZIR_STMT_IF &&
+           !is_else_branch(statement)) {
+            int branch = i;
+            int all_return = 1;
+            int has_else = 0;
+            do {
+                close = statement_close(function, branch, end);
+                if(close < 0)
+                    return 0;
+                all_return &= sequence_guarantees_return(function,
+                              branch + 1, close, depth + 1);
+                has_else |= function->stmts[branch].expr_root < 0;
+                branch = close + 1;
+            } while(branch < end &&
+                    is_else_branch(&function->stmts[branch]));
+            if(all_return && has_else)
+                return 1;
+            i = branch - 1;
+        } else if(statement->kind == ZIR_STMT_BLOCK_OPEN) {
+            close = statement_close(function, i, end);
+            if(close < 0)
+                return 0;
+            if(sequence_guarantees_return(function, i + 1, close, depth + 1))
+                return 1;
+            i = close;
+        } else if(statement->kind == ZIR_STMT_WHILE) {
+            close = statement_close(function, i, end);
+            if(close < 0)
+                return 0;
+            i = close;
+        } else if(statement->kind == ZIR_STMT_BREAK ||
+                  statement->kind == ZIR_STMT_CONTINUE) {
+            return 0;
+        }
+    }
+    return 0;
+}
+
 int
 VmVerify(const ZirProgram *program, const char *entry_module,
             const char *entry_function)
@@ -269,67 +458,20 @@ VmVerify(const ZirProgram *program, const char *entry_module,
                               function->name);
                 return 0;
             }
-            if(strcmp(function->return_type, "void") != 0 &&
-               (function->stmt_count == 0 ||
-                function->stmts[function->stmt_count - 1].kind != ZIR_STMT_RETURN)) {
-                Diagnostic(function->span, "zib.return",
-                           "portable scalar functions require a final return: %s",
+            if(!verify_sequence(module, function, 0, function->stmt_count,
+                                bindings, binding_count, 0, 0)) {
+                Diagnostic(function->span, "zib.statement",
+                           "function is outside the portable scalar subset: %s",
                            function->name);
                 return 0;
             }
-            for(int s = 0; s < function->stmt_count; s++) {
-                const ZirStmt *statement = &function->stmts[s];
-                int valid = 0;
-                switch(statement->kind) {
-                case ZIR_STMT_DECL:
-                    valid = !statement->is_instance &&
-                            scalar_type(statement->type) &&
-                            strcmp(statement->type, "void") != 0 &&
-                            statement->name[0] != 0 &&
-                            binding_count < VM_MAX_LOCALS &&
-                            (statement->expr_root < 0 ||
-                             verify_expression(module, function,
-                                               bindings, binding_count,
-                                               statement->expr_root, 0));
-                    if(valid) {
-                        copy_text(bindings[binding_count].name,
-                                 sizeof(bindings[binding_count].name),
-                                 statement->name);
-                        copy_text(bindings[binding_count].type,
-                                 sizeof(bindings[binding_count].type),
-                                 statement->type);
-                        binding_count++;
-                    }
-                    break;
-                case ZIR_STMT_ASSIGN:
-                    valid = statement->lhs_root >= 0 &&
-                            function->exprs[statement->lhs_root].kind == ZIR_EXPR_IDENT &&
-                            binding_index(bindings, binding_count,
-                                          function->exprs[statement->lhs_root].name) >= 0 &&
-                            strcmp(statement->assignment_op, "=") == 0 &&
-                            statement->expr_root >= 0 &&
-                            verify_expression(module, function, bindings,
-                                              binding_count, statement->expr_root, 0);
-                    break;
-                case ZIR_STMT_RETURN:
-                    valid = statement->expr_root < 0 ||
-                            verify_expression(module, function, bindings,
-                                              binding_count, statement->expr_root, 0);
-                    break;
-                case ZIR_STMT_EXPR:
-                case ZIR_STMT_UNUSED:
-                    valid = statement->expr_root >= 0 &&
-                            verify_expression(module, function, bindings,
-                                              binding_count, statement->expr_root, 0);
-                    break;
-                default:
-                    break;
-                }
-                if(!valid) {
-                    Diagnostic(statement->span, "zib.statement",
-                                  "statement is outside the portable scalar subset");
-                    return 0;
-                }
+            if(strcmp(function->return_type, "void") != 0 &&
+               !sequence_guarantees_return(function, 0,
+                                           function->stmt_count, 0)) {
+                Diagnostic(function->span, "zib.return",
+                           "portable scalar functions must return on every path: %s",
+                           function->name);
+                return 0;
             }
         }
     }
@@ -435,6 +577,126 @@ eval(Frame *frame, int index, int depth)
     return coerce(value, scalar_type(expression->type) ? expression->type : "i32");
 }
 
+static Flow
+execute_sequence(Frame *frame, int begin, int end, int depth,
+                 int64_t *result)
+{
+    Vm *vm = frame->vm;
+    const ZirFunction *function = frame->function;
+    if(depth >= VM_MAX_DEPTH)
+        return FLOW_ERROR;
+    for(int s = begin; s < end && !vm->failed; s++) {
+        const ZirStmt *statement = &function->stmts[s];
+        int close;
+        int saved_locals;
+        Flow flow;
+        if(++vm->steps > VM_MAX_STEPS)
+            return FLOW_ERROR;
+        switch(statement->kind) {
+        case ZIR_STMT_DECL: {
+            int64_t value = statement->expr_root >= 0 ?
+                eval(frame, statement->expr_root, 0) : 0;
+            if(vm->failed || frame->local_count >= VM_MAX_LOCALS)
+                return FLOW_ERROR;
+            Local *local = &frame->locals[frame->local_count++];
+            copy_text(local->name, sizeof(local->name), statement->name);
+            copy_text(local->type, sizeof(local->type), statement->type);
+            local->value = coerce(value, statement->type);
+            break;
+        }
+        case ZIR_STMT_ASSIGN: {
+            const char *name = function->exprs[statement->lhs_root].name;
+            int i = frame->local_count - 1;
+            while(i >= 0 && strcmp(frame->locals[i].name, name) != 0)
+                i--;
+            if(i < 0 || strcmp(statement->assignment_op, "=") != 0)
+                return FLOW_ERROR;
+            frame->locals[i].value = coerce(eval(frame, statement->expr_root, 0),
+                                             frame->locals[i].type);
+            break;
+        }
+        case ZIR_STMT_RETURN:
+            *result = statement->expr_root >= 0 ?
+                eval(frame, statement->expr_root, 0) : 0;
+            return vm->failed ? FLOW_ERROR : FLOW_RETURN;
+        case ZIR_STMT_EXPR:
+        case ZIR_STMT_UNUSED:
+            (void)eval(frame, statement->expr_root, 0);
+            break;
+        case ZIR_STMT_IF: {
+            int branch = s;
+            int executed = 0;
+            do {
+                const ZirStmt *head = &function->stmts[branch];
+                close = statement_close(function, branch, end);
+                if(close < 0)
+                    return FLOW_ERROR;
+                if(!executed && (head->expr_root < 0 ||
+                                 eval(frame, head->expr_root, 0))) {
+                    if(vm->failed)
+                        return FLOW_ERROR;
+                    saved_locals = frame->local_count;
+                    flow = execute_sequence(frame, branch + 1, close,
+                                            depth + 1, result);
+                    frame->local_count = saved_locals;
+                    if(flow != FLOW_NEXT)
+                        return flow;
+                    executed = 1;
+                }
+                if(vm->failed)
+                    return FLOW_ERROR;
+                branch = close + 1;
+            } while(branch < end &&
+                    is_else_branch(&function->stmts[branch]));
+            s = branch - 1;
+            break;
+        }
+        case ZIR_STMT_WHILE:
+            close = statement_close(function, s, end);
+            if(close < 0)
+                return FLOW_ERROR;
+            saved_locals = frame->local_count;
+            while(1) {
+                if(++vm->steps > VM_MAX_STEPS)
+                    return FLOW_ERROR;
+                int64_t condition = eval(frame, statement->expr_root, 0);
+                if(vm->failed)
+                    return FLOW_ERROR;
+                if(!condition)
+                    break;
+                frame->local_count = saved_locals;
+                flow = execute_sequence(frame, s + 1, close, depth + 1,
+                                        result);
+                frame->local_count = saved_locals;
+                if(flow == FLOW_RETURN || flow == FLOW_ERROR)
+                    return flow;
+                if(flow == FLOW_BREAK)
+                    break;
+            }
+            s = close;
+            break;
+        case ZIR_STMT_BLOCK_OPEN:
+            close = statement_close(function, s, end);
+            if(close < 0)
+                return FLOW_ERROR;
+            saved_locals = frame->local_count;
+            flow = execute_sequence(frame, s + 1, close, depth + 1, result);
+            frame->local_count = saved_locals;
+            if(flow != FLOW_NEXT)
+                return flow;
+            s = close;
+            break;
+        case ZIR_STMT_BREAK:
+            return FLOW_BREAK;
+        case ZIR_STMT_CONTINUE:
+            return FLOW_CONTINUE;
+        default:
+            return FLOW_ERROR;
+        }
+    }
+    return vm->failed ? FLOW_ERROR : FLOW_NEXT;
+}
+
 static int64_t
 run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
              const int64_t *args, int arg_count)
@@ -443,10 +705,11 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
     Parameter parameters[VM_MAX_PARAMS];
     int count = parse_parameters(function, parameters);
     int64_t result = 0;
-    if(vm->failed || ++vm->depth > VM_MAX_DEPTH || count != arg_count) {
+    if(vm->failed || vm->depth >= VM_MAX_DEPTH || count != arg_count) {
         vm->failed = 1;
         return 0;
     }
+    vm->depth++;
     frame.vm = vm;
     frame.module = module;
     frame.function = function;
@@ -458,53 +721,10 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
         frame.locals[i].value = coerce(args[i], parameters[i].type);
     }
     frame.local_count = count;
-    for(int s = 0; s < function->stmt_count && !vm->failed; s++) {
-        const ZirStmt *statement = &function->stmts[s];
-        if(++vm->steps > VM_MAX_STEPS) {
-            vm->failed = 1;
-            break;
-        }
-        switch(statement->kind) {
-        case ZIR_STMT_DECL:
-            if(frame.local_count >= VM_MAX_LOCALS) {
-                vm->failed = 1;
-                break;
-            }
-            copy_text(frame.locals[frame.local_count].name,
-                     sizeof(frame.locals[frame.local_count].name), statement->name);
-            copy_text(frame.locals[frame.local_count].type,
-                     sizeof(frame.locals[frame.local_count].type), statement->type);
-            frame.locals[frame.local_count++].value =
-                statement->expr_root >= 0 ?
-                coerce(eval(&frame, statement->expr_root, 0), statement->type) : 0;
-            break;
-        case ZIR_STMT_ASSIGN: {
-            const char *name = function->exprs[statement->lhs_root].name;
-            int i = frame.local_count - 1;
-            while(i >= 0 && strcmp(frame.locals[i].name, name) != 0)
-                i--;
-            if(i < 0 || strcmp(statement->assignment_op, "=") != 0) {
-                vm->failed = 1;
-                break;
-            }
-            frame.locals[i].value = coerce(eval(&frame, statement->expr_root, 0),
-                                           frame.locals[i].type);
-            break;
-        }
-        case ZIR_STMT_RETURN:
-            if(statement->expr_root >= 0)
-                result = eval(&frame, statement->expr_root, 0);
-            vm->depth--;
-            return coerce(result, function->return_type);
-        case ZIR_STMT_EXPR:
-        case ZIR_STMT_UNUSED:
-            (void)eval(&frame, statement->expr_root, 0);
-            break;
-        default:
-            vm->failed = 1;
-            break;
-        }
-    }
+    Flow flow = execute_sequence(&frame, 0, function->stmt_count, 0, &result);
+    if(flow == FLOW_ERROR || flow == FLOW_BREAK || flow == FLOW_CONTINUE ||
+       (flow != FLOW_RETURN && strcmp(function->return_type, "void") != 0))
+        vm->failed = 1;
     vm->depth--;
     return coerce(result, function->return_type);
 }

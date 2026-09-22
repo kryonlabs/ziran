@@ -23,8 +23,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   The test runs an imported two-module call and compares bundle bytes from
   source and saved IR. The current runner supports zero-argument entry
   functions, `i32`/`int`/`bool`/`void` functions, scalar parameters and locals,
-  calls, arithmetic, comparisons, assignments, and returns. It rejects host
-  imports and unsupported statements before writing a bundle.
+  calls, arithmetic, comparisons, assignments, `if`/`else`, `while`, lexical
+  blocks, `break`, `continue`, and returns. It rejects host imports and
+  unsupported statements before writing a bundle. A loop and branch program
+  is compared against generated C, C++, and Go in `make check`.
 - Extracted compiler function names no longer carry `Zir` or `zir_` prefixes;
   IR types retain `Zir` names for now.
 - `#ui`, `#style`, and old app/route forms are rejected. The embedded Kryon
@@ -46,7 +48,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   its current model, and make every other supported backend consume
   the same saved IR. Mixed `.zi`/`.zir` builds currently rerun the source
   checker across all modules.
-- Extend the `.zib` linker and verifier beyond the scalar subset: full
+- Extend the `.zib` linker and verifier beyond the scalar subset: remaining
   control flow, records, strings, arrays, slots, state, and all checked
   expressions. Add a real host capability contract and equivalent behavior
   for all supported language features. The current bundle embeds checked
