@@ -2,8 +2,9 @@
 
 Ziran is a general-purpose programming language. Source files use `.zi`,
 checked intermediate representation uses `.zir`, and portable linked programs
-use `.zib`. None of these formats requires a UI. Kryon is a separate UI
-library written in Ziran and imported like any other library.
+use `.zib`. None of these formats requires a UI. In the intended architecture,
+Kryon is a separate UI library written in Ziran and imported like any other
+library.
 
 The intended architecture is specified in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) records what the
