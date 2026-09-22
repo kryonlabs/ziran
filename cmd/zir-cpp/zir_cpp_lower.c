@@ -470,29 +470,25 @@ rewrite_body2(const ZirModule *m, const ZirCppModuleSyms *restab,
     dst[n] = '\0';
 }
 
-/* C function name: <module>_<name> (module dots -> underscores), with a
- * _kry_draw suffix for screen/body functions. */
+/* C function name: <module>_<name> (module dots -> underscores). */
 static void
 function_c_name(const ZirModule *m, const ZirFunction *fn,
                 char *dst, size_t dst_size)
 {
     char mod[LOWER_NAME_MAX];
     size_t n = 0;
-    const char *suffix = fn->is_colon ? "" : "_kry_draw";
-
-    /* '#export' keeps the plain Kry name: the symbol is project-global,
-     * not module-prefixed (legacy global_name rule). */
+    /* '#export' keeps the plain name for native callers. */
     if(fn->exported) {
-        snprintf(dst, dst_size, "%s%s", fn->name, suffix);
+        snprintf(dst, dst_size, "%s", fn->name);
         return;
     }
     if(m->name[0] != '\0' && strcmp(m->name, "main") != 0) {
         for(const char *p = m->name; *p && n + 1 < sizeof(mod); p++)
             mod[n++] = (*p == '.') ? '_' : *p;
         mod[n] = '\0';
-        snprintf(dst, dst_size, "%s_%s%s", mod, fn->name, suffix);
+        snprintf(dst, dst_size, "%s_%s", mod, fn->name);
     } else {
-        snprintf(dst, dst_size, "%s%s", fn->name, suffix);
+        snprintf(dst, dst_size, "%s", fn->name);
     }
 }
 

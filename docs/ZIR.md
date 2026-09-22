@@ -1,6 +1,6 @@
 # Ziran intermediate representation (`.zir`)
 
-This is the target contract. An experimental binary version 2 now exists for
+This is the target contract. An experimental binary version 3 now exists for
 the tested C/C++/Go subset. It is not yet the complete contract below; see
 [Implementation status](IMPLEMENTATION_STATUS.md).
 
@@ -28,7 +28,7 @@ unrelated imported function with the same type shape.
 `.zir` is the compiler interchange and cache format. Portable distribution
 uses a linked `.zib`, not an unlinked `.zir`. See [Bundle format](ZIB.md).
 
-## Experimental version 2
+## Experimental version 3
 
 The current writer emits `ZIR` followed by a zero byte, a little-endian
 version number, and length-prefixed checked module records. Strings and
@@ -37,5 +37,5 @@ not serialized. The reader rejects wrong versions, truncated records,
 oversized fields, invalid references, and trailing bytes. The C, C++, and native Go
 commands can build saved `.zir` modules, including an imported two-module
 block-call example. The reader still needs full semantic verification, and
-the portable backend does not consume this format yet. Version 2 is
+the portable backend does not consume this format yet. Version 3 is
 experimental and has no compatibility promise.

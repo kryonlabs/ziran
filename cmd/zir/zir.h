@@ -152,7 +152,6 @@ typedef struct ZirFunction {
     int exported;
     int is_extern;
     ZirExternKind extern_kind;
-    int is_colon;   /* 'Name :: (...) {' form: C name has no _kry_draw suffix */
     int is_closure; /* inline slot body, emitted at its lexical binding */
     ZirCapture *captures;
     int capture_count;

@@ -2212,15 +2212,11 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                         fn->extern_target, fn->extern_symbol,
                         sizeof(fn->extern_symbol), rel, line_no);
                 }
-                fn->is_colon = strstr(t, "::") != NULL;
-                /* '#export' on a colon function keeps the plain Kry name as
-                 * the C symbol so handwritten C and JNI entry points can call
-                 * it directly. */
-                fn->exported = fn->is_colon && strstr(t, "#export") != NULL;
+                /* '#export' keeps the plain symbol for native callers. */
+                fn->exported = strstr(t, "#export") != NULL;
                 /* Public functions are emitted in headers. */
                 fn->is_public = !is_extern &&
-                                strstr(t, "#private") == NULL &&
-                                fn->is_colon;
+                                strstr(t, "#private") == NULL;
                 if(has_body && !is_extern) {
                     mode = FUNCTION;
                     depth = 1;

@@ -12,7 +12,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   imported typed record block call named `Button` through generated C, C++,
   and native Go. Source and saved `.zir` builds execute for the tested subset.
   The call is resolved from its declaration, not its name.
-- `ziran ir` writes experimental binary `.zir` version 2 after checking all
+- `ziran ir` writes experimental binary `.zir` version 3 after checking all
   input modules together. C, C++, and Go can read saved modules without reparsing
   `.zi`; their imports are relinked from serialized module identities. The
   reader rejects malformed headers, versions, truncated data, and invalid
