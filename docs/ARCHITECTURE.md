@@ -36,6 +36,8 @@ for unrelated libraries too and pass the same checker and backend tests.
 
 Language laws constrain semantics, types, evaluation order, IR validity, and
 backend equivalence. Kryon owns its UI behavior and rendering laws.
+[Language direction](LANGUAGE_DIRECTION.md) sets the additional requirements
+for law-driven development, LLM tooling, parallel execution, and evolution.
 
 ## Compilation and execution
 

@@ -32,6 +32,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 - Complete native C++, C, and Go backend parity, FFI, capability checks, and
   language law tests independent of UI assumptions. The current `make check`
   only covers the stated C/Go subset.
+- Define and implement the law checking and parallel execution contracts in
+  [Language direction](LANGUAGE_DIRECTION.md). The current law pass checks a
+  generic post-check IR invariant; there is no general proof system, automatic
+  parallel execution, or GPU backend in this repository.
 - Rewrite Kryon's maintained runtime and widgets as importable `.zi` modules
   with platform access through declared interfaces. Kryon is still a C
   library today; no downstream application has been cut over.

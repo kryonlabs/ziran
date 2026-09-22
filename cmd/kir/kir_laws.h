@@ -2,8 +2,7 @@
 #define KIR_LAWS_H
 #include "kir.h"
 
-/* Enforce named .kry laws over parsed programs in every compiler mode.
- * Violations report `law <name>` diagnostics and fail before lowering.
- * Type-checking strictness cannot disable laws. Returns 1 when passing. */
+/* Enforce named post-check Ziran IR invariants before backend lowering.
+ * Violations carry stable law names in diagnostics. */
 int KirCheckLaws(KirProgram **programs, int count);
 #endif

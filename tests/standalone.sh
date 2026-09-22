@@ -6,11 +6,11 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 cat > "$work/hello.zi" <<'EOF'
 #module "hello"
-Text :: () -> i32 #export {
+Texture :: () -> i32 #export {
     return 42
 }
 Answer :: () -> i32 #export {
-    return Text()
+    return Texture()
 }
 EOF
 
