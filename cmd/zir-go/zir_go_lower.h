@@ -6,15 +6,10 @@
 /*
  * zir_go_lower - Zir -> Go backend.
  *
- * Emits one .go file per module into out_dir, all in one Go package. The
- * generated code calls the native Go Kryon package API. It does not thread a
- * cgo bridge or runtime object through generated functions.
- *
- * v1 scope: the declarative app subset translates fully — state blocks,
- * app metadata (-> generated main unless --no-main), frames, widget calls,
- * and scalar expressions (compound literals, casts, state refs). Imperative
- * constructs supported by the backend retain their types. Unsupported types
- * and statements fail with a source diagnostic; no placeholder code is emitted.
+ * Emits one .go file per module into out_dir, all in one Go package.
+ * Standalone language modules need no Kryon runtime. The backend still has
+ * inherited Kryon-specific lowering paths; see IMPLEMENTATION_STATUS.md.
+ * Unsupported types and statements fail with a source diagnostic.
  */
 int zir_go_lower(const ZirProgram *const *progs, int prog_count,
               const char *root, const char *out_dir, const char *pkg,

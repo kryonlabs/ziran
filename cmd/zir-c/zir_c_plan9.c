@@ -1441,7 +1441,7 @@ for_decl_split(const char *line, char *type, size_t type_size,
 /* ------------------------------------------------------------------ */
 
 int
-zir_c_plan9_rewrite_file(const char *path, int is_project)
+zir_c_plan9_rewrite_file(const char *path)
 {
     FILE *f;
     char *text;
@@ -1476,30 +1476,12 @@ zir_c_plan9_rewrite_file(const char *path, int is_project)
 
     write_text = text;
     rewritten = NULL;
-    if(is_project) {
-        char *unguarded = zir_c_plan9_rewrite_project(text);
-
-        if(unguarded != NULL) {
-            char *generic = zir_c_plan9_rewrite(unguarded);
-
-            free(unguarded);
-            if(generic == NULL) {
-                free(text);
-                return -1;
-            }
-            rewritten = generic;
-            write_text = generic;
-        }
-    } else {
-        char *generic = zir_c_plan9_rewrite(text);
-
-        if(generic == NULL) {
-            free(text);
-            return -1;
-        }
-        rewritten = generic;
-        write_text = generic;
+    rewritten = zir_c_plan9_rewrite(text);
+    if(rewritten == NULL) {
+        free(text);
+        return -1;
     }
+    write_text = rewritten;
 
     if(write_text != text) {
         f = fopen(path, "wb");
@@ -1514,45 +1496,6 @@ zir_c_plan9_rewrite_file(const char *path, int is_project)
     free(rewritten);
     free(text);
     return 0;
-}
-
-char *
-zir_c_plan9_rewrite_project(const char *text)
-{
-    static const char guarded[] =
-        "#if defined(__GNUC__) || defined(__clang__)\n"
-        "void *CreateApp(const char *project_path) __attribute__((weak));\n"
-        "void DestroyApp(void *app) __attribute__((weak));\n"
-        "void ApplyRoute(void *app, const AppRouteInfo *route) "
-        "__attribute__((weak));\n"
-        "void BeginScreenDraw(void *app, Rectangle viewport) "
-        "__attribute__((weak));\n"
-        "#endif\n";
-    static const char exposed[] =
-        "void *CreateApp(const char *project_path) __attribute__((weak));\n"
-        "void DestroyApp(void *app) __attribute__((weak));\n"
-        "void ApplyRoute(void *app, const AppRouteInfo *route) "
-        "__attribute__((weak));\n"
-        "void BeginScreenDraw(void *app, Rectangle viewport) "
-        "__attribute__((weak));\n";
-    const char *hit;
-    size_t len = strlen(text);
-    size_t guarded_len = strlen(guarded);
-    size_t exposed_len = strlen(exposed);
-    char *out;
-
-    hit = strstr(text, guarded);
-    if(hit == NULL)
-        return NULL;
-    out = malloc(len - guarded_len + exposed_len + 1);
-    if(out == NULL)
-        return NULL;
-    memcpy(out, text, (size_t)(hit - text));
-    memcpy(out + (size_t)(hit - text), exposed, exposed_len);
-    memcpy(out + (size_t)(hit - text) + exposed_len, hit + guarded_len,
-           len - (size_t)(hit - text) - guarded_len);
-    out[len - guarded_len + exposed_len] = '\0';
-    return out;
 }
 
 char *zir_c_plan9_rewrite_once(const char *text);

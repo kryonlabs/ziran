@@ -22,12 +22,14 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   removed. JSON diagnostics no longer require Kryon code.
 - UI tree and DOM property fields have been removed from the statement IR.
   App, route, style, and inspector metadata have been removed from the IR and
-  backend entry paths. The extracted implementation still has other UI-era paths.
+  backend entry paths. Generic calls named `Image` and record block calls
+  named `Button` are covered by standalone tests. The extracted implementation
+  still has other UI-era paths.
 
 ## Still required
 
 - Remove the remaining UI-specific parser, checker, IR, and backend paths,
-  including special handling of built-in widget names. Finish
+  including Go's legacy Kryon runtime and record conversion branches. Finish
   general typed block calls, named blocks, callable child slots, and imports
   for ordinary libraries. Current block-call coverage is a small leaf subset.
 - Complete semantic verification of loaded `.zir`, remove UI-era fields from

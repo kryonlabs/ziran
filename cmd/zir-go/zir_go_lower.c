@@ -23,7 +23,6 @@
 static int runtime_output;
 static const ZirModule *type_scope;
 static char instance_receiver[ZIR_NAME_MAX];
-static char current_guard[ZIR_GO_NAME_MAX];
 static char state_receiver[ZIR_NAME_MAX] = "st";
 
 typedef struct {
@@ -153,63 +152,6 @@ is_runtime_go_type(const char *type)
     if(ZirFindRuntimeType(type, NULL) != NULL)
         return 1;
 
-}
-
-static int
-is_lowered_scope_widget(const char *name)
-{
-    return strcmp(name, "DisabledScope") == 0 ||
-           strcmp(name, "DisabledEndScope") == 0 ||
-           strcmp(name, "PopupScope") == 0 ||
-           strcmp(name, "PopupEndScope") == 0 ||
-           strcmp(name, "ScrollScope") == 0 ||
-           strcmp(name, "ScrollEndScope") == 0 ||
-           strcmp(name, "TableCellScope") == 0 ||
-           strcmp(name, "TableCellEndScope") == 0 ||
-           strcmp(name, "CanvasScope") == 0 ||
-           strcmp(name, "CanvasEndScope") == 0;
-}
-
-static int
-module_uses_lowered_scope_runtime(const ZirModule *m)
-{
-    static const char *const lowered[] = {
-        "DisabledScope", "DisabledEndScope", "PopupScope", "PopupEndScope",
-        "ScrollScope", "ScrollEndScope", "TableCellScope", "TableCellEndScope",
-        "CanvasScope", "CanvasEndScope", NULL
-    };
-    for(int i = 0; i < m->function_count; i++) {
-        const ZirFunction *fn = &m->functions[i];
-        for(int j = 0; j < fn->stmt_count; j++) {
-            if(fn->stmts[j].kind == ZIR_STMT_BLOCK_CALL &&
-               is_lowered_scope_widget(fn->stmts[j].callee))
-                return 1;
-            for(int k = 0; lowered[k] != NULL; k++)
-                if(strstr(fn->stmts[j].text, lowered[k]) != NULL)
-                    return 1;
-        }
-    }
-    return 0;
-}
-
-static void
-emit_lowered_scope_runtime(FILE *f, const char *guard)
-{
-    fprintf(f, "type _%sScopeRuntime interface {\n", guard);
-    fprintf(f, "\tDisabledScope(bool)\n");
-    fprintf(f, "\tDisabledEndScope()\n");
-    fprintf(f, "\tPopupScope(kr.PopupProps) bool\n");
-    fprintf(f, "\tPopupEndScope()\n");
-    fprintf(f, "\tScrollScope(kr.Rectangle, int32, *int32) kr.Rectangle\n");
-    fprintf(f, "\tScrollEndScope()\n");
-    fprintf(f, "\tTableCellScope(kr.TableViewProps, int32, int32) kr.Rectangle\n");
-    fprintf(f, "\tTableCellEndScope()\n");
-    fprintf(f, "\tCanvasScope(canvas kr.Canvas) kr.CanvasResult\n");
-    fprintf(f, "\tCanvasEndScope(canvas kr.Canvas)\n");
-    fprintf(f, "}\n\n");
-    fprintf(f, "func _%sScopes() _%sScopeRuntime {\n", guard, guard);
-    fprintf(f, "\treturn _%sRuntime.(_%sScopeRuntime)\n", guard, guard);
-    fprintf(f, "}\n\n");
 }
 
 static void
@@ -2050,136 +1992,11 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                     continue;
                 }
             }
-            if(!runtime_output && current_guard[0] != '\0' &&
-               is_lowered_scope_widget(ident)) {
-                dn += (size_t)snprintf(dst + dn, dst_size - dn,
-                    "_%sScopes().%s", current_guard, ident);
-                p = q;
-                continue;
-            }
             if(ZirFindRuntimeEnumMember(ident) != NULL) {
                 dn += (size_t)snprintf(dst + dn, dst_size - dn, "%s%s",
                     runtime_output ? "" : ZIR_GO_RUNTIME_PKG ".", ident);
                 p = q;
                 continue;
-            }
-            /* Public Kryon constants become package constants. */
-            {
-                struct { const char *c; const char *go; } constants[] = {
-                    {"Text8", "Text8"},
-                    {"Text12", "Text12"},
-                    {"Text14", "Text14"},
-                    {"Text16", "Text16"},
-                    {"Text18", "Text18"},
-                    {"Text20", "Text20"},
-                    {"Text24", "Text24"},
-                    {"Text32", "Text32"},
-                    {"Text48", "Text48"},
-					{"TextWrapAuto", "TextWrapAuto"},
-					{"TextWrapNone", "TextWrapNone"},
-					{"TextAlignStart", "TextAlignStart"},
-					{"TextAlignCenter", "TextAlignCenter"},
-					{"TextAlignEnd", "TextAlignEnd"},
-                    {"ICON_SUN", "IconSun"},
-                    {"ICON_MOON", "IconMoon"},
-                    {"ICON_PLAY", "IconPlay"},
-                    {"ICON_PLUS", "IconPlus"},
-                    {"ICON_SAVE", "IconSave"},
-                    {"ICON_TRASH", "IconTrash"},
-					{"PopupFlagsNone", "PopupFlagsNone"},
-					{"PopupTooltip", "PopupTooltip"},
-					{"PopupModal", "PopupModal"},
-                    {"PopupContext", "PopupContext"},
-                    {"DragDropRoleSource", "DragDropRoleSource"},
-                    {"DragDropRoleTarget", "DragDropRoleTarget"},
-                    {"MenuModeBar", "MenuModeBar"},
-                    {"MenuModePopup", "MenuModePopup"},
-                    {"MenuModeContext", "MenuModeContext"},
-                    {"KEY_C", "KeyC"},
-					{"MenuCommand", "MenuCommand"},
-					{"MenuCheck", "MenuCheck"},
-					{"MenuRadio", "MenuRadio"},
-					{"MenuSeparator", "MenuSeparator"},
-					{"MenuSubmenu", "MenuSubmenu"},
-                    {"SyntaxNone", "SyntaxNone"},
-                    {"SyntaxKry", "SyntaxKry"},
-                    {"SyntaxC", "SyntaxC"},
-                    {"SyntaxMake", "SyntaxMake"},
-                    {"THEME_SOURCE_APP", "THEME_SOURCE_APP"},
-                    {"THEME_SOURCE_SYSTEM", "THEME_SOURCE_SYSTEM"},
-                    {"THEME_MODE_SYSTEM", "THEME_MODE_SYSTEM"},
-                    {"THEME_MODE_LIGHT", "THEME_MODE_LIGHT"},
-                    {"THEME_MODE_DARK", "THEME_MODE_DARK"},
-                    {"THEME_SKY", "THEME_SKY"},
-                    {"THEME_OCEAN", "THEME_OCEAN"},
-                    {"THEME_FOREST", "THEME_FOREST"},
-                    {"THEME_SUNSET", "THEME_SUNSET"},
-                    {"THEME_LAVENDER", "THEME_LAVENDER"},
-                    {"THEME_CHERRY", "THEME_CHERRY"},
-                    {"THEME_DAWN", "THEME_DAWN"},
-                    {"THEME_SAGE", "THEME_SAGE"},
-                    {"THEME_INK", "THEME_INK"},
-                    {"THEME_MONO", "THEME_MONO"},
-                    {"THEME_MINT", "THEME_MINT"},
-                    {"THEME_COBALT", "THEME_COBALT"},
-                    {"THEME_PLAN9", "THEME_PLAN9"},
-                    {"THEME_XFCE", "THEME_XFCE"},
-                    {"THEME_SWEET", "THEME_SWEET"},
-                    {"THEME_COUNT", "THEME_COUNT"},
-                    {"ImageFitStretch", "ImageFitStretch"},
-                    {"ImageFitContain", "ImageFitContain"},
-                    {"ImageFitCover", "ImageFitCover"},
-                    {"WHITE", "WHITE"},
-                    {"BLACK", "BLACK"},
-                    {"RAYWHITE", "RAYWHITE"},
-                    {"BLANK", "BLANK"},
-                    {"LIGHTGRAY", "LIGHTGRAY"},
-                    {"GRAY", "GRAY"},
-                    {"DARKGRAY", "DARKGRAY"},
-                    {"YELLOW", "YELLOW"},
-                    {"GOLD", "GOLD"},
-                    {"ORANGE", "ORANGE"},
-                    {"PINK", "PINK"},
-                    {"RED", "RED"},
-                    {"MAROON", "MAROON"},
-                    {"GREEN", "GREEN"},
-                    {"LIME", "LIME"},
-                    {"DARKGREEN", "DARKGREEN"},
-                    {"SKYBLUE", "SKYBLUE"},
-                    {"BLUE", "BLUE"},
-                    {"DARKBLUE", "DARKBLUE"},
-                    {"PURPLE", "PURPLE"},
-                    {"VIOLET", "VIOLET"},
-                    {"DARKPURPLE", "DARKPURPLE"},
-                    {"BEIGE", "BEIGE"},
-                    {"BROWN", "BROWN"},
-                    {"DARKBROWN", "DARKBROWN"},
-                    {"MAGENTA", "MAGENTA"},
-                    {NULL, NULL}
-                };
-                int matched = 0;
-
-                for(int ci = 0; constants[ci].c != NULL; ci++) {
-                    if(strlen(constants[ci].c) == il &&
-                       strncmp(constants[ci].c, ident, il) == 0) {
-                        size_t gl = strlen(constants[ci].go);
-                        int written = runtime_output ? 0 :
-                            snprintf(dst + dn, dst_size - dn,
-                                     "%s.", ZIR_GO_RUNTIME_PKG);
-                        if(written > 0)
-                            dn += (size_t)written;
-                        if(dn + gl + 1 < dst_size) {
-                            memcpy(dst + dn, constants[ci].go, gl);
-                            dn += gl;
-                        }
-                        matched = 1;
-                        break;
-                    }
-                }
-                if(matched) {
-                    p = q;
-                    continue;
-                }
             }
             if(zir_go_is_array_name(ident, il)) {
                 if(q[0] == '[' && q[1] == ':' && q[2] == ']') {
@@ -2480,25 +2297,6 @@ resolve_body_symbol(void *context, const char *text, char *out, size_t size)
         }
     }
     tx_expr(context, text, out, size);
-    if(!runtime_output && current_guard[0] != '\0') {
-        static const char *const lowered[] = {
-            "DisabledScope", "DisabledEndScope", "PopupScope", "PopupEndScope",
-            "ScrollScope", "ScrollEndScope", "TableCellScope", "TableCellEndScope",
-            "CanvasScope", "CanvasEndScope", NULL
-        };
-        for(int i = 0; lowered[i] != NULL; i++) {
-            char runtime_call[ZIR_GO_TEXT_MAX];
-            char package_call[ZIR_NAME_MAX + 8];
-            snprintf(package_call, sizeof(package_call), "%s.%s(",
-                     ZIR_GO_RUNTIME_PKG, lowered[i]);
-            if(strncmp(out, package_call, strlen(package_call)) == 0) {
-                snprintf(runtime_call, sizeof(runtime_call), "_%sScopes().%s(%s",
-                         current_guard, lowered[i], out + strlen(package_call));
-                zir_copy(out, size, runtime_call);
-                return;
-            }
-        }
-    }
     const char *arguments = strchr(text, '(');
     if(runtime_output && arguments != NULL && *instance_receiver) {
         char name[ZIR_NAME_MAX];
@@ -2531,7 +2329,6 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
 
     instance_receiver[0] = '\0';
     zir_go_local_count = 0;
-    snprintf(current_guard, sizeof(current_guard), "%s", guard);
     if(runtime_output && fn->uses_host) {
         int collision;
         int serial = 0;
@@ -2837,28 +2634,10 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
             }
             break;
         }
-        case ZIR_STMT_BLOCK_CALL: {
-            char wname[ZIR_GO_NAME_MAX];
-            char wargs[ZIR_GO_TEXT_MAX];
-            char app_runtime[ZIR_GO_NAME_MAX * 2];
-            const char *target = ZIR_GO_RUNTIME_PKG;
-
-            zir_camel_ident(st->callee, wname, sizeof(wname));
-            tx_expr(m, st->args, wargs, sizeof(wargs));
-            snprintf(app_runtime, sizeof(app_runtime), "_%sRuntime", guard);
-            emit_indent(f, indent);
-            if(is_lowered_scope_widget(wname)) {
-                snprintf(app_runtime, sizeof(app_runtime), "_%sScopes()",
-                         guard);
-                target = app_runtime;
-            }
-            if(strcmp(wname, "DisabledScope") == 0)
-                fprintf(f, "%s.DisabledScope((%s) != 0)\n",
-                        target, wargs);
-            else
-                fprintf(f, "%s.%s(%s)\n", target, wname, wargs);
-            break;
-        }
+        case ZIR_STMT_BLOCK_CALL:
+            ZirDiagnostic(st->span, "zir_go.block_call",
+                          "unlowered block call: %s", st->callee);
+            exit(1);
         case ZIR_STMT_RETURN:
         {
             const char *value = zir_skip_ws(rw);
@@ -3027,7 +2806,6 @@ zir_go_lower(const ZirProgram *const *progs, int prog_count,
             type_scope = m;
             runtime_output = runtime_implementation;
             zir_go_set_module(m, guard);
-            snprintf(current_guard, sizeof(current_guard), "%s", guard);
             fprintf(f, "// Code generated by zir_go from %s. DO NOT EDIT.\n",
                     m->source_path);
             fprintf(f, "package %s\n\n", pkg);
@@ -3058,15 +2836,6 @@ zir_go_lower(const ZirProgram *const *progs, int prog_count,
             }
             if(g_extern_count > 0)
                 fprintf(f, "\n");
-
-            int uses_lowered_scope_runtime =
-                module_uses_lowered_scope_runtime(m);
-            if(!runtime_implementation &&
-               uses_lowered_scope_runtime)
-                fprintf(f, "var _%sRuntime %s.Runtime\n\n", guard,
-                        ZIR_GO_RUNTIME_PKG);
-            if(!runtime_implementation && uses_lowered_scope_runtime)
-                emit_lowered_scope_runtime(f, guard);
 
             for(int i = 0; i < m->import_count; i++) {
                 const ZirImport *imp = &m->imports[i];

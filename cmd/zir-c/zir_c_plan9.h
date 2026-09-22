@@ -24,19 +24,12 @@ int zir_c_plan9_enabled(void);
  * caller frees. Returns NULL on out-of-memory (caller keeps original). */
 char *zir_c_plan9_rewrite(const char *text);
 
-/* Rewrite a generated file in place when the plan9 pass is enabled
- * (weak-declaration exposure for project files, then the generic pass).
+/* Rewrite a generated file in place when the plan9 pass is enabled.
  * Returns 0 on success. */
-int zir_c_plan9_rewrite_file(const char *path, int is_project);
+int zir_c_plan9_rewrite_file(const char *path);
 
 /* Number of __auto_type declarations left unresolved by the last
  * zir_c_plan9_rewrite call (reported once per run by main). */
 int zir_c_plan9_unresolved(void);
-
-/* Drop the __GNUC__ guard around the weak app-lifecycle declarations in
- * generated project files: the native cpp does not define __GNUC__, so
- * the guarded block would compile out and leave the calls without
- * prototypes. */
-char *zir_c_plan9_rewrite_project(const char *text);
 
 #endif

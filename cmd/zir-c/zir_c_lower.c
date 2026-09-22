@@ -1802,7 +1802,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
         emit_guard_close(c, fn->guard);
     }
     fclose(c);
-    zir_c_plan9_rewrite_file(cpath, 0);
+    zir_c_plan9_rewrite_file(cpath);
 }
 
 void

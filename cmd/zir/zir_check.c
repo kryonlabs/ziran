@@ -1200,11 +1200,10 @@ resolve_block_calls(Checker *c)
         const ZirFunction *declaration = NULL;
         int resolved = ZirResolveFunction(c->module, statement->callee, &owner, &declaration);
         if(!statement->declared_block_call) {
-            if(resolved == 1) {
-                statement->kind = ZIR_STMT_EXPR;
-                changed = 1;
-            }
-            continue;
+            ZirDiagnostic(statement->span, "check.block_call",
+                          "block call has no declared syntax: %s", statement->callee);
+            c->failed = 1;
+            return 0;
         }
         char parameters[64][ZIR_TEXT_MAX];
         int count = declaration ? zir_split_top(declaration->args, parameters[0], 64, sizeof(parameters[0])) : 0;

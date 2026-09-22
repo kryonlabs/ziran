@@ -156,7 +156,7 @@ typedef struct ZirFunction {
     int is_closure; /* inline slot body, emitted at its lexical binding */
     ZirCapture *captures;
     int capture_count;
-    int is_public;  /* exported function or project route */
+    int is_public;  /* function emitted in generated interfaces */
     int checked;    /* shared checker resolved the function without errors */
     int uses_host; /* direct or transitive host services or retained-state access */
     char extern_target[ZIR_NAME_MAX];   /* '#extern "pkg.Fn"' quoted symbol */
