@@ -30,8 +30,4 @@ void zir_cpp_build_syms(const ZirProgram *program, ZirCppModuleSyms *out);
 void zir_cpp_function_c_name(const ZirModule *m, const ZirFunction *fn,
                          char *dst, size_t dst_size);
 
-/* zir_cpp_project.c — kryon_project.h/.c (app-host ABI) after all files lower. */
-void zir_cpp_write_project(ZirProgram *const *progs, int prog_count,
-                       const char *root, const char *out_dir, int no_main);
-
 #endif

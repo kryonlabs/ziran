@@ -21,6 +21,7 @@ case "$command" in
         case "$1" in
             --target=c) shift; exec "$bin_dir/ziran-c" --no-main "$@" ;;
             --target=go) shift; exec "$bin_dir/ziran-go" --no-main "$@" ;;
+            --target=cpp) shift; exec "$bin_dir/ziran-cpp" --no-main "$@" ;;
             *) usage ;;
         esac
         ;;

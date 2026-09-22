@@ -1,16 +1,14 @@
 /*
  * ziran-cpp - .zi -> C++ compiler. Zir is the shared frontend: every .zi parses
- * into a ZirProgram (zir_parse.c) and lowers to C++ source that calls the
- * C Kryon runtime through extern "C" (zir_cpp_lower.c). All inputs are parsed
- * first so cross-module calls resolve through one symbol table. Emitted
- * declarations keep C linkage so generated modules interop with k2c output
- * and the plain-C kryon_project files.
+ * into a ZirProgram and lowers to C++ source. All inputs are loaded before
+ * cross-module symbol resolution.
  */
 #include "zir.h"
 #include "zir_parse.h"
 #include "zir_check.h"
 #include "zir_laws.h"
 #include "zir_diagnostic.h"
+#include "zir_serial.h"
 #include "zir_cpp_lower.h"
 
 #include <stdio.h>
@@ -34,6 +32,7 @@ main(int argc, char **argv)
     int strict = 0;
     int check_ok;
     int laws_ok;
+    int all_ir = 1;
     ZirProgram **progs;
     ZirCppModuleSyms *syms;
     int file_count;
@@ -77,7 +76,8 @@ main(int argc, char **argv)
     }
     /* Pass 1: parse every file, build the cross-module symbol table. */
     for(i = 0; i < file_count; i++) {
-        progs[i] = zir_parse_file(argv[first_file + i], root);
+        all_ir &= ZirPathIsZir(argv[first_file + i]);
+        progs[i] = ZirProgramLoad(argv[first_file + i], root);
         if(progs[i] == NULL) {
             fprintf(stderr, "ziran-cpp: failed to parse %s\n",
                     argv[first_file + i]);
@@ -85,7 +85,8 @@ main(int argc, char **argv)
         }
         zir_cpp_build_syms(progs[i], &syms[i]);
     }
-    check_ok = ZirCheckPrograms(progs, file_count, strict);
+    check_ok = all_ir ? ZirLinkImports(progs, file_count) :
+                        ZirCheckPrograms(progs, file_count, strict);
     laws_ok = ZirCheckLaws(progs, file_count);
     if(!check_ok || !laws_ok) {
         for(i = 0; i < file_count; i++) ZirProgramFree(progs[i]);
@@ -96,7 +97,7 @@ main(int argc, char **argv)
     /* Pass 2: lower with full cross-module resolution. */
     for(i = 0; i < file_count; i++)
         zir_cpp_lower(progs[i], root, out_dir, syms, file_count);
-    zir_cpp_write_project(progs, file_count, root, out_dir, no_main);
+    (void)no_main;
     for(i = 0; i < file_count; i++)
         ZirProgramFree(progs[i]);
     free(progs);

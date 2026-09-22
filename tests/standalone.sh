@@ -38,6 +38,21 @@ ${CC:-cc} -Iinclude -I"$work/c" "$work/c/hello.c" "$work/main.c" -o "$work/hello
 ${CC:-cc} -Iinclude -I"$work/c-ir" "$work/c-ir/hello.c" "$work/main.c" \
     -o "$work/hello-from-ir"
 "$work/hello-from-ir"
+"$ziran" build --target=cpp --strict --root "$work" -o "$work/cpp" \
+    "$work/hello.zi"
+cat > "$work/cpp/main.cpp" <<'EOF'
+#include "hello.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+EOF
+${CXX:-c++} -Iinclude -I"$work/cpp" "$work/cpp/hello.cpp" \
+    "$work/cpp/main.cpp" -o "$work/hello-cpp"
+"$work/hello-cpp"
+"$ziran" build --target=cpp --strict --root "$work" -o "$work/cpp-ir" \
+    "$work/ir/hello.zir"
+cp "$work/cpp/main.cpp" "$work/cpp-ir/main.cpp"
+${CXX:-c++} -Iinclude -I"$work/cpp-ir" "$work/cpp-ir/hello.cpp" \
+    "$work/cpp-ir/main.cpp" -o "$work/hello-cpp-ir"
+"$work/hello-cpp-ir"
 "$ziran" build --target=go --strict --pkg main --root "$work" -o "$work/go" "$work/hello.zi"
 test -s "$work/go/hello.go"
 cat > "$work/go/main.go" <<'EOF'
@@ -127,6 +142,23 @@ ${CC:-cc} -Iinclude -I"$work/blocks-from-ir" \
 cp "$work/blocks-go/main.go" "$work/blocks-go-ir/main.go"
 GO111MODULE=off go run "$work/blocks-go-ir/blocklib.go" \
     "$work/blocks-go-ir/blockapp.go" "$work/blocks-go-ir/main.go"
+"$ziran" build --target=cpp --strict --root "$work" -o "$work/blocks-cpp" \
+    "$work/blocklib.zi" "$work/blockapp.zi"
+cat > "$work/blocks-cpp/main.cpp" <<'EOF'
+#include "blockapp.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+EOF
+${CXX:-c++} -Iinclude -I"$work/blocks-cpp" \
+    "$work/blocks-cpp/blocklib.cpp" "$work/blocks-cpp/blockapp.cpp" \
+    "$work/blocks-cpp/main.cpp" -o "$work/blocks-cpp/app"
+"$work/blocks-cpp/app"
+"$ziran" build --target=cpp --strict --root "$work" -o "$work/blocks-cpp-ir" \
+    "$work/blocks-ir/blocklib.zir" "$work/blocks-ir/blockapp.zir"
+cp "$work/blocks-cpp/main.cpp" "$work/blocks-cpp-ir/main.cpp"
+${CXX:-c++} -Iinclude -I"$work/blocks-cpp-ir" \
+    "$work/blocks-cpp-ir/blocklib.cpp" "$work/blocks-cpp-ir/blockapp.cpp" \
+    "$work/blocks-cpp-ir/main.cpp" -o "$work/blocks-cpp-ir/app"
+"$work/blocks-cpp-ir/app"
 
 python3 - "$work/blocks-ir/blockapp.zir" "$work/corrupt.zir" <<'PY'
 from pathlib import Path

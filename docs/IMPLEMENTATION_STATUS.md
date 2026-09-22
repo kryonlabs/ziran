@@ -5,15 +5,15 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 
 ## Working now
 
-- The compiler frontend and C/Go backends have been extracted into a separate
+- The compiler frontend and C/C++/Go backends have been extracted into a separate
   Ziran repository. `build/bin/ziran` exposes `check`, `ir`, and
-  `build --target=c|go` for `.zi` input.
+  `build --target=c|cpp|go` for `.zi` input.
 - `make check` passes standalone non-UI programs, a two-module import, and an
-  imported typed record block call named `Button` through generated C and
-  native Go. Source and saved `.zir` builds execute for the tested subset.
+  imported typed record block call named `Button` through generated C, C++,
+  and native Go. Source and saved `.zir` builds execute for the tested subset.
   The call is resolved from its declaration, not its name.
 - `ziran ir` writes experimental binary `.zir` version 1 after checking all
-  input modules together. C and Go can read saved modules without reparsing
+  input modules together. C, C++, and Go can read saved modules without reparsing
   `.zi`; their imports are relinked from serialized module identities. The
   reader rejects malformed headers, versions, truncated data, and invalid
   structural references. Deterministic output is checked on a sample.
@@ -30,7 +30,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   general typed block calls, named blocks, callable child slots, and imports
   for ordinary libraries. Current block-call coverage is a small leaf subset.
 - Complete semantic verification of loaded `.zir`, remove UI-era fields from
-  its current model, and make C++ and every other supported backend consume
+  its current model, and make every other supported backend consume
   the same saved IR. Mixed `.zi`/`.zir` builds currently rerun the source
   checker across all modules.
 - Implement the general `.zib` linker, verifier, loader, runtime, and explicit
@@ -38,7 +38,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   Kryon's old `.krb` compiler remains in Kryon.
 - Complete native C++, C, and Go backend parity, FFI, capability checks, and
   language law tests independent of UI assumptions. The current `make check`
-  only covers the stated C/Go subset.
+  only covers the stated C/C++/Go subset.
 - Define and implement the law checking and parallel execution contracts in
   [Language direction](LANGUAGE_DIRECTION.md). The current law pass checks a
   generic post-check IR invariant; there is no general proof system, automatic
