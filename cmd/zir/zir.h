@@ -108,19 +108,6 @@ typedef struct ZirImport {
     const struct ZirModule *resolved_module; /* borrowed from the checked program set */
 } ZirImport;
 
-typedef enum ZirStyleImportKind {
-    ZIR_STYLE_IMPORT_FILE = 1,
-    ZIR_STYLE_IMPORT_BUILTIN
-} ZirStyleImportKind;
-
-typedef struct ZirStyleImport {
-    ZirStyleImportKind kind;
-    char alias[ZIR_NAME_MAX];
-    char target[ZIR_PATH_MAX];
-    char guard[ZIR_TEXT_MAX];   /* enclosing '#if' condition (expanded) */
-    ZirSourceSpan span;
-} ZirStyleImport;
-
 typedef struct ZirStmt {
     ZirStmtKind kind;
     char text[ZIR_TEXT_MAX];
@@ -169,7 +156,6 @@ typedef struct ZirFunction {
     int is_closure; /* inline slot body, emitted at its lexical binding */
     ZirCapture *captures;
     int capture_count;
-    int is_ui;      /* '#ui' function: declares a retained UI hierarchy */
     int is_public;  /* exported function or project route */
     int checked;    /* shared checker resolved the function without errors */
     int uses_host; /* direct or transitive host services or retained-state access */
@@ -238,40 +224,10 @@ int ZirSliceElementType(const char *type, char *element, size_t element_size);
 int ZirArrayElementType(const char *type, char *element, size_t element_size,
                         int *capacity);
 
-typedef struct ZirAppMeta {
-    int has_app;
-    char title[ZIR_NAME_MAX];
-    int width;
-    int height;
-    int fps;
-    char theme[ZIR_NAME_MAX];
-    int dark_mode;
-    int font_examples;
-    char frame[ZIR_NAME_MAX];
-    char before_window[ZIR_NAME_MAX];
-    char init[ZIR_NAME_MAX];
-    char after_frame[ZIR_NAME_MAX];
-    char should_continue[ZIR_NAME_MAX];
-    char scene[ZIR_NAME_MAX];
-    char shutdown[ZIR_NAME_MAX];
-} ZirAppMeta;
-
-typedef struct ZirRoute {
-    char id[ZIR_NAME_MAX];
-    char title[ZIR_NAME_MAX];
-    char group[ZIR_NAME_MAX];
-    char page[ZIR_NAME_MAX];
-    char path[ZIR_PATH_MAX];
-    char guard[ZIR_TEXT_MAX];
-    ZirSourceSpan span;
-} ZirRoute;
-
 typedef struct ZirModule {
     char name[ZIR_NAME_MAX];
     char source_path[ZIR_PATH_MAX];
-    int inspect_calls;
     ZirSourceSpan span;
-    ZirAppMeta app;
     ZirGlobal *globals;
     int global_count;
     int global_cap;
@@ -290,12 +246,6 @@ typedef struct ZirModule {
     ZirImport *imports;
     int import_count;
     int import_cap;
-    ZirStyleImport *style_imports;
-    int style_import_count;
-    int style_import_cap;
-    ZirRoute *routes;
-    int route_count;
-    int route_cap;
     ZirFunction *functions;
     int function_count;
     int function_cap;
@@ -334,11 +284,6 @@ ZirImport *ZirModuleAddImport(ZirModule *module, ZirImportKind kind,
                               const char *name, const char *target,
                               const char *signature, int required,
                               ZirSourceSpan span);
-ZirStyleImport *ZirModuleAddStyleImport(ZirModule *module,
-                                        ZirStyleImportKind kind,
-                                        const char *target,
-                                        const char *alias,
-                                        ZirSourceSpan span);
 ZirFunction *ZirModuleAddFunction(ZirModule *module, const char *name,
                                   const char *args, const char *return_type,
                                   int exported, ZirSourceSpan span);
@@ -352,8 +297,6 @@ ZirAssert *ZirModuleAddAssert(ZirModule *module, const char *condition,
                               const char *message, ZirSourceSpan span);
 ZirType *ZirModuleAddType(ZirModule *module, const char *name,
                           ZirSourceSpan span);
-ZirRoute *ZirModuleAddRoute(ZirModule *module, const char *id,
-                            ZirSourceSpan span);
 ZirStmt *ZirFunctionAddStmt(ZirFunction *fn, ZirStmtKind kind,
                             const char *text, const char *callee,
                             ZirSourceSpan span);

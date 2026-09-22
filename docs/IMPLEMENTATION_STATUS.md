@@ -12,7 +12,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   imported typed record block call named `Button` through generated C, C++,
   and native Go. Source and saved `.zir` builds execute for the tested subset.
   The call is resolved from its declaration, not its name.
-- `ziran ir` writes experimental binary `.zir` version 1 after checking all
+- `ziran ir` writes experimental binary `.zir` version 2 after checking all
   input modules together. C, C++, and Go can read saved modules without reparsing
   `.zi`; their imports are relinked from serialized module identities. The
   reader rejects malformed headers, versions, truncated data, and invalid
@@ -21,12 +21,13 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   runtime declarations and copied `src/kry_std` implementation have been
   removed. JSON diagnostics no longer require Kryon code.
 - UI tree and DOM property fields have been removed from the statement IR.
-  The extracted implementation still has other UI-era structures and paths.
+  App, route, style, and inspector metadata have been removed from the IR and
+  backend entry paths. The extracted implementation still has other UI-era paths.
 
 ## Still required
 
 - Remove the remaining UI-specific parser, checker, IR, and backend paths,
-  including old style/app/route structures. Finish
+  including special handling of built-in widget names. Finish
   general typed block calls, named blocks, callable child slots, and imports
   for ordinary libraries. Current block-call coverage is a small leaf subset.
 - Complete semantic verification of loaded `.zir`, remove UI-era fields from

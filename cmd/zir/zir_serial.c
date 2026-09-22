@@ -33,6 +33,7 @@ typedef struct Reader {
 #define SPAN_FIELD(type, name) \
     {offsetof(type, name), sizeof(((type *)0)->name), FIELD_SPAN}
 #define FIELD_COUNT(fields) (sizeof(fields) / sizeof((fields)[0]))
+#define ZIR_FORMAT_VERSION 2u
 
 static const Field state_fields[] = {
     STRING_FIELD(ZirStateField, name), STRING_FIELD(ZirStateField, type),
@@ -101,7 +102,7 @@ static const Field type_fields[] = {
 };
 static const Field module_fields[] = {
     STRING_FIELD(ZirModule, name), STRING_FIELD(ZirModule, source_path),
-    INTEGER_FIELD(ZirModule, inspect_calls), SPAN_FIELD(ZirModule, span)
+    SPAN_FIELD(ZirModule, span)
 };
 
 static int
@@ -291,8 +292,6 @@ read_records(Reader *reader, int *count, size_t size,
 static int
 write_function(FILE *out, const ZirFunction *function)
 {
-    if(function->is_ui)
-        return 0;
     return write_fields(out, function, function_fields, FIELD_COUNT(function_fields)) &&
            WRITE_ARRAY(out, function, captures, capture_count, capture_fields) &&
            WRITE_ARRAY(out, function, stmts, stmt_count, statement_fields) &&
@@ -315,8 +314,6 @@ read_function(Reader *reader, ZirFunction *function)
 static int
 write_module(FILE *out, const ZirModule *module)
 {
-    if(module->app.has_app || module->style_import_count || module->route_count)
-        return 0;
     if(!write_fields(out, module, module_fields, FIELD_COUNT(module_fields)) ||
        !WRITE_ARRAY(out, module, globals, global_count, global_fields) ||
        !WRITE_ARRAY(out, module, defines, define_count, define_fields) ||
@@ -388,7 +385,7 @@ validate_program(const ZirProgram *program)
                 return 0;
         for(int f = 0; f < module->function_count; f++) {
             const ZirFunction *function = &module->functions[f];
-            if(!function->name[0] || function->is_ui)
+            if(!function->name[0])
                 return 0;
             for(int s = 0; s < function->stmt_count; s++) {
                 const ZirStmt *statement = &function->stmts[s];
@@ -420,7 +417,8 @@ ZirProgramWriteZir(const ZirProgram *program, FILE *out)
     static const unsigned char magic[4] = {'Z', 'I', 'R', 0};
     if(program == NULL || out == NULL || !validate_program(program) ||
        fwrite(magic, 1, sizeof(magic), out) != sizeof(magic) ||
-       !write_u32(out, 1) || !write_u32(out, (uint32_t)program->module_count))
+       !write_u32(out, ZIR_FORMAT_VERSION) ||
+       !write_u32(out, (uint32_t)program->module_count))
         return 0;
     for(int i = 0; i < program->module_count; i++)
         if(!write_module(out, &program->modules[i]))
@@ -444,7 +442,7 @@ ZirProgramReadZir(FILE *in, const char *path)
     }
     if(!read_u32(&reader, &version))
         goto failed;
-    if(version != 1) {
+    if(version != ZIR_FORMAT_VERSION) {
         reader.problem = "unsupported ZIR version";
         goto failed;
     }

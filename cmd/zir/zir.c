@@ -336,12 +336,10 @@ ZirProgramFree(ZirProgram *program)
         free(m->state_fields);
         free(m->globals);
         free(m->imports);
-        free(m->style_imports);
         free(m->functions);
         free(m->defines);
         free(m->asserts);
         free(m->types);
-        free(m->routes);
     }
     free(program->modules);
     free(program);
@@ -385,7 +383,6 @@ ZirProgramAddModule(ZirProgram *program, const char *name,
     memset(m, 0, sizeof(*m));
     zir_copy(m->name, sizeof(m->name), name);
     zir_copy(m->source_path, sizeof(m->source_path), source_path);
-    m->inspect_calls = 1;
     m->span = span;
     return m;
 }
@@ -435,32 +432,6 @@ ZirModuleAddImport(ZirModule *module, ZirImportKind kind, const char *name,
     zir_copy(imp->target, sizeof(imp->target), target);
     zir_copy(imp->signature, sizeof(imp->signature), signature);
     imp->required = required;
-    imp->span = span;
-    return imp;
-}
-
-ZirStyleImport *
-ZirModuleAddStyleImport(ZirModule *module, ZirStyleImportKind kind,
-                        const char *target, const char *alias,
-                        ZirSourceSpan span)
-{
-    ZirStyleImport *imports;
-    ZirStyleImport *imp;
-
-    if(module == NULL)
-        return NULL;
-    imports = zir_realloc_array(module->style_imports,
-                                &module->style_import_cap,
-                                module->style_import_count,
-                                sizeof(ZirStyleImport));
-    if(imports == NULL)
-        return NULL;
-    module->style_imports = imports;
-    imp = &module->style_imports[module->style_import_count++];
-    memset(imp, 0, sizeof(*imp));
-    imp->kind = kind;
-    zir_copy(imp->target, sizeof(imp->target), target);
-    zir_copy(imp->alias, sizeof(imp->alias), alias);
     imp->span = span;
     return imp;
 }
@@ -583,29 +554,6 @@ ZirModuleAddType(ZirModule *module, const char *name, ZirSourceSpan span)
              sizeof(module->types[0].name), name);
     module->types[module->type_count].span = span;
     return &module->types[module->type_count++];
-}
-
-ZirRoute *
-ZirModuleAddRoute(ZirModule *module, const char *id, ZirSourceSpan span)
-{
-    ZirRoute *routes;
-    ZirRoute *route;
-
-    if(module == NULL)
-        return NULL;
-    routes = zir_realloc_array(module->routes, &module->route_cap,
-                               module->route_count, sizeof(ZirRoute));
-    if(routes == NULL)
-        return NULL;
-    module->routes = routes;
-    route = &module->routes[module->route_count++];
-    memset(route, 0, sizeof(*route));
-    zir_copy(route->id, sizeof(route->id), id);
-    zir_copy(route->title, sizeof(route->title), id);
-    zir_copy(route->group, sizeof(route->group), "Project");
-    zir_copy(route->page, sizeof(route->page), id);
-    route->span = span;
-    return route;
 }
 
 ZirStmt *
@@ -801,23 +749,6 @@ ZirProgramDump(const ZirProgram *program, FILE *out)
         fprintf(out, "module %s source %s span ", m->name, m->source_path);
         zir_dump_span(out, m->span);
         fprintf(out, "\n");
-        if(m->app.has_app) {
-            fprintf(out, "  app title %s size %dx%d fps %d theme %s "
-                    "dark %d font_examples %d frame %s before_window %s "
-                    "init %s after_frame %s should_continue %s scene %s "
-                    "shutdown %s\n",
-                    m->app.title[0] ? m->app.title : "\"\"",
-                    m->app.width, m->app.height, m->app.fps,
-                    m->app.theme[0] ? m->app.theme : "",
-                    m->app.dark_mode, m->app.font_examples,
-                    m->app.frame[0] ? m->app.frame : "",
-                    m->app.before_window[0] ? m->app.before_window : "",
-                    m->app.init[0] ? m->app.init : "",
-                    m->app.after_frame[0] ? m->app.after_frame : "",
-                    m->app.should_continue[0] ? m->app.should_continue : "",
-                    m->app.scene[0] ? m->app.scene : "",
-                    m->app.shutdown[0] ? m->app.shutdown : "");
-        }
         for(j = 0; j < m->import_count; j++) {
             const ZirImport *imp = &m->imports[j];
 
@@ -832,30 +763,12 @@ ZirProgramDump(const ZirProgram *program, FILE *out)
             zir_dump_span(out, imp->span);
             fprintf(out, "\n");
         }
-        for(j = 0; j < m->style_import_count; j++) {
-            const ZirStyleImport *imp = &m->style_imports[j];
-
-            fprintf(out, "  style %s target %s alias %s span ",
-                    imp->kind == ZIR_STYLE_IMPORT_BUILTIN ? "builtin" : "file",
-                    imp->target, imp->alias);
-            zir_dump_span(out, imp->span);
-            fprintf(out, "\n");
-        }
         for(j = 0; j < m->state_count; j++) {
             const ZirStateField *f = &m->state_fields[j];
 
             fprintf(out, "  state %s type %s init %s span ",
                     f->name, f->type, f->init);
             zir_dump_span(out, f->span);
-            fprintf(out, "\n");
-        }
-        for(j = 0; j < m->route_count; j++) {
-            const ZirRoute *route = &m->routes[j];
-
-            fprintf(out, "  route %s title %s group %s page %s path %s span ",
-                    route->id, route->title, route->group, route->page,
-                    route->path);
-            zir_dump_span(out, route->span);
             fprintf(out, "\n");
         }
         for(j = 0; j < m->assert_count; j++) {

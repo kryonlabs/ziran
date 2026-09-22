@@ -107,14 +107,6 @@ static int is_module_alias(const ZirModule *m, const char *alias,
 static void function_c_name(const ZirModule *m, const ZirFunction *fn,
                             char *dst, size_t dst_size);
 
-static int
-function_name_needs_global_prefix(const char *name)
-{
-    return strcmp(name, "App") == 0 ||
-           strcmp(name, "AppHost") == 0 ||
-           strcmp(name, "AppRouteInfo") == 0;
-}
-
 /* If ident (len chars, followed by '(') names a function in this module,
  * write its full C name into dst and return its length; else return 0. */
 static size_t
@@ -499,8 +491,6 @@ function_c_name(const ZirModule *m, const ZirFunction *fn,
             mod[n++] = (*p == '.') ? '_' : *p;
         mod[n] = '\0';
         snprintf(dst, dst_size, "%s_%s%s", mod, fn->name, suffix);
-    } else if(function_name_needs_global_prefix(fn->name)) {
-        snprintf(dst, dst_size, "kry_%s%s", fn->name, suffix);
     } else {
         snprintf(dst, dst_size, "%s%s", fn->name, suffix);
     }
@@ -755,30 +745,7 @@ emit_call_wrap(FILE *c, const ZirModule *m, const ZirCppModuleSyms *restab,
         fprintf(c, "    %s\n", rw);
         return;
     }
-    if(!m->inspect_calls) {
-        fprintf(c, "    %s;\n", rw);
-        return;
-    }
-    int defines_push = 0;
-    int defines_pop = 0;
-    for(int i = 0; i < m->function_count; i++) {
-        if(strcmp(m->functions[i].name, "PushInspectSource") == 0)
-            defines_push = 1;
-        if(strcmp(m->functions[i].name, "PopInspectSource") == 0)
-            defines_pop = 1;
-    }
-    if(defines_push && defines_pop) {
-        fprintf(c, "    %s;\n", rw);
-        return;
-    }
-    {
-        char esc[ZIR_PATH_MAX * 2];
-
-        zir_escape_c_string(m->source_path, esc, sizeof(esc));
-        fprintf(c, "    PushInspectSource(\"%s\", %d);\n", esc, line);
-    }
     fprintf(c, "    %s;\n", rw);
-    fprintf(c, "    PopInspectSource();\n");
 }
 
 typedef struct BodySymbols {

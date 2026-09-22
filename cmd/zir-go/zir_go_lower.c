@@ -7,7 +7,6 @@
 #include "zir_check.h"
 #include "zir_expr.h"
 #include "zir_diagnostic.h"
-#include "zir_style_imports.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -153,42 +152,7 @@ is_runtime_go_type(const char *type)
 {
     if(ZirFindRuntimeType(type, NULL) != NULL)
         return 1;
-    static const char *types[] = {
-		"Animation", "AnimTrack", "Keyframe", "AnimInterp", "NodeId",
-		"KeyID",
-		"Accelerator",
-		"MenuItemKind", "MenuItem", "MenuGroup", "MenuMode", "MenuResult", "MenuProps",
-        "TextAlign", "TextWrap",
-        "Theme", "ThemeFamily", "ThemeColors", "ThemeMetrics",
-        "SyntaxMode", "ThemeStyle", "ThemeSource",
-        "ThemeMode", "ImageFit", "ImageStyle", "SemanticKind",
-        "SelectableProps", "CheckboxProps", "ToggleProps",
-		"Tab", "TabBarProps",
-        "TextFieldProps", "TextAreaProps", "ColumnProps", "RowProps",
-        "ParagraphSpec", "ImageProps", "PageProps",
-        "SectionProps", "HeadingProps", "ParagraphTextProps", "LinkProps",
-        "FlowProps", "GridProps", "TitleBarDropdown", "TitleBarProps",
-        "NavigationBarItem", "NavigationBarProps",
-		"ToolbarProps", "CardProps", "RadioProps", "ProgressProps", "PlotProps",
-		"NumericValueKind", "DragMode", "DragProps", "SliderProps", "InputProps",
-		"TextProps", "SeparatorProps", "DragDropRole", "DragDropProps",
-		"ToastProps",
-		"ColorPickerProps",
-		"SpinboxProps", "DropdownOption", "DropdownProps",
-		"SegmentOption", "SegmentedControlProps", "SegmentedControlResult",
-		"PopupFlags", "PopupProps",
-		"FieldsetProps", "ListBoxProps",
-		"TreeItem", "TreeViewProps",
-        "TableRow", "TableViewProps",
-        "PanedViewProps", "CollapsibleProps", "ModalAction", "ModalProps",
-        "Canvas",
-        "CanvasResult", NULL
-    };
 
-    for(int i = 0; types[i] != NULL; i++)
-        if(strcmp(type, types[i]) == 0)
-            return 1;
-    return 0;
 }
 
 static int
@@ -1153,153 +1117,7 @@ props_field_at(const ZirModule *module, const char *type, int index,
         }
         return 0;
     }
-    static const struct {
-        const char *type;
-        const char *fields[40];
-    } table[] = {
-        {"Canvas", {"Bounds", "ClassName", "ScrollX", "ScrollY", "Zoom"}},
-        {"CanvasResult", {"Active", "Dragging", "SelectedIndex", "World"}},
-        {"ColumnProps", {"Bounds", "Gap", "Padding", "Key"}},
-        {"FlowProps", {"Bounds", "Gap", "Padding", "Key"}},
-        {"GridProps", {"Bounds", "Columns", "MinItemWidth", "MaxColumns", "Gap", "Padding", "Key"}},
-        {"PageProps", {"Bounds", "Title", "Description", "CanonicalURL",
-                       "ClassName", "Key"}},
-        {"SectionProps", {"Bounds", "Label", "ClassName", "Key"}},
-        {"HeadingProps", {"Bounds", "Text", "Level", "ClassName", "Key"}},
-        {"ParagraphTextProps", {"Bounds", "Text", "ClassName", "Key"}},
-        {"LinkProps", {"Bounds", "ClassName", "Text", "Link", "FocusID",
-                       "Disabled"}},
-        {"TitleBarDropdown", {"ID", "Options", "OptionCount",
-                              "SelectedIndex", "Disabled", "MinWidth",
-                              "Height"}},
-        {"TitleBarProps", {"Title", "ClassName", "Height", "LeadingIcon",
-                           "HasLeadingAction", "Dropdown", "HasDropdown"}},
-        {"CardProps", {"Bounds", "ID", "Clickable", "Disabled", "Selected",
-                       "State", "Style"}},
-        {"ImageProps", {"AssetPath", "AltText", "Bounds", "Source", "Origin",
-                          "Rotation", "Fit", "Style"}},
-        {"ImageStyle", {"Enabled", "Background", "TonalOverlay",
-                          "SurfaceOverlay", "ScrimTop", "ScrimBottom",
-                          "Outline", "Roundness", "RadiusPx", "Segments",
-                          "OutlinePx"}},
-        {"FieldsetProps", {"Bounds", "ClassName", "Title"}},
-        {"ParagraphSpec", {"Text", "Icon", "IconType", "IconSize", "Width",
-                             "Font", "LineGap", "Align", "ClassName"}},
-        {"ThemeFamily", {"Name", "Light", "Dark"}},
-        {"SelectableProps", {"Bounds", "ID", "ClassName", "Label", "Selected", "Disabled"}},
-        {"CheckboxProps", {"Bounds", "ID", "ClassName", "Label", "Value", "Flags",
-                                "FlagsValue", "Disabled"}},
-        {"ToggleProps", {"Bounds", "ID", "ClassName", "Value", "OffLabel", "OnLabel",
-                         "Disabled"}},
-		{"Tab", {"Label", "Icon", "Disabled", "Closeable"}},
-		{"TabBarProps", {"Bounds", "ClassName", "Tabs", "Count", "SelectedIndex",
-		                 "MinTabWidth", "MaxTabWidth", "ScrollOffset",
-		                 "FocusSelected", "ClosedIndex", "DoubleClickedIndex",
-		                 "ReorderedFromIndex", "ReorderedToIndex",
-		                 "SelectedTabBounds", "MiddleClickedIndex", "ID",
-		                 "Disabled"}},
-        {"RadioProps", {"Bounds", "ClassName", "Label", "ID", "Checked",
-                              "Disabled"}},
-		{"ProgressProps", {"Bounds", "ClassName", "Min", "Max", "Value", "Label"}},
-		{"PlotProps", {"Bounds", "ClassName", "Label", "Values", "ValueCount", "Offset",
-		               "Overlay", "ScaleMin", "ScaleMax", "Mode"}},
-		{"DragProps", {"Bounds", "ID", "ClassName", "Label", "Kind", "Mode",
-		                  "FloatValues", "IntValues", "ValueCount",
-		                  "FloatMin", "FloatMax", "IntMin", "IntMax",
-		                  "Speed", "Min", "Max", "Format", "FormatMax",
-		                  "Disabled"}},
-		{"SliderProps", {"Bounds", "ID", "ClassName", "Label", "Kind", "FloatValues",
-		                    "IntValues", "ValueCount", "FloatValue", "Min",
-		                    "Max", "Format", "Disabled", "Vertical",
-		                    "Angle"}},
-		{"InputProps", {"Bounds", "ID", "Label", "Kind", "FloatValues",
-		                   "IntValues", "DoubleValues", "ValueCount",
-		                   "Step", "StepFast", "Format", "Disabled"}},
-		{"TextProps", {"Bounds", "Text", "Wrap", "Align", "VerticalAlign", "Disabled", "Selectable", "ClassName", "Style"}},
-		{"SeparatorProps", {"Bounds", "ClassName", "Vertical", "Label", "Font", "Disabled"}},
-		{"DragDropProps", {"Bounds", "ID", "ClassName", "Role", "Type", "Data", "DataSize",
-		                    "Output", "OutputSize", "AcceptedSize", "Disabled"}},
-		{"ToastProps", {"Message", "ClassName", "Seconds"}},
-		{"ColorPickerProps", {"Bounds", "ID", "ClassName", "Label", "Values", "ValueCount",
-		                         "Disabled", "Picker"}},
-		{"ModalAction", {"Label", "Tone", "Emphasis", "Disabled"}},
-		{"ModalProps", {"Title", "ClassName", "Message", "Actions", "ActionCount",
-		                 "CloseIcon", "MaxWidth", "Text", "TextSize",
-		                 "CursorPosition", "Focused", "FocusID"}},
-		{"MenuItem", {"Kind", "Label", "Accelerator", "ID", "Disabled",
-		                 "Checked", "Submenu", "SubmenuCount"}},
-		{"MenuGroup", {"Bounds", "Label", "Items", "ItemCount"}},
-		{"MenuResult", {"ActivatedID", "OpenIndex"}},
-		{"MenuProps", {"ID", "ClassName", "Mode", "Bounds", "Trigger", "Menus",
-		                 "MenuCount", "Items", "ItemCount", "OpenIndex",
-		                 "Open", "X", "Y"}},
-        {"IconRowItem", {"Icon", "Disabled"}},
-        {"BottomIconRowProps", {"CenterX", "ViewWidth", "ViewHeight", "Count",
-                                "Items"}},
-        {"IconRowResult", {"ClickedIndex", "Y", "ButtonWidth"}},
-        {"ToolbarAction", {"Icon", "IconType", "Disabled"}},
-        {"ToolbarProps", {"ID", "ClassName", "X", "Y", "Width", "Height", "DrawMenu",
-                          "Options", "OptionCount", "SelectedIndex",
-                          "DropdownMinWidth", "DropdownMaxWidth",
-                          "DropdownHeight", "Actions", "ActionCount"}},
-        {"ToolbarResult", {"SelectedMenuItem", "ClickedAction"}},
-        {"SpinboxProps", {"Bounds", "ID", "ClassName", "Min", "Max", "Step", "Value",
-                          "Disabled", "ValueText", "Wrap"}},
-        {"DropdownOption", {"Label", "IconType", "Disabled",
-                            "SeparatorBefore"}},
-        {"DropdownProps", {"Bounds", "ID", "ClassName", "Options", "OptionCount",
-                           "SelectedIndex", "Disabled", "Items"}},
-        {"SegmentOption", {"Label", "Disabled"}},
-        {"SegmentedControlProps", {"Bounds", "ID", "ClassName", "Options", "OptionCount",
-                                   "SelectedIndex", "Height", "MinItemWidth",
-                                   "MaxItemWidth", "Wrap"}},
-        {"SegmentedControlResult", {"SelectedIndex", "ClickedIndex", "Changed",
-                                    "Height"}},
-        {"PopupProps", {"Bounds", "ID", "ClassName", "Open", "Disabled", "Trigger", "Flags"}},
-        {"Accelerator", {"Key", "Ctrl", "Shift", "Alt", "ID"}},
-        {"TextFieldProps", {"Bounds", "Text", "TextSize", "CursorPosition",
-                            "Focused", "MaxCodepoints", "FocusID",
-                            "Style", "CommitPressed", "Secure", "ReadOnly"}},
-        {"TextAreaProps", {"Bounds", "Text", "TextSize", "CursorPosition",
-                           "Focused", "ScrollY", "MaxCodepoints",
-                           "FocusID", "Placeholder", "Syntax",
-                           "Style", "ContentVersion", "ReadOnly", "Wrap"}},
-		{"ListBoxProps", {"Bounds", "ID", "ClassName", "Items", "ItemCount",
-		                  "SelectedIndex", "Selected", "SelectedCount", "Anchor",
-		                  "ScrollOffset", "RowHeight", "Disabled", "ContentHeight", "ItemKeys"}},
-		{"TreeItem", {"Label", "Depth", "ID", "Expanded", "Selectable"}},
-		{"TreeViewProps", {"Bounds", "ID", "ClassName", "Items", "ItemCount",
-		                   "SelectedID", "ScrollOffset", "RowHeight", "Disabled"}},
-        {"TableViewProps", {"Bounds", "ID", "ClassName", "Columns", "ColumnCount",
-                            "Rows", "RowCount", "ColumnWidths", "SelectedRow",
-                            "SelectedColumn", "ActivatedRow",
-                            "ActivatedColumn", "RightClickedRow",
-                            "RightClickedColumn", "SortColumn",
-                            "ScrollOffset", "RowHeight", "ColumnEnabled",
-                            "ColumnOrder", "SortDirection", "Disabled",
-                            "Resizable", "MinColumnWidth", "FreezeRows",
-                            "HeaderHeight", "HeaderAngle", "CustomCells",
-                            "CopyText", "PastedText", "PastedRow",
-                            "PastedColumn"}},
-        {"TableRow", {"Cells", "CellCount"}},
-        {"Canvas", {"Bounds", "ClassName", "ScrollX", "ScrollY", "Zoom"}},
-    };
-    size_t i;
 
-    for(i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
-        if(strcmp(table[i].type, type) == 0) {
-            size_t n = 0;
-
-            while(n < sizeof(table[i].fields) / sizeof(table[i].fields[0]) &&
-                  table[i].fields[n] != NULL)
-                n++;
-            if(index >= 0 && (size_t)index < n) {
-                zir_copy(name, name_size, table[i].fields[index]);
-                return 1;
-            }
-            return 0;
-        }
-    }
     return 0;
 }
 
@@ -3159,66 +2977,6 @@ uses_runtime(FILE *f, long begin)
     return 0;
 }
 
-static void
-emit_go_style_registration(FILE *f, const ZirProgram *const *progs,
-                           int prog_count, const char *root,
-                           const char *func_name)
-{
-    int emitted = 0;
-
-    for(int pi = 0; pi < prog_count; pi++) {
-        const ZirProgram *prog = progs[pi];
-
-        if(prog == NULL)
-            continue;
-        for(int mi = 0; mi < prog->module_count; mi++) {
-            const ZirModule *m = &prog->modules[mi];
-
-            for(int si = 0; si < m->style_import_count; si++) {
-                const ZirStyleImport *style = &m->style_imports[si];
-                char *source;
-
-                if(!emitted) {
-                    fprintf(f, "func %s() {\n", func_name);
-                    emitted = 1;
-                }
-                if(style->kind == ZIR_STYLE_IMPORT_BUILTIN &&
-                   ZirStyleImportIsBuiltIn(style->target)) {
-                    fprintf(f, "\t%s.EnsureBuiltInStylePacks()\n",
-                            ZIR_GO_RUNTIME_PKG);
-                    fprintf(f, "\t%s.SetActiveStylePack(",
-                            ZIR_GO_RUNTIME_PKG);
-                    go_string(f, style->target);
-                    fprintf(f, ")\n");
-                    continue;
-                }
-                source = ZirReadStyleImportSource(m, root, style);
-                if(source == NULL) {
-                    fprintf(stderr, "%s:%d: unable to resolve #style %s\n",
-                            style->span.path, style->span.line, style->target);
-                    continue;
-                }
-                fprintf(f, "\tif %s.RegisterStylePackSource(",
-                        ZIR_GO_RUNTIME_PKG);
-                go_string(f, source);
-                fprintf(f, ", ");
-                go_string(f, style->alias[0] != '\0' ? style->alias
-                                                      : style->target);
-                fprintf(f, ", \"\") {\n");
-                fprintf(f, "\t\t%s.SetActiveStylePack(",
-                        ZIR_GO_RUNTIME_PKG);
-                go_string(f, style->alias[0] != '\0' ? style->alias
-                                                      : style->target);
-                fprintf(f, ")\n\t}\n");
-                free(source);
-            }
-        }
-    }
-    if(!emitted)
-        fprintf(f, "func %s() {\n", func_name);
-    fprintf(f, "}\n\n");
-}
-
 int
 zir_go_lower(const ZirProgram *const *progs, int prog_count,
           const char *root, const char *out_dir, const char *pkg,
@@ -3304,7 +3062,7 @@ zir_go_lower(const ZirProgram *const *progs, int prog_count,
             int uses_lowered_scope_runtime =
                 module_uses_lowered_scope_runtime(m);
             if(!runtime_implementation &&
-               (m->app.has_app || uses_lowered_scope_runtime))
+               uses_lowered_scope_runtime)
                 fprintf(f, "var _%sRuntime %s.Runtime\n\n", guard,
                         ZIR_GO_RUNTIME_PKG);
             if(!runtime_implementation && uses_lowered_scope_runtime)
@@ -3558,85 +3316,6 @@ zir_go_lower(const ZirProgram *const *progs, int prog_count,
                 lower_function(f, m, &m->functions[i], guard);
             }
 
-            /* app -> main */
-            if(m->app.has_app && !no_main) {
-                char frame[ZIR_GO_NAME_MAX * 2];
-                char app_runtime[ZIR_GO_NAME_MAX * 2];
-                char style_register[ZIR_GO_NAME_MAX * 2];
-                const ZirFunction *entry = NULL;
-
-                if(m->app.frame[0] != '\0') {
-                    for(int i = 0; i < m->function_count; i++) {
-                        if(strcmp(m->functions[i].name, m->app.frame) == 0) {
-                            entry = &m->functions[i];
-                            break;
-                        }
-                    }
-                }
-                if(entry == NULL) {
-                    for(int i = 0; i < m->function_count; i++) {
-                        if(m->functions[i].is_ui) {
-                            entry = &m->functions[i];
-                            break;
-                        }
-                    }
-                }
-                if(entry != NULL)
-                    zir_camel_ident(entry->name, frame, sizeof(frame));
-                else
-                    zir_camel_ident(m->app.frame, frame, sizeof(frame));
-                snprintf(app_runtime, sizeof(app_runtime), "_%sRuntime", guard);
-                snprintf(style_register, sizeof(style_register),
-                         "_%sRegisterStyles", guard);
-                emit_go_style_registration(f, progs, prog_count, root,
-                                           style_register);
-                fprintf(f, "func main() {\n");
-                fprintf(f, "\t%s = %s.Open(%s.AppConfig{\n", app_runtime,
-                        ZIR_GO_RUNTIME_PKG, ZIR_GO_RUNTIME_PKG);
-                fprintf(f, "\t\tTitle: \"%s\",\n", m->app.title);
-                fprintf(f, "\t\tWidth: %d, Height: %d, FPS: %d,\n",
-                        m->app.width, m->app.height, m->app.fps);
-                fprintf(f, "\t})\n");
-                fprintf(f, "\tdefer %s.Close()\n", app_runtime);
-                fprintf(f, "\t%s()\n", style_register);
-                fprintf(f, "\tfor !%s.WindowShouldClose() {\n",
-                        app_runtime);
-                if(entry != NULL && entry->is_ui) {
-                    fprintf(f, "\t\t%s.BeginFrame()\n", app_runtime);
-                    if(strstr(entry->args, "Rectangle") != NULL) {
-                        fprintf(f, "\t\tviewport := %s.Rectangle{Width: float32(%s.GetScreenWidth()), Height: float32(%s.GetScreenHeight())}\n",
-                                ZIR_GO_RUNTIME_PKG, app_runtime, app_runtime);
-                        if(m->state_count > 0)
-                            fprintf(f, "\t\t%s_%s(%sStateValue, viewport)\n",
-                                    guard, frame, guard);
-                        else
-                            fprintf(f, "\t\t%s_%s(viewport)\n", guard, frame);
-                    } else {
-                        if(m->state_count > 0)
-                            fprintf(f, "\t\t%s_%s(%sStateValue)\n", guard,
-                                    frame, guard);
-                        else
-                            fprintf(f, "\t\t%s_%s()\n", guard, frame);
-                    }
-                    fprintf(f, "\t\t%s.EndFrame()\n", app_runtime);
-                } else if(entry != NULL && strstr(entry->args, "Rectangle") != NULL) {
-                    fprintf(f, "\t\tviewport := %s.Rectangle{Width: float32(%s.GetScreenWidth()), Height: float32(%s.GetScreenHeight())}\n",
-                            ZIR_GO_RUNTIME_PKG, app_runtime,
-                            app_runtime);
-                    if(m->state_count > 0)
-                        fprintf(f, "\t\t%s_%s(%sStateValue, viewport)\n",
-                                guard, frame, guard);
-                    else
-                        fprintf(f, "\t\t%s_%s(viewport)\n", guard, frame);
-                } else if(entry != NULL) {
-                    if(m->state_count > 0)
-                        fprintf(f, "\t\t%s_%s(%sStateValue)\n", guard, frame,
-                                guard);
-                    else
-                        fprintf(f, "\t\t%s_%s()\n", guard, frame);
-                }
-                fprintf(f, "\t}\n}\n");
-            }
             if(!uses_runtime(f, runtime_import_end)) {
                 fseek(f, runtime_import_begin, SEEK_SET);
                 for(long k = runtime_import_begin; k < runtime_import_end; k++)

@@ -138,14 +138,6 @@ static void function_c_name(const ZirModule *m, const ZirFunction *fn,
 static void strip_alias_type(const ZirModule *m, const char *type,
                              char *dst, size_t dst_size);
 
-static int
-function_name_needs_global_prefix(const char *name)
-{
-    return strcmp(name, "App") == 0 ||
-           strcmp(name, "AppHost") == 0 ||
-           strcmp(name, "AppRouteInfo") == 0;
-}
-
 /* If ident (len chars, followed by '(') names a function in this module,
  * write its full C name into dst and return its length; else return 0. */
 static size_t
@@ -431,8 +423,6 @@ function_c_name(const ZirModule *m, const ZirFunction *fn,
             mod[n++] = (*p == '.') ? '_' : *p;
         mod[n] = '\0';
         snprintf(dst, dst_size, "%s_%s%s", mod, fn->name, suffix);
-    } else if(function_name_needs_global_prefix(fn->name)) {
-        snprintf(dst, dst_size, "kry_%s%s", fn->name, suffix);
     } else {
         snprintf(dst, dst_size, "%s%s", fn->name, suffix);
     }
@@ -725,99 +715,12 @@ emit_call_wrap(FILE *c, const ZirModule *m, const ZirCModuleSyms *restab,
 
     if(!rewrite_body2(m, restab, restab_count, text, rw, sizeof(rw), shadow))
         zir_c_rewrite_overflow(m->source_path, line);
-    if(strncmp(rw, "Image(", 6) == 0) {
-        size_t suffix_len = strlen(rw + strlen("Image")) + 1;
-
-        if(strlen("RenderImage") + suffix_len < sizeof(rw)) {
-            memmove(rw + strlen("RenderImage"), rw + strlen("Image"),
-                    suffix_len);
-            memcpy(rw, "RenderImage", strlen("RenderImage"));
-        }
-    }
     if(zir_c_in_array_init) {
         /* Initializer items are expressions with their own separators. */
         fprintf(c, "    %s\n", rw);
         return;
     }
-    if(!m->inspect_calls) {
-        fprintf(c, "    %s;\n", rw);
-        return;
-    }
-    int defines_push = 0;
-    int defines_pop = 0;
-    for(int i = 0; i < m->function_count; i++) {
-        if(strcmp(m->functions[i].name, "PushInspectSource") == 0)
-            defines_push = 1;
-        if(strcmp(m->functions[i].name, "PopInspectSource") == 0)
-            defines_pop = 1;
-    }
-    if(defines_push && defines_pop) {
-        /* Instrumenting the hook implementation would call itself forever. */
-        fprintf(c, "    %s;\n", rw);
-        return;
-    }
-    {
-        char esc[ZIR_PATH_MAX * 2];
-
-        zir_escape_c_string(m->source_path, esc, sizeof(esc));
-        fprintf(c, "    PushInspectSource(\"%s\", %d);\n", esc, line);
-    }
     fprintf(c, "    %s;\n", rw);
-    fprintf(c, "    PopInspectSource();\n");
-}
-
-/* Host hooks are only needed when a lowered body actually calls one; a
- * scalar-only module must not be forced to know the widget type surface. */
-static int
-module_uses_host_hooks(const ZirModule *m)
-{
-    static const char *const hooks[] = {
-        "DisabledScope", "DisabledEndScope", "ScrollScope", "ScrollEndScope",
-        "ButtonScope", "CardScope", "PopupScope", "PopupEndScope",
-        "TableCellScope", "TableCellEndScope", "CanvasScope", "CanvasEndScope",
-        "RenderImage", "PushTextSelectable", "PopTextSelectable",
-        NULL
-    };
-
-    for(int fi = 0; fi < m->function_count; fi++) {
-        const ZirFunction *fn = &m->functions[fi];
-
-        for(int si = 0; si < fn->stmt_count; si++) {
-            const ZirStmt *st = &fn->stmts[si];
-
-            if(st->kind == ZIR_STMT_BLOCK_CALL)
-                return 1;
-            for(int h = 0; hooks[h] != NULL; h++)
-                if(strstr(st->text, hooks[h]) != NULL ||
-                   strstr(st->args, hooks[h]) != NULL)
-                    return 1;
-        }
-    }
-    return 0;
-}
-
-static void
-emit_ui_host_hook_prototypes(FILE *c)
-{
-    fputs("\n"
-          "/* Private host hooks used by lowered .kry block widgets. They stay\n"
-          " * out of public headers; generated C only needs the prototypes. */\n"
-          "void DisabledScope(int disabled);\n"
-          "void DisabledEndScope(void);\n"
-          "Rectangle ScrollScope(Rectangle bounds, int content_height, int *scroll_offset);\n"
-          "void ScrollEndScope(void);\n"
-          "NodeId ButtonScope(ButtonProps button);\n"
-          "NodeId CardScope(CardProps card);\n"
-          "int PopupScope(PopupProps popup);\n"
-          "void PopupEndScope(void);\n"
-          "Rectangle TableCellScope(TableViewProps table, int row, int column);\n"
-          "void TableCellEndScope(void);\n"
-          "CanvasResult CanvasScope(Canvas canvas);\n"
-          "void CanvasEndScope(Canvas canvas);\n"
-          "void RenderImage(ImageProps image);\n"
-          "int PushTextSelectable(int selectable);\n"
-          "void PopTextSelectable(int token);\n",
-          c);
 }
 
 typedef struct BodySymbols {
@@ -1759,16 +1662,6 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
         else
             fprintf(c, "#include \"%s.h\"\n", imp->target);
         emit_guard_close(c, imp->guard);
-    }
-    /* Block widgets lower to host-hook calls (ScrollScope, RenderImage, ...)
-     * from plain functions too, not only #ui functions. The prototypes use
-     * public widget types, so pull the tree surface in only when some body
-     * actually calls a hook. */
-    if(module_uses_host_hooks(m)) {
-        fputs("#include \"ui_tree_props.generated.h\"\n", c);
-        fputs("#include \"ui_canvas_props.generated.h\"\n", c);
-        fputs("#include \"ui_popup_props.generated.h\"\n", c);
-        emit_ui_host_hook_prototypes(c);
     }
     fprintf(c, "\n#define ZIRAN_PRIVATE_UNUSED __attribute__((unused))\n");
     /* Kry module constants lowered to C preprocessor constants. */

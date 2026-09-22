@@ -6,11 +6,11 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 cat > "$work/hello.zi" <<'EOF'
 #module "hello"
-Texture :: () -> i32 #export {
+Image :: () -> i32 #export {
     return 42
 }
 Answer :: () -> i32 #export {
-    return Texture()
+    return Image()
 }
 EOF
 
@@ -24,10 +24,15 @@ python3 - "$work/ir/hello.zir" <<'PY'
 from pathlib import Path
 import sys
 data = Path(sys.argv[1]).read_bytes()
-assert data[:8] == b'ZIR\0\x01\0\0\0', data[:8]
+assert data[:8] == b'ZIR\0\x02\0\0\0', data[:8]
 PY
 "$ziran" build --target=c --root "$work" -o "$work/c" "$work/hello.zi"
 test -s "$work/c/hello.c"
+grep -Fq 'Image(' "$work/c/hello.c"
+if grep -Fq 'RenderImage(' "$work/c/hello.c"; then
+    echo 'generic Image call was rewritten as a UI host call' >&2
+    exit 1
+fi
 cat > "$work/main.c" <<'EOF'
 #include "hello.h"
 int main(void) { return Answer() == 42 ? 0 : 1; }
@@ -176,7 +181,7 @@ python3 - "$work/blocks-ir/blockapp.zir" "$work/version.zir" <<'PY'
 from pathlib import Path
 import sys
 data = bytearray(Path(sys.argv[1]).read_bytes())
-data[4] = 2
+data[4] = 1
 Path(sys.argv[2]).write_bytes(data)
 PY
 if "$ziran" build --target=c --root "$work" -o "$work/version-out" \

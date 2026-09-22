@@ -2123,10 +2123,9 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                   strncmp(t, "#style", 6) != 0) {
             /* plain # comment at top level — never a header; real
              * directives (#module/#import/#if...) fall through below */
-        } else if(mode == TOP && strcmp(t, "#inspect off") == 0) {
-            module->inspect_calls = 0;
-        } else if(mode == TOP && strcmp(t, "#inspect on") == 0) {
-            module->inspect_calls = 1;
+        } else if(mode == TOP && starts_word(t, "#inspect")) {
+            die_at(ZirSpan(rel, line_no, 1),
+                   "#inspect is not a Ziran directive");
         } else if(mode == TOP && strncmp(t, "#module", 7) == 0) {
             if(parse_quoted(t, module_name, sizeof(module_name)))
                 snprintf(module->name, sizeof(module->name), "%s", module_name);
@@ -2171,17 +2170,16 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
             char args[ZIR_TEXT_MAX];
             char ret[ZIR_NAME_MAX];
             int is_extern = strstr(t, "#extern") != NULL;
-            int is_ui = strstr(t, "#ui") != NULL;
             int has_body = strchr(t, '{') != NULL;
 
-            if(is_ui)
+            if(strstr(t, "#ui") != NULL)
                 die_at(ZirSpan(rel, line_no, 1),
                        "#ui is not a Ziran modifier; import Kryon functions instead");
 
             parse_function_header(name, sizeof(name), args, sizeof(args),
                                   ret, sizeof(ret), t);
             if(strstr(t, "#slot") != NULL) {
-                if(has_body || is_extern || is_ui || strcmp(ret, "void") != 0)
+                if(has_body || is_extern || strcmp(ret, "void") != 0)
                     die_at(ZirSpan(rel, line_no, 1), "slot declarations require a bodyless void signature");
                 ZirType *slot = ZirModuleAddType(module, name, ZirSpan(rel, line_no, 1));
                 slot->is_slot = 1;
@@ -2215,16 +2213,14 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                         sizeof(fn->extern_symbol), rel, line_no);
                 }
                 fn->is_colon = strstr(t, "::") != NULL;
-                fn->is_ui = is_ui;
                 /* '#export' on a colon function keeps the plain Kry name as
                  * the C symbol so handwritten C and JNI entry points can call
                  * it directly. */
                 fn->exported = fn->is_colon && strstr(t, "#export") != NULL;
-                /* Public functions are emitted in headers; #ui functions are
-                 * also project routes. */
+                /* Public functions are emitted in headers. */
                 fn->is_public = !is_extern &&
                                 strstr(t, "#private") == NULL &&
-                                (is_ui || fn->is_colon);
+                                fn->is_colon;
                 if(has_body && !is_extern) {
                     mode = FUNCTION;
                     depth = 1;
@@ -2732,44 +2728,6 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
         die_at(ZirSpan(rel, line_no, 1), "unterminated slot body");
     if(in != NULL)
         fclose(in);
-    for(int mi = 0; mi < program->module_count; mi++) {
-        ZirModule *app_module = &program->modules[mi];
-        struct {
-            const char *property;
-            const char *function;
-            const char *return_type;
-        } hooks[] = {
-            {"before_window", app_module->app.before_window, "bool"},
-            {"after_frame", app_module->app.after_frame, "void"},
-            {"should_continue", app_module->app.should_continue, "bool"},
-        };
-
-        if(!app_module->app.has_app)
-            continue;
-        for(size_t hi = 0; hi < sizeof(hooks) / sizeof(hooks[0]); hi++) {
-            const ZirFunction *hook = NULL;
-
-            if(hooks[hi].function[0] == '\0')
-                continue;
-            for(int fi = 0; fi < app_module->function_count; fi++) {
-                if(strcmp(app_module->functions[fi].name,
-                          hooks[hi].function) == 0) {
-                    hook = &app_module->functions[fi];
-                    break;
-                }
-            }
-            if(hook == NULL || hook->is_extern || hook->is_ui ||
-               hook->args[0] != '\0' ||
-               strcmp(hook->return_type, hooks[hi].return_type) != 0) {
-                char message[256];
-
-                snprintf(message, sizeof(message),
-                         "app %s requires a same-module () -> %s function",
-                         hooks[hi].property, hooks[hi].return_type);
-                die_at(ZirSpan(rel, line_no, 1), message);
-            }
-        }
-    }
     for(int mi = 0; mi < program->module_count; mi++)
         for(int fi = 0; fi < program->modules[mi].function_count; fi++) {
             if(!ZirLowerCleanup(&program->modules[mi].functions[fi])) {
