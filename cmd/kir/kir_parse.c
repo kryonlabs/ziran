@@ -1954,7 +1954,8 @@ widget_stmt_apply_expression_metadata(KirStmt *statement,
     } else {
         return;
     }
-    if(parse_widget_statement(expr, widget, sizeof(widget), args, sizeof(args)))
+    if(fn->is_ui && parse_widget_statement(expr, widget, sizeof(widget),
+                                            args, sizeof(args)))
         widget_stmt_apply_source_metadata(statement, fn, parent,
                                       root_anonymous_count, widget, span);
     else if(parse_direct_call_statement(expr, widget, sizeof(widget), args,
@@ -4515,7 +4516,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                                   KirSpan(rel, line_no, pending_start_column),
                                   0);
 
-                if(kind == KIR_STMT_EXPR &&
+                if(kind == KIR_STMT_EXPR && fn->is_ui &&
                    parse_widget_statement(t, widget, sizeof(widget),
                                           widget_args,
                                           sizeof(widget_args)))
