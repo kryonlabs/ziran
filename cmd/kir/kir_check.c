@@ -1031,7 +1031,7 @@ widget_statement(KirFunction *body, KirStmtKind kind, KirSourceSpan span,
     KirStmt *statement = KirFunctionAddStmt(body, kind, text, "", span);
     if(statement == NULL)
         return NULL;
-    statement->declared_widget = 1;
+    statement->declared_block_call = 1;
     return statement;
 }
 
@@ -1051,8 +1051,8 @@ inherit_widget_block_metadata(KirStmt *statement, const KirStmt *source)
     statement->kind = kind;
     kir_copy(statement->text, sizeof(statement->text), text);
     kir_copy(statement->args, sizeof(statement->args), args);
-    statement->declared_widget = 1;
-    statement->widget_fallback = 0;
+    statement->declared_block_call = 1;
+    statement->block_fallback = 0;
     statement->expr_root = -1;
     statement->lhs_root = -1;
 }
@@ -1173,7 +1173,7 @@ lower_widget_block(Checker *c, int index, const KirModule *owner,
     }
     {
         KirStmt *call = widget_statement(&lowered, KIR_STMT_EXPR, span,
-                                         "%s(%s)", source->widget, arguments);
+                                         "%s(%s)", source->callee, arguments);
         if(call == NULL)
             goto failed;
         inherit_widget_block_metadata(call, source);
@@ -1191,7 +1191,7 @@ lower_widget_block(Checker *c, int index, const KirModule *owner,
     free(lowered.stmts);
     return replacement_count;
 failed:
-    KirDiagnostic(span, "check.widget", "%s: %s", diagnostic, source->widget);
+    KirDiagnostic(span, "check.callee", "%s: %s", diagnostic, source->callee);
     free(lowered.stmts);
     c->failed = 1;
     return -1;
@@ -1203,21 +1203,21 @@ resolve_widget_blocks(Checker *c)
     int changed = 0;
     for(int i = 0; i < c->fn->stmt_count; i++) {
         KirStmt *statement = &c->fn->stmts[i];
-        if(statement->kind != KIR_STMT_WIDGET)
+        if(statement->kind != KIR_STMT_BLOCK_CALL)
             continue;
         const KirModule *owner = NULL;
         const KirFunction *declaration = NULL;
-        int resolved = KirResolveFunction(c->module, statement->widget, &owner, &declaration);
-        if(!statement->declared_widget) {
+        int resolved = KirResolveFunction(c->module, statement->callee, &owner, &declaration);
+        if(!statement->declared_block_call) {
             if(resolved == 1) {
                 statement->kind = KIR_STMT_EXPR;
                 changed = 1;
             }
             continue;
         }
-        if(resolved == 0 && statement->widget_fallback) {
-            statement->declared_widget = 0;
-            statement->widget_fallback = 0;
+        if(resolved == 0 && statement->block_fallback) {
+            statement->declared_block_call = 0;
+            statement->block_fallback = 0;
             continue;
         }
         char parameters[64][KIR_TEXT_MAX];
@@ -1238,31 +1238,31 @@ resolve_widget_blocks(Checker *c)
         else if(count < 1 || count == 64 || props == NULL || props->is_enum || props->is_slot)
             diagnostic = "widget declaration requires one typed record parameter";
         if(diagnostic != NULL) {
-            KirDiagnostic(statement->span, "check.widget", "%s: %s", diagnostic, statement->widget);
+            KirDiagnostic(statement->span, "check.callee", "%s: %s", diagnostic, statement->callee);
             c->failed = 1;
             return 0;
         }
         if(KirFindType(c->module, type, NULL) != props) {
-            KirDiagnostic(statement->span, "check.widget_type",
+            KirDiagnostic(statement->span, "check.callee_type",
                           "widget props type is shadowed or not directly imported: %s", type);
             c->failed = 1;
             return 0;
         }
-        if(statement->widget_fallback) {
+        if(statement->block_fallback) {
             /* Host props were provisional. Reuse only the block's field
              * values; the resolved declaration owns the actual record type. */
             char *begin = strchr(statement->args, '{');
             char *end = strrchr(statement->args, '}');
             if(begin == NULL || end == NULL || end <= begin) {
-                KirDiagnostic(statement->span, "check.widget", "invalid leaf widget properties: %s",
-                              statement->widget);
+                KirDiagnostic(statement->span, "check.callee", "invalid leaf widget properties: %s",
+                              statement->callee);
                 c->failed = 1;
                 return 0;
             }
             size_t length = (size_t)(end - begin - 1);
             memmove(statement->args, begin + 1, length);
             statement->args[length] = '\0';
-            statement->widget_fallback = 0;
+            statement->block_fallback = 0;
         }
         char temporary[KIR_NAME_MAX];
         int serial = i;
@@ -1385,7 +1385,7 @@ check_function(Checker *c, KirFunction *fn)
         int errors_before_expression = c->errors;
         if(st->kind == KIR_STMT_DECL)
             normalize_array(c->module, st->type, sizeof(st->type));
-        if(st->declared_widget || st->is_instance)
+        if(st->declared_block_call || st->is_instance)
             c->strict = 1;
         if(st->kind == KIR_STMT_DECL && !st->is_instance)
             contextual_slot(c, st->expr_root, st->type);
@@ -1393,7 +1393,7 @@ check_function(Checker *c, KirFunction *fn)
            c->fn->exprs[st->lhs_root].kind == KIR_EXPR_IDENT)
             contextual_slot(c, st->expr_root, lookup(c, c->fn->exprs[st->lhs_root].name));
         type = expression_type(c, st->expr_root);
-        if(st->kind == KIR_STMT_WIDGET && st->expr_root >= 0 &&
+        if(st->kind == KIR_STMT_BLOCK_CALL && st->expr_root >= 0 &&
            *c->fn->exprs[st->expr_root].slot_type)
             st->kind = KIR_STMT_EXPR;
         if(st->kind == KIR_STMT_DECL) {
@@ -1460,7 +1460,7 @@ check_function(Checker *c, KirFunction *fn)
             if(*type && strcmp(type, "bool")) error(c, st->span, "condition requires bool", type);
         } else if(st->kind == KIR_STMT_RAW || st->kind == KIR_STMT_UNKNOWN ||
                   st->kind == KIR_STMT_FOR || st->kind == KIR_STMT_GOTO ||
-                  st->kind == KIR_STMT_LABEL || st->kind == KIR_STMT_WIDGET) {
+                  st->kind == KIR_STMT_LABEL || st->kind == KIR_STMT_BLOCK_CALL) {
             if(!module_uses_c(c))
                 error(c, st->span, "statement is not supported by strict checking", st->text);
         }
@@ -1468,7 +1468,7 @@ check_function(Checker *c, KirFunction *fn)
            st->kind == KIR_STMT_WHILE || st->kind == KIR_STMT_FOR || st->kind == KIR_STMT_SWITCH)
             c->depth++;
         c->strict = strict;
-        if((st->declared_widget || st->is_instance) && c->errors != errors_before_expression)
+        if((st->declared_block_call || st->is_instance) && c->errors != errors_before_expression)
             c->failed = 1;
     }
     for(int i = 0; i < fn->expr_count; i++) {

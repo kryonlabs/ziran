@@ -409,7 +409,7 @@ KirStructureFunction(KirFunction *fn, const KirModule *module)
             } while(tok.kind != KIR_TOKEN_EOF);
         } else if(st->kind == KIR_STMT_RETURN) value = text + 6;
         else if(st->kind == KIR_STMT_UNUSED) value = text + 6;
-        else if(st->kind == KIR_STMT_EXPR || st->kind == KIR_STMT_WIDGET) value = text;
+        else if(st->kind == KIR_STMT_EXPR || st->kind == KIR_STMT_BLOCK_CALL) value = text;
         else if(st->kind == KIR_STMT_WHILE || st->kind == KIR_STMT_IF || st->kind == KIR_STMT_SWITCH) {
             kir_strip_block_brace(text);
             value = text;

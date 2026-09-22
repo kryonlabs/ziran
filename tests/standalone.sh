@@ -86,6 +86,14 @@ EOF
 ${CC:-cc} -Iinclude -I"$work/blocks" "$work/blocks/blocklib.c" \
     "$work/blocks/blockapp.c" "$work/blocks/main.c" -o "$work/blocks/app"
 "$work/blocks/app"
+"$ziran" build --target=go --strict --pkg main --root "$work" \
+    -o "$work/blocks-go" "$work/blocklib.zi" "$work/blockapp.zi"
+cat > "$work/blocks-go/main.go" <<'EOF'
+package main
+func main() { if Blockapp_Answer() != 42 { panic("wrong result") } }
+EOF
+GO111MODULE=off go run "$work/blocks-go/blocklib.go" \
+    "$work/blocks-go/blockapp.go" "$work/blocks-go/main.go"
 
 cat > "$work/bad.zi" <<'EOF'
 #module "bad"

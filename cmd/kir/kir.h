@@ -52,7 +52,7 @@ typedef enum KirStmtKind {
     KIR_STMT_DEFER,
     KIR_STMT_UNUSED,
     KIR_STMT_RAW,
-    KIR_STMT_WIDGET
+    KIR_STMT_BLOCK_CALL
 } KirStmtKind;
 
 typedef enum KirExprKind {
@@ -125,115 +125,10 @@ typedef struct KirStyleImport {
 typedef struct KirStmt {
     KirStmtKind kind;
     char text[KIR_TEXT_MAX];
-    char widget[KIR_NAME_MAX];
+    char callee[KIR_NAME_MAX];
     char args[KIR_TEXT_MAX];
-    char node_name[KIR_NAME_MAX];       /* source-level UI block identity */
-    char node_key[KIR_TEXT_MAX];        /* stable source-level UI key */
-    char node_path[KIR_TEXT_MAX];       /* stable source-level UI tree path */
-    char node_parent_path[KIR_TEXT_MAX];/* parent UI tree path, empty at root */
-    char dom_tag[KIR_NAME_MAX];         /* requested browser element tag */
-    char dom_ref[KIR_NAME_MAX];         /* requested Kry DOM object ref */
-    char dom_id[KIR_NAME_MAX];          /* requested browser id */
-    char dom_name_attr[KIR_NAME_MAX];   /* requested browser name attribute */
-    char dom_value_attr[KIR_TEXT_MAX];  /* requested browser value attribute */
-    char dom_class[KIR_TEXT_MAX];       /* requested browser/KSS classes */
-    char dom_title[KIR_TEXT_MAX];       /* requested browser title */
-    char dom_href[KIR_TEXT_MAX];        /* requested browser link target */
-    char dom_target[KIR_NAME_MAX];      /* requested browser browsing context */
-    char dom_rel[KIR_TEXT_MAX];         /* requested browser link relation */
-    char dom_for_attr[KIR_NAME_MAX];    /* requested label/control id */
-    char dom_part[KIR_TEXT_MAX];        /* requested element part names */
-    char dom_slot[KIR_NAME_MAX];        /* requested shadow slot name */
-    char dom_data_attrs[KIR_TEXT_MAX];  /* requested data-* attributes */
-    char dom_extra_attrs[KIR_TEXT_MAX]; /* requested arbitrary browser attributes */
-    char dom_placeholder[KIR_TEXT_MAX]; /* requested input placeholder */
-    char dom_input_type[KIR_NAME_MAX];  /* requested browser input type */
-    char dom_form_attr[KIR_NAME_MAX];   /* requested form owner id */
-    char dom_form_action[KIR_TEXT_MAX]; /* requested form action URL */
-    char dom_form_method[KIR_NAME_MAX]; /* requested form method */
-    char dom_form_enctype[KIR_NAME_MAX];/* requested form encoding */
-    char dom_autocomplete[KIR_NAME_MAX];/* requested autocomplete policy */
-    char dom_hidden[KIR_NAME_MAX];      /* requested hidden expression */
-    char dom_draggable[KIR_NAME_MAX];   /* requested draggable policy */
-    char dom_spellcheck[KIR_NAME_MAX];  /* requested spellcheck policy */
-    char dom_contenteditable[KIR_NAME_MAX]; /* requested editing policy */
-    char dom_autofocus[KIR_NAME_MAX];   /* requested autofocus expression */
-    char dom_inert[KIR_NAME_MAX];       /* requested inert expression */
-    char dom_autocapitalize[KIR_NAME_MAX]; /* requested autocapitalize policy */
-    char dom_enterkeyhint[KIR_NAME_MAX];/* requested virtual keyboard enter hint */
-    char dom_download[KIR_TEXT_MAX];    /* requested download filename */
-    char dom_formnovalidate[KIR_NAME_MAX]; /* requested formnovalidate expression */
-    char dom_novalidate[KIR_NAME_MAX];  /* requested novalidate expression */
-    char dom_popover[KIR_NAME_MAX];     /* requested popover policy */
-    char dom_popover_target[KIR_NAME_MAX]; /* requested popover target id */
-    char dom_popover_target_action[KIR_NAME_MAX]; /* requested popover target action */
-    char dom_readonly[KIR_NAME_MAX];    /* requested readonly expression */
-    char dom_required[KIR_NAME_MAX];    /* requested required expression */
-    char dom_min[KIR_NAME_MAX];         /* requested form min expression */
-    char dom_max[KIR_NAME_MAX];         /* requested form max expression */
-    char dom_step[KIR_NAME_MAX];        /* requested form step expression */
-    char dom_minlength[KIR_NAME_MAX];   /* requested minlength expression */
-    char dom_maxlength[KIR_NAME_MAX];   /* requested maxlength expression */
-    char dom_pattern[KIR_TEXT_MAX];     /* requested form validation pattern */
-    char dom_accept[KIR_TEXT_MAX];      /* requested file accept list */
-    char dom_multiple[KIR_NAME_MAX];    /* requested multiple expression */
-    char dom_inputmode[KIR_NAME_MAX];   /* requested inputmode hint */
-    char dom_headers[KIR_TEXT_MAX];     /* requested table header refs */
-    char dom_scope[KIR_NAME_MAX];       /* requested table header scope */
-    char dom_colspan[KIR_NAME_MAX];     /* requested table colspan expression */
-    char dom_rowspan[KIR_NAME_MAX];     /* requested table rowspan expression */
-    char dom_tab_index[KIR_NAME_MAX];   /* requested tabindex expression */
-    char dom_role[KIR_NAME_MAX];        /* requested accessibility role */
-    char dom_aria_label[KIR_TEXT_MAX];  /* requested accessible label */
-    char dom_aria_description[KIR_TEXT_MAX]; /* requested accessible description */
-    char dom_aria_describedby[KIR_TEXT_MAX]; /* requested accessible relationship */
-    char dom_aria_labelledby[KIR_TEXT_MAX]; /* requested labelling relationship */
-    char dom_aria_activedescendant[KIR_TEXT_MAX]; /* requested active descendant */
-    char dom_aria_controls[KIR_TEXT_MAX];    /* requested controlled element ids */
-    char dom_aria_owns[KIR_TEXT_MAX];        /* requested owned element ids */
-    char dom_aria_sort[KIR_NAME_MAX];        /* requested table/list sort order */
-    char dom_aria_orientation[KIR_NAME_MAX]; /* requested widget orientation */
-    char dom_aria_level[KIR_NAME_MAX];       /* requested tree/list level */
-    char dom_aria_posinset[KIR_NAME_MAX];    /* requested item position */
-    char dom_aria_setsize[KIR_NAME_MAX];     /* requested set size */
-    char dom_aria_haspopup[KIR_NAME_MAX];    /* requested popup relationship type */
-    char dom_aria_multiselectable[KIR_NAME_MAX]; /* requested multi-select state */
-    char dom_aria_rowindex[KIR_NAME_MAX];    /* requested table/grid row index */
-    char dom_aria_colindex[KIR_NAME_MAX];    /* requested table/grid column index */
-    char dom_aria_rowcount[KIR_NAME_MAX];    /* requested table/grid row count */
-    char dom_aria_colcount[KIR_NAME_MAX];    /* requested table/grid column count */
-    char dom_aria_live[KIR_NAME_MAX];        /* requested live region policy */
-    char dom_aria_attrs[KIR_TEXT_MAX];  /* requested arbitrary aria-* attributes */
-    char dom_on_click[KIR_NAME_MAX];    /* logic function bound to click */
-    char dom_on_input[KIR_NAME_MAX];    /* logic function bound to input(value) */
-    char dom_on_before_input[KIR_NAME_MAX]; /* logic function bound to beforeinput(value) */
-    char dom_on_change[KIR_NAME_MAX];   /* logic function bound to change(value) */
-    char dom_on_select[KIR_NAME_MAX];   /* logic function bound to select(value) */
-    char dom_on_key[KIR_NAME_MAX];      /* logic function bound to keydown(key) */
-    char dom_on_invalid[KIR_NAME_MAX];  /* logic function bound to invalid(value) */
-    char dom_on_submit[KIR_NAME_MAX];   /* logic function bound to submit */
-    char dom_on_reset[KIR_NAME_MAX];    /* logic function bound to reset */
-    char dom_on_toggle[KIR_NAME_MAX];   /* logic function bound to toggle */
-    char dom_on_close[KIR_NAME_MAX];    /* logic function bound to close */
-    char dom_on_cancel[KIR_NAME_MAX];   /* logic function bound to cancel */
-    char dom_on_focus[KIR_NAME_MAX];    /* logic function bound to focus */
-    char dom_on_blur[KIR_NAME_MAX];     /* logic function bound to blur */
-    char dom_on_scroll[KIR_NAME_MAX];   /* logic function bound to scroll(value) */
-    char dom_on_mouse_enter[KIR_NAME_MAX]; /* logic function bound to mouseenter */
-    char dom_on_mouse_leave[KIR_NAME_MAX]; /* logic function bound to mouseleave */
-    char dom_on_mouse_move[KIR_NAME_MAX];  /* logic function bound to mousemove */
-    char dom_on_mouse_down[KIR_NAME_MAX];  /* logic function bound to mousedown */
-    char dom_on_mouse_up[KIR_NAME_MAX];    /* logic function bound to mouseup */
-    char dom_on_wheel[KIR_NAME_MAX];       /* logic function bound to wheel(value) */
-    char dom_on_drag_start[KIR_NAME_MAX];  /* logic function bound to dragstart(value) */
-    char dom_on_drag_end[KIR_NAME_MAX];    /* logic function bound to dragend(value) */
-    char dom_on_drag_over[KIR_NAME_MAX];   /* logic function bound to dragover */
-    char dom_on_drop[KIR_NAME_MAX];        /* logic function bound to drop(value) */
-    char dom_on_copy[KIR_NAME_MAX];        /* logic function bound to copy(value) */
-    char dom_on_cut[KIR_NAME_MAX];         /* logic function bound to cut(value) */
-    char dom_on_paste[KIR_NAME_MAX];       /* logic function bound to paste(value) */
-    int declared_widget; /* typed #ui block invocation, resolved after imports */
-    int widget_fallback; /* leaf block may use host props only if no declaration resolves */
+    int declared_block_call; /* typed block invocation, resolved after imports */
+    int block_fallback; /* legacy unresolved block path, pending removal */
     int is_instance; /* typed record binding retained by its explicit key */
     int expr_root;      /* index into enclosing function exprs, or -1 */
     int lhs_root;       /* structured assignment destination, or -1 */
@@ -462,9 +357,9 @@ KirType *KirModuleAddType(KirModule *module, const char *name,
 KirRoute *KirModuleAddRoute(KirModule *module, const char *id,
                             KirSourceSpan span);
 KirStmt *KirFunctionAddStmt(KirFunction *fn, KirStmtKind kind,
-                            const char *text, const char *widget,
+                            const char *text, const char *callee,
                             KirSourceSpan span);
-KirStmt *KirFunctionAddWidget(KirFunction *fn, const char *widget,
+KirStmt *KirFunctionAddBlockCall(KirFunction *fn, const char *callee,
                               const char *args, const char *text,
                               KirSourceSpan span);
 const char *KirImportKindName(KirImportKind kind);

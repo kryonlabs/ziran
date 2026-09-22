@@ -610,7 +610,7 @@ KirModuleAddRoute(KirModule *module, const char *id, KirSourceSpan span)
 
 KirStmt *
 KirFunctionAddStmt(KirFunction *fn, KirStmtKind kind, const char *text,
-                   const char *widget, KirSourceSpan span)
+                   const char *callee, KirSourceSpan span)
 {
     KirStmt *stmts;
     KirStmt *st;
@@ -626,7 +626,7 @@ KirFunctionAddStmt(KirFunction *fn, KirStmtKind kind, const char *text,
     memset(st, 0, sizeof(*st));
     st->kind = kind;
     kir_copy(st->text, sizeof(st->text), text);
-    kir_copy(st->widget, sizeof(st->widget), widget);
+    kir_copy(st->callee, sizeof(st->callee), callee);
     st->expr_root = -1;
     st->lhs_root = -1;
     st->span = span;
@@ -634,10 +634,10 @@ KirFunctionAddStmt(KirFunction *fn, KirStmtKind kind, const char *text,
 }
 
 KirStmt *
-KirFunctionAddWidget(KirFunction *fn, const char *widget, const char *args,
+KirFunctionAddBlockCall(KirFunction *fn, const char *callee, const char *args,
                      const char *text, KirSourceSpan span)
 {
-    KirStmt *st = KirFunctionAddStmt(fn, KIR_STMT_WIDGET, text, widget, span);
+    KirStmt *st = KirFunctionAddStmt(fn, KIR_STMT_BLOCK_CALL, text, callee, span);
 
     if(st != NULL)
         kir_copy(st->args, sizeof(st->args), args);
@@ -744,7 +744,7 @@ KirStmtKindName(KirStmtKind kind)
     case KIR_STMT_DEFER: return "defer";
     case KIR_STMT_UNUSED: return "unused";
     case KIR_STMT_RAW: return "raw";
-    case KIR_STMT_WIDGET: return "widget";
+    case KIR_STMT_BLOCK_CALL: return "block_call";
     default: return "unknown";
     }
 }
@@ -877,18 +877,10 @@ KirProgramDump(const KirProgram *program, FILE *out)
             for(k = 0; k < fn->stmt_count; k++) {
                 const KirStmt *st = &fn->stmts[k];
 
-                fprintf(out, "    stmt %s widget %s args %s text %s span ",
-                        KirStmtKindName(st->kind), st->widget, st->args,
+                fprintf(out, "    stmt %s callee %s args %s text %s span ",
+                        KirStmtKindName(st->kind), st->callee, st->args,
                         st->text);
                 kir_dump_span(out, st->span);
-                if(st->node_name[0])
-                    fprintf(out, " node %s", st->node_name);
-                if(st->node_key[0])
-                    fprintf(out, " key %s", st->node_key);
-                if(st->node_path[0])
-                    fprintf(out, " path %s", st->node_path);
-                if(st->node_parent_path[0])
-                    fprintf(out, " parent %s", st->node_parent_path);
                 fprintf(out, "\n");
                 if(st->expr_root >= 0)
                     kir_dump_expr(fn, st->expr_root, out, 3);

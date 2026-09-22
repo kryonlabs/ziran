@@ -469,7 +469,7 @@ parse_direct_call_statement(const char *text, char *name, size_t name_size,
 }
 
 typedef struct WidgetBlock {
-    char widget[KIR_NAME_MAX];
+    char callee[KIR_NAME_MAX];
     KirSourceSpan span;
     char props[KIR_TEXT_MAX];
     int close_depth;
@@ -572,7 +572,7 @@ widget_block_append_prop(WidgetBlock *block, const char *field, const char *valu
     int length = snprintf(block->props + used, sizeof(block->props) - used,
                           ".%s = %s, ", field, value);
     if(length < 0 || (size_t)length >= sizeof(block->props) - used)
-        die_at(span, "widget properties exceed the declaration size limit: %s", block->widget);
+        die_at(span, "widget properties exceed the declaration size limit: %s", block->callee);
 }
 
 static void
@@ -586,11 +586,11 @@ widget_block_open(KirFunction *fn, WidgetBlock *block, KirSourceSpan span, int c
     if(!closing)
         die_at(span, "block content requires a declared slot parameter");
     source_span = block->span.path[0] != '\0' ? block->span : span;
-    statement = KirFunctionAddWidget(fn, block->widget, block->props, "",
+    statement = KirFunctionAddBlockCall(fn, block->callee, block->props, "",
                                      source_span);
     if(statement == NULL)
         die("out of memory parsing block call");
-    statement->declared_widget = 1;
+    statement->declared_block_call = 1;
     block->statement_index = (int)(statement - fn->stmts);
     block->opened = 1;
 }
@@ -2687,7 +2687,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                     block->span = KirSpanEnd(rel, pending_start_line,
                                              pending_start_column, line_no,
                                              pending_end_column);
-                    snprintf(block->widget, sizeof(block->widget), "%s",
+                    snprintf(block->callee, sizeof(block->callee), "%s",
                              block_widget);
                     block->close_depth = depth + 1;
                     depth++;

@@ -785,7 +785,7 @@ module_uses_host_hooks(const KirModule *m)
         for(int si = 0; si < fn->stmt_count; si++) {
             const KirStmt *st = &fn->stmts[si];
 
-            if(st->kind == KIR_STMT_WIDGET)
+            if(st->kind == KIR_STMT_BLOCK_CALL)
                 return 1;
             for(int h = 0; hooks[h] != NULL; h++)
                 if(strstr(st->text, hooks[h]) != NULL ||
@@ -1202,7 +1202,7 @@ lower_body(FILE *c, const KirModule *m, const K2cModuleSyms *restab, int restab_
                 fprintf(c, "%s;\n", rw);
             }
             break;
-        case KIR_STMT_WIDGET:
+        case KIR_STMT_BLOCK_CALL:
             emit_call_wrap(c, m, restab, restab_count, st->span.line,
                            st->text, shadow);
             break;

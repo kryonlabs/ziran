@@ -217,8 +217,8 @@ module_uses_lowered_scope_runtime(const KirModule *m)
     for(int i = 0; i < m->function_count; i++) {
         const KirFunction *fn = &m->functions[i];
         for(int j = 0; j < fn->stmt_count; j++) {
-            if(fn->stmts[j].kind == KIR_STMT_WIDGET &&
-               is_lowered_scope_widget(fn->stmts[j].widget))
+            if(fn->stmts[j].kind == KIR_STMT_BLOCK_CALL &&
+               is_lowered_scope_widget(fn->stmts[j].callee))
                 return 1;
             for(int k = 0; lowered[k] != NULL; k++)
                 if(strstr(fn->stmts[j].text, lowered[k]) != NULL)
@@ -3011,12 +3011,6 @@ lower_function(FILE *f, const KirModule *m, const KirFunction *fn,
                         fprintf(f, "var %s %s = %s\n", aname, gt, assign + 2);
                 } else
                     fprintf(f, "var %s %s\n", aname, gt);
-                /* Lexical widget scopes require a binding even when the body
-                 * only uses their clipping or camera effects. */
-                if(st->node_name[0] != '\0') {
-                    emit_indent(f, indent);
-                    fprintf(f, "_ = %s\n", aname);
-                }
             } else if(colon != NULL) { /* ':=' */
                 fprintf(f, "%s\n", rw);
             } else {
@@ -3025,13 +3019,13 @@ lower_function(FILE *f, const KirModule *m, const KirFunction *fn,
             }
             break;
         }
-        case KIR_STMT_WIDGET: {
+        case KIR_STMT_BLOCK_CALL: {
             char wname[K2GO_NAME_MAX];
             char wargs[K2GO_TEXT_MAX];
             char app_runtime[K2GO_NAME_MAX * 2];
             const char *target = K2GO_RUNTIME_PKG;
 
-            kir_camel_ident(st->widget, wname, sizeof(wname));
+            kir_camel_ident(st->callee, wname, sizeof(wname));
             tx_expr(m, st->args, wargs, sizeof(wargs));
             snprintf(app_runtime, sizeof(app_runtime), "_%sRuntime", guard);
             emit_indent(f, indent);

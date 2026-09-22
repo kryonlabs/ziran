@@ -1,15 +1,21 @@
 # Ziran
 
-Ziran is a general-purpose programming language. Source files use `.zi`,
-checked intermediate representation uses `.zir`, and portable linked programs
-use `.zib`. None of these formats requires a UI. In the intended architecture,
-Kryon is a separate UI library written in Ziran and imported like any other
-library.
+Ziran is a general-purpose language. Its source files use `.zi`, its checked
+intermediate representation uses `.zir`, and its portable linked programs use
+`.zib`. None of those formats assumes a graphical application.
 
-The intended architecture is specified in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-[docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) records what the
-current toolchain actually implements. The split is underway; the current
-compiler is not yet a complete implementation of the architecture.
+Kryon is a separate UI library written in Ziran. Programs import its widgets
+as ordinary library declarations. The Ziran compiler, IR, linker, and runtime
+have no widget list, `#ui` mode, renderer policy, or implicit Kryon dependency.
+See [Architecture](docs/ARCHITECTURE.md) for the intended boundary and
+[Migration](docs/MIGRATION.md) for the two-repository cutover.
 
-For the current standalone compiler subset, run `make` and `make check`.
-The smoke test compiles non-UI `.zi` modules to C and native Go and runs them.
+The split is underway. The current compiler can check and compile a tested
+subset of non-UI `.zi` to C and native Go. It cannot yet read `.zir` back or
+produce or run `.zib`. [Implementation status](docs/IMPLEMENTATION_STATUS.md)
+lists the remaining work. The [IR](docs/ZIR.md) and [bundle](docs/ZIB.md)
+documents specify their intended contracts, not shipped formats.
+
+Run `make` to build the current toolchain and `make check` for its standalone
+smoke test. `build/bin/ziran check`, `ir`, and `build --target=c|go` are the
+currently exposed commands.

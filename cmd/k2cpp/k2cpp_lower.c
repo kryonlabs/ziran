@@ -1158,7 +1158,7 @@ lower_body(FILE *c, const KirModule *m, const K2cppModuleSyms *restab, int resta
                 fprintf(c, "%s;\n", rw);
             }
             break;
-        case KIR_STMT_WIDGET:
+        case KIR_STMT_BLOCK_CALL:
             emit_call_wrap(c, m, restab, restab_count, st->span.line,
                            st->text, shadow);
             break;

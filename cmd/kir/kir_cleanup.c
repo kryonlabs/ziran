@@ -70,7 +70,7 @@ action_kind(const char *text, KirStmt *action)
 static int
 append(KirFunction *out, const KirStmt *st)
 {
-    KirStmt *copy = KirFunctionAddStmt(out, st->kind, st->text, st->widget,
+    KirStmt *copy = KirFunctionAddStmt(out, st->kind, st->text, st->callee,
                                       st->span);
     if(!copy)
         return 0;

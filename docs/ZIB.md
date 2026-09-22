@@ -1,21 +1,28 @@
 # Ziran portable bundle (`.zib`)
 
-This document defines the intended format boundary. No `.zib` writer or
-runtime is shipped yet; see [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+This is the target contract. No `.zib` writer, loader, or runtime ships yet;
+see [Implementation status](IMPLEMENTATION_STATUS.md).
 
-A `.zib` is a versioned, portable executable bundle produced by linking
-checked `.zir` modules. Its format identifier is `ZIB`. It contains executable
-code, data, linked module identities, exports, and an explicit list of host
-capabilities. The loader validates the format version, section bounds,
-imports, and capability requirements before executing code.
+A `.zib` is a versioned, portable executable bundle linked from checked
+`.zir` modules. Its format identifier is `ZIB`. It contains the program's
+portable executable content, data, entry point, linked module identities,
+exports, and explicit host capability requirements. The exact instruction and
+section encoding will be specified before the format is called stable.
 
-The format has no UI-specific node records or implicit Kryon dependency.
-A command-line program with no Kryon import is a valid `.zib`. Importing
-Kryon embeds the reachable portable Kryon modules into the same bundle;
-graphics and input become requirements only when those modules use them.
-The host implements declared capabilities. A missing capability is an error,
-not a reason to omit an operation.
+The linker resolves imports and includes reachable code from ordinary
+libraries. That includes Kryon only when the program imports it. A non-UI
+command-line program is a first-class `.zib`; it launches without a graphical
+host. Kryon UI code is portable Ziran code in the bundle, with rendering and
+input supplied through declared host capabilities. The same bundle format
+serves graphical and non-graphical programs.
 
-The former `.krb` UI cartridge is not a `.zib` version. Programs migrate by
-recompiling `.zi` source; old cartridge bytes are not reinterpreted as Ziran
-bundles.
+Before execution, the loader validates the format version, section bounds,
+symbols, entry point, and capability contract. Missing symbols, unsupported
+versions, malformed bundles, and unavailable required capabilities fail with
+diagnostics. A portable bundle cannot contain an undeclared dependency on
+target-specific C, C++, or Go code. Hosts may implement the declared
+capability interfaces with native libraries.
+
+The old `.krb` cartridge is a Kryon-specific format. It is not renamed or
+reinterpreted as `.zib`. Existing programs must be recompiled from `.zi` into
+the new pipeline during the breaking cutover.

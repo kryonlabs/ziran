@@ -1,52 +1,73 @@
 # Ziran architecture
 
-This document defines the intended ownership and data flow. The current
-implementation differs where listed in [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+This is the agreed target architecture for the Ziran and Kryon repositories.
+It is not a claim that every part is implemented. Current gaps are tracked in
+[Implementation status](IMPLEMENTATION_STATUS.md).
 
-## Ownership
+## Repository ownership
 
-Ziran owns the source language, parser, checker, language laws, standard
-library, intermediate representation, linker, portable bundle format, and
-execution runtime. Its core contains no widget names, DOM properties, KSS
-syntax, rendering policy, or UI-specific IR nodes. An identifier such as
-`Button` has no meaning to Ziran unless a program declares or imports it.
+| Repository | Owns | Must not own |
+| --- | --- | --- |
+| Ziran | Language semantics, parser, checker, laws, standard library, `.zir`, native backends, `.zib` linker, verifier, loader, and generic execution runtime | Widgets, UI trees, styling, DOM policy, renderers, Kryon-specific names or implicit UI startup |
+| Kryon | Importable `.zi` modules for widgets, layout, themes, interaction, accessibility, rendering, and platform adapters | Ziran syntax, compiler branches for widgets, or an application's terminal or product UI |
 
-Kryon owns widgets, layout, styling, interaction, accessibility, renderers,
-and its host capability implementations. Kryon's runtime source is `.zi`.
-Applications import Kryon modules through ordinary Ziran imports. UI APIs
-such as `Text(TextProps)` and `Image(ImageProps)` are Kryon declarations,
-not compiler intrinsics. An application that does not import Kryon has no
-Kryon code or graphics capability requirement.
-
-## Pipeline
-
-```text
-.zi source -> parse and check -> .zir
-.zir modules + imported libraries -> link -> .zib
-.zir -> C, C++, or native Go code when a native target is requested
-.zib -> Ziran runtime + declared host capabilities
-```
-
-The compiler uses the same checked IR for every backend. `.zi` input is a
-convenience path through the parser to that IR; a backend never reparses
-source after accepting `.zir`. The linker embeds reachable portable library
-modules in a `.zib`, including Kryon when imported. It reports unresolved
-symbols and unavailable capabilities rather than silently dropping behavior.
-
-The portable runtime starts a non-UI `.zib` without graphics services. UI
-programs request graphics and input through explicit capabilities supplied by
-the selected host. Native C, C++, and Go backends can bind external libraries
-through declared FFI interfaces. A portable `.zib` cannot execute arbitrary
-target-specific C or Go fragments.
+The dependency direction is **Kryon → Ziran**. A CLI, service, or library can
+use Ziran without Kryon. Importing Kryon is an explicit source dependency.
+Kryon's maintained implementation, including its widget and runtime logic, is
+100% Ziran source. A platform adapter may call operating-system or third-party
+APIs through declared FFI or host capabilities; those external libraries are
+dependencies, not a second copy of Kryon's implementation. Generated C, C++,
+or Go is compiler output, not Kryon source.
 
 ## Language boundary
 
-The language supports ordinary functions, records, modules, typed block calls,
-and typed slots. These constructs are useful beyond UI code. A block call is
-resolved from the imported function signature and its record and slot types;
-the compiler has no list of special widget names and no `#ui` mode. Kryon may
-provide a `Button` function and a `ButtonProps` record, while another library
-may use the same constructs for an unrelated purpose.
+Modules, records, functions, imports, typed block calls, and callable slots
+are general language features. A block call resolves against a visible
+function signature and record/slot types. Its semantics do not depend on the
+callee's spelling. `Button`, `Text`, and `Image` mean nothing until imported or
+declared. Kryon's `Image(ImageProps)` is an ordinary library API, including
+when used for semantic images.
 
-Compiler laws cover language semantics, type safety, evaluation order, IR
-validity, and backend parity. Kryon owns laws about widgets and rendering.
+Ziran has no `#ui` function modifier, app/route syntax, widget fallback,
+`#style` directive, DOM fields in its IR, or renderer-specific type checks.
+Kryon defines its own composition, styling, navigation, and lifecycle APIs in
+`.zi`. If a general language feature is needed for those APIs, it must work
+for unrelated libraries too and pass the same checker and backend tests.
+
+Language laws constrain semantics, types, evaluation order, IR validity, and
+backend equivalence. Kryon owns its UI behavior and rendering laws.
+
+## Compilation and execution
+
+```text
+.zi modules ──parse/check──> .zir modules
+.zir modules ──native backend──> C, C++, or native Go output
+.zir modules ──link/verify──> .zib ──portable runtime + host capabilities──> process
+```
+
+Every backend consumes the same checked `.zir` model. Native output may bind
+declared platform libraries. `.zib` contains portable executable content and
+cannot depend on arbitrary target-specific C, C++, or Go source fragments.
+Native and portable builds of the same supported program must agree on
+observable language behavior.
+
+The linker resolves explicit imports, includes the reachable library code,
+and reports unresolved symbols or unavailable capabilities. A program with no
+Kryon import has no Kryon code or graphics requirement. A program importing
+Kryon links the Kryon modules it uses; graphics, input, audio, filesystem, and
+other host access must be declared as capabilities when needed. The host
+supplies those capabilities. A missing required capability is a reported
+error, never silently ignored.
+
+The portable runtime launches a non-graphical `.zib` without initializing a
+window or display. Kryon decides how to use the host's graphical capabilities
+through its imported `.zi` implementation. The compiler and loader do not
+inspect widget names to make that decision.
+
+## Product boundary
+
+Kryon is a reusable library. Applications keep their own product logic and
+UI in their repositories and import Kryon. Kapsule's terminal emulator, for
+example, belongs to Kapsule; Kryon only gains small reusable primitives when
+multiple applications need them. See [Migration](MIGRATION.md) for the single
+breaking cutover and verification gates.
