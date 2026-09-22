@@ -1,11 +1,8 @@
-/*
- * Emit a debuggable ZIR text artifact from .zi source.
- * Thin wrapper around the shared zir_parse_file frontend.
- */
 #include "zir.h"
 #include "zir_parse.h"
 #include "zir_check.h"
 #include "zir_laws.h"
+#include "zir_serial.h"
 #include "zir_diagnostic.h"
 
 #include <stdio.h>
@@ -19,17 +16,63 @@ usage(void)
     fprintf(stderr, "usage: ziran ir [--diagnostics=text|json] --root DIR -o DIR file.zi ...\n");
 }
 
+static int
+write_program(const ZirProgram *program, const char *out_dir)
+{
+    const char *source = program->modules[0].source_path;
+    size_t length = strlen(source);
+    char output[ZIR_PATH_MAX * 2];
+    FILE *file;
+
+    if(length > 3 && strcmp(source + length - 3, ".zi") == 0)
+        length -= 3;
+    if(snprintf(output, sizeof(output), "%s/%.*s.zir", out_dir,
+                (int)length, source) >= (int)sizeof(output)) {
+        ZirDiagnostic(program->modules[0].span, "zir.output",
+                      "IR output path is too long");
+        return 0;
+    }
+    for(char *cursor = output + 1; *cursor; cursor++) {
+        if(*cursor != '/')
+            continue;
+        *cursor = '\0';
+        mkdir(output, 0755);
+        *cursor = '/';
+    }
+    file = fopen(output, "wb");
+    if(file == NULL) {
+        ZirDiagnostic(program->modules[0].span, "zir.output",
+                      "cannot open IR output: %s", output);
+        return 0;
+    }
+    if(!ZirProgramWriteZir(program, file)) {
+        ZirDiagnostic(program->modules[0].span, "zir.output",
+                      "cannot serialize checked IR: %s", output);
+        fclose(file);
+        remove(output);
+        return 0;
+    }
+    if(fclose(file) != 0) {
+        ZirDiagnostic(program->modules[0].span, "zir.output",
+                      "cannot finish IR output: %s", output);
+        remove(output);
+        return 0;
+    }
+    return 1;
+}
+
 int
 main(int argc, char **argv)
 {
     const char *root = NULL;
     const char *out_dir = NULL;
     int check_only = 0;
-    int check_ok;
-    int laws_ok;
-    int i;
+    int first_file = 0;
+    int result = 1;
+    ZirProgram **programs = NULL;
+    int count;
 
-    for(i = 1; i < argc; i++) {
+    for(int i = 1; i < argc; i++) {
         if(strncmp(argv[i], "--diagnostics=", 14) == 0) {
             if(!ZirSetDiagnosticFormat(argv[i] + 14)) {
                 usage();
@@ -45,67 +88,36 @@ main(int argc, char **argv)
             usage();
             return 1;
         } else {
+            first_file = i;
             break;
         }
     }
-    if(root == NULL || (!check_only && out_dir == NULL) || i >= argc) {
+    if(root == NULL || (!check_only && out_dir == NULL) || first_file == 0) {
         usage();
         return 1;
     }
-    for(; i < argc; i++) {
-        ZirProgram *program = zir_parse_file(argv[i], root);
-        if(program == NULL)
-            return 1;
-        check_ok = ZirCheckPrograms(&program, 1, 0);
-        laws_ok = ZirCheckLaws(&program, 1);
-        if(!check_ok || !laws_ok) {
-            ZirProgramFree(program);
-            return 1;
-        }
-        if(check_only) {
-            ZirProgramFree(program);
-            continue;
-        }
-        /* Write the .zir dump using the module's source_path (relative to root)
-         * so directory structure is preserved. */
-        if(program->module_count > 0) {
-            const char *src = program->modules[0].source_path;
-            size_t slen = strlen(src);
-            char stem[512];
-            char out_path[1024];
-            FILE *out;
-
-            if(slen > 3 && strcmp(src + slen - 3, ".zi") == 0)
-                slen -= 3;
-            if(slen >= sizeof(stem))
-                slen = sizeof(stem) - 1;
-            memcpy(stem, src, slen);
-            stem[slen] = '\0';
-            snprintf(out_path, sizeof(out_path), "%s/%s.zir", out_dir, stem);
-            /* mkdir -p */
-            {
-                char tmp[1024];
-                size_t j;
-
-                snprintf(tmp, sizeof(tmp), "%s", out_path);
-                for(j = 1; j < strlen(tmp); j++) {
-                    if(tmp[j] == '/') {
-                        tmp[j] = '\0';
-                        mkdir(tmp, 0755);
-                        tmp[j] = '/';
-                    }
-                }
-            }
-            out = fopen(out_path, "wb");
-            if(out == NULL) {
-                fprintf(stderr, "ziran-ir: %s: open failed\n", out_path);
-                ZirProgramFree(program);
-                return 1;
-            }
-            ZirProgramDump(program, out);
-            fclose(out);
-        }
-        ZirProgramFree(program);
+    count = argc - first_file;
+    programs = calloc((size_t)count, sizeof(*programs));
+    if(programs == NULL)
+        return 1;
+    for(int i = 0; i < count; i++) {
+        programs[i] = zir_parse_file(argv[first_file + i], root);
+        if(programs[i] == NULL)
+            goto done;
     }
-    return 0;
+    if(!ZirCheckPrograms(programs, count, 1) || !ZirCheckLaws(programs, count))
+        goto done;
+    if(!check_only) {
+        for(int i = 0; i < count; i++) {
+            if(programs[i]->module_count < 1 ||
+               !write_program(programs[i], out_dir))
+                goto done;
+        }
+    }
+    result = 0;
+done:
+    for(int i = 0; i < count; i++)
+        ZirProgramFree(programs[i]);
+    free(programs);
+    return result;
 }

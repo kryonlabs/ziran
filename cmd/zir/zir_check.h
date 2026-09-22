@@ -5,5 +5,6 @@
 /* Resolve scalar expression types and lexical bindings. Strict mode rejects
  * unresolved expressions instead of delegating them to target-language text. */
 int ZirCheckPrograms(ZirProgram **programs, int count, int strict);
+int ZirLinkImports(ZirProgram **programs, int count);
 const char *ZirScalarType(const char *type);
 #endif

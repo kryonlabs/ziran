@@ -8,6 +8,7 @@
 #include "zir_check.h"
 #include "zir_laws.h"
 #include "zir_diagnostic.h"
+#include "zir_serial.h"
 #include "zir_c_lower.h"
 #include "zir_c_plan9.h"
 
@@ -34,6 +35,7 @@ main(int argc, char **argv)
     int laws_ok;
     int plan9 = 0;
     int unresolved = 0;
+    int all_ir = 1;
     ZirProgram **progs;
     ZirCModuleSyms *syms;
     int file_count;
@@ -82,7 +84,8 @@ main(int argc, char **argv)
     zir_c_plan9_set_enabled(plan9);
     /* Pass 1: parse every file, build the cross-module symbol table. */
     for(i = 0; i < file_count; i++) {
-        progs[i] = zir_parse_file(argv[first_file + i], root);
+        all_ir &= ZirPathIsZir(argv[first_file + i]);
+        progs[i] = ZirProgramLoad(argv[first_file + i], root);
         if(progs[i] == NULL) {
             fprintf(stderr, "ziran-c: failed to parse %s\n",
                     argv[first_file + i]);
@@ -90,7 +93,8 @@ main(int argc, char **argv)
         }
         zir_c_build_syms(progs[i], &syms[i]);
     }
-    check_ok = ZirCheckPrograms(progs, file_count, strict);
+    check_ok = all_ir ? ZirLinkImports(progs, file_count) :
+                        ZirCheckPrograms(progs, file_count, strict);
     laws_ok = ZirCheckLaws(progs, file_count);
     if(!check_ok || !laws_ok) {
         for(i = 0; i < file_count; i++) ZirProgramFree(progs[i]);

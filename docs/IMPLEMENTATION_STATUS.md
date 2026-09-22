@@ -10,7 +10,13 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `build --target=c|go` for `.zi` input.
 - `make check` passes standalone non-UI programs, a two-module import, and an
   imported typed record block call named `Button` through generated C and
-  native Go. The call is resolved from its declaration, not its name.
+  native Go. Source and saved `.zir` builds execute for the tested subset.
+  The call is resolved from its declaration, not its name.
+- `ziran ir` writes experimental binary `.zir` version 1 after checking all
+  input modules together. C and Go can read saved modules without reparsing
+  `.zi`; their imports are relinked from serialized module identities. The
+  reader rejects malformed headers, versions, truncated data, and invalid
+  structural references. Deterministic output is checked on a sample.
 - `#ui`, `#style`, and old app/route forms are rejected. The embedded Kryon
   runtime declarations and copied `src/kry_std` implementation have been
   removed. JSON diagnostics no longer require Kryon code.
@@ -23,9 +29,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   including old style/app/route structures. Finish
   general typed block calls, named blocks, callable child slots, and imports
   for ordinary libraries. Current block-call coverage is a small leaf subset.
-- Replace the `.zir` diagnostic dump with a versioned writer, validating
-  reader, and saved-IR input for every backend. The current backends still
-  parse `.zi` directly.
+- Complete semantic verification of loaded `.zir`, remove UI-era fields from
+  its current model, and make C++ and every other supported backend consume
+  the same saved IR. Mixed `.zi`/`.zir` builds currently rerun the source
+  checker across all modules.
 - Implement the general `.zib` linker, verifier, loader, runtime, and explicit
   host capability contract. No generic portable output is available today.
   Kryon's old `.krb` compiler remains in Kryon.

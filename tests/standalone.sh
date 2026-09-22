@@ -15,9 +15,17 @@ Answer :: () -> i32 #export {
 EOF
 
 "$ziran" check --root "$work" "$work/hello.zi"
+"$ziran" fmt --check "$work/hello.zi"
 "$ziran" ir --root "$work" -o "$work/ir" "$work/hello.zi"
+"$ziran" ir --root "$work" -o "$work/ir-again" "$work/hello.zi"
+cmp "$work/ir/hello.zir" "$work/ir-again/hello.zir"
 test -s "$work/ir/hello.zir"
-grep -Fq 'zir 1' "$work/ir/hello.zir"
+python3 - "$work/ir/hello.zir" <<'PY'
+from pathlib import Path
+import sys
+data = Path(sys.argv[1]).read_bytes()
+assert data[:8] == b'ZIR\0\x01\0\0\0', data[:8]
+PY
 "$ziran" build --target=c --root "$work" -o "$work/c" "$work/hello.zi"
 test -s "$work/c/hello.c"
 cat > "$work/main.c" <<'EOF'
@@ -26,6 +34,10 @@ int main(void) { return Answer() == 42 ? 0 : 1; }
 EOF
 ${CC:-cc} -Iinclude -I"$work/c" "$work/c/hello.c" "$work/main.c" -o "$work/hello"
 "$work/hello"
+"$ziran" build --target=c --root "$work" -o "$work/c-ir" "$work/ir/hello.zir"
+${CC:-cc} -Iinclude -I"$work/c-ir" "$work/c-ir/hello.c" "$work/main.c" \
+    -o "$work/hello-from-ir"
+"$work/hello-from-ir"
 "$ziran" build --target=go --strict --pkg main --root "$work" -o "$work/go" "$work/hello.zi"
 test -s "$work/go/hello.go"
 cat > "$work/go/main.go" <<'EOF'
@@ -33,6 +45,10 @@ package main
 func main() { if Hello_Answer() != 42 { panic("wrong result") } }
 EOF
 GO111MODULE=off go run "$work/go/hello.go" "$work/go/main.go"
+"$ziran" build --target=go --strict --pkg main --root "$work" \
+    -o "$work/go-ir" "$work/ir/hello.zir"
+cp "$work/go/main.go" "$work/go-ir/main.go"
+GO111MODULE=off go run "$work/go-ir/hello.go" "$work/go-ir/main.go"
 
 cat > "$work/library.zi" <<'EOF'
 #module "library"
@@ -95,6 +111,48 @@ func main() { if Blockapp_Answer() != 42 { panic("wrong result") } }
 EOF
 GO111MODULE=off go run "$work/blocks-go/blocklib.go" \
     "$work/blocks-go/blockapp.go" "$work/blocks-go/main.go"
+
+"$ziran" ir --root "$work" -o "$work/blocks-ir" \
+    "$work/blocklib.zi" "$work/blockapp.zi"
+"$ziran" build --target=c --strict --root "$work" -o "$work/blocks-from-ir" \
+    "$work/blocks-ir/blocklib.zir" "$work/blocks-ir/blockapp.zir"
+cp "$work/blocks/main.c" "$work/blocks-from-ir/main.c"
+${CC:-cc} -Iinclude -I"$work/blocks-from-ir" \
+    "$work/blocks-from-ir/blocklib.c" "$work/blocks-from-ir/blockapp.c" \
+    "$work/blocks-from-ir/main.c" -o "$work/blocks-from-ir/app"
+"$work/blocks-from-ir/app"
+"$ziran" build --target=go --strict --pkg main --root "$work" \
+    -o "$work/blocks-go-ir" "$work/blocks-ir/blocklib.zir" \
+    "$work/blocks-ir/blockapp.zir"
+cp "$work/blocks-go/main.go" "$work/blocks-go-ir/main.go"
+GO111MODULE=off go run "$work/blocks-go-ir/blocklib.go" \
+    "$work/blocks-go-ir/blockapp.go" "$work/blocks-go-ir/main.go"
+
+python3 - "$work/blocks-ir/blockapp.zir" "$work/corrupt.zir" <<'PY'
+from pathlib import Path
+import sys
+data = Path(sys.argv[1]).read_bytes()
+Path(sys.argv[2]).write_bytes(data[:17])
+PY
+if "$ziran" build --target=c --root "$work" -o "$work/corrupt-out" \
+    "$work/corrupt.zir" 2> "$work/corrupt.err"; then
+    echo 'truncated IR unexpectedly passed' >&2
+    exit 1
+fi
+grep -Eq 'truncated|invalid' "$work/corrupt.err"
+python3 - "$work/blocks-ir/blockapp.zir" "$work/version.zir" <<'PY'
+from pathlib import Path
+import sys
+data = bytearray(Path(sys.argv[1]).read_bytes())
+data[4] = 2
+Path(sys.argv[2]).write_bytes(data)
+PY
+if "$ziran" build --target=c --root "$work" -o "$work/version-out" \
+    "$work/version.zir" 2> "$work/version.err"; then
+    echo 'unsupported IR version unexpectedly passed' >&2
+    exit 1
+fi
+grep -Fq 'unsupported ZIR version' "$work/version.err"
 
 cat > "$work/bad.zi" <<'EOF'
 #module "bad"

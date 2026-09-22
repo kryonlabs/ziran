@@ -6,6 +6,7 @@
 #include "zir_check.h"
 #include "zir_laws.h"
 #include "zir_diagnostic.h"
+#include "zir_serial.h"
 #include "zir_emit.h"
 #include "zir_go_lower.h"
 
@@ -33,6 +34,7 @@ main(int argc, char **argv)
     int check_ok;
     int laws_ok;
     int runtime_implementation = 0;
+    int all_ir = 1;
     ZirProgram **progs;
     int file_count;
     int i;
@@ -85,13 +87,15 @@ main(int argc, char **argv)
         return 1;
     }
     for(i = 0; i < file_count; i++) {
-        progs[i] = zir_parse_file(argv[first_file + i], root);
+        all_ir &= ZirPathIsZir(argv[first_file + i]);
+        progs[i] = ZirProgramLoad(argv[first_file + i], root);
         if(progs[i] == NULL) {
             fprintf(stderr, "ziran-go: failed to parse %s\n", argv[first_file + i]);
             return 1;
         }
     }
-    check_ok = ZirCheckPrograms(progs, file_count, strict);
+    check_ok = all_ir ? ZirLinkImports(progs, file_count) :
+                        ZirCheckPrograms(progs, file_count, strict);
     laws_ok = ZirCheckLaws(progs, file_count);
     if(!check_ok || !laws_ok) {
         for(i = 0; i < file_count; i++) ZirProgramFree(progs[i]);

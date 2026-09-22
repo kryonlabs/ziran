@@ -1552,10 +1552,8 @@ normalize_function_arrays(const ZirModule *module, ZirFunction *fn)
 }
 
 int
-ZirCheckPrograms(ZirProgram **programs, int count, int strict)
+ZirLinkImports(ZirProgram **programs, int count)
 {
-    Checker c = {0};
-    c.programs = programs; c.program_count = count; c.strict = strict;
     /* Link only explicitly imported modules that are present in this build.
      * Host headers remain unresolved; they are not a global type namespace. */
     for(int p = 0; p < count; p++) {
@@ -1568,7 +1566,7 @@ ZirCheckPrograms(ZirProgram **programs, int count, int strict)
                    (strstr(import->args, "[]") != NULL ||
                     ZirSliceElementType(import->return_type, NULL, 0))) {
                     ZirDiagnostic(import->span, "check.slice_signature",
-                                  "slice signatures require an ordinary Kry function");
+                                  "slice signatures require an ordinary Ziran function");
                     return 0;
                 }
                 if(import->kind != ZIR_IMPORT_HEADER || strchr(import->target, '.') != NULL)
@@ -1586,7 +1584,7 @@ ZirCheckPrograms(ZirProgram **programs, int count, int strict)
                            strcmp(import->target, stem) != 0)
                             continue;
                         if(import->resolved_module && import->resolved_module != candidate) {
-                            ZirDiagnostic(import->span, "check.import", "ambiguous Kry import: %s",
+                            ZirDiagnostic(import->span, "check.import", "ambiguous Ziran import: %s",
                                           import->target);
                             return 0;
                         }
@@ -1596,6 +1594,16 @@ ZirCheckPrograms(ZirProgram **programs, int count, int strict)
             }
         }
     }
+    return 1;
+}
+
+int
+ZirCheckPrograms(ZirProgram **programs, int count, int strict)
+{
+    Checker c = {0};
+    c.programs = programs; c.program_count = count; c.strict = strict;
+    if(!ZirLinkImports(programs, count))
+        return 0;
     for(int p = 0; p < count; p++) {
         for(int m = 0; m < programs[p]->module_count; m++) {
             ZirModule *module = &programs[p]->modules[m];

@@ -7,7 +7,7 @@ BIN_DIR := $(BUILD_DIR)/bin
 FRONTEND := cmd/zir/zir.c cmd/zir/zir_parse.c cmd/zir/zir_text.c \
     cmd/zir/zir_token.c cmd/zir/zir_cleanup.c cmd/zir/zir_expr.c \
     cmd/zir/zir_check.c cmd/zir/zir_borrow.c cmd/zir/zir_laws.c \
-    cmd/zir/zir_emit.c cmd/zir/zir_style_imports.c \
+    cmd/zir/zir_emit.c cmd/zir/zir_style_imports.c cmd/zir/zir_serial.c \
     cmd/zir/zir_diagnostic.c
 HEADERS := $(wildcard cmd/zir/*.h)
 
