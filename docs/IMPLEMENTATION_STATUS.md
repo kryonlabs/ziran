@@ -41,8 +41,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   functions and modules, while retaining reachable record and enum declarations.
   The test runs record and enum functions across imported modules. Kryon's
   complete geometry, layout, and group calculation test also runs in `.zib`
-  from source and saved `.zir`. Kryon's accessibility policy also builds and
-  runs as a `.zib` from both inputs, independently of the UI runtime.
+  from source and saved `.zir`. Kryon's accessibility and drag and drop
+  policies also build and run as `.zib` bundles from both inputs,
+  independently of the UI runtime.
 - Compiler functions use short names without `Zir` or `zir_` prefixes,
   including the IR serializer's `ProgramWrite`, `ProgramRead`, and `PathIsIR`.
   IR data types retain `Zir` names for now.
