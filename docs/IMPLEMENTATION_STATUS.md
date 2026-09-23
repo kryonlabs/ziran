@@ -42,7 +42,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   The test runs record and enum functions across imported modules. Kryon's
   complete geometry, layout, and group calculation test also runs in `.zib`
   from source and saved `.zir`. Kryon's accessibility, drag and drop, theme,
-  popup, and transition fade policies also build and run as `.zib` bundles
+  popup, transition fade, and numeric input policies also build and run as `.zib` bundles
   from both inputs, independently of the UI runtime. The popup ownership test
   includes frame IDs above `INT64_MAX`.
 - Compiler functions use short names without `Zir` or `zir_` prefixes,
@@ -63,6 +63,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.zir` tests run both forms without Kryon.
 - The shared emitter now has only C, C++, and Go targets. Its unused JavaScript
   path and hardcoded Kryon calls have been removed.
+- Native C++ now lowers pointer and `const` record field types through the
+  same scalar type mapping as C. A non-UI source and saved-IR record with an
+  `i32*` field compiles and runs on C++.
 - The inherited `#intrinsic "web"` modifier and its two name-based browser
   shims are gone. Browser behavior now requires an explicit host or target
   extern. C/C++ output no longer injects Kryon's inspection header for

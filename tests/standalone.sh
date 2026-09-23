@@ -145,6 +145,33 @@ for input in "$work/ordinary_names.zi" "$work/ordinary-ir/ordinary_names.zir"; d
     done
 done
 
+cat > "$work/pointer_record.zi" <<'EOF'
+#module "pointer_record"
+Props :: struct {
+    values: i32*
+    label: const char*
+}
+Answer :: () -> i32 #export {
+    return 42
+}
+EOF
+"$ziran" ir --root "$work" -o "$work/pointer-ir" \
+    "$work/pointer_record.zi"
+for input in "$work/pointer_record.zi" "$work/pointer-ir/pointer_record.zir"; do
+    output="$work/pointer-cpp-$(basename "$input")"
+    "$ziran" build --target=cpp --strict --root "$work" \
+        -o "$output" "$input"
+    grep -Fq 'int32_t* values;' "$output/pointer_record.hpp"
+    grep -Fq 'const char* label;' "$output/pointer_record.hpp"
+    cat > "$output/main.cpp" <<'CPP'
+#include "pointer_record.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+CPP
+    ${CXX:-c++} -Iinclude -I"$output" \
+        "$output/pointer_record.cpp" "$output/main.cpp" -o "$output/app"
+    "$output/app"
+done
+
 cat > "$work/ffi_direct.zi" <<'EOF'
 #module "ffi_direct"
 Reverse :: (value: u32) -> u32 #extern "math/bits.Reverse32" #export

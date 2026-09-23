@@ -533,6 +533,35 @@ strip_alias_type(const ZirModule *m, const char *type,
     if(*scalar && !strcmp(scalar,type) && TargetType(type,ZIR_C)) {
         snprintf(dst,dst_size,"%s",TargetType(type,ZIR_C)); return;
     }
+    if(type[0] == '*' && type[1] != '\0') {
+        char base[LOWER_NAME_MAX * 2];
+        strip_alias_type(m, type + 1, base, sizeof(base));
+        snprintf(dst, dst_size, "%s*", base);
+        return;
+    }
+    if(strncmp(type, "const ", 6) == 0 && type[6] != '\0') {
+        char inner[LOWER_NAME_MAX * 2];
+        strip_alias_type(m, type + 6, inner, sizeof(inner));
+        snprintf(dst, dst_size, "const %s", inner);
+        return;
+    }
+    {
+        size_t tlen = strlen(type);
+        if(tlen > 1 && type[tlen - 1] == '*') {
+            char base[LOWER_NAME_MAX * 2];
+            char trimmed[LOWER_NAME_MAX * 2];
+            size_t blen = tlen - 1;
+            while(blen > 0 && (type[blen - 1] == ' ' || type[blen - 1] == '\t'))
+                blen--;
+            if(blen >= sizeof(trimmed))
+                blen = sizeof(trimmed) - 1;
+            memcpy(trimmed, type, blen);
+            trimmed[blen] = '\0';
+            strip_alias_type(m, trimmed, base, sizeof(base));
+            snprintf(dst, dst_size, "%s*", base);
+            return;
+        }
+    }
 
     if(dot != NULL) {
         size_t alen = (size_t)(dot - type);
