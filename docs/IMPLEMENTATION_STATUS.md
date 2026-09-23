@@ -42,7 +42,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   The test runs record and enum functions across imported modules. Kryon's
   complete geometry, layout, and group calculation test also runs in `.zib`
   from source and saved `.zir`. Kryon's accessibility, drag and drop, theme,
-  popup, transition fade, numeric input, and text row policies also build and run as `.zib` bundles
+  popup, transition fade, numeric input, text row, and drag policies also build
+  and run as `.zib` bundles
   from both inputs, independently of the UI runtime. The popup ownership test
   includes frame IDs above `INT64_MAX`.
 - Portable strings now carry immutable UTF-8 bytes with exact byte lengths,
