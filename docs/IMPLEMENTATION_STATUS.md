@@ -12,6 +12,13 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   imported typed record block call named `Button` through generated C, C++,
   and native Go. Source and saved `.zir` builds execute for the tested subset.
   The call is resolved from its declaration, not its name.
+- `check`, `ir`, `build`, and `bundle` discover extensionless imports
+  transitively. Repeated `--module-path DIR` options locate ordinary libraries
+  outside an app root; explicitly supplied modules take precedence. A separate
+  app root and two-module library are tested from source and saved `.zir`,
+  including generated C and `.zib`. Kryon's drag policy test loads its `zi/`
+  library from an app entry file through the same path, across C, C++, Go,
+  and portable bundles.
 - `ziran ir` writes experimental binary `.zir` version 4 after checking all
   input modules together. C, C++, and Go can read saved modules without reparsing
   `.zi`; their imports are relinked from serialized module identities. The

@@ -5,8 +5,9 @@ See [Implementation status](IMPLEMENTATION_STATUS.md) for the remaining work.
 
 ## Experimental version 1
 
-`ziran bundle --root DIR --entry module:function -o FILE file.zi|file.zir ...`
-links explicitly supplied modules. `ziran run FILE` validates and executes
+`ziran bundle --root DIR [--module-path DIR] --entry module:function -o FILE file.zi|file.zir ...`
+loads explicit inputs and their extensionless imports, then links reachable
+modules. `ziran run FILE` validates and executes
 zero-argument integer, bool, or void entry functions on a portable interpreter.
 Called functions can use `i32`, `u8`, `u32`, `u64`, `bool`, `float`, `double`, and
 immutable `string` values, enums, and plain records with scalar, enum, string,

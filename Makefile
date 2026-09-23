@@ -7,7 +7,7 @@ BIN_DIR := $(BUILD_DIR)/bin
 FRONTEND := cmd/zir/zir.c cmd/zir/zir_parse.c cmd/zir/zir_text.c \
     cmd/zir/zir_token.c cmd/zir/zir_cleanup.c cmd/zir/zir_expr.c \
     cmd/zir/zir_check.c cmd/zir/zir_borrow.c cmd/zir/zir_laws.c \
-    cmd/zir/zir_emit.c cmd/zir/zir_serial.c \
+    cmd/zir/zir_emit.c cmd/zir/zir_serial.c cmd/zir/zir_load.c \
     cmd/zir/zir_diagnostic.c
 PORTABLE := cmd/zir/zir_bundle.c cmd/zir/zir_vm.c
 HEADERS := $(wildcard cmd/zir/*.h)
@@ -49,6 +49,7 @@ check: all $(BIN_DIR)/bundle-link-test
 	$(BIN_DIR)/bundle-link-test
 	sh tests/standalone.sh $(BIN_DIR)/ziran
 	sh tests/portable_strings.sh $(BIN_DIR)/ziran
+	sh tests/module_paths.sh $(BIN_DIR)/ziran
 
 clean:
 	rm -rf $(BUILD_DIR)

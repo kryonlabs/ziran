@@ -4,6 +4,7 @@
 #include "zir_laws.h"
 #include "zir_serial.h"
 #include "zir_diagnostic.h"
+#include "zir_load.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,7 +14,7 @@
 static void
 usage(void)
 {
-    fprintf(stderr, "usage: ziran ir [--diagnostics=text|json] --root DIR -o DIR file.zi ...\n");
+    fprintf(stderr, "usage: ziran ir [--diagnostics=text|json] [--module-path DIR] --root DIR -o DIR file.zi|file.zir ...\n");
 }
 
 static int
@@ -69,7 +70,9 @@ main(int argc, char **argv)
     int check_only = 0;
     int first_file = 0;
     int result = 1;
-    ZirProgram **programs = NULL;
+    ProgramSet set = {0};
+    const char *module_paths[64];
+    int module_path_count = 0;
     int count;
 
     for(int i = 1; i < argc; i++) {
@@ -80,6 +83,8 @@ main(int argc, char **argv)
             }
         } else if(strcmp(argv[i], "--root") == 0 && i + 1 < argc) {
             root = argv[++i];
+        } else if(strcmp(argv[i], "--module-path") == 0 && i + 1 < argc && module_path_count < 64) {
+            module_paths[module_path_count++] = argv[++i];
         } else if(strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             out_dir = argv[++i];
         } else if(strcmp(argv[i], "--check-only") == 0) {
@@ -96,28 +101,23 @@ main(int argc, char **argv)
         usage();
         return 1;
     }
-    count = argc - first_file;
-    programs = calloc((size_t)count, sizeof(*programs));
-    if(programs == NULL)
-        return 1;
-    for(int i = 0; i < count; i++) {
-        programs[i] = parse_file(argv[first_file + i], root);
-        if(programs[i] == NULL)
-            goto done;
-    }
-    if(!CheckPrograms(programs, count, 1) || !CheckLaws(programs, count))
+    if(!ProgramsLoad(&set, root, module_paths, module_path_count,
+                     (const char *const *)(argv + first_file), argc - first_file))
+        goto done;
+    count = set.count;
+    if(!CheckCanonicalPrograms(set.programs, count, 1,
+                               (const char *const *)set.paths) ||
+       !CheckLaws(set.programs, count))
         goto done;
     if(!check_only) {
         for(int i = 0; i < count; i++) {
-            if(programs[i]->module_count < 1 ||
-               !write_program(programs[i], out_dir))
+            if(set.programs[i]->module_count < 1 ||
+               !write_program(set.programs[i], out_dir))
                 goto done;
         }
     }
     result = 0;
 done:
-    for(int i = 0; i < count; i++)
-        ProgramFree(programs[i]);
-    free(programs);
+    ProgramsFree(&set);
     return result;
 }

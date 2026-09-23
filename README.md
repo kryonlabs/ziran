@@ -24,3 +24,14 @@ documents distinguish the current format from the intended contracts.
 Run `make` to build the current toolchain and `make check` for its standalone
 smoke test. `build/bin/ziran` exposes `check`, `ir`, `fmt`,
 `build --target=c|cpp|go`, `bundle`, and `run`.
+
+For ordinary imports, pass the entry file and a library directory with
+`--module-path DIR` (repeat for multiple directories). `check`, `ir`,
+`build`, and `bundle` load extensionless `#import "module"` dependencies
+transitively from `.zi` or saved `.zir`. For example:
+
+```sh
+build/bin/ziran check --root app --module-path ../kryon/zi app/main.zi
+```
+
+Imports with a dotted target, such as `#import "stdio.h"`, remain host headers.

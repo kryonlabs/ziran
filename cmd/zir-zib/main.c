@@ -4,6 +4,7 @@
 #include "zir_diagnostic.h"
 #include "zir_laws.h"
 #include "zir_serial.h"
+#include "zir_load.h"
 #include "zir_vm.h"
 
 #include <stdio.h>
@@ -14,7 +15,7 @@ static void
 usage(void)
 {
     fprintf(stderr,
-            "usage: ziran bundle --root DIR --entry module:function -o FILE file.zi|file.zir ...\n"
+            "usage: ziran bundle [--module-path DIR] --root DIR --entry module:function -o FILE file.zi|file.zir ...\n"
             "       ziran run file.zib\n");
 }
 
@@ -43,6 +44,9 @@ bundle_command(int argc, char **argv)
     int first_file = 0;
     int count, result = 1;
     char entry_module[ZIR_NAME_MAX], entry_function[ZIR_NAME_MAX];
+    ProgramSet set = {0};
+    const char *module_paths[64];
+    int module_path_count = 0;
     ZirProgram **programs = NULL;
     ZirProgram merged = {0};
     ZirProgram *linked = NULL;
@@ -50,6 +54,8 @@ bundle_command(int argc, char **argv)
     for(int i = 0; i < argc; i++) {
         if(strcmp(argv[i], "--root") == 0 && i + 1 < argc)
             root = argv[++i];
+        else if(strcmp(argv[i], "--module-path") == 0 && i + 1 < argc && module_path_count < 64)
+            module_paths[module_path_count++] = argv[++i];
         else if(strcmp(argv[i], "--entry") == 0 && i + 1 < argc)
             entry = argv[++i];
         else if(strcmp(argv[i], "-o") == 0 && i + 1 < argc)
@@ -70,19 +76,16 @@ bundle_command(int argc, char **argv)
         usage();
         return 1;
     }
-    count = argc - first_file;
-    programs = calloc((size_t)count, sizeof(*programs));
-    if(programs == NULL)
-        return 1;
-    for(int i = 0; i < count; i++) {
-        programs[i] = ProgramLoad(argv[first_file + i], root);
-        if(programs[i] == NULL)
-            goto done;
+    if(!ProgramsLoad(&set, root, module_paths, module_path_count,
+                     (const char *const *)(argv + first_file), argc - first_file))
+        goto done;
+    count = set.count;
+    programs = set.programs;
+    for(int i = 0; i < count; i++)
         merged.module_count += programs[i]->module_count;
-    }
     if(merged.module_count == 0 ||
        !CheckCanonicalPrograms(programs, count, 1,
-                               (const char *const *)(argv + first_file)) ||
+                               (const char *const *)set.paths) ||
        !CheckLaws(programs, count))
         goto done;
     merged.modules = calloc((size_t)merged.module_count, sizeof(*merged.modules));
@@ -117,9 +120,7 @@ done:
         remove(output);
     ProgramFree(linked);
     free(merged.modules);
-    for(int i = 0; i < count; i++)
-        ProgramFree(programs[i]);
-    free(programs);
+    ProgramsFree(&set);
     return result;
 }
 
