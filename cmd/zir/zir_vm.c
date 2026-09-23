@@ -13,8 +13,8 @@
 enum { VM_MAX_PARAMS = 16, VM_MAX_LOCALS = 64, VM_MAX_DEPTH = 128,
        VM_MAX_STEPS = 1000000, VM_MAX_FIELDS = 64,
        VM_MAX_ENUM_MEMBERS = 64,
-       VM_MAX_RECORD_BYTES = 64 * 1024 * 1024,
-       VM_MAX_ARRAY_BYTES = 64 * 1024 * 1024 };
+       VM_MAX_RECORD_BYTES = 256 * 1024 * 1024,
+       VM_MAX_ARRAY_BYTES = 256 * 1024 * 1024 };
 
 typedef struct Parameter {
     char name[ZIR_NAME_MAX];
@@ -61,6 +61,7 @@ typedef struct RecordField {
 
 struct Record {
     Record *next;
+    int retired;
     const ZirModule *owner;
     const ZirType *type;
     int field_count;
@@ -69,6 +70,7 @@ struct Record {
 
 struct Array {
     Array *next;
+    int retired;
     const ZirModule *owner;
     char element_type[ZIR_NAME_MAX];
     int length;
@@ -871,6 +873,56 @@ coerce_expression(Vm *vm, const ZirModule *module,
             return value;
     }
     return coerce(vm, module, value, type);
+}
+
+/* A storage assignment clones its replacement before it discards the old
+ * value. Owned record and array trees can then be reclaimed immediately;
+ * this bounds repeated updates of large value records. */
+static void
+retire_value(Value value, int depth)
+{
+    if(depth >= VM_MAX_DEPTH)
+        return;
+    if(value.kind == VALUE_RECORD && value.record != NULL &&
+       !value.record->retired) {
+        value.record->retired = 1;
+        for(int i = 0; i < value.record->field_count; i++)
+            retire_value(value.record->fields[i].value, depth + 1);
+    } else if(value.kind == VALUE_ARRAY && value.array != NULL &&
+              !value.array->retired) {
+        value.array->retired = 1;
+        for(int i = 0; i < value.array->length; i++)
+            retire_value(value.array->elements[i], depth + 1);
+    }
+}
+
+static void
+release_retired(Vm *vm)
+{
+    Record **record = &vm->records;
+    while(*record != NULL) {
+        if((*record)->retired) {
+            Record *dead = *record;
+            *record = dead->next;
+            vm->record_bytes -= sizeof(Record) +
+                (size_t)dead->field_count * sizeof(RecordField);
+            free(dead);
+        } else {
+            record = &(*record)->next;
+        }
+    }
+    Array **array = &vm->arrays;
+    while(*array != NULL) {
+        if((*array)->retired) {
+            Array *dead = *array;
+            *array = dead->next;
+            vm->array_bytes -= sizeof(Array) +
+                (size_t)dead->length * sizeof(Value);
+            free(dead);
+        } else {
+            array = &(*array)->next;
+        }
+    }
 }
 
 static int
@@ -2187,8 +2239,16 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
                     function->exprs[statement->lhs_root].type,
                     function->exprs[statement->expr_root].type);
             }
-            *slot = coerce(vm, frame->module, right,
-                           function->exprs[statement->lhs_root].type);
+            Value replacement = coerce(vm, frame->module, right,
+                                       function->exprs[statement->lhs_root].type);
+            if(vm->failed)
+                return FLOW_ERROR;
+            Value previous = *slot;
+            *slot = replacement;
+            if(previous.kind == VALUE_RECORD || previous.kind == VALUE_ARRAY) {
+                retire_value(previous, 0);
+                release_retired(vm);
+            }
             break;
         }
         case ZIR_STMT_RETURN:

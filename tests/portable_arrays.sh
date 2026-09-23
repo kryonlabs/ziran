@@ -70,6 +70,15 @@ Answer :: () -> i32 #export {
         if !CheckLarge(large) { return 0 }
         iteration += 1
     }
+    moving: LargeBox = large
+    iteration = 0
+    while iteration < 80 {
+        moving = RoundTripLarge(moving)
+        iteration += 1
+    }
+    if large.values[0].x != 41 || moving.values[0].x != 42 {
+        return 0
+    }
     values: [THREE]i32 = {41, 1, 0}
     copy: [THREE]i32 = values
     values[0] = 0

@@ -107,7 +107,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 - Portable execution borrows read-only record and array parameters and
   reclaims temporary values after ordinary function calls while retaining
   copied results. A repeated nested call over a 4,096-record array checks
-  value isolation without exhausting the VM's allocation limit.
+  value isolation without exhausting the VM's allocation limit. Replaced
+  record and array storage is reclaimed after a value copy; the portable VM
+  currently allows up to 256 MiB each of tracked record and array allocations
+  so large checked parsers such as Kryon's KSS parser can execute.
 - The portable verifier still rejects records with raw pointer fields. Kryon's
   `CardButtonProps` builds for native C, C++, and Go, but a `.zib` entry that
   carries its pointer-bearing `ButtonProps` result does not yet verify. A
