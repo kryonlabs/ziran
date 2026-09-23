@@ -42,9 +42,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   The test runs record and enum functions across imported modules. Kryon's
   complete geometry, layout, and group calculation test also runs in `.zib`
   from source and saved `.zir`. Kryon's accessibility, drag and drop, theme,
-  and popup policies, including popup ownership with frame IDs above `INT64_MAX`,
-  also build and run as `.zib` bundles from both inputs,
-  independently of the UI runtime.
+  popup, and transition fade policies also build and run as `.zib` bundles
+  from both inputs, independently of the UI runtime. The popup ownership test
+  includes frame IDs above `INT64_MAX`.
 - Compiler functions use short names without `Zir` or `zir_` prefixes,
   including the IR serializer's `ProgramWrite`, `ProgramRead`, and `PathIsIR`.
   IR data types retain `Zir` names for now.
