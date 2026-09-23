@@ -389,6 +389,62 @@ EOF
 "$ziran" bundle --root "$work" --entry direct_enum:Answer \
     -o "$work/direct-enum.zib" "$work/direct_enum.zi"
 test "$("$ziran" run "$work/direct-enum.zib")" = 8
+cat > "$work/unsigned_bits.zi" <<'EOF'
+#module "unsigned_bits"
+Answer :: () -> i32 #export {
+    value: u32 = (u32)0x80000000
+    if (u32)1 << (u32)31 != value { return 0 }
+    if value >> (u32)31 != (u32)1 { return 0 }
+    value |= (u32)3
+    if value != (u32)0x80000003 { return 0 }
+    value &= ~(u32)1
+    if value != (u32)0x80000002 { return 0 }
+    value ^= (u32)2
+    if value != (u32)0x80000000 { return 0 }
+    value >>= (u32)31
+    negative: i32 = -8
+    if negative >> 2 != -2 { return 0 }
+    return (i32)(value + (u32)41)
+}
+EOF
+"$ziran" bundle --root "$work" --entry unsigned_bits:Answer \
+    -o "$work/unsigned-bits.zib" "$work/unsigned_bits.zi"
+test "$("$ziran" run "$work/unsigned-bits.zib")" = 42
+"$ziran" ir --root "$work" -o "$work/unsigned-bits-ir" \
+    "$work/unsigned_bits.zi"
+"$ziran" bundle --root "$work" --entry unsigned_bits:Answer \
+    -o "$work/unsigned-bits-from-ir.zib" \
+    "$work/unsigned-bits-ir/unsigned_bits.zir"
+cmp "$work/unsigned-bits.zib" "$work/unsigned-bits-from-ir.zib"
+test "$("$ziran" run "$work/unsigned-bits-from-ir.zib")" = 42
+"$ziran" build --target=c --strict --root "$work" \
+    -o "$work/unsigned-bits-c" "$work/unsigned_bits.zi"
+cat > "$work/unsigned-bits-c/main.c" <<'EOF'
+#include "unsigned_bits.h"
+int main(void) { return Answer() == 42 ? 0 : 1; }
+EOF
+${CC:-cc} -Iinclude -I"$work/unsigned-bits-c" \
+    "$work/unsigned-bits-c/unsigned_bits.c" \
+    "$work/unsigned-bits-c/main.c" -o "$work/unsigned-bits-c/app"
+"$work/unsigned-bits-c/app"
+"$ziran" build --target=cpp --strict --root "$work" \
+    -o "$work/unsigned-bits-cpp" "$work/unsigned_bits.zi"
+cat > "$work/unsigned-bits-cpp/main.cpp" <<'EOF'
+#include "unsigned_bits.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+EOF
+${CXX:-c++} -Iinclude -I"$work/unsigned-bits-cpp" \
+    "$work/unsigned-bits-cpp/unsigned_bits.cpp" \
+    "$work/unsigned-bits-cpp/main.cpp" -o "$work/unsigned-bits-cpp/app"
+"$work/unsigned-bits-cpp/app"
+"$ziran" build --target=go --strict --pkg main --root "$work" \
+    -o "$work/unsigned-bits-go" "$work/unsigned_bits.zi"
+cat > "$work/unsigned-bits-go/main.go" <<'EOF'
+package main
+func main() { if UnsignedBits_Answer() != 42 { panic("wrong bits result") } }
+EOF
+GO111MODULE=off go run "$work/unsigned-bits-go/unsigned_bits.go" \
+    "$work/unsigned-bits-go/main.go"
 python3 - "$work/flow-ir/flow.zir" "$work/invalid-flow.zir" <<'PY'
 from pathlib import Path
 import sys

@@ -1585,10 +1585,14 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         line(e,"%s = %s%s",a,result,e->target==ZIR_GO?"":";");copy_text(out,size,temp);e->pure=1;return;
     case ZIR_EXPR_CAST: {
         const char *declared_type = type;
+        const char *operand_type = e->fn->exprs[expr->right].type;
         int right_pure;
         if(enum_type(e->module, type))
             type = "i32";
-        emit_expr(e,expr->right,e->fn->exprs[expr->right].type,a,sizeof(a));
+        if(e->fn->exprs[expr->right].kind == ZIR_EXPR_INT &&
+           width(type) >= 32 && !signed_type(type))
+            operand_type = type;
+        emit_expr(e,expr->right,operand_type,a,sizeof(a));
         right_pure = e->pure;
         pure = right_pure;
         if(!strcmp(type, "string") || !strcmp(type, "const char*")) {

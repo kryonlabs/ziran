@@ -88,7 +88,8 @@ value_kind(const char *type)
     if(strcmp(type, "void") == 0)
         return VALUE_VOID;
     if(strcmp(type, "i32") == 0 || strcmp(type, "int") == 0 ||
-       strcmp(type, "integer") == 0 || strcmp(type, "bool") == 0)
+       strcmp(type, "integer") == 0 || strcmp(type, "bool") == 0 ||
+       strcmp(type, "u32") == 0)
         return VALUE_INT;
     if(strcmp(type, "float") == 0 || strcmp(type, "f32") == 0 ||
        strcmp(type, "double") == 0 || strcmp(type, "f64") == 0 ||
@@ -435,14 +436,21 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         return real_value(number);
     }
     if(value.kind == VALUE_REAL) {
-        if(!isfinite(value.real) || value.real < INT32_MIN ||
-           value.real >= (double)INT32_MAX + 1.0) {
+        double lower = strcmp(type, "u32") == 0 ? 0.0 : INT32_MIN;
+        double upper = strcmp(type, "u32") == 0 ?
+                       (double)UINT32_MAX + 1.0 : (double)INT32_MAX + 1.0;
+        if(!isfinite(value.real) || value.real < lower ||
+           value.real >= upper) {
             vm->failed = 1;
             return int_value(0);
         }
+        if(strcmp(type, "u32") == 0)
+            return int_value((uint32_t)value.real);
         return int_value((int32_t)value.real);
     }
     uint32_t bits = (uint32_t)value.integer;
+    if(strcmp(type, "u32") == 0)
+        return int_value(bits);
     return int_value(bits <= INT32_MAX ? (int64_t)bits :
                      (int64_t)bits - 4294967296LL);
 }
@@ -535,12 +543,27 @@ binary_operator(const char *op)
 {
     static const char *const supported[] = {
         "+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=",
-        "&&", "||", NULL
+        "&&", "||", "&", "|", "^", "<<", ">>", NULL
     };
     for(int i = 0; supported[i] != NULL; i++)
         if(strcmp(op, supported[i]) == 0)
             return 1;
     return 0;
+}
+
+static int
+integer_type(const char *type)
+{
+    return value_kind(type) == VALUE_INT &&
+           strcmp(type, "bool") != 0;
+}
+
+static int
+bitwise_operator(const char *op)
+{
+    return strcmp(op, "&") == 0 || strcmp(op, "|") == 0 ||
+           strcmp(op, "^") == 0 || strcmp(op, "<<") == 0 ||
+           strcmp(op, ">>") == 0;
 }
 
 static const char *
@@ -556,6 +579,16 @@ assignment_binary_operator(const char *op)
         return "/";
     if(strcmp(op, "%=") == 0)
         return "%";
+    if(strcmp(op, "&=") == 0)
+        return "&";
+    if(strcmp(op, "|=") == 0)
+        return "|";
+    if(strcmp(op, "^=") == 0)
+        return "^";
+    if(strcmp(op, "<<=") == 0)
+        return "<<";
+    if(strcmp(op, ">>=") == 0)
+        return ">>";
     return NULL;
 }
 
@@ -581,7 +614,7 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         errno = 0;
         number = strtoll(expression->text, &end, 0);
         return errno == 0 && end != expression->text && *end == 0 &&
-               number >= INT32_MIN && number <= INT32_MAX;
+               number >= INT32_MIN && number <= UINT32_MAX;
     }
     case ZIR_EXPR_FLOAT: {
         char *end;
@@ -609,7 +642,9 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
                 strcmp(expression->op, "~") == 0) &&
                verify_expression(module, function, bindings, binding_count,
                                  expression->right, depth + 1) &&
-               scalar_type(function->exprs[expression->right].type);
+               (strcmp(expression->op, "~") == 0 ?
+                integer_type(function->exprs[expression->right].type) :
+                scalar_type(function->exprs[expression->right].type));
     case ZIR_EXPR_BINARY: {
         if(!binary_operator(expression->op) ||
            !verify_expression(module, function, bindings, binding_count,
@@ -625,6 +660,8 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
             return left_enum == right_enum &&
                    (strcmp(expression->op, "==") == 0 ||
                     strcmp(expression->op, "!=") == 0);
+        if(bitwise_operator(expression->op))
+            return integer_type(left_type) && integer_type(right_type);
         return scalar_type(left_type) && scalar_type(right_type);
     }
     case ZIR_EXPR_CAST: {
@@ -818,9 +855,10 @@ verify_sequence(const ZirModule *module, const ZirFunction *function,
                    strcmp(destination, "void") == 0 ||
                    strcmp(source, "bool") == 0 ||
                    strcmp(source, "void") == 0 ||
-                   (strcmp(operation, "%") == 0 &&
-                    (value_kind(destination) != VALUE_INT ||
-                     value_kind(source) != VALUE_INT)))
+                   ((strcmp(operation, "%") == 0 ||
+                     bitwise_operator(operation)) &&
+                    (!integer_type(destination) ||
+                     !integer_type(source))))
                     return 0;
             }
             break;
@@ -1056,7 +1094,8 @@ assignment_slot(Frame *frame, int index, int depth)
 }
 
 static Value
-binary_value(Vm *vm, const char *op, Value left, Value right)
+binary_value(Vm *vm, const char *op, Value left, Value right,
+             const char *left_type)
 {
     int real = left.kind == VALUE_REAL || right.kind == VALUE_REAL;
     double a = as_real(left), b = as_real(right);
@@ -1090,6 +1129,26 @@ binary_value(Vm *vm, const char *op, Value left, Value right)
         if(strcmp(op, "*") == 0) return real_value(a * b);
         if(strcmp(op, "/") == 0 && b != 0.0) return real_value(a / b);
         goto failed;
+    }
+    if(bitwise_operator(op)) {
+        uint32_t a_bits = (uint32_t)left.integer;
+        uint32_t b_bits = (uint32_t)right.integer;
+        if(strcmp(op, "&") == 0)
+            return int_value(a_bits & b_bits);
+        if(strcmp(op, "|") == 0)
+            return int_value(a_bits | b_bits);
+        if(strcmp(op, "^") == 0)
+            return int_value(a_bits ^ b_bits);
+        if(right.integer < 0 || right.integer >= 32)
+            goto failed;
+        unsigned amount = (unsigned)right.integer;
+        if(strcmp(op, "<<") == 0)
+            return int_value(a_bits << amount);
+        uint32_t shifted = a_bits >> amount;
+        if(strcmp(left_type, "u32") != 0 &&
+           (a_bits & UINT32_C(0x80000000)) != 0 && amount > 0)
+            shifted |= UINT32_MAX << (32 - amount);
+        return int_value(shifted);
     }
     if(strcmp(op, "+") == 0) return int_value(left.integer + right.integer);
     if(strcmp(op, "-") == 0) return int_value(left.integer - right.integer);
@@ -1184,7 +1243,8 @@ eval(Frame *frame, int index, int depth)
         else if(strcmp(expression->op, "||") == 0)
             value = int_value(truthy(left) || truthy(right));
         else
-            value = binary_value(frame->vm, expression->op, left, right);
+            value = binary_value(frame->vm, expression->op, left, right,
+                frame->function->exprs[expression->left].type);
         break;
     case ZIR_EXPR_CAST:
         value = coerce(frame->vm, frame->module,
@@ -1310,7 +1370,8 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
                     statement->assignment_op);
                 if(operation == NULL)
                     return FLOW_ERROR;
-                right = binary_value(vm, operation, *slot, right);
+                right = binary_value(vm, operation, *slot, right,
+                    function->exprs[statement->lhs_root].type);
             }
             *slot = coerce(vm, frame->module, right,
                            function->exprs[statement->lhs_root].type);

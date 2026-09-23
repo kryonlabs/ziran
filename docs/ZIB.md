@@ -8,11 +8,12 @@ See [Implementation status](IMPLEMENTATION_STATUS.md) for the remaining work.
 `ziran bundle --root DIR --entry module:function -o FILE file.zi|file.zir ...`
 links explicitly supplied modules. `ziran run FILE` validates and executes
 zero-argument integer, bool, or void entry functions on a portable interpreter.
-Called functions can use `float` and `double` scalars, enums, and plain records
-with scalar, enum, or nested record fields. Record defaults and literals,
+Called functions can use `i32`, `u32`, `bool`, `float`, and `double` scalars,
+enums, and plain records with scalar, enum, or nested record fields. Record defaults and literals,
 member reads and writes, scalar compound assignments, parameters, returns,
-and value copies execute in the interpreter. Portable enum initializers
-support integer literals and references to preceding members joined by `+`
+and value copies execute in the interpreter. The `u32` subset includes
+bitwise `&`, `|`, `^`, `~`, shifts, and their compound assignments. Portable
+enum initializers support integer literals and references to preceding members joined by `+`
 or `-`; other constant expressions remain outside this subset. The bundle is
 `ZIB` plus a zero byte, a little-endian version, length-prefixed entry module
 and function names, a host capability count (currently zero), and a
