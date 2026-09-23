@@ -76,7 +76,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   Kryon's `ImageProps` record now uses portable strings for asset paths and
   alt text. Its fit, source selection, draw eligibility, and default tint
   decisions are tested with that record across C, C++, Go, and `.zib`. The
-  complete Image widget is not yet in the checked library.
+  checked `Image(ImageProps)` widget now resolves class styles, selects asset
+  dimensions or a supplied texture handle, and queues a portable clipped image
+  draw or missing-asset label. Source and saved `.zib` tests exercise the host
+  dimension and raster contracts; C, C++, and Go run the texture-backed path.
+  Concrete desktop and browser image hosts remain unfinished.
   Kryon's shared style values and fill-state records now support Separator and
   Progress paint decisions as ordinary imported modules in those targets.
   Kryon's Progress composition now selects fonts and computes layout in checked
