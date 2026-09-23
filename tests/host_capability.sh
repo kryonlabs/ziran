@@ -76,12 +76,12 @@ grep -Fq 'bundle capability list differs from linked IR' "$work/tampered.err"
 cat > "$work/unsupported.zi" <<'EOF'
 #module "unsupported"
 Box :: struct {
-    value: i32
+    value: i32*
 }
 Borrow :: () -> Box #extern
 Answer :: () -> i32 #export {
     box: Box = Borrow()
-    return box.value
+    return 42
 }
 EOF
 if "$ziran" bundle --root "$work" --entry unsupported:Answer \
@@ -90,4 +90,4 @@ if "$ziran" bundle --root "$work" --entry unsupported:Answer \
     echo 'pointer capability unexpectedly bundled' >&2
     exit 1
 fi
-grep -Fq 'scalar host capability' "$work/unsupported.err"
+grep -Fq 'supported host capability' "$work/unsupported.err"

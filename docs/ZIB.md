@@ -34,7 +34,7 @@ the expression uses the member as an integer without an explicit enum cast.
 The reader rejects unsupported versions, truncated or trailing data, malformed
 embedded IR, semantic errors and divergent fields in saved IR, unresolved imports,
 unsupported capabilities, and functions outside the current portable subset.
-Reachable `#extern` host calls with scalar, string, or void signatures become
+Reachable `#extern` host calls with scalar, string, enum, plain record, or void signatures become
 explicit capabilities. An embedding C host links `build/libziran.a`, includes
 `ziran_host.h`, opens a bundle with `BundleOpen`, and inspects its required
 module/function names with `BundleCapabilityCount`, `BundleCapabilityModule`,
@@ -42,15 +42,17 @@ and `BundleCapabilityFunction`. It passes `HostBinding` entries to `BundleRun`.
 The runner checks that every required binding is present before executing the
 entry function. The standalone `ziran run` command has no host bindings and
 rejects a call that needs one. The loader compares the capability list with
-the linked IR; the VM checks signatures before execution.
+the linked IR; the VM checks signatures before execution and verifies returned
+record field names and types. Record fields may themselves contain records,
+strings, or enums.
 Source and saved-IR bundle bytes match in scalar, record, and enum tests,
 including Kryon's geometry, layout, and popup ownership tests. Synchronous
 callable slots with captured locals and imported named functions run from
 source and saved IR. Fixed arrays with numeric or resolved named capacities support defaults,
 positional literals, element reads and writes, and value copies, including
 arrays inside imported records. Indexing is bounds-checked. Version 2 is
-experimental and has no compatibility promise. Host calls with records,
-pointers, or arrays, graphical programs, slices, unresolved or nested fixed
+experimental and has no compatibility promise. Host calls with pointers,
+arrays, or slots, graphical programs, slices, unresolved or nested fixed
 arrays, state, globals, `for`, and `switch` remain unsupported.
 
 ## Target contract

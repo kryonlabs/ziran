@@ -52,7 +52,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `i64`, `u32`, and `u64` bitwise operations and shifts, calls,
   arithmetic, comparisons, casts, assignments, `if`/`else`, `while`, lexical
   blocks, `break`, `continue`, and returns. It rejects host imports outside the
-  scalar/string/void subset and
+  scalar/string/plain-record subset and
   unsupported statements before writing a bundle. Loop, branch, and real
   arithmetic programs are compared against generated C, C++, and Go in
   `make check`. The bundle loader also reruns the language checker and laws
@@ -77,15 +77,17 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   Progress paint decisions as ordinary imported modules in those targets.
   Window placement and drag policy now runs from source and saved IR in native
   targets and `.zib`, with window flags imported from a normal Ziran module.
-- Reachable scalar `#extern` host calls now appear as module/function
+- Reachable `#extern` host calls now appear as module/function
   capabilities in `.zib`. The loader verifies the capability list against the
   linked IR. `build/libziran.a` and `include/ziran_host.h` expose an opaque
   bundle handle, capability enumeration, and bindings for integer, real, string,
-  and void calls. `BundleRun` checks all required bindings before execution.
+  enum, plain record, and void calls. Record fields retain declared names and
+  types, including nested records; returned fields are checked before use.
+  `BundleRun` checks all required bindings before execution.
   The CLI runner also checks required bindings before execution. Source and
   saved-IR bundles, unused extern pruning, list tampering, missing binding
-  preflight, and unsupported record signatures are tested. Record and pointer
-  host calls remain unsupported.
+  preflight, malformed record returns, and pointer-bearing record rejection
+  are tested. Pointer, array, and slot host calls remain unsupported.
 - Portable strings now carry immutable UTF-8 bytes with exact byte lengths,
   including embedded nulls. The verifier and interpreter cover literals,
   equality, read-only byte indexing, `.length`, parameters, returns, and
@@ -157,7 +159,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 - Extend the `.zib` linker and verifier beyond the current subset: remaining
   control flow, enum initializer expressions, unresolved and nested arrays,
   slices, state, and all checked
-  expressions. Extend host capabilities to portable records, handles, and
+  expressions. Extend host capabilities to portable handles, arrays, and
   equivalent behavior
   for all supported language features. The current bundle embeds checked
   `.zir`; the linker follows direct function calls and retains the types

@@ -15,8 +15,11 @@ typedef enum VmHostValueKind {
     VM_HOST_INTEGER,
     VM_HOST_UNSIGNED,
     VM_HOST_REAL,
-    VM_HOST_STRING
+    VM_HOST_STRING,
+    VM_HOST_RECORD
 } VmHostValueKind;
+
+typedef struct VmHostField VmHostField;
 
 typedef struct VmHostValue {
     VmHostValueKind kind;
@@ -26,10 +29,19 @@ typedef struct VmHostValue {
     double real;
     const unsigned char *data;
     size_t length;
+    const VmHostField *fields;
+    size_t field_count;
 } VmHostValue;
 
+struct VmHostField {
+    const char *name;
+    VmHostValue value;
+};
+
 /* Return nonzero after writing a result of the declared return type.
- * Returned string bytes must remain valid until BundleRun returns. */
+ * Record fields are in declaration order and carry their declared names and
+ * types. Argument fields are borrowed for the call. Returned fields and
+ * string bytes must remain valid until BundleRun returns. */
 typedef int (*VmHostCall)(void *context, const char *module,
                           const char *function, const VmHostValue *args,
                           int arg_count, VmHostValue *result);

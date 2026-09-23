@@ -369,6 +369,31 @@ portable_type(const ZirModule *module, const char *type)
     return portable_type_at(module, type, 0);
 }
 
+/* Host values have a declared, recursive record shape. Arrays and slots need
+ * separate ownership and callback contracts before crossing this boundary. */
+static int
+host_type_at(const ZirModule *module, const char *type, int depth)
+{
+    if(depth >= VM_MAX_DEPTH || ArrayElementType(type, NULL, 0, NULL))
+        return 0;
+    if(value_kind(type) != VALUE_INVALID)
+        return 1;
+    const ZirModule *owner = NULL;
+    const ZirType *record = FindType(module, type, &owner);
+    if(record == NULL || record->is_extern || record->is_slot)
+        return 0;
+    if(record->is_enum)
+        return enum_member_value(record, NULL, NULL);
+    size_t offset = 0;
+    ZirTypeField field;
+    int count = 0, status;
+    while((status = TypeNextField(record, &offset, &field)) == 1)
+        if(++count > VM_MAX_FIELDS || !strcmp(field.type, "void") ||
+           !host_type_at(owner, field.type, depth + 1))
+            return 0;
+    return status == 0;
+}
+
 static Value
 int_value(int64_t integer)
 {
@@ -1538,19 +1563,19 @@ VmVerify(const ZirProgram *program, const char *entry_module,
                 Parameter parameters[VM_MAX_PARAMS];
                 int count = parse_import_parameters(module,
                     &module->imports[i], parameters);
-                int scalar_signature =
-                    value_kind(module->imports[i].return_type) != VALUE_INVALID &&
+                int host_signature =
+                    host_type_at(module, module->imports[i].return_type, 0) &&
                     count >= 0;
-                for(int p = 0; scalar_signature && p < count; p++)
-                    scalar_signature = value_kind(parameters[p].type) != VALUE_INVALID &&
-                        value_kind(parameters[p].type) != VALUE_VOID;
-                if(scalar_signature)
+                for(int p = 0; host_signature && p < count; p++)
+                    host_signature = host_type_at(module, parameters[p].type, 0) &&
+                        strcmp(parameters[p].type, "void") != 0;
+                if(host_signature)
                     continue;
             }
             if(module->imports[i].kind != ZIR_IMPORT_HEADER ||
                module->imports[i].resolved_module == NULL) {
                 Diagnostic(module->imports[i].span, "zib.capability",
-                              "portable execution requires an included Ziran module or scalar host capability");
+                              "portable execution requires an included Ziran module or supported host capability");
                 return 0;
             }
         }
@@ -2222,6 +2247,139 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
     return vm->failed ? FLOW_ERROR : FLOW_NEXT;
 }
 
+static void
+release_host_argument(VmHostValue *value, int depth)
+{
+    if(value->kind != VM_HOST_RECORD || value->fields == NULL ||
+       depth >= VM_MAX_DEPTH)
+        return;
+    VmHostField *fields = (VmHostField *)value->fields;
+    for(size_t i = 0; i < value->field_count; i++)
+        release_host_argument(&fields[i].value, depth + 1);
+    free(fields);
+    value->fields = NULL;
+}
+
+static int
+host_argument(const ZirModule *module, const char *type, Value value,
+              VmHostValue *out, int depth)
+{
+    if(depth >= VM_MAX_DEPTH)
+        return 0;
+    out->type = type;
+    const ZirModule *owner = NULL;
+    const ZirType *record = FindType(module, type, &owner);
+    if(record != NULL && !record->is_enum) {
+        if(value.kind != VALUE_RECORD || value.record == NULL ||
+           value.record->type != record ||
+           value.record->field_count < 0 ||
+           value.record->field_count > VM_MAX_FIELDS)
+            return 0;
+        int count = value.record->field_count;
+        VmHostField *fields = calloc(count ? (size_t)count : 1,
+                                     sizeof(*fields));
+        if(fields == NULL)
+            return 0;
+        out->kind = VM_HOST_RECORD;
+        out->fields = fields;
+        out->field_count = (size_t)count;
+        for(int i = 0; i < count; i++) {
+            fields[i].name = value.record->fields[i].field.name;
+            if(!host_argument(owner,
+                              value.record->fields[i].field.type,
+                              value.record->fields[i].value,
+                              &fields[i].value, depth + 1))
+                return 0;
+        }
+        return 1;
+    }
+    if(record != NULL && record->is_enum && value.kind != VALUE_ENUM)
+        return 0;
+    out->integer = value.integer;
+    out->bits = value.bits;
+    out->real = value.real;
+    out->data = value.data;
+    out->length = value.length;
+    out->kind = value.kind == VALUE_REAL ? VM_HOST_REAL :
+        value.kind == VALUE_STRING ? VM_HOST_STRING :
+        type[0] == 'u' ? VM_HOST_UNSIGNED : VM_HOST_INTEGER;
+    return value.kind == VALUE_INT || value.kind == VALUE_ENUM ||
+           value.kind == VALUE_REAL || value.kind == VALUE_STRING;
+}
+
+static Value
+host_return(Vm *vm, const ZirModule *module, const char *type,
+            const VmHostValue *input, int depth)
+{
+    Value result = int_value(0);
+    if(depth >= VM_MAX_DEPTH || input->type == NULL ||
+       strcmp(input->type, type) != 0) {
+        vm->failed = 1;
+        return result;
+    }
+    const ZirModule *owner = NULL;
+    const ZirType *declared = FindType(module, type, &owner);
+    if(declared != NULL && !declared->is_enum) {
+        if(input->kind != VM_HOST_RECORD ||
+           (input->field_count > 0 && input->fields == NULL) ||
+           input->field_count > VM_MAX_FIELDS) {
+            vm->failed = 1;
+            return result;
+        }
+        size_t offset = 0;
+        ZirTypeField field;
+        int count = 0, status;
+        while((status = TypeNextField(declared, &offset, &field)) == 1)
+            count++;
+        if(status < 0 || count != (int)input->field_count) {
+            vm->failed = 1;
+            return result;
+        }
+        Record *record = allocate_record(vm, owner, declared, count);
+        if(record == NULL)
+            return result;
+        offset = 0;
+        for(int i = 0; i < count && !vm->failed; i++) {
+            if(TypeNextField(declared, &offset,
+                             &record->fields[i].field) != 1 ||
+               input->fields[i].name == NULL ||
+               strcmp(input->fields[i].name,
+                      record->fields[i].field.name) != 0) {
+                vm->failed = 1;
+                break;
+            }
+            record->fields[i].value = host_return(vm, owner,
+                record->fields[i].field.type,
+                &input->fields[i].value, depth + 1);
+        }
+        return (Value){.kind = VALUE_RECORD, .record = record};
+    }
+    ValueKind expected = value_kind(type);
+    VmHostValueKind kind = expected == VALUE_VOID ? VM_HOST_VOID :
+        expected == VALUE_REAL ? VM_HOST_REAL :
+        expected == VALUE_STRING ? VM_HOST_STRING :
+        type[0] == 'u' ? VM_HOST_UNSIGNED : VM_HOST_INTEGER;
+    if((declared == NULL && expected == VALUE_INVALID) ||
+       input->kind != kind || input->field_count != 0 ||
+       input->fields != NULL ||
+       (kind == VM_HOST_STRING && input->data == NULL &&
+        input->length != 0)) {
+        vm->failed = 1;
+        return result;
+    }
+    if(kind == VM_HOST_REAL)
+        result = real_value(input->real);
+    else if(kind == VM_HOST_STRING)
+        result = string_value(input->data, input->length);
+    else if(kind == VM_HOST_UNSIGNED)
+        result = uint_value(input->bits);
+    else if(kind == VM_HOST_INTEGER)
+        result = int_value(input->integer);
+    else
+        result.kind = VALUE_VOID;
+    return coerce(vm, module, result, type);
+}
+
 static Value
 run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
              const Value *args, int arg_count, Frame *parent)
@@ -2246,47 +2404,24 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
         }
         for(int i = 0; i < count; i++) {
             Value argument = coerce(vm, module, args[i], parameters[i].type);
-            host_args[i].type = parameters[i].type;
-            host_args[i].integer = argument.integer;
-            host_args[i].bits = argument.bits;
-            host_args[i].real = argument.real;
-            host_args[i].data = argument.data;
-            host_args[i].length = argument.length;
-            host_args[i].kind = argument.kind == VALUE_REAL ? VM_HOST_REAL :
-                argument.kind == VALUE_STRING ? VM_HOST_STRING :
-                (parameters[i].type[0] == 'u' ? VM_HOST_UNSIGNED :
-                 VM_HOST_INTEGER);
+            if(vm->failed || !host_argument(module,
+                                            parameters[i].type, argument,
+                                            &host_args[i], 0)) {
+                vm->failed = 1;
+                break;
+            }
         }
         host_result.type = function->return_type;
-        if(vm->failed || !vm->host(vm->host_context, module->name,
-                                   function->name, host_args, count,
-                                   &host_result)) {
+        if(!vm->failed && !vm->host(vm->host_context, module->name,
+                                    function->name, host_args, count,
+                                    &host_result))
             vm->failed = 1;
+        for(int i = 0; i < count; i++)
+            release_host_argument(&host_args[i], 0);
+        if(vm->failed)
             return result;
-        }
-        ValueKind expected = value_kind(function->return_type);
-        VmHostValueKind expected_host = expected == VALUE_VOID ? VM_HOST_VOID :
-            expected == VALUE_REAL ? VM_HOST_REAL :
-            expected == VALUE_STRING ? VM_HOST_STRING :
-            function->return_type[0] == 'u' ? VM_HOST_UNSIGNED :
-            VM_HOST_INTEGER;
-        if(host_result.kind != expected_host ||
-           (expected_host == VM_HOST_STRING && host_result.data == NULL &&
-            host_result.length != 0)) {
-            vm->failed = 1;
-            return result;
-        }
-        if(expected_host == VM_HOST_REAL)
-            result = real_value(host_result.real);
-        else if(expected_host == VM_HOST_STRING)
-            result = string_value(host_result.data, host_result.length);
-        else if(expected_host == VM_HOST_UNSIGNED)
-            result = uint_value(host_result.bits);
-        else if(expected_host == VM_HOST_INTEGER)
-            result = int_value(host_result.integer);
-        else
-            result.kind = VALUE_VOID;
-        return coerce(vm, module, result, function->return_type);
+        return host_return(vm, module, function->return_type,
+                           &host_result, 0);
     }
     vm->depth++;
     frame.vm = vm;
