@@ -63,6 +63,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   equality, read-only byte indexing, `.length`, parameters, returns, and
   record fields. `make check` compares source and saved-IR bundles with C,
   C++, and Go on a string program and rejects out-of-range indexing.
+- The portable verifier still rejects records with raw pointer fields. Kryon's
+  `CardButtonProps` builds for native C, C++, and Go, but a `.zib` entry that
+  carries its pointer-bearing `ButtonProps` result does not yet verify. A
+  portable host handle or capability contract is required for that case.
 - Compiler functions use short names without `Zir` or `zir_` prefixes,
   including the IR serializer's `ProgramWrite`, `ProgramRead`, and `PathIsIR`.
   IR data types retain `Zir` names for now.
