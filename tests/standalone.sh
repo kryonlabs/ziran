@@ -896,7 +896,41 @@ if "$ziran" check --root "$work" "$work/ui_mode.zi" \
     echo '#ui unexpectedly passed in Ziran' >&2
     exit 1
 fi
-grep -Fq '#ui is not a Ziran modifier' "$work/ui_mode.err"
+grep -Fq 'unknown function modifier: #ui' "$work/ui_mode.err"
+
+cat > "$work/extern_ui_mode.zi" <<'EOF'
+#module "extern_ui_mode"
+Effect :: () #extern #ui
+EOF
+if "$ziran" check --root "$work" "$work/extern_ui_mode.zi" \
+    2> "$work/extern_ui_mode.err"; then
+    echo '#ui extern unexpectedly passed in Ziran' >&2
+    exit 1
+fi
+grep -Fq 'unknown function modifier: #ui' "$work/extern_ui_mode.err"
+
+cat > "$work/unknown_directive.zi" <<'EOF'
+#module "unknown_directive"
+#style defaults
+EOF
+if "$ziran" check --root "$work" "$work/unknown_directive.zi" \
+    2> "$work/unknown_directive.err"; then
+    echo 'unknown directive unexpectedly passed in Ziran' >&2
+    exit 1
+fi
+grep -Fq 'unknown directive: #style defaults' "$work/unknown_directive.err"
+
+cat > "$work/unknown_top_level.zi" <<'EOF'
+#module "unknown_top_level"
+route home {
+}
+EOF
+if "$ziran" check --root "$work" "$work/unknown_top_level.zi" \
+    2> "$work/unknown_top_level.err"; then
+    echo 'unknown top-level declaration unexpectedly passed in Ziran' >&2
+    exit 1
+fi
+grep -Fq 'invalid top-level declaration' "$work/unknown_top_level.err"
 
 cat > "$work/intrinsic_mode.zi" <<'EOF'
 #module "intrinsic_mode"
@@ -908,7 +942,7 @@ if "$ziran" check --root "$work" "$work/intrinsic_mode.zi" \
     echo '#intrinsic unexpectedly passed in Ziran' >&2
     exit 1
 fi
-grep -Fq '#intrinsic is not a Ziran modifier' "$work/intrinsic_mode.err"
+grep -Fq 'unknown function modifier: #intrinsic' "$work/intrinsic_mode.err"
 
 cat > "$work/instance_mode.zi" <<'EOF'
 #module "instance_mode"
@@ -924,7 +958,7 @@ if "$ziran" check --root "$work" "$work/instance_mode.zi" \
     echo '#instance unexpectedly passed in Ziran' >&2
     exit 1
 fi
-grep -Fq '#instance is not a Ziran modifier' "$work/instance_mode.err"
+grep -Fq 'unknown declaration modifier: #instance' "$work/instance_mode.err"
 
 cat > "$work/unknown_block.zi" <<'EOF'
 #module "unknown_block"

@@ -365,14 +365,14 @@ StructureFunction(ZirFunction *fn, const ZirModule *module)
             if(colon) {
                 *colon++ = 0; trim_in_place(text);
                 copy_text(st->name, sizeof(st->name), text);
-                if(strstr(colon, "#instance") != NULL) {
-                    Diagnostic(st->span, "parse.instance",
-                        "#instance is not a Ziran modifier; import a state library instead");
-                    exit(1);
-                }
                 value = strchr(colon, '=');
                 if(value) *value++ = 0;
                 trim_in_place(colon);
+                if(strchr(colon, '#') != NULL) {
+                    Diagnostic(st->span, "parse.modifier",
+                        "unknown declaration modifier: %s", strchr(colon, '#'));
+                    exit(1);
+                }
                 copy_text(st->type, sizeof(st->type), colon);
             }
         } else if(st->kind == ZIR_STMT_ASSIGN) {

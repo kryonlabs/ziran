@@ -177,7 +177,7 @@ typedef struct ZirGlobal {
     ZirSourceSpan span;
 } ZirGlobal;
 
-/* A Kry `Name :: value` constant emitted into generated target interfaces. */
+/* A Ziran `Name :: value` constant emitted into generated target interfaces. */
 typedef struct ZirDefine {
     char name[ZIR_NAME_MAX];
     char value[ZIR_TEXT_MAX];
@@ -188,7 +188,7 @@ typedef struct ZirDefine {
 typedef struct ZirAssert {
     char condition[ZIR_TEXT_MAX]; /* expanded C preprocessor condition */
     char message[ZIR_TEXT_MAX];   /* C #error payload */
-    int known;                    /* condition resolved by Kry frontend */
+    int known;                    /* condition resolved by Ziran frontend */
     int value;                    /* boolean value when known */
     char guard[ZIR_TEXT_MAX];     /* enclosing '#if' condition (expanded) */
     ZirSourceSpan span;
@@ -254,7 +254,7 @@ typedef struct ZirProgram {
     int module_cap;
 } ZirProgram;
 
-/* Local records and direct unqualified Kry imports; owner supplies field scope. */
+/* Local records and direct unqualified Ziran imports; owner supplies field scope. */
 /* Local declarations shadow imports. Returns 1 found, 0 absent, -1 ambiguous. */
 int ResolveFunction(const ZirModule *module, const char *name,
                        const ZirModule **owner, const ZirFunction **function);

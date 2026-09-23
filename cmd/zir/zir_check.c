@@ -452,7 +452,7 @@ contextual_slot(Checker *c, int index, const char *expected)
 
 /* Modules that import C headers interoperate with C: calls and names the
  * frontend cannot see are verified by the C compiler, not by strict checking.
- * A quoted import that resolved to another Kry module is not C interop. */
+ * A quoted import that resolved to another Ziran module is not C interop. */
 static int
 module_uses_c(const Checker *c)
 {
@@ -1491,7 +1491,7 @@ normalize_function_arrays(const ZirModule *module, ZirFunction *fn)
         if(type[0] == '[' && !host_buffer) {
             const char *problem = local_storage_error(module, type);
             if(problem == NULL && (fn->is_extern || fn->is_closure))
-                problem = "direct array signatures require an ordinary Kry function";
+                problem = "direct array signatures require an ordinary Ziran function";
             int bound = -1;
             if(problem == NULL && !SliceElementType(type, NULL, 0) &&
                array_capacity(module, type, &bound) != 1)

@@ -109,7 +109,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   extern. C/C++ output no longer injects Kryon's inspection header for
   ordinary functions, and generated temporaries and header guards use Ziran
   names. Saved IR rejects the retired intrinsic import tag.
-- `#ui`, `#style`, and old app/route forms are rejected. The embedded Kryon
+- Unknown directives, function modifiers, declaration modifiers, and top-level
+  forms are rejected generically; this includes old `#ui`, `#style`, and
+  app/route forms. The embedded Kryon
   runtime declarations and copied `src/kry_std` implementation have been
   removed. JSON diagnostics no longer require Kryon code.
 - `#instance` is rejected as a language modifier. Its special statement and

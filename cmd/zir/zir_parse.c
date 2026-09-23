@@ -829,9 +829,6 @@ parse_extern_line(ZirModule *module, const char *path, int line_no,
     if(!parse_symbol_before_colons(line, name, sizeof(name)))
         return 0;
     const char *declaration = skip_ws(strstr(line, "::") + 2);
-    if(*declaration == '(' && strstr(line, "#intrinsic") != NULL)
-        die_at(Span(path, line_no, 1),
-               "#intrinsic is not a Ziran modifier; declare a host or target extern");
     if(strstr(line, "#extern") == NULL)
         return 0;
     if(starts_word(declaration, "struct") || starts_word(declaration, "enum"))
@@ -1438,9 +1435,9 @@ parse_compile_check(ZirModule *module, const char *path, int line_no,
             *comma = '\0';
             snprintf(msg, sizeof(msg), "%s", trim(comma + 1));
             if(msg[0] == '\0')
-                snprintf(msg, sizeof(msg), "\"Kry #assert failed\"");
+                snprintf(msg, sizeof(msg), "\"Ziran #assert failed\"");
         } else {
-            snprintf(msg, sizeof(msg), "\"Kry #assert failed\"");
+            snprintf(msg, sizeof(msg), "\"Ziran #assert failed\"");
         }
         expand_compile_expr(cond, sizeof(cond), consts, trim(body));
         {
@@ -1618,7 +1615,7 @@ cond_frame_settle(ZirCondFrame *frames, int count)
 /* Strip C-style block comments in place, preserving newlines so line
  * numbers stay honest. *in_comment carries the state across lines (a
  * comment opened on one line keeps stripping on the next). String and
- * char literals are respected, and reset at each newline since Kry
+ * char literals are respected, and reset at each newline since Ziran
  * literals never span lines. Without this, a comment close at end of
  * line trips the trailing-slash continuation rule and glues the comment
  * onto the next function header, silently dropping the function. */
@@ -2057,6 +2054,15 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
         }
         pending[0] = '\0';
         pending_len = 0;
+        if(mode == TOP && looks_like_function_header(t))
+            for(const char *modifier = strchr(t, '#'); modifier != NULL;
+                modifier = strchr(modifier + 1, '#'))
+                if(!starts_word(modifier, "#extern") &&
+                   !starts_word(modifier, "#export") &&
+                   !starts_word(modifier, "#private") &&
+                   !starts_word(modifier, "#slot"))
+                    die_at(Span(rel, line_no, 1),
+                           "unknown function modifier: %s", modifier);
         if(mode == TOP &&
            cond_top_step(t, tframes, &tframe_count, cur_guard,
                          sizeof(cur_guard), &consts, rel, line_no)) {
@@ -2066,25 +2072,15 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                                       cur_guard)) {
             continue;
         } else if(mode == TOP && t[0] == '#' &&
-                  strncmp(t, "#if", 3) != 0 && strncmp(t, "#else", 5) != 0 &&
-                  strncmp(t, "#endif", 6) != 0 &&
-                  strncmp(t, "#defined", 8) != 0 &&
-                  strncmp(t, "#enum", 5) != 0 &&
-                  strncmp(t, "#module", 7) != 0 &&
-                  strncmp(t, "#inspect", 8) != 0 &&
-                  strncmp(t, "#import", 7) != 0 &&
-                  strncmp(t, "#style", 6) != 0) {
-            /* plain # comment at top level — never a header; real
-             * directives (#module/#import/#if...) fall through below */
-        } else if(mode == TOP && starts_word(t, "#inspect")) {
-            die_at(Span(rel, line_no, 1),
-                   "#inspect is not a Ziran directive");
+                  !starts_word(t, "#module") &&
+                  !starts_word(t, "#import") &&
+                  !starts_word(t, "#enum")) {
+            if(t[1] != '\0' && t[1] != ' ' && t[1] != '\t')
+                die_at(Span(rel, line_no, 1),
+                       "unknown directive: %s", t);
         } else if(mode == TOP && strncmp(t, "#module", 7) == 0) {
             if(parse_quoted(t, module_name, sizeof(module_name)))
                 snprintf(module->name, sizeof(module->name), "%s", module_name);
-        } else if(mode == TOP && strncmp(t, "#style", 6) == 0) {
-            die_at(Span(rel, line_no, 1),
-                   "#style is a Kryon concern; import a library instead");
         } else if(mode == TOP &&
                   (parse_import_line(module, rel, line_no, t) ||
                    parse_extern_line(module, rel, line_no, t))) {
@@ -2105,29 +2101,12 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                              sizeof(module->state_fields[0].guard), "%s",
                              cur_guard);
             }
-        } else if(mode == TOP && starts_word(t, "route") &&
-                  strchr(t, '{') != NULL) {
-            die_at(Span(rel, line_no, 1),
-                   "route blocks are not Ziran declarations");
-        } else if(mode == TOP && starts_word(t, "app") &&
-                  strchr(t, '{') != NULL) {
-            die_at(Span(rel, line_no, 1),
-                   "app blocks are not Ziran declarations");
-        } else if(mode == TOP &&
-                  (starts_word(t, "screen") || starts_word(t, "preview") ||
-                   starts_word(t, "page") || starts_word(t, "frame") ||
-                   starts_word(t, "fn"))) {
-            die_at(Span(rel, line_no, 1), "invalid top-level declaration");
         } else if(mode == TOP && looks_like_function_header(t)) {
             char name[ZIR_NAME_MAX];
             char args[ZIR_TEXT_MAX];
             char ret[ZIR_NAME_MAX];
             int is_extern = strstr(t, "#extern") != NULL;
             int has_body = strchr(t, '{') != NULL;
-
-            if(strstr(t, "#ui") != NULL)
-                die_at(Span(rel, line_no, 1),
-                       "#ui is not a Ziran modifier; import Kryon functions instead");
 
             parse_function_header(name, sizeof(name), args, sizeof(args),
                                   ret, sizeof(ret), t);
@@ -2316,7 +2295,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
         } else if(mode == TOP && strstr(t, "::") != NULL &&
                   strchr(t, '{') == NULL &&
                   !looks_like_function_header(t)) {
-            /* 'Name :: expr' is the single Kry constant declaration. Ordinary
+            /* 'Name :: expr' is the Ziran constant declaration. Ordinary
              * constants are also emitted into generated interfaces so public
              * types can use them in array bounds. Platform predicates remain
              * frontend-only because #defined is not a C expression. */
@@ -2334,7 +2313,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                 expr++;
             if(cname[0] != '\0' && *expr != '\0') {
                 if(starts_word(expr, "#define"))
-                    die_at(Span(rel, line_no, 1), "use '%s :: value'; #define is not Kry syntax", cname);
+                    die_at(Span(rel, line_no, 1), "use '%s :: value'; #define is not Ziran syntax", cname);
                 else {
                     char run_value[ZIR_TEXT_MAX];
                     ZirDefine *def;
@@ -2671,6 +2650,8 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                 if(depth < 0)
                     depth = 0;
             }
+        } else if(mode == TOP && t[0] != '\0') {
+            die_at(Span(rel, line_no, 1), "invalid top-level declaration");
         }
     }
     if(slot_frame_count)
