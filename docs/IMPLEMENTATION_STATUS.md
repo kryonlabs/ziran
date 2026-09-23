@@ -54,7 +54,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   from both inputs, independently of the UI runtime. The popup ownership test
   includes frame IDs above `INT64_MAX`. Swipe direction, drag, cancellation,
   and release policy also runs from source and saved `.zir` across native
-  targets and `.zib` through ordinary module imports.
+  targets and `.zib` through ordinary module imports. Image fit, placeholder,
+  and clipped-strip geometry have the same source and saved-IR target coverage.
 - Portable strings now carry immutable UTF-8 bytes with exact byte lengths,
   including embedded nulls. The verifier and interpreter cover literals,
   equality, read-only byte indexing, `.length`, parameters, returns, and
