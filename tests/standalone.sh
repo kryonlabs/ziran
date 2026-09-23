@@ -9,8 +9,11 @@ cat > "$work/hello.zi" <<'EOF'
 Image :: () -> i32 #export {
     return 42
 }
-Answer :: () -> i32 #export {
+web_context_click_in_bounds :: () -> i32 #export {
     return Image()
+}
+Answer :: () -> i32 #export {
+    return web_context_click_in_bounds()
 }
 EOF
 
@@ -36,6 +39,7 @@ assert data[:8] == b'ZIR\0\x04\0\0\0', data[:8]
 PY
 "$ziran" build --target=c --root "$work" -o "$work/c" "$work/hello.zi"
 test -s "$work/c/hello.c"
+grep -Fxq '#ifndef ZI_HELLO_H' "$work/c/hello.h"
 grep -Fq 'Image(' "$work/c/hello.c"
 if grep -Fq 'RenderImage(' "$work/c/hello.c"; then
     echo 'generic Image call was rewritten as a UI host call' >&2
@@ -53,6 +57,7 @@ ${CC:-cc} -Iinclude -I"$work/c-ir" "$work/c-ir/hello.c" "$work/main.c" \
 "$work/hello-from-ir"
 "$ziran" build --target=cpp --strict --root "$work" -o "$work/cpp" \
     "$work/hello.zi"
+grep -Fxq '#ifndef ZI_HELLO_H' "$work/cpp/hello.hpp"
 cat > "$work/cpp/main.cpp" <<'EOF'
 #include "hello.hpp"
 int main() { return Answer() == 42 ? 0 : 1; }
@@ -127,6 +132,17 @@ package main
 func main() { if OrdinaryNames_Answer() != 42 { panic("wrong result") } }
 GO
     GO111MODULE=off go run "$output/ordinary_names.go" "$output/main.go"
+done
+for input in "$work/ordinary_names.zi" "$work/ordinary-ir/ordinary_names.zir"; do
+    for target in c cpp; do
+        output="$work/ordinary-$target-$(basename "$input")"
+        "$ziran" build --target="$target" --strict --root "$work" \
+            -o "$output" "$input"
+        if rg -q 'ui_inspect_props.generated.h|__kryonContextClick' "$output"; then
+            echo 'ordinary module received a Kryon compiler dependency' >&2
+            exit 1
+        fi
+    done
 done
 
 cat > "$work/ffi_direct.zi" <<'EOF'
@@ -855,6 +871,18 @@ if "$ziran" check --root "$work" "$work/ui_mode.zi" \
     exit 1
 fi
 grep -Fq '#ui is not a Ziran modifier' "$work/ui_mode.err"
+
+cat > "$work/intrinsic_mode.zi" <<'EOF'
+#module "intrinsic_mode"
+web_context_click_in_bounds :: (x0: i32, y0: i32, x1: i32,
+    y1: i32) -> int #intrinsic "web"
+EOF
+if "$ziran" check --root "$work" "$work/intrinsic_mode.zi" \
+    2> "$work/intrinsic_mode.err"; then
+    echo '#intrinsic unexpectedly passed in Ziran' >&2
+    exit 1
+fi
+grep -Fq '#intrinsic is not a Ziran modifier' "$work/intrinsic_mode.err"
 
 cat > "$work/instance_mode.zi" <<'EOF'
 #module "instance_mode"

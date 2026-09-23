@@ -608,7 +608,6 @@ ImportKindName(ZirImportKind kind)
     case ZIR_IMPORT_HEADER: return "header";
     case ZIR_IMPORT_MODULE: return "module";
     case ZIR_IMPORT_EXTERN: return "extern";
-    case ZIR_IMPORT_INTRINSIC: return "intrinsic";
     case ZIR_IMPORT_CAPABILITY: return "capability";
     case ZIR_IMPORT_HOST: return "host";
     default: return "unknown";

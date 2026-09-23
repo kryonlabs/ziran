@@ -1,6 +1,6 @@
 /*
  * zir_c_lower.c - ZIR to C backend. Lowers a ZirProgram to .c/.h source files.
- * This is the only .kry→C pipeline: the legacy kc line-matcher is gone.
+ * Source input is checked .zi or saved .zir.
  */
 #include "zir_c_lower.h"
 #include "zir_c_plan9.h"
@@ -52,10 +52,13 @@ guard_from_stem(const char *stem, char *dst, size_t dst_size)
 {
     size_t n = 0;
 
-    if(dst_size > 2) {
-        dst[n++] = 'K';
-        dst[n++] = '_';
+    if(dst_size < 6) {
+        if(dst_size > 0) dst[0] = '\0';
+        return;
     }
+    dst[n++] = 'Z';
+    dst[n++] = 'I';
+    dst[n++] = '_';
     for(const char *p = stem; *p && n + 3 < dst_size; p++) {
         char ch = *p;
 
@@ -69,7 +72,7 @@ guard_from_stem(const char *stem, char *dst, size_t dst_size)
     dst[n] = '\0';
 }
 
-/* Convert a .kry type like "[64] char" or "[2][3] int" to C declarator
+/* Convert a .zi type like "[64] char" or "[2][3] int" to C declarator
  * pieces: base "char" + array suffix "[64]" (placed after the name). */
 static void
 split_array_type(const char *type, char *base, size_t base_size,
@@ -181,8 +184,8 @@ resolve_aliased_fn(const ZirModule *m, const ZirCModuleSyms *restab,
                strcmp(restab[j].module_stem, imp->target) != 0)
                 continue;
             for(int k = 0; k < restab[j].fn_count; k++) {
-                if(strlen(restab[j].fns[k].kry) == flen &&
-                   strncmp(restab[j].fns[k].kry, fn, flen) == 0) {
+                if(strlen(restab[j].fns[k].source) == flen &&
+                   strncmp(restab[j].fns[k].source, fn, flen) == 0) {
                     snprintf(dst, dst_size, "%s", restab[j].fns[k].c);
                     return strlen(dst);
                 }
@@ -506,7 +509,7 @@ strip_alias_type(const ZirModule *m, const char *type,
     snprintf(dst, dst_size, "%s", type);
 }
 
-/* Convert .kry args "viewport: Rectangle, st: state.IdeState*" to C
+/* Convert .zi args "viewport: Rectangle, st: state.IdeState*" to C
  * "Rectangle viewport, IdeState* st" (alias-qualified types stripped). */
 static void
 convert_args(const ZirModule *m, const char *args, char *dst, size_t dst_size)
@@ -973,12 +976,12 @@ lower_body(FILE *c, const ZirModule *m, const ZirCModuleSyms *restab, int restab
                 /* multi: temps first, then assignments */
                 for(int k = 0; k < n; k++) {
                     emit_indent(c, indent);
-                    fprintf(c, "__auto_type __kryon_assign_%d_%d = %s;\n",
+                    fprintf(c, "__auto_type __zi_assign_%d_%d = %s;\n",
                             st->span.line, k, exprs[k % (n > 0 ? n : 1)]);
                 }
                 for(int k = 0; k < n; k++) {
                     emit_indent(c, indent);
-                    fprintf(c, "%s = __kryon_assign_%d_%d;\n",
+                    fprintf(c, "%s = __zi_assign_%d_%d;\n",
                             names[k], st->span.line, k);
                 }
             } else {
@@ -1078,12 +1081,12 @@ lower_body(FILE *c, const ZirModule *m, const ZirCModuleSyms *restab, int restab
             if(n >= 2) {
                 for(int k = 0; k < n; k++) {
                     emit_indent(c, indent);
-                    fprintf(c, "__auto_type __kryon_assign_%d_%d = %s;\n",
+                    fprintf(c, "__auto_type __zi_assign_%d_%d = %s;\n",
                             st->span.line, k, exprs[k]);
                 }
                 for(int k = 0; k < n; k++) {
                     emit_indent(c, indent);
-                    fprintf(c, "%s = __kryon_assign_%d_%d;\n",
+                    fprintf(c, "%s = __zi_assign_%d_%d;\n",
                             names[k], st->span.line, k);
                 }
             } else {
@@ -1146,98 +1149,6 @@ emit_compile_assert(FILE *out, const ZirAssert *assertion)
     fprintf(out, "#error %s\n", assertion->message);
     fprintf(out, "#endif\n");
     emit_guard_close(out, assertion->guard);
-}
-
-/* '#intrinsic "web"' wrappers: static EM_ASM shims, built only when
- * PLATFORM_WEB is defined (matching the legacy compiler). */
-static const char *const web_download_body[] = {
-    "    return EM_ASM_INT({",
-    "        try {",
-    "            const path = UTF8ToString($0);",
-    "            const filename = UTF8ToString($1);",
-    "            const mime = UTF8ToString($2);",
-    "            const bytes = FS.readFile(path);",
-    "            const blob = new Blob([bytes], "
-    "{type: mime || \"application/octet-stream\"});",
-    "            const url = URL.createObjectURL(blob);",
-    "            const a = document.createElement(\"a\");",
-    "            a.href = url;",
-    "            a.download = filename || \"download\";",
-    "            a.style.display = \"none\";",
-    "            document.body.appendChild(a);",
-    "            a.click();",
-    "            a.remove();",
-    "            setTimeout(() => URL.revokeObjectURL(url), 1000);",
-    "            return 1;",
-    "        } catch(e) {",
-    "            console.error(\"Kry web download failed:\", e);",
-    "            return 0;",
-    "        }",
-    "    }, path, filename, mime);",
-    NULL
-};
-
-static const char *const web_context_click_body[] = {
-    "    return EM_ASM_INT({",
-    "        const click = Module.__kryonContextClick;",
-    "        if(!click)",
-    "            return 0;",
-    "        if(Date.now() - click.time > 750) {",
-    "            Module.__kryonContextClick = null;",
-    "            return 0;",
-    "        }",
-    "        if(click.x >= $0 && click.x <= $2 && "
-    "click.y >= $1 && click.y <= $3) {",
-    "            Module.__kryonContextClick = null;",
-    "            return 1;",
-    "        }",
-    "        return 0;",
-    "    }, x0, y0, x1, y1);",
-    NULL
-};
-
-static void
-emit_web_intrinsic_wrapper(FILE *c, const ZirModule *m, const ZirImport *imp)
-{
-    const char *sig = imp->signature;
-    const char *op = strchr(sig, '(');
-    const char *cl = op != NULL ? strrchr(sig, ')') : NULL;
-    const char *const *body = NULL;
-    char guard[LOWER_TEXT_MAX];
-    char cargs[LOWER_TEXT_MAX];
-    char conv[LOWER_TEXT_MAX];
-
-    if(op != NULL && cl != NULL && cl > op)
-        snprintf(cargs, sizeof(cargs), "%.*s", (int)(cl - op - 1), op + 1);
-    else
-        snprintf(cargs, sizeof(cargs), "void");
-    convert_args(m, cargs, conv, sizeof(conv));
-    if(strcmp(imp->name, "web_download_file") == 0)
-        body = web_download_body;
-    else if(strcmp(imp->name, "web_context_click_in_bounds") == 0)
-        body = web_context_click_body;
-    else
-        body = NULL;
-    if(imp->guard[0] != '\0') {
-        snprintf(guard, sizeof(guard), "(");
-        strncat(guard, imp->guard, sizeof(guard) - strlen(guard) - 1);
-        strncat(guard, ") && (defined(PLATFORM_WEB))",
-                sizeof(guard) - strlen(guard) - 1);
-    } else {
-        snprintf(guard, sizeof(guard), "defined(PLATFORM_WEB)");
-    }
-    fprintf(c, "\n#if %s\n", guard);
-    fprintf(c, "static int\n%s(%s)\n{\n", imp->name,
-            conv[0] ? conv : "void");
-    if(body != NULL) {
-        int i;
-
-        for(i = 0; body[i] != NULL; i++)
-            fprintf(c, "%s\n", body[i]);
-    } else {
-        fprintf(c, "    return 0;\n");
-    }
-    fprintf(c, "}\n#endif\n");
 }
 
 static int
@@ -1581,8 +1492,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
         fprintf(h, "extern %s %s%s;\n", base, g->name, suffix);
         emit_guard_close(h, g->guard);
     }
-    /* A public extern declaration is part of the generated Kry interface.
-     * This lets .kry define an API without a parallel handwritten header. */
+    /* A public extern declaration is part of the generated module interface. */
     for(i = 0; i < m->import_count; i++) {
         const ZirImport *imp = &m->imports[i];
 
@@ -1624,11 +1534,6 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
     fprintf(c, "/* Generated by zir_c from %s. */\n", m->source_path);
     fprintf(c, "#include \"%s.h\"\n", stem);
     fprintf(c, "#include <stdio.h>\n");
-    int needs_inspection = 0;
-    for(int fi = 0; fi < m->function_count; fi++)
-        if(!m->functions[fi].is_extern && !CanEmitBody(m, &m->functions[fi])) needs_inspection = 1;
-    if(needs_inspection)
-        fprintf(c, "#include \"ui_inspect_props.generated.h\"\n");
     EmitNumbers(c, m, ZIR_C);
     /* '#private' imports include here (implementation-only). */
     for(i = 0; i < m->import_count; i++) {
@@ -1652,7 +1557,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
         emit_guard_close(c, imp->guard);
     }
     fprintf(c, "\n#define ZIRAN_PRIVATE_UNUSED __attribute__((unused))\n");
-    /* Kry module constants lowered to C preprocessor constants. */
+    /* Module constants lowered to C preprocessor constants. */
     for(i = 0; i < m->define_count; i++) {
         const ZirDefine *d = &m->defines[i];
 
@@ -1662,14 +1567,6 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
     }
     for(i = 0; i < m->assert_count; i++)
         emit_compile_assert(c, &m->asserts[i]);
-    /* '#intrinsic "web"' wrappers: static EM_ASM shims for web builds. */
-    for(i = 0; i < m->import_count; i++) {
-        const ZirImport *imp = &m->imports[i];
-
-        if(imp->kind != ZIR_IMPORT_INTRINSIC)
-            continue;
-        emit_web_intrinsic_wrapper(c, m, imp);
-    }
     /* #extern imports: emit C prototypes parsed from the raw signature
      * ('name :: (args) -> Ret #extern'). */
     for(i = 0; i < m->import_count; i++) {
@@ -1823,7 +1720,7 @@ c_build_syms(const ZirProgram *program, ZirCModuleSyms *out)
             out->module_slash[n++] = (*p == '.') ? '/' : *p;
         out->module_slash[n] = '\0';
     }
-    /* module stem: the source path minus '.kry' — imports may name the
+    /* module stem: the source path minus '.zi' — imports may name the
      * file path ('src/screens/settings/settings_theme') instead of the
      * dotted module name. */
     {
@@ -1843,8 +1740,8 @@ c_build_syms(const ZirProgram *program, ZirCModuleSyms *out)
         for(j = 0; j < m->function_count && out->fn_count < 256; j++) {
             const ZirFunction *fn = &m->functions[j];
 
-            snprintf(out->fns[out->fn_count].kry,
-                     sizeof(out->fns[0].kry), "%s", fn->name);
+            snprintf(out->fns[out->fn_count].source,
+                     sizeof(out->fns[0].source), "%s", fn->name);
             function_c_name(m, fn, out->fns[out->fn_count].c,
                             sizeof(out->fns[0].c));
             out->fn_count++;

@@ -63,6 +63,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.zir` tests run both forms without Kryon.
 - The shared emitter now has only C, C++, and Go targets. Its unused JavaScript
   path and hardcoded Kryon calls have been removed.
+- The inherited `#intrinsic "web"` modifier and its two name-based browser
+  shims are gone. Browser behavior now requires an explicit host or target
+  extern. C/C++ output no longer injects Kryon's inspection header for
+  ordinary functions, and generated temporaries and header guards use Ziran
+  names. Saved IR rejects the retired intrinsic import tag.
 - `#ui`, `#style`, and old app/route forms are rejected. The embedded Kryon
   runtime declarations and copied `src/kry_std` implementation have been
   removed. JSON diagnostics no longer require Kryon code.

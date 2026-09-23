@@ -305,9 +305,8 @@ CanEmitBody(const ZirModule *module, const ZirFunction *fn)
 {
     char params[64][ZIR_TEXT_MAX];
     int count;
-    /* A widget declaration is a typed function. Its annotation must not
-     * bypass shared semantics when every operation is portable. Host calls
-     * and unsupported composition still fail the normal eligibility checks. */
+    /* Eligibility follows the typed function body and its operations.
+     * Host calls and unsupported composition fail the same checks. */
     if(!fn->checked || fn->is_extern || !portable_type(module, fn->return_type)) return 0;
     count = *skip_ws(fn->args) ? split_top_level(fn->args, params[0], 64, sizeof(params[0])) : 0;
     for(int i = 0; i < count; i++) {

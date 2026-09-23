@@ -8,7 +8,7 @@ typedef struct ZirCppModuleSyms {
     char module_stem[ZIR_PATH_MAX];  /* source path minus .zi */
     char module_slash[ZIR_PATH_MAX];
     struct {
-        char kry[ZIR_NAME_MAX];
+        char source[ZIR_NAME_MAX];
         char c[ZIR_NAME_MAX * 3];
     } fns[256];
     int fn_count;

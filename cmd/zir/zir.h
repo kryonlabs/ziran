@@ -19,9 +19,9 @@ typedef enum ZirImportKind {
     ZIR_IMPORT_HEADER = 1,
     ZIR_IMPORT_MODULE,
     ZIR_IMPORT_EXTERN,
-    ZIR_IMPORT_INTRINSIC,
-    ZIR_IMPORT_CAPABILITY,
-    ZIR_IMPORT_HOST
+    /* Tag 4 belonged to the removed name-based web intrinsic. */
+    ZIR_IMPORT_CAPABILITY = 5,
+    ZIR_IMPORT_HOST = 6
 } ZirImportKind;
 
 typedef enum ZirExternKind {

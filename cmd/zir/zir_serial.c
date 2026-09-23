@@ -382,7 +382,8 @@ validate_program(const ZirProgram *program)
             return 0;
         for(int i = 0; i < module->import_count; i++)
             if(module->imports[i].kind < ZIR_IMPORT_HEADER ||
-               module->imports[i].kind > ZIR_IMPORT_HOST)
+               module->imports[i].kind > ZIR_IMPORT_HOST ||
+               module->imports[i].kind == 4) /* retired web intrinsic */
                 return 0;
         for(int f = 0; f < module->function_count; f++) {
             const ZirFunction *function = &module->functions[f];

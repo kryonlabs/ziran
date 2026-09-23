@@ -826,71 +826,24 @@ parse_extern_line(ZirModule *module, const char *path, int line_no,
     char symbol[ZIR_NAME_MAX];
     ZirImport *imp;
     ZirExternKind extern_kind;
-    const char *intrinsic = strstr(line, "#intrinsic");
-
-    if(intrinsic == NULL && strstr(line, "#extern") == NULL)
-        return 0;
     if(!parse_symbol_before_colons(line, name, sizeof(name)))
         return 0;
     const char *declaration = skip_ws(strstr(line, "::") + 2);
+    if(*declaration == '(' && strstr(line, "#intrinsic") != NULL)
+        die_at(Span(path, line_no, 1),
+               "#intrinsic is not a Ziran modifier; declare a host or target extern");
+    if(strstr(line, "#extern") == NULL)
+        return 0;
     if(starts_word(declaration, "struct") || starts_word(declaration, "enum"))
         return 0;
     target[0] = '\0';
     symbol[0] = '\0';
-    if(intrinsic != NULL) {
-        /* 'name :: (args) -> int #intrinsic "web"' — lowered by k2c to a
-         * static EM_ASM wrapper on web builds. Only the two known web
-         * intrinsics exist. */
-        const char *b = intrinsic + strlen("#intrinsic");
-        char backend[ZIR_NAME_MAX];
-        char ret[ZIR_NAME_MAX] = "";
-        const char *arrow = strstr(line, "->");
-
-        while(*b == ' ' || *b == '\t')
-            b++;
-        if(*b == '"') {
-            size_t n = 0;
-
-            b++;
-            while(*b != '\0' && *b != '"' && n + 1 < sizeof(backend))
-                backend[n++] = *b++;
-            backend[n] = '\0';
-        } else {
-            snprintf(backend, sizeof(backend), "%s", b);
-        }
-        if(strcmp(backend, "web") != 0)
-            die_at(Span(path, line_no, 1), "unknown intrinsic backend '%s'",
-                backend);
-        if(arrow != NULL && arrow < intrinsic) {
-            size_t n = 0;
-            const char *r = arrow + 2;
-
-            while(r < intrinsic && n + 1 < sizeof(ret)) {
-                if(*r != ' ' && *r != '\t')
-                    ret[n++] = *r;
-                r++;
-            }
-            ret[n] = '\0';
-        }
-        if(strcmp(ret, "int") != 0)
-            die_at(Span(path, line_no, 1), "web intrinsic '%s' must return int",
-                name);
-        if(strcmp(name, "web_download_file") != 0 &&
-            strcmp(name, "web_context_click_in_bounds") != 0)
-            die_at(Span(path, line_no, 1), "unknown web intrinsic '%s'", name);
-    } else {
-        const char *dir = strstr(line, "#extern");
-
-        if(dir != NULL)
-            parse_quoted(dir + 7, target, sizeof(target));
-    }
-    extern_kind = intrinsic != NULL
-                      ? ZIR_EXTERN_NONE
-                      : classify_extern_target(target, symbol, sizeof(symbol),
-                                               path, line_no);
-    imp = ModuleAddImport(module,
-                             intrinsic != NULL ? ZIR_IMPORT_INTRINSIC
-                                               : ZIR_IMPORT_EXTERN,
+    const char *dir = strstr(line, "#extern");
+    if(dir != NULL)
+        parse_quoted(dir + 7, target, sizeof(target));
+    extern_kind = classify_extern_target(target, symbol, sizeof(symbol),
+                                         path, line_no);
+    imp = ModuleAddImport(module, ZIR_IMPORT_EXTERN,
                              name, target[0] ? target : name, line, 1,
                              Span(path, line_no, 1));
     if(imp != NULL) {
