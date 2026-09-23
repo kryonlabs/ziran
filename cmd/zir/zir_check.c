@@ -291,12 +291,28 @@ normalize_array(const ZirModule *module, char *type, size_t size)
 }
 
 static int
+pointer_type(const char *type)
+{
+    /* Native Go represents legacy char pointers as strings, which have no
+     * null value. A nullable text handle needs its own portable contract. */
+    const char *base = skip_ws(type);
+    if(!strncmp(base, "const ", 6))
+        base = skip_ws(base + 6);
+    if(!strncmp(base, "char", 4) &&
+       (base[4] == '*' || base[4] == ' ' || base[4] == '\t'))
+        return 0;
+    return type[0] != '[' && strchr(type, '*') != NULL;
+}
+
+static int
 compatible(const char *to, const char *from)
 {
     const char *canonical = ScalarType(to);
     if(*canonical) to = canonical;
     if(!*to || !*from) return 1;
+    if(!strcmp(to, "null") && !strcmp(from, "null")) return 0;
     if(!strcmp(to, from)) return 1;
+    if(!strcmp(from, "null")) return pointer_type(to);
     if(SliceElementType(to, NULL, 0) || SliceElementType(from, NULL, 0)) {
         char a[ZIR_NAME_MAX], b[ZIR_NAME_MAX];
         if(!SliceElementType(to, a, sizeof(a)) || !SliceElementType(from, b, sizeof(b)))
@@ -350,7 +366,8 @@ assignable(Checker *c, int index)
     const ZirExpr *e;
     if(index < 0 || index >= c->fn->expr_count) return 0;
     e = &c->fn->exprs[index];
-    return (e->kind == ZIR_EXPR_IDENT && strcmp(e->name, "true") && strcmp(e->name, "false")) ||
+    return (e->kind == ZIR_EXPR_IDENT && strcmp(e->name, "true") &&
+            strcmp(e->name, "false") && strcmp(e->name, "nil")) ||
            e->kind == ZIR_EXPR_INDEX || e->kind == ZIR_EXPR_MEMBER ||
            e->kind == ZIR_EXPR_POINTER_MEMBER || (e->kind == ZIR_EXPR_UNARY && !strcmp(e->op, "*"));
 }
@@ -633,6 +650,7 @@ expression_type(Checker *c, int index)
     case ZIR_EXPR_STRING: type = "string"; break;
     case ZIR_EXPR_IDENT:
         if(!strcmp(e->name, "true") || !strcmp(e->name, "false")) type = "bool";
+        else if(!strcmp(e->name, "nil")) type = "null";
         else type = lookup(c, e->name);
         if(!*type) error(c, e->span, "unresolved name", e->name);
         break;
@@ -776,7 +794,8 @@ expression_type(Checker *c, int index)
         if(strcmp(left, "bool")) error(c, e->span, "conditional requires bool", left);
         if(!compatible(right, third) && !compatible(third, right))
             error(c, e->span, "conditional arms have different types", "");
-        type = !strcmp(right, "integer") ? third : right;
+        type = !strcmp(right, "integer") || !strcmp(right, "null") ?
+               third : right;
         if(!strcmp(right, "const char*") || !strcmp(third, "const char*")) {
             type = "const char*";
             check_borrowed_string(c, type, e->right);
@@ -1365,6 +1384,8 @@ check_function(Checker *c, ZirFunction *fn)
             if(!*st->type) copy_text(st->type, sizeof(st->type),
                 !strcmp(type, "integer") ? "int" : !strcmp(type, "real") ? "double" : type);
             else if(!compatible(st->type, type)) error(c, st->span, "initializer type mismatch", st->name);
+            if(!strcmp(st->type, "null"))
+                error(c, st->span, "nil requires an explicit pointer type", st->name);
             if(st->type[0] == '[') {
                 const char *problem = local_storage_error(c->module, st->type);
                 if(problem != NULL)

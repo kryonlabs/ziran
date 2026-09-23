@@ -109,6 +109,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 - Native C++ now lowers pointer and `const` record field types through the
   same scalar type mapping as C. A non-UI source and saved-IR record with an
   `i32*` field compiles and runs on C++.
+- Native C, C++, and Go accept `nil` for explicitly typed raw pointers, in
+  comparisons, assignments, calls, and pointer-returning conditionals. The
+  checker rejects untyped `nil` bindings and scalar assignments. Legacy
+  `char*`/`const char*` still map to Go strings, so nullable text pointers are
+  not supported across targets. Raw pointers remain outside `.zib`.
 - The inherited `#intrinsic "web"` modifier and its two name-based browser
   shims are gone. Browser behavior now requires an explicit host or target
   extern. C/C++ output no longer injects Kryon's inspection header for
