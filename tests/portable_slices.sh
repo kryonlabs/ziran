@@ -25,6 +25,27 @@ Point :: struct {
     x: i32
 }
 
+Cell :: struct {
+    head: Point
+    tail: Point
+}
+
+WriteCell :: (cells: []Cell, index: i32, value: i32) -> i32 {
+    cells[index] = (Cell){(Point){value}, (Point){value + 1}}
+    return 1
+}
+
+ReplaceBorrowedRecord :: () -> i32 {
+    cells: [2]Cell
+    view: []Cell = cells[:]
+    WriteCell(view, 0, 20)
+    WriteCell(view, 1, 30)
+    first: Cell = view[0]
+    first.tail = (Point){21}
+    view[0] = first
+    return view[0].head.x + view[0].tail.x + view[1].head.x - 29
+}
+
 state :: [2]i32 #global
 
 GlobalView :: () -> []i32 {
@@ -49,6 +70,7 @@ ReplaceWhileBorrowed :: () -> i32 {
 }
 
 Answer :: () -> i32 #export {
+    if ReplaceBorrowedRecord() != 42 { return -5 }
     if ReplaceWhileBorrowed() != 42 { return -1 }
     global_result: i32 = ReplaceGlobalWhileBorrowed()
     if global_result != 42 { return global_result }

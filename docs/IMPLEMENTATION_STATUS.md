@@ -69,6 +69,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   checker rejects slices in records and globals, host slice signatures, and
   returns that borrow a local array. Unresolved and nested fixed-array bounds
   remain outside the portable subset.
+  Borrowed arrays retain record elements written by called functions after
+  those functions return; the portable slice test covers replacing a nested
+  record in a live view across calls.
   The test runs record and enum functions across imported modules. Kryon's
   complete geometry, layout, and group calculation test also runs in `.zib`
   from source and saved `.zir`. Kryon's accessibility, drag and drop, theme,

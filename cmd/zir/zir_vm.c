@@ -2767,6 +2767,18 @@ pin_globals(Vm *vm)
         pin_value(vm->globals[i].value, 0);
 }
 
+/* A callee may write through a slice borrowed from a caller. Its newly
+ * allocated record elements then belong to that caller's array even though
+ * their allocation sequence falls inside the completed call. */
+static void
+pin_active_frames(Vm *vm)
+{
+    for(Frame *frame = vm->active_frame; frame != NULL;
+        frame = frame->caller)
+        for(int i = 0; i < frame->local_count; i++)
+            pin_value(frame->locals[i].value, 0);
+}
+
 /* Result coercion creates its own deep copy after before_result. Reclaim
  * earlier allocations from the completed call by allocation sequence, since
  * replacing a global can remove the record that was at the call's entry. */
@@ -2881,6 +2893,7 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
     Value returned = coerce(vm, module, result, function->return_type);
     if(!vm->failed && parent == NULL && !function_uses_slots(function)) {
         pin_globals(vm);
+        pin_active_frames(vm);
         release_call_records(vm, allocation_entry, allocation_before_result);
         release_call_arrays(vm, allocation_entry, allocation_before_result);
     }
