@@ -60,6 +60,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `--runtime-implementation` mode. Explicit Go extern targets generate package
   imports; host externs use a declared embedding interface. Source and saved
   `.zir` tests run both forms without Kryon.
+- The shared emitter now has only C, C++, and Go targets. Its unused JavaScript
+  path and hardcoded Kryon calls have been removed.
 - `#ui`, `#style`, and old app/route forms are rejected. The embedded Kryon
   runtime declarations and copied `src/kry_std` implementation have been
   removed. JSON diagnostics no longer require Kryon code.
@@ -74,9 +76,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 
 ## Still required
 
-- Remove the remaining UI-specific parser, checker, IR, and backend paths,
-  including the unused JavaScript emitter path. Finish
-  general typed block calls, named blocks, callable child slots, and imports
+- Remove the remaining UI-specific parser, checker, IR, and backend paths.
+  Finish general typed block calls, named blocks, callable child slots, and imports
   for ordinary libraries. Current block-call coverage is a small leaf subset.
 - Make structured `.zir` authoritative: the current checker reconstructs
   expressions from serialized statement text, then compares the full checked

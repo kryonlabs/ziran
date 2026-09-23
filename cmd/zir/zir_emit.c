@@ -141,8 +141,6 @@ EmitSlotType(FILE *out, const ZirType *slot, ZirTarget target,
     char parameters[64][ZIR_TEXT_MAX];
     int count = *skip_ws(slot->body) ?
         split_top_level(slot->body, parameters[0], 64, sizeof(parameters[0])) : 0;
-    if(target == ZIR_JS)
-        return;
     if(target == ZIR_GO)
         fprintf(out, "type %s func(", slot->name);
     else
@@ -206,7 +204,7 @@ zero_value(const char *type, ZirTarget target)
     if(!strcmp(canonical(type), "string"))
         return target == ZIR_C || target == ZIR_CPP ? "StringView(NULL, 0)" : "\"\"";
     if(!strcmp(canonical(type), "bool")) return "false";
-    return target == ZIR_JS && width(canonical(type)) > 32 ? "0n" : "0";
+    return "0";
 }
 
 typedef struct TypePath {
@@ -405,33 +403,6 @@ EmitNumberSupport(FILE *out, ZirTarget target, const char *p)
             "        if sign { x := int64(a << (64-w)) >> (64-w); y := int64(b << (64-w)) >> (64-w); if op == 4 { return uint64(x/y)&mask }; return uint64(x%%y)&mask }; if op == 4 { return a/b }; return a%%b\n"
             "    case 6,7:\n        if shift >= uint64(w) { panic(\"invalid shift count\") }; if op == 6 { return (a<<shift)&mask }; if shift == 0 { return a }; result := a>>shift; if sign && (a & (uint64(1)<<(w-1))) != 0 { result |= mask ^ (mask>>shift) }; return result\n"
             "    case 8: return a&b\n    case 9: return a|b\n    case 10: return a^b\n    }; panic(\"invalid numeric operation\")\n}\n\n", p);
-    } else {
-        fprintf(out,
-            "function %s_float(x, w, sign) {\n"
-            "  const bound = 2 ** (w - (sign ? 1 : 0));\n"
-            "  if(!(x >= (sign ? -bound : 0) && x < bound)) throw new RangeError('float conversion out of range');\n"
-            "  return BigInt(Math.trunc(x));\n}\n", p);
-        fprintf(out,
-            "function %s_value(x, w, sign) {\n"
-            "  if (typeof x === 'number' && !Number.isSafeInteger(x)) throw new RangeError('integer argument requires an exact value');\n"
-            "  x = sign ? BigInt.asIntN(w, BigInt(x)) : BigInt.asUintN(w, BigInt(x));\n"
-            "  return w > 32 ? x : Number(x);\n}\n"
-            "function %s_bool(x) { if(typeof x !== 'boolean') throw new TypeError('boolean value required'); return x; }\n"
-            "function %s_bits(a, b, w, sign, op) {\n"
-            "  const shift = BigInt(b); a = BigInt.asUintN(w, BigInt(a)); b = BigInt.asUintN(w, BigInt(b));\n"
-            "  let result;\n"
-            "  switch (op) {\n"
-            "  case 0: result=a; break; case 1: result=a+b; break; case 2: result=a-b; break; case 3: result=a*b; break;\n"
-            "  case 4: case 5:\n"
-            "    if(b === 0n) throw new RangeError('integer division by zero');\n"
-            "    if(sign) { a=BigInt.asIntN(w,a); b=BigInt.asIntN(w,b); }\n"
-            "    result=op === 4 ? a/b : a%%b; break;\n"
-            "  case 6: case 7:\n"
-            "    if(shift < 0n || shift >= BigInt(w)) throw new RangeError('invalid shift count');\n"
-            "    result=op === 6 ? a<<shift : (sign ? BigInt.asIntN(w,a) : a)>>shift; break;\n"
-            "  case 8: result=a&b; break; case 9: result=a|b; break; case 10: result=a^b; break;\n"
-            "  default: throw new Error('invalid numeric operation');\n"
-            "  }\n  return %s_value(result,w,sign);\n}\n\n", p, p, p, p);
     }
 }
 
@@ -541,96 +512,6 @@ fresh(Emitter *e, char *name)
 
 /* Stream the declared shape instead of expanding a nested record into a
  * bounded expression buffer. Copies retain C/Go's independent value semantics. */
-static void
-js_record_value(FILE *out, const ZirModule *module, const char *type, const char *source)
-{
-    fputc('{', out);
-    const ZirModule *owner = NULL;
-    const ZirType *record = FindType(module, type, &owner);
-    if(record != NULL) {
-        size_t offset = 0;
-        int count = 0;
-        ZirTypeField field;
-        int capacity = 0;
-
-        while(TypeNextField(record, &offset, &field) == 1) {
-            const char *field_type = canonical(field.type);
-            char path[ZIR_TEXT_MAX];
-            char element[ZIR_NAME_MAX];
-            fprintf(out, "%s%s: ", count++ ? ", " : "", field.name);
-            if(source != NULL)
-                format(path, sizeof(path), "%s.%s", source, field.name);
-            if(ArrayElementType(field_type, element, sizeof(element), &capacity)) {
-                /* Fixed-capacity array field: element-wise copies keep C and
-                 * Go value semantics; 'index' binds inside the callback. */
-                fprintf(out, "Array.from({length: %d}, (_, index) => ", capacity);
-                if(record_type(owner, canonical(element))) {
-                    if(source != NULL) {
-                        fprintf(out, "((record_source) => (");
-                        js_record_value(out, owner, canonical(element), "record_source");
-                        fprintf(out, "))(%s.%s[index])", source, field.name);
-                    } else {
-                        fputc('(', out);
-                        js_record_value(out, owner, canonical(element), NULL);
-                        fputc(')', out);
-                    }
-                } else if(source != NULL) {
-                    fprintf(out, "%s.%s[index]", source, field.name);
-                } else {
-                    fputs(zero_value(canonical(element), ZIR_JS), out);
-                }
-                fputc(')', out);
-                continue;
-            }
-            if(record_type(owner, field_type)) {
-                js_record_value(out, owner, field_type, source ? path : NULL);
-            } else if(source != NULL) {
-                fputs(path, out);
-            } else {
-                fputs(zero_value(field_type, ZIR_JS), out);
-            }
-        }
-    }
-    fputc('}', out);
-}
-
-int
-EmitJsRecordValue(FILE *out, const ZirModule *module, const char *type, const char *source)
-{
-    if(!record_type(module, type) || !portable_type(module, type))
-        return 0;
-    if(source != NULL)
-        fputs("((record_source) => (", out);
-    js_record_value(out, module, type, source ? "record_source" : NULL);
-    if(source != NULL)
-        fprintf(out, "))(%s)", source);
-    return 1;
-}
-
-static void
-js_record_fields(Emitter *e, const ZirModule *module, const char *type, const char *source,
-                 char *out, size_t size)
-{
-    char destination[ZIR_NAME_MAX];
-    fresh(e, destination);
-    for(int i = 0; i < e->indent; i++)
-        fputs("    ", e->out);
-    fprintf(e->out, "let %s = ", destination);
-    EmitJsRecordValue(e->out, module, type, source);
-    fputs(";\n", e->out);
-    copy_text(out, size, destination);
-}
-
-static void
-js_record_copy(Emitter *e, const char *type, const char *value,
-               char *out, size_t size)
-{
-    char source[ZIR_NAME_MAX];
-    fresh(e, source);
-    /* Capture once, including when the source is a function call. */
-    line(e, "let %s = %s;", source, value);
-    js_record_fields(e, e->module, type, source, out, size);
-}
 
 /* Array expressions are values. Their source is captured before any write,
  * so even a self-assignment or an overlapping record destination is safe. */
@@ -718,25 +599,11 @@ declare(Emitter *e, const char *name, const char *type, const char *value)
     if(enum_type(e->module, type)) {
         if(e->target == ZIR_GO)
             line(e, "var %s %s = %s(%s)", name, target_type, target_type, value);
-        else if(e->target == ZIR_JS)
-            line(e, "let %s = %s_value(%s,32,true);", name, e->numbers, value);
         else
             line(e, "%s %s = (%s)(%s);", type, name, type, value);
         return;
     }
     if(e->target == ZIR_GO) line(e, "var %s %s = %s", name, target_type, value);
-    else if(e->target == ZIR_JS && width(canonical(type)))
-        line(e,"let %s = %s_value(%s,%d,%s);",name,e->numbers,value,width(canonical(type)),signed_type(canonical(type))?"true":"false");
-    else if(e->target == ZIR_JS && !strcmp(canonical(type),"bool"))
-        line(e,"let %s = %s_bool(%s);",name,e->numbers,value);
-    else if(e->target == ZIR_JS && !strcmp(type, "const char*"))
-        line(e, "let %s = %s ?? \"\";", name, value);
-    else if(e->target == ZIR_JS && record_type(e->module, type)) {
-        char copy[ZIR_TEXT_MAX];
-        js_record_copy(e, type, value, copy, sizeof(copy));
-        line(e, "let %s = %s;", name, copy);
-    }
-    else if(e->target == ZIR_JS) line(e, "let %s = %s;", name, value);
     else line(e, "%s %s = %s;", target_type, name, value);
 }
 
@@ -794,8 +661,6 @@ number(Emitter *e, const char *type, const char *a, const char *b, int op, char 
     if(e->target == ZIR_GO) {
         format(bits,sizeof(bits),"%s_bits(uint64(%s),uint64(%s),%d,%s,%d)",e->numbers,a,b,w,sign?"true":"false",op);
         format(out,size,"%s(%s)",TargetType(type,e->target),bits);
-    } else if(e->target == ZIR_JS) {
-        format(out,size,"%s_bits(%s,%s,%d,%s,%d)",e->numbers,a,b,w,sign?"true":"false",op);
     } else {
         format(bits,sizeof(bits),"%s_bits((uint64_t)(%s),(uint64_t)(%s),%d,%d,%d)",e->numbers,a,b,w,sign,op);
         if(sign) format(out,size,"(%s)%s_signed(%s,%d)",TargetType(type,e->target),e->numbers,bits,w);
@@ -888,8 +753,7 @@ literal(Emitter *e, const ZirExpr *expr, const char *type, int negative, char *o
         if(signed_type(type)) max = (max>>1) + (negative ? 1 : 0);
         if(value > max || (negative && !signed_type(type) && value != 0)) fatal(expr,"integer literal does not fit its type");
     }
-    if(e->target == ZIR_JS) format(out,size,"%s%llu%s",negative?"-":"",value,w>32?"n":"");
-    else if(e->target == ZIR_GO) format(out,size,"%s%llu",negative?"-":"",value);
+    if(e->target == ZIR_GO) format(out,size,"%s%llu",negative?"-":"",value);
     else if(negative && value == (UINT64_C(1)<<63)) format(out,size,"(-INT64_C(9223372036854775807)-1)");
     else format(out,size,"%s%llu%s",negative?"-":"",value,w>32?(signed_type(type)?"LL":"ULL"):"");
 }
@@ -1345,8 +1209,6 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
            !strcmp(expr->name, "length")) {
             if(e->target == ZIR_GO)
                 format(result, sizeof(result), "int32(len(%s))", a);
-            else if(e->target == ZIR_JS)
-                format(result, sizeof(result), "kryon.StringByteLength(%s)", a);
             else
                 format(result, sizeof(result), "(int32_t)%s.length", a);
             pure = base_pure;
@@ -1427,14 +1289,12 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         if(SliceElementType(base_type, NULL, 0)) {
             slice_index(e, base_type, a, b, result, sizeof(result));
         } else if(!strcmp(base_type, "string")) {
-            if(e->target == ZIR_JS)
-                format(result, sizeof(result), "kryon.index(%s, %s)", a, b);
-            else if(e->target == ZIR_GO)
+            if(e->target == ZIR_GO)
                 format(result, sizeof(result), "%s[%s]", a, b);
             else
                 format(result, sizeof(result), "(uint8_t)ZIRAN_INDEX(%s.data, %s.length, %s)", a, a, b);
         } else if((e->target == ZIR_C || e->target == ZIR_CPP) && capacity != 0) {
-            /* fixed-capacity .kry arrays: debug builds bounds-check */
+            /* Fixed-capacity arrays are bounds-checked in debug builds. */
             format(result, sizeof(result), "ZIRAN_INDEX(%s, sizeof(%s) / sizeof(%s[0]), %s)",
                    a, a, a, b);
         } else {
@@ -1544,7 +1404,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         if(!strcmp(expr->op,"++") || !strcmp(expr->op,"--")) {
             emit_destination(e, expr->right, a, sizeof(a));
             if(width(type)) number(e,type,a,"1",expr->op[0]=='+'?1:2,result,sizeof(result));
-            else format(result,sizeof(result),e->target==ZIR_JS&&!strcmp(type,"f32")?"Math.fround(%s %c 1)":"(%s %c 1)",a,expr->op[0]);
+            else format(result,sizeof(result),"(%s %c 1)",a,expr->op[0]);
             line(e,"%s = %s%s",a,result,e->target==ZIR_GO?"":";");
             copy_text(result,sizeof(result),a);pure=1;break;
         }
@@ -1552,13 +1412,13 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         pure = e->pure;
         if(width(type) && !strcmp(expr->op,"-")) number(e,type,"0",a,2,result,sizeof(result));
         else if(width(type) && !strcmp(expr->op,"~")) {
-            number(e,type,a,e->target==ZIR_GO?"^uint64(0)":e->target==ZIR_JS?"-1n":"UINT64_MAX",10,result,sizeof(result));
+            number(e,type,a,e->target==ZIR_GO?"^uint64(0)":"UINT64_MAX",10,result,sizeof(result));
         } else format(result,sizeof(result),"%s%s",expr->op,a);
         break;
     case ZIR_EXPR_POSTFIX:
         emit_destination(e, expr->left, a, sizeof(a));fresh(e,temp);declare(e,temp,type,a);
         if(width(type)) number(e,type,a,"1",expr->op[0]=='+'?1:2,result,sizeof(result));
-        else format(result,sizeof(result),e->target==ZIR_JS&&!strcmp(type,"f32")?"Math.fround(%s %c 1)":"(%s %c 1)",a,expr->op[0]);
+        else format(result,sizeof(result),"(%s %c 1)",a,expr->op[0]);
         line(e,"%s = %s%s",a,result,e->target==ZIR_GO?"":";");copy_text(out,size,temp);e->pure=1;return;
     case ZIR_EXPR_CAST: {
         const char *declared_type = type;
@@ -1580,7 +1440,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         } else if(!strcmp(canonical(e->fn->exprs[expr->right].type),"bool")) {
             fresh(e,temp);declare(e,temp,type,"0");
             line(e,e->target==ZIR_GO?"if %s {":"if (%s) {",a);e->indent++;
-            line(e,"%s = %s%s",temp,e->target==ZIR_JS&&width(type)>32?"1n":"1",e->target==ZIR_GO?"":";");
+            line(e,"%s = 1%s",temp,e->target==ZIR_GO?"":";");
             e->indent--;
             line(e, "}");
             copy_text(result, sizeof(result), temp);
@@ -1591,7 +1451,6 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
                 number(e,type,b,"0",0,result,sizeof(result));
             } else number(e,type,a,"0",0,result,sizeof(result));
         }
-        else if(e->target==ZIR_JS) format(result,sizeof(result),"%s(%s)",!strcmp(type,"f32")?"Math.fround":!strcmp(type,"bool")?"Boolean":"Number",a);
         else if(e->target==ZIR_GO) format(result,sizeof(result),"%s(%s)",TargetType(type,e->target),a);
         else format(result,sizeof(result),"(%s)(%s)",TargetType(type,e->target),a);
         type = declared_type;
@@ -1599,7 +1458,6 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
     }
     default: fatal(expr,"unsupported structured expression");
     }
-    if(e->target==ZIR_JS && !strcmp(type,"f32")) {copy_text(a,sizeof(a),result);format(result,sizeof(result),"Math.fround(%s)",a);}
     e->pure = pure;
     if(go_folds_text(e, result)) {
         /* declare() applies this cast for named enum types; inlined text has
@@ -1647,11 +1505,7 @@ zero_record(Emitter *e, const char *type, char *out, size_t size)
         format(out, size, "%s{}", target_type);
         return;
     }
-    if(e->target != ZIR_JS) {
-        copy_text(out, size, e->target == ZIR_CPP ? "{}" : "{0}");
-        return;
-    }
-    js_record_fields(e, e->module, type, NULL, out, size);
+    copy_text(out, size, e->target == ZIR_CPP ? "{}" : "{0}");
 }
 
 static int
@@ -1698,18 +1552,12 @@ emit_sequence(Emitter *e,int begin,int end)
                 char op[4];copy_text(op,sizeof(op),st->assignment_op);op[strlen(op)-1]=0;
                 const char *type=canonical(e->fn->exprs[st->lhs_root].type);
                 if(width(type))number(e,type,old,value,operation(op),result,sizeof(result));
-                else format(result,sizeof(result),e->target==ZIR_JS&&!strcmp(type,"f32")?"Math.fround(%s %s %s)":"%s %s %s",old,op,value);
+                else format(result,sizeof(result),"%s %s %s",old,op,value);
             } else {
                 emit_expr(e,st->expr_root,e->fn->exprs[st->lhs_root].type,value,sizeof(value));
                 copy_text(result,sizeof(result),value);
             }
-            if(e->target == ZIR_JS && record_type(e->module, e->fn->exprs[st->lhs_root].type)) {
-                char copy[ZIR_TEXT_MAX];
-                js_record_copy(e, e->fn->exprs[st->lhs_root].type, result, copy, sizeof(copy));
-                line(e, "%s = %s;", lhs, copy);
-            }
-            else
-                assign_value(e, lhs, e->fn->exprs[st->lhs_root].type, result);
+            assign_value(e, lhs, e->fn->exprs[st->lhs_root].type, result);
             break;
         case ZIR_STMT_RETURN:
             if(st->expr_root >= 0) {
@@ -1744,7 +1592,7 @@ emit_sequence(Emitter *e,int begin,int end)
         case ZIR_STMT_EXPR:case ZIR_STMT_UNUSED:
             if(st->expr_root>=0) {
                 emit_expr(e,st->expr_root,e->fn->exprs[st->expr_root].type,value,sizeof(value));
-                if(*value)line(e,e->target==ZIR_GO?"_ = %s":e->target==ZIR_JS?"void %s;":"(void)%s;",value);
+                if(*value)line(e,e->target==ZIR_GO?"_ = %s":"(void)%s;",value);
             }break;
         default:break;
         }
@@ -1776,16 +1624,6 @@ EmitBody(FILE *out,const ZirModule *module,const ZirFunction *fn,ZirTarget targe
             char incoming[ZIR_NAME_MAX];
             ArrayAbiName(fn, i, incoming, sizeof(incoming));
             declare_array(&e, params[i], type, incoming);
-        }
-        if(target == ZIR_JS && enum_type(module, type))
-            line(&e, "%s = %s_value(%s,32,true);", params[i], e.numbers, params[i]);
-        if(target==ZIR_JS && width(type))line(&e,"%s = %s_value(%s,%d,%s);",params[i],e.numbers,params[i],width(type),signed_type(type)?"true":"false");
-        if(target==ZIR_JS && !strcmp(type,"bool"))line(&e,"%s = %s_bool(%s);",params[i],e.numbers,params[i]);
-        if(target==ZIR_JS && !strcmp(type,"f32"))line(&e,"%s = Math.fround(%s);",params[i],params[i]);
-        if(target == ZIR_JS && record_type(module, type)) {
-            char copy[ZIR_TEXT_MAX];
-            js_record_copy(&e, type, params[i], copy, sizeof(copy));
-            line(&e, "%s = %s;", params[i], copy);
         }
     }
     emit_sequence(&e,0,fn->stmt_count);free(e.locals);return 1;

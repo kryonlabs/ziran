@@ -2,7 +2,7 @@
 #define ZIR_EMIT_H
 #include "zir.h"
 
-typedef enum ZirTarget { ZIR_C, ZIR_CPP, ZIR_GO, ZIR_JS } ZirTarget;
+typedef enum ZirTarget { ZIR_C, ZIR_CPP, ZIR_GO } ZirTarget;
 /* Resolve target symbol spelling and call ABI. Input contains identifiers and
  * captured argument names only, never a source expression to reinterpret. */
 typedef void (*ZirResolveTarget)(void *context, const char *text, char *out, size_t size);
@@ -15,9 +15,6 @@ int ModuleUsesSlices(const ZirModule *module);
 void ArrayAbiName(const ZirFunction *fn, int parameter, char *out, size_t size);
 void ArrayAbiArgs(const ZirFunction *fn, char *out, size_t size);
 int CanEmitBody(const ZirModule *module, const ZirFunction *fn);
-/* Stream a portable record's zero value or deep copy; no output if unsupported. */
-int EmitJsRecordValue(FILE *out, const ZirModule *module, const char *type,
-                         const char *source);
 void EmitNumbers(FILE *out, const ZirModule *module, ZirTarget target);
 void EmitNumberSupport(FILE *out, ZirTarget target, const char *prefix);
 void EmitStringType(FILE *out);
