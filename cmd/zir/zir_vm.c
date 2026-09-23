@@ -89,7 +89,7 @@ value_kind(const char *type)
         return VALUE_VOID;
     if(strcmp(type, "i32") == 0 || strcmp(type, "int") == 0 ||
        strcmp(type, "integer") == 0 || strcmp(type, "bool") == 0 ||
-       strcmp(type, "u32") == 0)
+       strcmp(type, "u32") == 0 || strcmp(type, "u8") == 0)
         return VALUE_INT;
     if(strcmp(type, "float") == 0 || strcmp(type, "f32") == 0 ||
        strcmp(type, "double") == 0 || strcmp(type, "f64") == 0 ||
@@ -436,9 +436,13 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         return real_value(number);
     }
     if(value.kind == VALUE_REAL) {
-        double lower = strcmp(type, "u32") == 0 ? 0.0 : INT32_MIN;
+        int unsigned_type = strcmp(type, "u32") == 0 ||
+                            strcmp(type, "u8") == 0;
+        double lower = unsigned_type ? 0.0 : INT32_MIN;
         double upper = strcmp(type, "u32") == 0 ?
-                       (double)UINT32_MAX + 1.0 : (double)INT32_MAX + 1.0;
+                       (double)UINT32_MAX + 1.0 :
+                       strcmp(type, "u8") == 0 ? 256.0 :
+                       (double)INT32_MAX + 1.0;
         if(!isfinite(value.real) || value.real < lower ||
            value.real >= upper) {
             vm->failed = 1;
@@ -446,11 +450,15 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         }
         if(strcmp(type, "u32") == 0)
             return int_value((uint32_t)value.real);
+        if(strcmp(type, "u8") == 0)
+            return int_value((uint8_t)value.real);
         return int_value((int32_t)value.real);
     }
     uint32_t bits = (uint32_t)value.integer;
     if(strcmp(type, "u32") == 0)
         return int_value(bits);
+    if(strcmp(type, "u8") == 0)
+        return int_value((uint8_t)bits);
     return int_value(bits <= INT32_MAX ? (int64_t)bits :
                      (int64_t)bits - 4294967296LL);
 }

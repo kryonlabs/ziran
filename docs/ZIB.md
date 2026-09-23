@@ -8,7 +8,7 @@ See [Implementation status](IMPLEMENTATION_STATUS.md) for the remaining work.
 `ziran bundle --root DIR --entry module:function -o FILE file.zi|file.zir ...`
 links explicitly supplied modules. `ziran run FILE` validates and executes
 zero-argument integer, bool, or void entry functions on a portable interpreter.
-Called functions can use `i32`, `u32`, `bool`, `float`, and `double` scalars,
+Called functions can use `i32`, `u8`, `u32`, `bool`, `float`, and `double` scalars,
 enums, and plain records with scalar, enum, or nested record fields. Record defaults and literals,
 member reads and writes, scalar compound assignments, parameters, returns,
 and value copies execute in the interpreter. The `u32` subset includes

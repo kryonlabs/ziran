@@ -402,6 +402,8 @@ Answer :: () -> i32 #export {
     value ^= (u32)2
     if value != (u32)0x80000000 { return 0 }
     value >>= (u32)31
+    byte: u8 = (u8)258
+    if byte != (u8)2 { return 0 }
     negative: i32 = -8
     if negative >> 2 != -2 { return 0 }
     return (i32)(value + (u32)41)
