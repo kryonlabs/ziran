@@ -9,19 +9,23 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 cat > "$work/arraylib.zi" <<'EOF'
 #module "arraylib"
 
+BASE :: 1
+CAPACITY :: BASE + 1
+THREE :: CAPACITY + 1
+
 Point :: struct {
     x: i32
 }
 
 Box :: struct {
-    values: [2]Point
+    values: [CAPACITY]Point
 }
 
 SumBox :: (box: Box) -> i32 #export {
     return box.values[0].x + box.values[1].x
 }
 
-SumArray :: (values: [3]i32) -> i32 #export {
+SumArray :: (values: [THREE]i32) -> i32 #export {
     return values[0] + values[1]
 }
 EOF
@@ -44,8 +48,8 @@ ReadLoop :: () -> i32 {
 
 Answer :: () -> i32 #export {
     if ReadLoop() != 42 { return 0 }
-    values: [3]i32 = {41, 1, 0}
-    copy: [3]i32 = values
+    values: [THREE]i32 = {41, 1, 0}
+    copy: [THREE]i32 = values
     values[0] = 0
     if SumArray(copy) != 42 { return 0 }
     point: Point
@@ -115,6 +119,27 @@ CPP
 done
 
 cmp "$work/source.zib" "$work/saved.zib"
+
+cat > "$work/capacity.zi" <<'EOF'
+#module "capacity"
+LENGTH :: 1 + 1
+EOF
+cat > "$work/capacity_app.zi" <<'EOF'
+#module "capacity_app"
+#import "capacity"
+Answer :: () -> i32 #export {
+    values: [LENGTH]i32 = {40, 2}
+    return values[0] + values[1]
+}
+EOF
+"$ziran" ir --root "$work" -o "$work/capacity-ir" "$work/capacity_app.zi"
+"$ziran" bundle --root "$work" --entry capacity_app:Answer \
+    -o "$work/capacity-source.zib" "$work/capacity_app.zi"
+"$ziran" bundle --root "$work/capacity-ir" --entry capacity_app:Answer \
+    -o "$work/capacity-saved.zib" "$work/capacity-ir/capacity_app.zir"
+cmp "$work/capacity-source.zib" "$work/capacity-saved.zib"
+test "$("$ziran" run "$work/capacity-source.zib")" = 42
+
 "$ziran" bundle --root "$work" --entry arrayapp:OutOfBounds \
     -o "$work/out-of-bounds.zib" "$work/arrayapp.zi"
 if "$ziran" run "$work/out-of-bounds.zib" \

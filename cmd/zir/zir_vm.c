@@ -1554,9 +1554,9 @@ VmVerify(const ZirProgram *program, const char *entry_module,
                 return 0;
             }
         }
-        if(module->global_count || module->state_count || module->define_count) {
+        if(module->global_count || module->state_count) {
             Diagnostic(module->span, "zib.module",
-                          "globals, state, and defines are outside the portable subset");
+                          "globals and state are outside the portable subset");
             return 0;
         }
         for(int f = 0; f < module->function_count; f++) {

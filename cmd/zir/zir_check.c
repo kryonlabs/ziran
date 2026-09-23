@@ -1014,6 +1014,51 @@ check_type_declarations(const ZirModule *module, int strict)
     return 1;
 }
 
+/* Checked record layouts carry concrete array sizes into saved IR and ZIB.
+ * A bundle intentionally omits source definitions, so a field must not keep
+ * depending on a compile-time name after this point. */
+static int
+normalize_record_arrays(ZirModule *module)
+{
+    for(int i = 0; i < module->type_count; i++) {
+        ZirType *record = &module->types[i];
+        if(record->is_slot || record->is_enum || record->name[0] == '#')
+            continue;
+        size_t offset = 0;
+        ZirTypeField field;
+        int status, changed = 0;
+        while((status = TypeNextField(record, &offset, &field)) == 1) {
+            int capacity;
+            if(ArrayElementType(field.type, NULL, 0, &capacity) &&
+               capacity < 0 &&
+               array_capacity(module, field.type, &capacity) == 1)
+                changed = 1;
+        }
+        if(status < 0)
+            return 0;
+        if(!changed)
+            continue;
+        char body[sizeof(record->body)] = "";
+        size_t used = 0;
+        offset = 0;
+        while((status = TypeNextField(record, &offset, &field)) == 1) {
+            normalize_array(module, field.type, sizeof(field.type));
+            int length = snprintf(body + used, sizeof(body) - used,
+                                  "%s: %s\n", field.name, field.type);
+            if(length < 0 || (size_t)length >= sizeof(body) - used) {
+                Diagnostic(record->span, "check.record", "normalized record is too large: %s",
+                           record->name);
+                return 0;
+            }
+            used += (size_t)length;
+        }
+        if(status < 0)
+            return 0;
+        copy_text(record->body, sizeof(record->body), body);
+    }
+    return 1;
+}
+
 static ZirStmt *
 block_statement(ZirFunction *body, ZirStmtKind kind, ZirSourceSpan span,
                   const char *format, ...)
@@ -1611,7 +1656,8 @@ CheckPrograms(ZirProgram **programs, int count, int strict)
     }
     for(int p = 0; p < count; p++)
         for(int m = 0; m < programs[p]->module_count; m++)
-            if(!check_type_declarations(&programs[p]->modules[m], strict))
+            if(!check_type_declarations(&programs[p]->modules[m], strict) ||
+               !normalize_record_arrays(&programs[p]->modules[m]))
                 return 0;
     for(int p = 0; p < count; p++) for(int m = 0; m < programs[p]->module_count; m++) {
         c.module = &programs[p]->modules[m];

@@ -154,7 +154,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   supported backend consume the same saved IR. Source, saved-IR, and mixed
   builds currently rerun the source checker across all modules.
 - Extend the `.zib` linker and verifier beyond the current subset: remaining
-  control flow, enum initializer expressions, symbolic and nested arrays,
+  control flow, enum initializer expressions, unresolved and nested arrays,
   slices, state, and all checked
   expressions. Extend host capabilities to portable records, handles, and
   equivalent behavior
