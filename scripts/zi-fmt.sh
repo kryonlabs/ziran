@@ -82,9 +82,13 @@ for file in "$@"; do
         leading_close = substr(line, 1, 1) == "}"
         if(leading_close && indent > 0)
             indent--
-        for(i = 0; i < indent; i++)
+        continuation = paren_depth > 0 ? 1 : 0
+        for(i = 0; i < indent + continuation; i++)
             printf "    "
         print line
+        paren_depth += count_char(line, "(") - count_char(line, ")")
+        if(paren_depth < 0)
+            paren_depth = 0
         opens = count_char(line, "{")
         closes = count_char(line, "}")
         delta = opens - closes

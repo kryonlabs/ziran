@@ -16,6 +16,14 @@ EOF
 
 "$ziran" check --root "$work" "$work/hello.zi"
 "$ziran" fmt --check "$work/hello.zi"
+cat > "$work/wrapped.zi" <<'EOF'
+#module "wrapped"
+Add :: (first: i32,
+    second: i32) -> i32 #export {
+    return first + second
+}
+EOF
+"$ziran" fmt --check "$work/wrapped.zi"
 "$ziran" ir --root "$work" -o "$work/ir" "$work/hello.zi"
 "$ziran" ir --root "$work" -o "$work/ir-again" "$work/hello.zi"
 cmp "$work/ir/hello.zir" "$work/ir-again/hello.zir"
