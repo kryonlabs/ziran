@@ -52,8 +52,11 @@ source and saved IR. Fixed arrays with numeric or resolved named capacities supp
 positional literals, element reads and writes, and value copies, including
 arrays inside imported records. Indexing is bounds-checked. Version 2 is
 experimental and has no compatibility promise. Host calls with pointers,
-arrays, or slots, graphical programs, slices, unresolved or nested fixed
-arrays, state, globals, `for`, and `switch` remain unsupported.
+arrays, or slots remain unsupported. Default-initialized module globals of
+portable value types work within one `BundleRun`; each run starts with fresh
+global values. Explicit global initializers, complete graphical runtime
+integration, slices, unresolved or nested fixed arrays, module state, `for`,
+and `switch` remain unsupported.
 
 ## Target contract
 

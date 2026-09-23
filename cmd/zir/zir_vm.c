@@ -10,7 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { VM_MAX_PARAMS = 16, VM_MAX_LOCALS = 64, VM_MAX_DEPTH = 128,
+enum { VM_MAX_PARAMS = 16, VM_MAX_LOCALS = 64, VM_MAX_GLOBALS = 4096,
+       VM_MAX_DEPTH = 128,
        VM_MAX_STEPS = 1000000, VM_MAX_FIELDS = 64,
        VM_MAX_ENUM_MEMBERS = 64,
        VM_MAX_RECORD_BYTES = 256 * 1024 * 1024,
@@ -62,6 +63,8 @@ typedef struct RecordField {
 struct Record {
     Record *next;
     int retired;
+    int pinned;
+    uint64_t allocation;
     const ZirModule *owner;
     const ZirType *type;
     int field_count;
@@ -71,6 +74,8 @@ struct Record {
 struct Array {
     Array *next;
     int retired;
+    int pinned;
+    uint64_t allocation;
     const ZirModule *owner;
     char element_type[ZIR_NAME_MAX];
     int length;
@@ -90,15 +95,24 @@ typedef struct Local {
     Value value;
 } Local;
 
+typedef struct GlobalSlot {
+    const ZirModule *module;
+    const ZirGlobal *declaration;
+    Value value;
+} GlobalSlot;
+
 typedef struct Vm {
     int depth;
     int steps;
     int failed;
     size_t record_bytes;
     size_t array_bytes;
+    uint64_t allocation;
     Record *records;
     Array *arrays;
     StringLiteral *strings;
+    GlobalSlot *globals;
+    int global_count;
     VmHostCall host;
     void *host_context;
 } Vm;
@@ -602,6 +616,7 @@ allocate_record(Vm *vm, const ZirModule *owner,
         return NULL;
     }
     record->next = vm->records;
+    record->allocation = ++vm->allocation;
     record->owner = owner;
     record->type = type;
     record->field_count = count;
@@ -630,6 +645,7 @@ allocate_array(Vm *vm, const ZirModule *owner, const char *element,
         return NULL;
     }
     array->next = vm->arrays;
+    array->allocation = ++vm->allocation;
     array->owner = owner;
     copy_text(array->element_type, sizeof(array->element_type), element);
     array->length = length;
@@ -1008,6 +1024,15 @@ binding_index(const Parameter *bindings, int count, const char *name)
     return -1;
 }
 
+static const ZirGlobal *
+find_global_declaration(const ZirModule *module, const char *name)
+{
+    for(int i = 0; i < module->global_count; i++)
+        if(strcmp(module->globals[i].name, name) == 0)
+            return &module->globals[i];
+    return NULL;
+}
+
 static const char *
 assignment_root(const ZirFunction *function, int index)
 {
@@ -1150,7 +1175,8 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         }
         if(strcmp(expression->name, "true") == 0 ||
            strcmp(expression->name, "false") == 0 ||
-           binding_index(bindings, binding_count, expression->name) >= 0)
+           binding_index(bindings, binding_count, expression->name) >= 0 ||
+           find_global_declaration(module, expression->name) != NULL)
             return 1;
         const ZirType *enumeration = NULL;
         int32_t number;
@@ -1451,8 +1477,10 @@ verify_sequence(const ZirModule *module, const ZirFunction *function,
         case ZIR_STMT_ASSIGN:
             if(statement->lhs_root < 0 ||
                assignment_root(function, statement->lhs_root) == NULL ||
-               binding_index(bindings, binding_count,
-                             assignment_root(function, statement->lhs_root)) < 0 ||
+               (binding_index(bindings, binding_count,
+                              assignment_root(function, statement->lhs_root)) < 0 &&
+                find_global_declaration(module,
+                    assignment_root(function, statement->lhs_root)) == NULL) ||
                statement->expr_root < 0 ||
                !verify_expression(module, function, bindings, binding_count,
                                   statement->lhs_root, 0) ||
@@ -1656,10 +1684,18 @@ VmVerify(const ZirProgram *program, const char *entry_module,
                 return 0;
             }
         }
-        if(module->global_count || module->state_count) {
+        if(module->state_count) {
             Diagnostic(module->span, "zib.module",
-                          "globals and state are outside the portable subset");
+                          "state is outside the portable subset");
             return 0;
+        }
+        for(int g = 0; g < module->global_count; g++) {
+            const ZirGlobal *global = &module->globals[g];
+            if(!portable_type(module, global->type) || global->init[0]) {
+                Diagnostic(global->span, "zib.global",
+                           "portable globals need a value type and default initialization");
+                return 0;
+            }
         }
         for(int f = 0; f < module->function_count; f++) {
             const ZirFunction *function = &module->functions[f];
@@ -1724,6 +1760,18 @@ find_local(Frame *frame, const char *name)
 }
 
 static Value *
+find_global_value(Frame *frame, const char *name)
+{
+    for(int i = 0; i < frame->vm->global_count; i++) {
+        GlobalSlot *slot = &frame->vm->globals[i];
+        if(slot->module == frame->module &&
+           strcmp(slot->declaration->name, name) == 0)
+            return &slot->value;
+    }
+    return NULL;
+}
+
+static Value *
 record_field(Record *record, const char *name)
 {
     if(record == NULL)
@@ -1743,7 +1791,8 @@ assignment_slot(Frame *frame, int index, int depth)
     const ZirExpr *expression = &frame->function->exprs[index];
     if(expression->kind == ZIR_EXPR_IDENT) {
         Local *local = find_local(frame, expression->name);
-        return local != NULL ? &local->value : NULL;
+        return local != NULL ? &local->value :
+               find_global_value(frame, expression->name);
     }
     if(expression->kind == ZIR_EXPR_INDEX) {
         Value *base = assignment_slot(frame, expression->left, depth + 1);
@@ -1979,6 +2028,10 @@ eval(Frame *frame, int index, int depth)
         if(local != NULL)
             return coerce_expression(frame->vm, frame->module,
                                      local->value, expression->type);
+        Value *global = find_global_value(frame, expression->name);
+        if(global != NULL)
+            return coerce_expression(frame->vm, frame->module,
+                                     *global, expression->type);
         const ZirModule *owner = NULL;
         const ZirType *enumeration = NULL;
         int32_t number;
@@ -2518,48 +2571,71 @@ parameter_read_only(const ZirFunction *function, const char *name)
     return 1;
 }
 
-/* Result coercion creates its own deep copy. Keep that copy and reclaim
- * earlier allocations from the completed call; values owned by the caller
- * precede entry and are never touched. */
+/* Globals can receive values during a call. Keep every allocation reachable
+ * from them when reclaiming completed call temporaries. */
 static void
-release_call_records(Vm *vm, Record *entry, Record *before_result)
+pin_value(Value value, int depth)
 {
-    Record *last_kept = NULL;
-    for(Record *record = vm->records; record != before_result;
-        record = record->next)
-        last_kept = record;
-    if(last_kept != NULL)
-        last_kept->next = entry;
-    else
-        vm->records = entry;
-    Record *record = before_result;
-    while(record != entry) {
-        Record *next = record->next;
-        vm->record_bytes -= sizeof(Record) +
-            (size_t)record->field_count * sizeof(RecordField);
-        free(record);
-        record = next;
+    if(depth >= VM_MAX_DEPTH)
+        return;
+    if(value.kind == VALUE_RECORD && value.record != NULL &&
+       !value.record->pinned) {
+        value.record->pinned = 1;
+        for(int i = 0; i < value.record->field_count; i++)
+            pin_value(value.record->fields[i].value, depth + 1);
+    } else if(value.kind == VALUE_ARRAY && value.array != NULL &&
+              !value.array->pinned) {
+        value.array->pinned = 1;
+        for(int i = 0; i < value.array->length; i++)
+            pin_value(value.array->elements[i], depth + 1);
     }
 }
 
 static void
-release_call_arrays(Vm *vm, Array *entry, Array *before_result)
+pin_globals(Vm *vm)
 {
-    Array *last_kept = NULL;
-    for(Array *array = vm->arrays; array != before_result;
-        array = array->next)
-        last_kept = array;
-    if(last_kept != NULL)
-        last_kept->next = entry;
-    else
-        vm->arrays = entry;
-    Array *array = before_result;
-    while(array != entry) {
-        Array *next = array->next;
-        vm->array_bytes -= sizeof(Array) +
-            (size_t)array->length * sizeof(Value);
-        free(array);
-        array = next;
+    for(int i = 0; i < vm->global_count; i++)
+        pin_value(vm->globals[i].value, 0);
+}
+
+/* Result coercion creates its own deep copy after before_result. Reclaim
+ * earlier allocations from the completed call by allocation sequence, since
+ * replacing a global can remove the record that was at the call's entry. */
+static void
+release_call_records(Vm *vm, uint64_t entry, uint64_t before_result)
+{
+    Record **record = &vm->records;
+    while(*record != NULL) {
+        Record *current = *record;
+        if(current->allocation > entry &&
+           current->allocation <= before_result && !current->pinned) {
+            *record = current->next;
+            vm->record_bytes -= sizeof(Record) +
+                (size_t)current->field_count * sizeof(RecordField);
+            free(current);
+        } else {
+            current->pinned = 0;
+            record = &current->next;
+        }
+    }
+}
+
+static void
+release_call_arrays(Vm *vm, uint64_t entry, uint64_t before_result)
+{
+    Array **array = &vm->arrays;
+    while(*array != NULL) {
+        Array *current = *array;
+        if(current->allocation > entry &&
+           current->allocation <= before_result && !current->pinned) {
+            *array = current->next;
+            vm->array_bytes -= sizeof(Array) +
+                (size_t)current->length * sizeof(Value);
+            free(current);
+        } else {
+            current->pinned = 0;
+            array = &current->next;
+        }
     }
 }
 
@@ -2571,8 +2647,7 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
     Parameter parameters[VM_MAX_PARAMS];
     int count = parse_parameters(module, function, parameters);
     Value result = int_value(0);
-    Record *record_entry = vm->records;
-    Array *array_entry = vm->arrays;
+    uint64_t allocation_entry = vm->allocation;
     if(vm->failed || vm->depth >= VM_MAX_DEPTH || count != arg_count) {
         vm->failed = 1;
         return result;
@@ -2630,12 +2705,12 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
        (flow != FLOW_RETURN && strcmp(function->return_type, "void") != 0))
         vm->failed = 1;
     vm->depth--;
-    Record *record_before_result = vm->records;
-    Array *array_before_result = vm->arrays;
+    uint64_t allocation_before_result = vm->allocation;
     Value returned = coerce(vm, module, result, function->return_type);
     if(!vm->failed && parent == NULL && !function_uses_slots(function)) {
-        release_call_records(vm, record_entry, record_before_result);
-        release_call_arrays(vm, array_entry, array_before_result);
+        pin_globals(vm);
+        release_call_records(vm, allocation_entry, allocation_before_result);
+        release_call_arrays(vm, allocation_entry, allocation_before_result);
     }
     return returned;
 }
@@ -2670,6 +2745,36 @@ free_strings(Vm *vm)
     }
 }
 
+static int
+initialize_globals(Vm *vm, const ZirProgram *program)
+{
+    int count = 0;
+    for(int m = 0; m < program->module_count; m++) {
+        if(program->modules[m].global_count < 0 ||
+           program->modules[m].global_count > VM_MAX_GLOBALS - count)
+            return 0;
+        count += program->modules[m].global_count;
+    }
+    if(count == 0)
+        return 1;
+    vm->globals = calloc((size_t)count, sizeof(*vm->globals));
+    if(vm->globals == NULL)
+        return 0;
+    for(int m = 0; m < program->module_count; m++) {
+        const ZirModule *module = &program->modules[m];
+        for(int g = 0; g < module->global_count; g++) {
+            GlobalSlot *slot = &vm->globals[vm->global_count++];
+            slot->module = module;
+            slot->declaration = &module->globals[g];
+            slot->value = default_value(vm, module,
+                                        slot->declaration->type, 0);
+            if(vm->failed)
+                return 0;
+        }
+    }
+    return 1;
+}
+
 int
 VmRunWithHost(const ZirProgram *program, const char *entry_module,
               const char *entry_function, VmHostCall host, void *context,
@@ -2680,6 +2785,13 @@ VmRunWithHost(const ZirProgram *program, const char *entry_module,
     Vm vm = {.host = host, .host_context = context};
     if(!VmVerify(program, entry_module, entry_function))
         return 0;
+    if(!initialize_globals(&vm, program)) {
+        free_records(&vm);
+        free_arrays(&vm);
+        free_strings(&vm);
+        free(vm.globals);
+        return 0;
+    }
     entry = find_entry(program, entry_module, entry_function, &module);
     Value value = run_function(&vm, module, entry, NULL, 0, NULL);
     *result = value.integer;
@@ -2690,11 +2802,13 @@ VmRunWithHost(const ZirProgram *program, const char *entry_module,
         free_records(&vm);
         free_arrays(&vm);
         free_strings(&vm);
+        free(vm.globals);
         return 0;
     }
     free_records(&vm);
     free_arrays(&vm);
     free_strings(&vm);
+    free(vm.globals);
     return 1;
 }
 

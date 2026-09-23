@@ -527,6 +527,33 @@ BundleLink(const ZirProgram *program, const char *entry_module,
                    (size_t)source->define_count * sizeof(*target->defines));
             target->define_count = target->define_cap = source->define_count;
         }
+        /* Keep module globals read or written by retained functions. Globals
+         * used only by discarded functions must not add bundle state or
+         * unsupported initializer requirements. */
+        for(int g = 0; g < source->global_count; g++) {
+            int used = 0;
+            for(int f = 0; f < source->function_count && !used; f++) {
+                if(!keep[m][f])
+                    continue;
+                const ZirFunction *function = &source->functions[f];
+                for(int e = 0; e < function->expr_count; e++)
+                    if(function->exprs[e].kind == ZIR_EXPR_IDENT &&
+                       strcmp(function->exprs[e].name,
+                              source->globals[g].name) == 0) {
+                        used = 1;
+                        break;
+                    }
+            }
+            if(!used)
+                continue;
+            ZirGlobal *next = realloc(target->globals,
+                (size_t)(target->global_count + 1) * sizeof(*next));
+            if(next == NULL)
+                goto failed;
+            target->globals = next;
+            target->globals[target->global_count++] = source->globals[g];
+            target->global_cap = target->global_count;
+        }
         if(kept_functions > 0) {
             target->functions = calloc((size_t)kept_functions,
                                        sizeof(*target->functions));

@@ -83,9 +83,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.zi`, using generic host glyph measurement and raster capabilities. Source
   and saved `.zir`, `.zib`, C, C++, and Go tests cover that path. Kryon now
   resolves Progress's track, fill, and label roles from a portable owned
-  320-rule table through its checked style cascade. Callers still supply the
-  default faces and rule data; the legacy style loader and complete widget
-  integration remain unfinished.
+  320-rule table through its checked style cascade. Kryon's one-argument
+  `Progress` painter now reads an installed rule table from an ordinary Ziran
+  global and uses Ziran-defined default faces. KSS text can populate that
+  table through a checked parser bridge. Retained tree submission and the
+  pointer-backed native style loader remain unfinished.
   Window placement and drag policy now runs from source and saved IR in native
   targets and `.zib`, with window flags imported from a normal Ziran module.
 - Reachable `#extern` host calls now appear as module/function
@@ -104,6 +106,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   equality, read-only byte indexing, `.length`, parameters, returns, and
   record fields. `make check` compares source and saved-IR bundles with C,
   C++, and Go on a string program and rejects out-of-range indexing.
+- Portable bundles retain referenced module globals with default values,
+  including records and fixed arrays. The VM reads and writes them across
+  imported function calls, and reclaims replaced values without losing
+  globals reached by a caller. Source and saved `.zir`, `.zib`, C, C++, and Go
+  tests cover value isolation and repeated mutation. Each `BundleRun` starts
+  fresh; explicit initializers and persistent VM sessions are not supported.
 - Portable execution borrows read-only record and array parameters and
   reclaims temporary values after ordinary function calls while retaining
   copied results. A repeated nested call over a 4,096-record array checks
