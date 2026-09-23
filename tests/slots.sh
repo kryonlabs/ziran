@@ -28,15 +28,21 @@ cat > "$work/slotapp.zi" <<'EOF'
 #module "slotapp"
 #import "slotlib"
 
+Marker :: struct {
+    value: i32
+}
+
 Answer :: () -> i32 #export {
     observed: i32 = 0
+    marker: Marker
     Container chosen: {
         value = 41
         child = (value: i32) #slot {
             observed = value
+            marker.value = value
         }
     }
-    if observed != 41 { return 0 }
+    if observed != 41 || marker.value != 41 { return 0 }
     Container plain: {
         value = 41
         child = PlainChild

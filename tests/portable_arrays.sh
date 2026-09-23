@@ -21,6 +21,21 @@ Box :: struct {
     values: [CAPACITY]Point
 }
 
+LargeBox :: struct {
+    values: [4096]Point
+}
+
+RoundTripLarge :: (box: LargeBox) -> LargeBox #export {
+    copy: LargeBox = box
+    copy.values[0].x = 42
+    return copy
+}
+
+CheckLarge :: (box: LargeBox) -> bool #export {
+    updated: LargeBox = RoundTripLarge(box)
+    return box.values[0].x == 41 && updated.values[0].x == 42
+}
+
 SumBox :: (box: Box) -> i32 #export {
     return box.values[0].x + box.values[1].x
 }
@@ -48,6 +63,13 @@ ReadLoop :: () -> i32 {
 
 Answer :: () -> i32 #export {
     if ReadLoop() != 42 { return 0 }
+    large: LargeBox
+    large.values[0].x = 41
+    iteration: i32 = 0
+    while iteration < 80 {
+        if !CheckLarge(large) { return 0 }
+        iteration += 1
+    }
     values: [THREE]i32 = {41, 1, 0}
     copy: [THREE]i32 = values
     values[0] = 0

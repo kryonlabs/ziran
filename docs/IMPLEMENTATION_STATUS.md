@@ -81,8 +81,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   Progress paint decisions as ordinary imported modules in those targets.
   Kryon's Progress composition now selects fonts and computes layout in checked
   `.zi`, using generic host glyph measurement and raster capabilities. Source
-  and saved `.zir`, `.zib`, C, C++, and Go tests cover that path. Resolved style
-  faces are still supplied by the caller; complete style lookup and widget
+  and saved `.zir`, `.zib`, C, C++, and Go tests cover that path. Kryon now
+  resolves Progress's track, fill, and label roles from a portable owned
+  320-rule table through its checked style cascade. Callers still supply the
+  default faces and rule data; the legacy style loader and complete widget
   integration remain unfinished.
   Window placement and drag policy now runs from source and saved IR in native
   targets and `.zib`, with window flags imported from a normal Ziran module.
@@ -102,6 +104,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   equality, read-only byte indexing, `.length`, parameters, returns, and
   record fields. `make check` compares source and saved-IR bundles with C,
   C++, and Go on a string program and rejects out-of-range indexing.
+- Portable execution borrows read-only record and array parameters and
+  reclaims temporary values after ordinary function calls while retaining
+  copied results. A repeated nested call over a 4,096-record array checks
+  value isolation without exhausting the VM's allocation limit.
 - The portable verifier still rejects records with raw pointer fields. Kryon's
   `CardButtonProps` builds for native C, C++, and Go, but a `.zib` entry that
   carries its pointer-bearing `ButtonProps` result does not yet verify. A

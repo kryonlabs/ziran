@@ -848,6 +848,31 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
                      (int64_t)bits - 4294967296LL);
 }
 
+/* Expression values are read-only until a declaration, assignment, or call
+ * parameter stores them. Those storage boundaries use coerce() and make the
+ * required value copy. Borrowing matching records and arrays here avoids a
+ * deep temporary copy for every member read and function argument. */
+static Value
+coerce_expression(Vm *vm, const ZirModule *module,
+                  Value value, const char *type)
+{
+    if(value.kind == VALUE_RECORD && value.record != NULL) {
+        const ZirType *record = FindType(module, type, NULL);
+        if(record != NULL && !record->is_enum && !record->is_slot &&
+           !record->is_extern && value.record->type == record)
+            return value;
+    }
+    if(value.kind == VALUE_ARRAY && value.array != NULL) {
+        char element[ZIR_NAME_MAX];
+        int capacity;
+        if(ArrayElementType(type, element, sizeof(element), &capacity) &&
+           capacity == value.array->length &&
+           strcmp(element, value.array->element_type) == 0)
+            return value;
+    }
+    return coerce(vm, module, value, type);
+}
+
 static int
 parse_parameters(const ZirModule *module, const ZirFunction *function,
                  Parameter *parameters)
@@ -1900,8 +1925,8 @@ eval(Frame *frame, int index, int depth)
             return int_value(0);
         Local *local = find_local(frame, expression->name);
         if(local != NULL)
-            return coerce(frame->vm, frame->module, local->value,
-                          expression->type);
+            return coerce_expression(frame->vm, frame->module,
+                                     local->value, expression->type);
         const ZirModule *owner = NULL;
         const ZirType *enumeration = NULL;
         int32_t number;
@@ -2114,7 +2139,8 @@ eval(Frame *frame, int index, int depth)
         frame->vm->failed = 1;
         break;
     }
-    return coerce(frame->vm, frame->module, value, expression->type);
+    return coerce_expression(frame->vm, frame->module, value,
+                             expression->type);
 }
 
 static Flow
@@ -2380,6 +2406,103 @@ host_return(Vm *vm, const ZirModule *module, const char *type,
     return coerce(vm, module, result, type);
 }
 
+static const char *
+assignment_root_name(const ZirFunction *function, int index)
+{
+    while(index >= 0 && index < function->expr_count) {
+        const ZirExpr *expression = &function->exprs[index];
+        if(expression->kind == ZIR_EXPR_IDENT)
+            return expression->name;
+        if(expression->kind != ZIR_EXPR_MEMBER &&
+           expression->kind != ZIR_EXPR_INDEX)
+            return NULL;
+        index = expression->left;
+    }
+    return NULL;
+}
+
+static int
+function_uses_slots(const ZirFunction *function)
+{
+    if(function->is_closure)
+        return 1;
+    for(int i = 0; i < function->expr_count; i++) {
+        if(function->exprs[i].is_function_value ||
+           function->exprs[i].slot_type[0])
+            return 1;
+    }
+    for(int i = 0; i < function->stmt_count; i++) {
+        if(function->stmts[i].kind == ZIR_STMT_BLOCK_CALL)
+            return 1;
+    }
+    return 0;
+}
+
+/* A record or array parameter can share its caller's value only when the
+ * callee cannot write through that parameter. Other storage paths still copy
+ * values, so passing a parameter onward to a mutating function stays safe. */
+static int
+parameter_read_only(const ZirFunction *function, const char *name)
+{
+    if(function_uses_slots(function))
+        return 0;
+    for(int i = 0; i < function->stmt_count; i++) {
+        const ZirStmt *statement = &function->stmts[i];
+        if(statement->kind == ZIR_STMT_ASSIGN) {
+            const char *root = assignment_root_name(function,
+                                                    statement->lhs_root);
+            if(root == NULL || strcmp(root, name) == 0)
+                return 0;
+        }
+    }
+    return 1;
+}
+
+/* Result coercion creates its own deep copy. Keep that copy and reclaim
+ * earlier allocations from the completed call; values owned by the caller
+ * precede entry and are never touched. */
+static void
+release_call_records(Vm *vm, Record *entry, Record *before_result)
+{
+    Record *last_kept = NULL;
+    for(Record *record = vm->records; record != before_result;
+        record = record->next)
+        last_kept = record;
+    if(last_kept != NULL)
+        last_kept->next = entry;
+    else
+        vm->records = entry;
+    Record *record = before_result;
+    while(record != entry) {
+        Record *next = record->next;
+        vm->record_bytes -= sizeof(Record) +
+            (size_t)record->field_count * sizeof(RecordField);
+        free(record);
+        record = next;
+    }
+}
+
+static void
+release_call_arrays(Vm *vm, Array *entry, Array *before_result)
+{
+    Array *last_kept = NULL;
+    for(Array *array = vm->arrays; array != before_result;
+        array = array->next)
+        last_kept = array;
+    if(last_kept != NULL)
+        last_kept->next = entry;
+    else
+        vm->arrays = entry;
+    Array *array = before_result;
+    while(array != entry) {
+        Array *next = array->next;
+        vm->array_bytes -= sizeof(Array) +
+            (size_t)array->length * sizeof(Value);
+        free(array);
+        array = next;
+    }
+}
+
 static Value
 run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
              const Value *args, int arg_count, Frame *parent)
@@ -2388,6 +2511,8 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
     Parameter parameters[VM_MAX_PARAMS];
     int count = parse_parameters(module, function, parameters);
     Value result = int_value(0);
+    Record *record_entry = vm->records;
+    Array *array_entry = vm->arrays;
     if(vm->failed || vm->depth >= VM_MAX_DEPTH || count != arg_count) {
         vm->failed = 1;
         return result;
@@ -2403,7 +2528,8 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
             return result;
         }
         for(int i = 0; i < count; i++) {
-            Value argument = coerce(vm, module, args[i], parameters[i].type);
+            Value argument = coerce_expression(vm, module, args[i],
+                                               parameters[i].type);
             if(vm->failed || !host_argument(module,
                                             parameters[i].type, argument,
                                             &host_args[i], 0)) {
@@ -2430,10 +2556,13 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
     frame.parent = parent;
     for(int i = 0; i < count; i++) {
         copy_text(frame.locals[i].name, sizeof(frame.locals[i].name),
-                 parameters[i].name);
+                  parameters[i].name);
         copy_text(frame.locals[i].type, sizeof(frame.locals[i].type),
-                 parameters[i].type);
-        frame.locals[i].value = coerce(vm, module, args[i], parameters[i].type);
+                  parameters[i].type);
+        frame.locals[i].value = parameter_read_only(function,
+                                                    parameters[i].name) ?
+            coerce_expression(vm, module, args[i], parameters[i].type) :
+            coerce(vm, module, args[i], parameters[i].type);
     }
     frame.local_count = count;
     Flow flow = execute_sequence(&frame, 0, function->stmt_count, 0, &result);
@@ -2441,7 +2570,14 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
        (flow != FLOW_RETURN && strcmp(function->return_type, "void") != 0))
         vm->failed = 1;
     vm->depth--;
-    return coerce(vm, module, result, function->return_type);
+    Record *record_before_result = vm->records;
+    Array *array_before_result = vm->arrays;
+    Value returned = coerce(vm, module, result, function->return_type);
+    if(!vm->failed && parent == NULL && !function_uses_slots(function)) {
+        release_call_records(vm, record_entry, record_before_result);
+        release_call_arrays(vm, array_entry, array_before_result);
+    }
+    return returned;
 }
 
 static void
