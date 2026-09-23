@@ -62,7 +62,13 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   C, C++, Go, and `.zib`, including imported record element types, value-copy
   isolation, and portable bounds failures. Linked bundles retain needed
   compile-time definitions for named bounds, including constants-only imports.
-  Unresolved bounds and slices remain outside the portable subset.
+  Portable slices borrow fixed-array storage. Source and saved IR bundles and
+  generated C, C++, and Go agree on range creation, nested views, function
+  parameters and returns, `.length`, indexed reads and writes, and array
+  replacement while a view is live. Bounds failures reject execution. The
+  checker rejects slices in records and globals, host slice signatures, and
+  returns that borrow a local array. Unresolved and nested fixed-array bounds
+  remain outside the portable subset.
   The test runs record and enum functions across imported modules. Kryon's
   complete geometry, layout, and group calculation test also runs in `.zib`
   from source and saved `.zir`. Kryon's accessibility, drag and drop, theme,
@@ -193,7 +199,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   builds currently rerun the source checker across all modules.
 - Extend the `.zib` linker and verifier beyond the current subset: remaining
   control flow, enum initializer expressions, unresolved and nested arrays,
-  slices, state, and all checked
+  slice storage in aggregates and host calls, state, and all checked
   expressions. Extend host capabilities to portable handles, arrays, and
   equivalent behavior
   for all supported language features. The current bundle embeds checked

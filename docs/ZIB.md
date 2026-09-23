@@ -56,8 +56,14 @@ arrays, or slots remain unsupported. Default-initialized module globals of
 portable value types work within one `BundleRun`; each call starts with fresh
 global values. `BundleInstantiate` creates an instance whose globals persist
 across `BundleInstanceRun` calls. Explicit global initializers, complete
-graphical runtime integration, slices, unresolved or nested fixed arrays,
+graphical runtime integration, slice fields/globals/host calls, unresolved or nested fixed arrays,
 module state, `for`, and `switch` remain unsupported.
+
+Local slices may borrow fixed arrays or other slices, cross ordinary Ziran
+function calls, return views of permitted backing storage, and read or write
+indexed elements. The loader checks the existing slice lifetime rules; the VM
+checks ranges and indexes during execution. A live view keeps its backing
+array identity across an array value assignment.
 
 ## Target contract
 

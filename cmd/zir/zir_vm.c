@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -31,6 +32,7 @@ typedef enum ValueKind {
     VALUE_ENUM,
     VALUE_RECORD,
     VALUE_ARRAY,
+    VALUE_SLICE,
     VALUE_SLOT
 } ValueKind;
 
@@ -46,6 +48,7 @@ typedef struct Value {
     double real;
     const unsigned char *data;
     size_t length;
+    size_t offset;
     const ZirType *enumeration;
     Record *record;
     Array *array;
@@ -113,6 +116,7 @@ typedef struct Vm {
     StringLiteral *strings;
     GlobalSlot *globals;
     int global_count;
+    Frame *active_frame;
     VmHostCall host;
     void *host_context;
 } Vm;
@@ -128,6 +132,7 @@ struct Frame {
     const ZirModule *module;
     const ZirFunction *function;
     Frame *parent;
+    Frame *caller;
     Local locals[VM_MAX_LOCALS];
     int local_count;
 };
@@ -324,6 +329,12 @@ portable_type_at(const ZirModule *module, const char *type, int depth)
         return 1;
     if(depth >= VM_MAX_DEPTH)
         return 0;
+    if(SliceElementType(type, element, sizeof(element))) {
+        const ZirType *element_type = FindType(module, element, NULL);
+        return element[0] != '[' &&
+               (element_type == NULL || !element_type->is_slot) &&
+               portable_type_at(module, element, depth + 1);
+    }
     if(ArrayElementType(type, element, sizeof(element), &capacity)) {
         const ZirType *element_type = FindType(module, element, NULL);
         return capacity > 0 && element[0] != '[' &&
@@ -396,7 +407,8 @@ portable_type(const ZirModule *module, const char *type)
 static int
 host_type_at(const ZirModule *module, const char *type, int depth)
 {
-    if(depth >= VM_MAX_DEPTH || ArrayElementType(type, NULL, 0, NULL))
+    if(depth >= VM_MAX_DEPTH || ArrayElementType(type, NULL, 0, NULL) ||
+       SliceElementType(type, NULL, 0))
         return 0;
     if(value_kind(type) != VALUE_INVALID)
         return 1;
@@ -713,6 +725,8 @@ default_value(Vm *vm, const ZirModule *module, const char *type, int depth)
         return real_value(0.0);
     if(kind == VALUE_STRING)
         return string_value((const unsigned char *)"", 0);
+    if(SliceElementType(type, element, sizeof(element)))
+        return (Value){.kind = VALUE_SLICE};
     if(ArrayElementType(type, element, sizeof(element), &capacity)) {
         if(depth >= VM_MAX_DEPTH || capacity <= 0 || element[0] == '[') {
             vm->failed = 1;
@@ -778,6 +792,14 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
     if(target == VALUE_INVALID) {
         char element[ZIR_NAME_MAX];
         int capacity;
+        if(SliceElementType(type, element, sizeof(element))) {
+            if(value.kind == VALUE_SLICE &&
+               (value.array == NULL ||
+                strcmp(value.array->element_type, element) == 0))
+                return value;
+            vm->failed = 1;
+            return int_value(0);
+        }
         if(ArrayElementType(type, element, sizeof(element), &capacity)) {
             if(value.kind != VALUE_ARRAY || value.array == NULL ||
                capacity != value.array->length) {
@@ -810,7 +832,7 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         return int_value(0);
     }
     if(value.kind == VALUE_STRING || value.kind == VALUE_RECORD ||
-       value.kind == VALUE_ARRAY ||
+       value.kind == VALUE_ARRAY || value.kind == VALUE_SLICE ||
        value.kind == VALUE_SLOT ||
        value.kind == VALUE_VOID ||
        value.kind == VALUE_INVALID) {
@@ -918,30 +940,54 @@ retire_value(Value value, int depth)
     }
 }
 
+static void pin_value(Value value, int depth);
+
+static int
+array_has_active_slice(Vm *vm, const Array *array)
+{
+    for(Frame *frame = vm->active_frame; frame != NULL;
+        frame = frame->caller) {
+        for(int i = 0; i < frame->local_count; i++) {
+            Value value = frame->locals[i].value;
+            if(value.kind == VALUE_SLICE && value.array == array)
+                return 1;
+        }
+    }
+    return 0;
+}
+
 static void
 release_retired(Vm *vm)
 {
+    for(Frame *frame = vm->active_frame; frame != NULL;
+        frame = frame->caller) {
+        for(int i = 0; i < frame->local_count; i++)
+            if(frame->locals[i].value.kind == VALUE_SLICE)
+                pin_value(frame->locals[i].value, 0);
+    }
     Record **record = &vm->records;
     while(*record != NULL) {
-        if((*record)->retired) {
+        if((*record)->retired && !(*record)->pinned) {
             Record *dead = *record;
             *record = dead->next;
             vm->record_bytes -= sizeof(Record) +
                 (size_t)dead->field_count * sizeof(RecordField);
             free(dead);
         } else {
+            (*record)->pinned = 0;
             record = &(*record)->next;
         }
     }
     Array **array = &vm->arrays;
     while(*array != NULL) {
-        if((*array)->retired) {
+        if((*array)->retired && !(*array)->pinned) {
             Array *dead = *array;
             *array = dead->next;
             vm->array_bytes -= sizeof(Array) +
                 (size_t)dead->length * sizeof(Value);
             free(dead);
         } else {
+            (*array)->pinned = 0;
             array = &(*array)->next;
         }
     }
@@ -1313,6 +1359,11 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
                    strcmp(expression->type, "i32") == 0 &&
                    verify_expression(module, function, bindings, binding_count,
                                      expression->left, depth + 1);
+        if(SliceElementType(base->type, NULL, 0))
+            return strcmp(expression->name, "length") == 0 &&
+                   strcmp(expression->type, "i32") == 0 &&
+                   verify_expression(module, function, bindings, binding_count,
+                                     expression->left, depth + 1);
         const ZirType *record = FindType(module, base->type, NULL);
         size_t offset = 0;
         ZirTypeField field;
@@ -1326,6 +1377,34 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
                        (ScalarType(field.type)[0] != 0 &&
                         strcmp(ScalarType(field.type), expression->type) == 0);
         return 0;
+    }
+    case ZIR_EXPR_SLICE: {
+        char element[ZIR_NAME_MAX];
+        char expected[ZIR_NAME_MAX];
+        int capacity;
+        if(expression->left < 0 || expression->left >= function->expr_count ||
+           !verify_expression(module, function, bindings, binding_count,
+                              expression->left, depth + 1))
+            return 0;
+        const char *base = function->exprs[expression->left].type;
+        if(!ArrayElementType(base, element, sizeof(element), &capacity) &&
+           !SliceElementType(base, element, sizeof(element)))
+            return 0;
+        int written = snprintf(expected, sizeof(expected), "[]%s", element);
+        if(written < 0 || (size_t)written >= sizeof(expected) ||
+           strcmp(expression->type, expected) != 0)
+            return 0;
+        if(expression->right >= 0 &&
+           (!integer_type(function->exprs[expression->right].type) ||
+            !verify_expression(module, function, bindings, binding_count,
+                               expression->right, depth + 1)))
+            return 0;
+        if(expression->third >= 0 &&
+           (!integer_type(function->exprs[expression->third].type) ||
+            !verify_expression(module, function, bindings, binding_count,
+                               expression->third, depth + 1)))
+            return 0;
+        return 1;
     }
     case ZIR_EXPR_INDEX: {
         if(expression->left < 0 || expression->left >= function->expr_count ||
@@ -1341,8 +1420,9 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
             return strcmp(expression->type, "u8") == 0;
         char element[ZIR_NAME_MAX];
         int capacity;
-        return ArrayElementType(base, element, sizeof(element), &capacity) &&
-               capacity > 0 &&
+        int array = ArrayElementType(base, element, sizeof(element), &capacity);
+        int slice = !array && SliceElementType(base, element, sizeof(element));
+        return (slice || (array && capacity > 0)) &&
                (strcmp(expression->type, element) == 0 ||
                 (ScalarType(element)[0] != 0 &&
                  strcmp(expression->type, ScalarType(element)) == 0));
@@ -1789,6 +1869,20 @@ record_field(Record *record, const char *name)
 }
 
 static Value *
+indexed_element(Value base, uint64_t index)
+{
+    if(base.kind == VALUE_ARRAY && base.array != NULL &&
+       index < (uint64_t)base.array->length)
+        return &base.array->elements[index];
+    if(base.kind == VALUE_SLICE && base.array != NULL &&
+       base.offset <= (size_t)base.array->length &&
+       base.length <= (size_t)base.array->length - base.offset &&
+       index < base.length)
+        return &base.array->elements[base.offset + (size_t)index];
+    return NULL;
+}
+
+static Value *
 assignment_slot(Frame *frame, int index, int depth)
 {
     if(index < 0 || index >= frame->function->expr_count ||
@@ -1803,14 +1897,15 @@ assignment_slot(Frame *frame, int index, int depth)
     if(expression->kind == ZIR_EXPR_INDEX) {
         Value *base = assignment_slot(frame, expression->left, depth + 1);
         Value index_value = eval(frame, expression->right, depth + 1);
-        if(base == NULL || base->kind != VALUE_ARRAY ||
-           base->array == NULL || index_value.kind != VALUE_INT ||
-           (!index_value.unsigned64 && index_value.integer < 0) ||
-           integer_bits(index_value) >= (uint64_t)base->array->length) {
+        if(base == NULL || index_value.kind != VALUE_INT ||
+           (!index_value.unsigned64 && index_value.integer < 0)) {
             frame->vm->failed = 1;
             return NULL;
         }
-        return &base->array->elements[integer_bits(index_value)];
+        Value *element = indexed_element(*base, integer_bits(index_value));
+        if(element == NULL)
+            frame->vm->failed = 1;
+        return element;
     }
     if(expression->kind != ZIR_EXPR_MEMBER)
         return NULL;
@@ -2155,12 +2250,58 @@ eval(Frame *frame, int index, int depth)
             value = int_value((int64_t)left.length);
             break;
         }
+        if(left.kind == VALUE_SLICE &&
+           strcmp(expression->name, "length") == 0) {
+            value = int_value((int64_t)left.length);
+            break;
+        }
         Value *field = left.kind == VALUE_RECORD ?
                        record_field(left.record, expression->name) : NULL;
         if(field == NULL)
             frame->vm->failed = 1;
         else
             value = *field;
+        break;
+    }
+    case ZIR_EXPR_SLICE: {
+        Value *stored = assignment_slot(frame, expression->left, depth + 1);
+        left = stored != NULL ? *stored :
+               eval(frame, expression->left, depth + 1);
+        Array *backing = NULL;
+        size_t offset = 0;
+        size_t length = 0;
+        if(left.kind == VALUE_ARRAY && left.array != NULL) {
+            backing = left.array;
+            length = (size_t)backing->length;
+        } else if(left.kind == VALUE_SLICE) {
+            backing = left.array;
+            offset = left.offset;
+            length = left.length;
+            if(backing != NULL &&
+               (offset > (size_t)backing->length ||
+                length > (size_t)backing->length - offset))
+                frame->vm->failed = 1;
+        } else {
+            frame->vm->failed = 1;
+        }
+        Value low = expression->right >= 0 ?
+            eval(frame, expression->right, depth + 1) : int_value(0);
+        Value high = expression->third >= 0 ?
+            eval(frame, expression->third, depth + 1) :
+            int_value((int64_t)length);
+        if(frame->vm->failed || low.kind != VALUE_INT ||
+           high.kind != VALUE_INT ||
+           (!low.unsigned64 && low.integer < 0) ||
+           (!high.unsigned64 && high.integer < 0) ||
+           integer_bits(low) > integer_bits(high) ||
+           integer_bits(high) > length) {
+            frame->vm->failed = 1;
+            break;
+        }
+        value = (Value){.kind = VALUE_SLICE, .array = backing,
+                        .offset = offset + (size_t)integer_bits(low),
+                        .length = (size_t)(integer_bits(high) -
+                                           integer_bits(low))};
         break;
     }
     case ZIR_EXPR_INDEX: {
@@ -2178,11 +2319,13 @@ eval(Frame *frame, int index, int depth)
         }
         if(left.kind == VALUE_STRING && integer_bits(right) < left.length)
             value = int_value(left.data[integer_bits(right)]);
-        else if(left.kind == VALUE_ARRAY && left.array != NULL &&
-                integer_bits(right) < (uint64_t)left.array->length)
-            value = left.array->elements[integer_bits(right)];
-        else
-            frame->vm->failed = 1;
+        else {
+            Value *element = indexed_element(left, integer_bits(right));
+            if(element != NULL)
+                value = *element;
+            else
+                frame->vm->failed = 1;
+        }
         break;
     }
     case ZIR_EXPR_CONDITIONAL:
@@ -2303,6 +2446,23 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
             if(vm->failed)
                 return FLOW_ERROR;
             Value previous = *slot;
+            if(previous.kind == VALUE_ARRAY && previous.array != NULL &&
+               replacement.kind == VALUE_ARRAY && replacement.array != NULL &&
+               previous.array->length == replacement.array->length &&
+               array_has_active_slice(vm, previous.array)) {
+                /* A live slice borrows the array's storage. Native array
+                 * assignment updates that storage, so keep its identity and
+                 * move the replacement elements into the existing slots. */
+                for(int element = 0; element < previous.array->length; element++) {
+                    Value old = previous.array->elements[element];
+                    previous.array->elements[element] =
+                        replacement.array->elements[element];
+                    replacement.array->elements[element] = old;
+                }
+                retire_value(replacement, 0);
+                release_retired(vm);
+                break;
+            }
             *slot = replacement;
             if(previous.kind == VALUE_RECORD || previous.kind == VALUE_ARRAY) {
                 retire_value(previous, 0);
@@ -2594,6 +2754,9 @@ pin_value(Value value, int depth)
         value.array->pinned = 1;
         for(int i = 0; i < value.array->length; i++)
             pin_value(value.array->elements[i], depth + 1);
+    } else if(value.kind == VALUE_SLICE && value.array != NULL) {
+        pin_value((Value){.kind = VALUE_ARRAY, .array = value.array},
+                  depth + 1);
     }
 }
 
@@ -2695,6 +2858,8 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
     frame.module = module;
     frame.function = function;
     frame.parent = parent;
+    frame.caller = vm->active_frame;
+    vm->active_frame = &frame;
     for(int i = 0; i < count; i++) {
         copy_text(frame.locals[i].name, sizeof(frame.locals[i].name),
                   parameters[i].name);
@@ -2710,6 +2875,7 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
     if(flow == FLOW_ERROR || flow == FLOW_BREAK || flow == FLOW_CONTINUE ||
        (flow != FLOW_RETURN && strcmp(function->return_type, "void") != 0))
         vm->failed = 1;
+    vm->active_frame = frame.caller;
     vm->depth--;
     uint64_t allocation_before_result = vm->allocation;
     Value returned = coerce(vm, module, result, function->return_type);
