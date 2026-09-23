@@ -120,7 +120,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.zir`; the linker follows direct function calls and retains the types
   those functions use. The portable interpreter executes plain records and
   enums but does not yet cover every checked expression or native feature.
-  Kryon's old `.krb` compiler remains in Kryon.
+  Kryon's old `.krb` compiler has been removed. Existing `.krb` files cannot
+  be loaded as `.zib`.
 - Complete native C++, C, and Go backend parity, FFI, capability checks, and
   language law tests independent of UI assumptions. The current `make check`
   only covers the stated C/C++/Go subset.
@@ -128,8 +129,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   [Language direction](LANGUAGE_DIRECTION.md). The current law pass checks a
   generic post-check IR invariant; there is no general proof system, automatic
   parallel execution, or GPU backend in this repository.
-- Rewrite Kryon's maintained runtime and widgets as importable `.zi` modules
-  with platform access through declared interfaces. Kryon is still a C
-  library today; no downstream application has been cut over.
+- Complete Kryon's moved `.zi` widget modules with platform access through
+  declared interfaces. The checked Kryon archive currently contains a policy
+  subset; native host integration and downstream cutover remain incomplete.
 - Pass the full supported target and downstream application gates, then make
   the planned single breaking cutover. See [Migration](MIGRATION.md).

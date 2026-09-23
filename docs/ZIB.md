@@ -59,5 +59,5 @@ target-specific C, C++, or Go code. Hosts may implement the declared
 capability interfaces with native libraries.
 
 The old `.krb` cartridge is a Kryon-specific format. It is not renamed or
-reinterpreted as `.zib`. Existing programs must be recompiled from `.zi` into
-the new pipeline during the breaking cutover.
+reinterpreted as `.zib`. Existing programs must be migrated to `.zi` and
+recompiled through the Ziran pipeline.
