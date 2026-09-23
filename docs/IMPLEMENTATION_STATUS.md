@@ -26,12 +26,14 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   loads and executes the validated scalar subset without a display or Kryon.
   The test runs an imported two-module call and compares bundle bytes from
   source and saved IR. The current runner supports zero-argument entry
-  functions, `i32`/`int`/`bool`/`void` functions, scalar parameters and locals,
-  calls, arithmetic, comparisons, assignments, `if`/`else`, `while`, lexical
+  functions with `i32`/`int`/`bool`/`void` results, and helper functions with
+  `float`/`double` results. It supports scalar parameters and locals, calls,
+  arithmetic, comparisons, casts, assignments, `if`/`else`, `while`, lexical
   blocks, `break`, `continue`, and returns. It rejects host imports and
-  unsupported statements before writing a bundle. A loop and branch program
-  is compared against generated C, C++, and Go in `make check`. The bundle
-  loader also reruns the language checker and laws before execution.
+  unsupported statements before writing a bundle. Loop, branch, and real
+  arithmetic programs are compared against generated C, C++, and Go in
+  `make check`. The bundle loader also reruns the language checker and laws
+  before execution.
 - Extracted compiler function names no longer carry `Zir` or `zir_` prefixes;
   IR types retain `Zir` names for now.
 - Native Go no longer treats ordinary imported record types as types from the

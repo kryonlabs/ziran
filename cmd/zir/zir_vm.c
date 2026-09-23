@@ -4,6 +4,7 @@
 #include "zir_text.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,10 +17,23 @@ typedef struct Parameter {
     char type[ZIR_NAME_MAX];
 } Parameter;
 
+typedef enum ValueKind {
+    VALUE_INVALID,
+    VALUE_VOID,
+    VALUE_INT,
+    VALUE_REAL
+} ValueKind;
+
+typedef struct Value {
+    ValueKind kind;
+    int64_t integer;
+    double real;
+} Value;
+
 typedef struct Local {
     char name[ZIR_NAME_MAX];
     char type[ZIR_NAME_MAX];
-    int64_t value;
+    Value value;
 } Local;
 
 typedef struct Vm {
@@ -44,21 +58,87 @@ typedef enum Flow {
     FLOW_ERROR
 } Flow;
 
+static ValueKind
+value_kind(const char *type)
+{
+    if(strcmp(type, "void") == 0)
+        return VALUE_VOID;
+    if(strcmp(type, "i32") == 0 || strcmp(type, "int") == 0 ||
+       strcmp(type, "integer") == 0 || strcmp(type, "bool") == 0)
+        return VALUE_INT;
+    if(strcmp(type, "float") == 0 || strcmp(type, "f32") == 0 ||
+       strcmp(type, "double") == 0 || strcmp(type, "f64") == 0 ||
+       strcmp(type, "real") == 0)
+        return VALUE_REAL;
+    return VALUE_INVALID;
+}
+
 static int
 scalar_type(const char *type)
 {
-    return strcmp(type, "i32") == 0 || strcmp(type, "int") == 0 ||
-           strcmp(type, "bool") == 0 || strcmp(type, "void") == 0;
+    return value_kind(type) != VALUE_INVALID;
 }
 
-static int64_t
-coerce(int64_t value, const char *type)
+static Value
+int_value(int64_t integer)
 {
-    if(strcmp(type, "bool") == 0)
-        return value != 0;
-    if(strcmp(type, "i32") == 0 || strcmp(type, "int") == 0)
-        return (int32_t)value;
+    Value value = {VALUE_INT, integer, 0.0};
     return value;
+}
+
+static Value
+real_value(double real)
+{
+    Value value = {VALUE_REAL, 0, real};
+    return value;
+}
+
+static double
+as_real(Value value)
+{
+    return value.kind == VALUE_REAL ? value.real : (double)value.integer;
+}
+
+static int
+truthy(Value value)
+{
+    return value.kind == VALUE_REAL ? value.real != 0.0 : value.integer != 0;
+}
+
+static Value
+coerce(Vm *vm, Value value, const char *type)
+{
+    ValueKind target = value_kind(type);
+    if(target == VALUE_VOID) {
+        Value empty = {VALUE_VOID, 0, 0.0};
+        return empty;
+    }
+    if(target == VALUE_INVALID || value.kind == VALUE_VOID ||
+       value.kind == VALUE_INVALID) {
+        vm->failed = 1;
+        return int_value(0);
+    }
+    if(strcmp(type, "bool") == 0)
+        return int_value(truthy(value));
+    if(target == VALUE_REAL) {
+        double number = as_real(value);
+        if(strcmp(type, "float") == 0 || strcmp(type, "f32") == 0)
+            number = (float)number;
+        if(!isfinite(number))
+            vm->failed = 1;
+        return real_value(number);
+    }
+    if(value.kind == VALUE_REAL) {
+        if(!isfinite(value.real) || value.real < INT32_MIN ||
+           value.real >= (double)INT32_MAX + 1.0) {
+            vm->failed = 1;
+            return int_value(0);
+        }
+        return int_value((int32_t)value.real);
+    }
+    uint32_t bits = (uint32_t)value.integer;
+    return int_value(bits <= INT32_MAX ? (int64_t)bits :
+                     (int64_t)bits - 4294967296LL);
 }
 
 static int
@@ -153,6 +233,8 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
     if(index < 0 || index >= function->expr_count || depth >= VM_MAX_DEPTH)
         return 0;
     expression = &function->exprs[index];
+    if(value_kind(expression->type) == VALUE_INVALID)
+        return 0;
     switch(expression->kind) {
     case ZIR_EXPR_INT: {
         char *end;
@@ -161,6 +243,14 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         number = strtoll(expression->text, &end, 0);
         return errno == 0 && end != expression->text && *end == 0 &&
                number >= INT32_MIN && number <= INT32_MAX;
+    }
+    case ZIR_EXPR_FLOAT: {
+        char *end;
+        double number;
+        errno = 0;
+        number = strtod(expression->text, &end);
+        return errno == 0 && end != expression->text && *end == 0 &&
+               isfinite(number);
     }
     case ZIR_EXPR_IDENT:
         return strcmp(expression->name, "true") == 0 ||
@@ -422,9 +512,14 @@ VmVerify(const ZirProgram *program, const char *entry_module,
     if(program == NULL || entry_module == NULL || entry_function == NULL)
         return 0;
     entry = find_entry(program, entry_module, entry_function, &entry_owner);
-    if(entry == NULL || entry->is_extern || parse_parameters(entry, bindings) != 0) {
+    if(entry == NULL || entry->is_extern ||
+       parse_parameters(entry, bindings) != 0 ||
+       (strcmp(entry->return_type, "i32") != 0 &&
+        strcmp(entry->return_type, "int") != 0 &&
+        strcmp(entry->return_type, "bool") != 0 &&
+        strcmp(entry->return_type, "void") != 0)) {
         Diagnostic(Span("<bundle>", 1, 1), "zib.entry",
-                      "entry must be one unique zero-argument Ziran function");
+                      "entry must be one unique zero-argument integer, bool, or void Ziran function");
         return 0;
     }
     for(int m = 0; m < program->module_count; m++) {
@@ -478,35 +573,81 @@ VmVerify(const ZirProgram *program, const char *entry_module,
     return 1;
 }
 
-static int64_t run_function(Vm *vm, const ZirModule *module,
-                            const ZirFunction *function, const int64_t *args,
-                            int arg_count);
+static Value run_function(Vm *vm, const ZirModule *module,
+                          const ZirFunction *function, const Value *args,
+                          int arg_count);
 
-static int64_t
+static Value
+binary_value(Vm *vm, const char *op, Value left, Value right)
+{
+    int real = left.kind == VALUE_REAL || right.kind == VALUE_REAL;
+    double a = as_real(left), b = as_real(right);
+    if(vm->failed || left.kind == VALUE_VOID || right.kind == VALUE_VOID)
+        goto failed;
+    if(strcmp(op, "==") == 0)
+        return int_value(real ? a == b : left.integer == right.integer);
+    if(strcmp(op, "!=") == 0)
+        return int_value(real ? a != b : left.integer != right.integer);
+    if(strcmp(op, "<") == 0)
+        return int_value(real ? a < b : left.integer < right.integer);
+    if(strcmp(op, "<=") == 0)
+        return int_value(real ? a <= b : left.integer <= right.integer);
+    if(strcmp(op, ">") == 0)
+        return int_value(real ? a > b : left.integer > right.integer);
+    if(strcmp(op, ">=") == 0)
+        return int_value(real ? a >= b : left.integer >= right.integer);
+    if(real) {
+        if(strcmp(op, "+") == 0) return real_value(a + b);
+        if(strcmp(op, "-") == 0) return real_value(a - b);
+        if(strcmp(op, "*") == 0) return real_value(a * b);
+        if(strcmp(op, "/") == 0 && b != 0.0) return real_value(a / b);
+        goto failed;
+    }
+    if(strcmp(op, "+") == 0) return int_value(left.integer + right.integer);
+    if(strcmp(op, "-") == 0) return int_value(left.integer - right.integer);
+    if(strcmp(op, "*") == 0) return int_value(left.integer * right.integer);
+    if(strcmp(op, "/") == 0 && right.integer != 0)
+        return int_value(left.integer / right.integer);
+    if(strcmp(op, "%") == 0 && right.integer != 0)
+        return int_value(left.integer % right.integer);
+failed:
+    vm->failed = 1;
+    return int_value(0);
+}
+
+static Value
 eval(Frame *frame, int index, int depth)
 {
     const ZirExpr *expression;
-    int64_t left, right, value = 0;
+    Value value = int_value(0), left, right;
     if(frame->vm->failed || index < 0 || index >= frame->function->expr_count ||
        depth >= VM_MAX_DEPTH) {
         frame->vm->failed = 1;
-        return 0;
+        return value;
     }
     expression = &frame->function->exprs[index];
     switch(expression->kind) {
     case ZIR_EXPR_INT: {
         char *end;
         errno = 0;
-        value = strtoll(expression->text, &end, 0);
+        value = int_value(strtoll(expression->text, &end, 0));
         if(errno || end == expression->text || *end)
+            frame->vm->failed = 1;
+        break;
+    }
+    case ZIR_EXPR_FLOAT: {
+        char *end;
+        errno = 0;
+        value = real_value(strtod(expression->text, &end));
+        if(errno || end == expression->text || *end || !isfinite(value.real))
             frame->vm->failed = 1;
         break;
     }
     case ZIR_EXPR_IDENT:
         if(strcmp(expression->name, "true") == 0)
-            return 1;
+            return int_value(1);
         if(strcmp(expression->name, "false") == 0)
-            return 0;
+            return int_value(0);
         for(int i = frame->local_count - 1; i >= 0; i--)
             if(strcmp(frame->locals[i].name, expression->name) == 0)
                 return frame->locals[i].value;
@@ -514,47 +655,53 @@ eval(Frame *frame, int index, int depth)
         break;
     case ZIR_EXPR_UNARY:
         right = eval(frame, expression->right, depth + 1);
-        if(strcmp(expression->op, "-") == 0) value = -right;
-        else if(strcmp(expression->op, "+") == 0) value = right;
-        else if(strcmp(expression->op, "!") == 0) value = !right;
-        else if(strcmp(expression->op, "~") == 0) value = ~right;
-        else frame->vm->failed = 1;
+        if(frame->vm->failed)
+            break;
+        if(strcmp(expression->op, "-") == 0)
+            value = right.kind == VALUE_REAL ? real_value(-right.real) :
+                                               int_value(-right.integer);
+        else if(strcmp(expression->op, "+") == 0)
+            value = right;
+        else if(strcmp(expression->op, "!") == 0)
+            value = int_value(!truthy(right));
+        else if(strcmp(expression->op, "~") == 0 && right.kind == VALUE_INT)
+            value = int_value(~right.integer);
+        else
+            frame->vm->failed = 1;
         break;
     case ZIR_EXPR_BINARY:
         left = eval(frame, expression->left, depth + 1);
-        if(strcmp(expression->op, "&&") == 0 && !left) return 0;
-        if(strcmp(expression->op, "||") == 0 && left) return 1;
+        if(frame->vm->failed)
+            break;
+        if(strcmp(expression->op, "&&") == 0 && !truthy(left))
+            return int_value(0);
+        if(strcmp(expression->op, "||") == 0 && truthy(left))
+            return int_value(1);
         right = eval(frame, expression->right, depth + 1);
-        if(strcmp(expression->op, "+") == 0) value = left + right;
-        else if(strcmp(expression->op, "-") == 0) value = left - right;
-        else if(strcmp(expression->op, "*") == 0) value = left * right;
-        else if(strcmp(expression->op, "/") == 0 && right) value = left / right;
-        else if(strcmp(expression->op, "%") == 0 && right) value = left % right;
-        else if(strcmp(expression->op, "==") == 0) value = left == right;
-        else if(strcmp(expression->op, "!=") == 0) value = left != right;
-        else if(strcmp(expression->op, "<") == 0) value = left < right;
-        else if(strcmp(expression->op, "<=") == 0) value = left <= right;
-        else if(strcmp(expression->op, ">") == 0) value = left > right;
-        else if(strcmp(expression->op, ">=") == 0) value = left >= right;
-        else if(strcmp(expression->op, "&&") == 0) value = left && right;
-        else if(strcmp(expression->op, "||") == 0) value = left || right;
-        else frame->vm->failed = 1;
+        if(strcmp(expression->op, "&&") == 0)
+            value = int_value(truthy(left) && truthy(right));
+        else if(strcmp(expression->op, "||") == 0)
+            value = int_value(truthy(left) || truthy(right));
+        else
+            value = binary_value(frame->vm, expression->op, left, right);
         break;
     case ZIR_EXPR_CAST:
-        value = coerce(eval(frame, expression->right, depth + 1), expression->name);
+        value = coerce(frame->vm, eval(frame, expression->right, depth + 1),
+                       expression->name);
         break;
     case ZIR_EXPR_CONDITIONAL:
         left = eval(frame, expression->left, depth + 1);
-        value = eval(frame, left ? expression->right : expression->third,
-                     depth + 1);
+        if(!frame->vm->failed)
+            value = eval(frame, truthy(left) ? expression->right :
+                          expression->third, depth + 1);
         break;
     case ZIR_EXPR_CALL: {
-        int64_t args[VM_MAX_PARAMS];
+        Value args[VM_MAX_PARAMS];
         int count = 0;
         const ZirModule *owner = NULL;
         const ZirFunction *callee = NULL;
         if(ResolveFunction(frame->module, expression->name,
-                              &owner, &callee) != 1 || callee == NULL) {
+                           &owner, &callee) != 1 || callee == NULL) {
             frame->vm->failed = 1;
             break;
         }
@@ -574,12 +721,12 @@ eval(Frame *frame, int index, int depth)
         frame->vm->failed = 1;
         break;
     }
-    return coerce(value, scalar_type(expression->type) ? expression->type : "i32");
+    return coerce(frame->vm, value, expression->type);
 }
 
 static Flow
 execute_sequence(Frame *frame, int begin, int end, int depth,
-                 int64_t *result)
+                 Value *result)
 {
     Vm *vm = frame->vm;
     const ZirFunction *function = frame->function;
@@ -594,14 +741,14 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
             return FLOW_ERROR;
         switch(statement->kind) {
         case ZIR_STMT_DECL: {
-            int64_t value = statement->expr_root >= 0 ?
-                eval(frame, statement->expr_root, 0) : 0;
+            Value value = statement->expr_root >= 0 ?
+                eval(frame, statement->expr_root, 0) : int_value(0);
             if(vm->failed || frame->local_count >= VM_MAX_LOCALS)
                 return FLOW_ERROR;
             Local *local = &frame->locals[frame->local_count++];
             copy_text(local->name, sizeof(local->name), statement->name);
             copy_text(local->type, sizeof(local->type), statement->type);
-            local->value = coerce(value, statement->type);
+            local->value = coerce(vm, value, statement->type);
             break;
         }
         case ZIR_STMT_ASSIGN: {
@@ -611,13 +758,13 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
                 i--;
             if(i < 0 || strcmp(statement->assignment_op, "=") != 0)
                 return FLOW_ERROR;
-            frame->locals[i].value = coerce(eval(frame, statement->expr_root, 0),
-                                             frame->locals[i].type);
+            frame->locals[i].value = coerce(vm,
+                eval(frame, statement->expr_root, 0), frame->locals[i].type);
             break;
         }
         case ZIR_STMT_RETURN:
             *result = statement->expr_root >= 0 ?
-                eval(frame, statement->expr_root, 0) : 0;
+                eval(frame, statement->expr_root, 0) : int_value(0);
             return vm->failed ? FLOW_ERROR : FLOW_RETURN;
         case ZIR_STMT_EXPR:
         case ZIR_STMT_UNUSED:
@@ -632,7 +779,7 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
                 if(close < 0)
                     return FLOW_ERROR;
                 if(!executed && (head->expr_root < 0 ||
-                                 eval(frame, head->expr_root, 0))) {
+                                 truthy(eval(frame, head->expr_root, 0)))) {
                     if(vm->failed)
                         return FLOW_ERROR;
                     saved_locals = frame->local_count;
@@ -659,10 +806,10 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
             while(1) {
                 if(++vm->steps > VM_MAX_STEPS)
                     return FLOW_ERROR;
-                int64_t condition = eval(frame, statement->expr_root, 0);
+                Value condition = eval(frame, statement->expr_root, 0);
                 if(vm->failed)
                     return FLOW_ERROR;
-                if(!condition)
+                if(!truthy(condition))
                     break;
                 frame->local_count = saved_locals;
                 flow = execute_sequence(frame, s + 1, close, depth + 1,
@@ -697,17 +844,17 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
     return vm->failed ? FLOW_ERROR : FLOW_NEXT;
 }
 
-static int64_t
+static Value
 run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
-             const int64_t *args, int arg_count)
+             const Value *args, int arg_count)
 {
     Frame frame = {0};
     Parameter parameters[VM_MAX_PARAMS];
     int count = parse_parameters(function, parameters);
-    int64_t result = 0;
+    Value result = int_value(0);
     if(vm->failed || vm->depth >= VM_MAX_DEPTH || count != arg_count) {
         vm->failed = 1;
-        return 0;
+        return result;
     }
     vm->depth++;
     frame.vm = vm;
@@ -718,7 +865,7 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
                  parameters[i].name);
         copy_text(frame.locals[i].type, sizeof(frame.locals[i].type),
                  parameters[i].type);
-        frame.locals[i].value = coerce(args[i], parameters[i].type);
+        frame.locals[i].value = coerce(vm, args[i], parameters[i].type);
     }
     frame.local_count = count;
     Flow flow = execute_sequence(&frame, 0, function->stmt_count, 0, &result);
@@ -726,7 +873,7 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
        (flow != FLOW_RETURN && strcmp(function->return_type, "void") != 0))
         vm->failed = 1;
     vm->depth--;
-    return coerce(result, function->return_type);
+    return coerce(vm, result, function->return_type);
 }
 
 int
@@ -739,7 +886,8 @@ VmRun(const ZirProgram *program, const char *entry_module,
     if(!VmVerify(program, entry_module, entry_function))
         return 0;
     entry = find_entry(program, entry_module, entry_function, &module);
-    *result = run_function(&vm, module, entry, NULL, 0);
+    Value value = run_function(&vm, module, entry, NULL, 0);
+    *result = value.integer;
     *has_result = strcmp(entry->return_type, "void") != 0;
     if(vm.failed) {
         Diagnostic(entry->span, "zib.runtime",

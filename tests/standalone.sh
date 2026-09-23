@@ -185,6 +185,57 @@ test "$("$ziran" run "$work/flow.zib")" = 42
     -o "$work/flow-from-ir.zib" "$work/flow-ir/flow.zir"
 cmp "$work/flow.zib" "$work/flow-from-ir.zib"
 test "$("$ziran" run "$work/flow-from-ir.zib")" = 42
+cat > "$work/reals.zi" <<'EOF'
+#module "reals"
+Scale :: (value: float) -> float #export {
+    return value * 2.0
+}
+Half :: (value: double) -> double #export {
+    return value / 2.0
+}
+Answer :: () -> i32 #export {
+    scaled: float = Scale(1.25)
+    half: double = Half(7.0)
+    if scaled != 2.5 || half != 3.5 { return 0 }
+    if (i32)(scaled + 0.5) != 3 { return 0 }
+    positive: bool = scaled > 2.0 ? true : false
+    if !positive || 1.0 / 2.0 != 0.5 { return 0 }
+    return 42
+}
+EOF
+"$ziran" build --target=c --strict --root "$work" -o "$work/reals-c" \
+    "$work/reals.zi"
+cat > "$work/reals-c/main.c" <<'EOF'
+#include "reals.h"
+int main(void) { return Answer() == 42 ? 0 : 1; }
+EOF
+${CC:-cc} -Iinclude -I"$work/reals-c" "$work/reals-c/reals.c" \
+    "$work/reals-c/main.c" -o "$work/reals-c/app"
+"$work/reals-c/app"
+"$ziran" build --target=cpp --strict --root "$work" -o "$work/reals-cpp" \
+    "$work/reals.zi"
+cat > "$work/reals-cpp/main.cpp" <<'EOF'
+#include "reals.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+EOF
+${CXX:-c++} -Iinclude -I"$work/reals-cpp" "$work/reals-cpp/reals.cpp" \
+    "$work/reals-cpp/main.cpp" -o "$work/reals-cpp/app"
+"$work/reals-cpp/app"
+"$ziran" build --target=go --strict --pkg main --root "$work" \
+    -o "$work/reals-go" "$work/reals.zi"
+cat > "$work/reals-go/main.go" <<'EOF'
+package main
+func main() { if Reals_Answer() != 42 { panic("wrong real result") } }
+EOF
+GO111MODULE=off go run "$work/reals-go/reals.go" "$work/reals-go/main.go"
+"$ziran" bundle --root "$work" --entry reals:Answer \
+    -o "$work/reals.zib" "$work/reals.zi"
+test "$("$ziran" run "$work/reals.zib")" = 42
+"$ziran" ir --root "$work" -o "$work/reals-ir" "$work/reals.zi"
+"$ziran" bundle --root "$work" --entry reals:Answer \
+    -o "$work/reals-from-ir.zib" "$work/reals-ir/reals.zir"
+cmp "$work/reals.zib" "$work/reals-from-ir.zib"
+test "$("$ziran" run "$work/reals-from-ir.zib")" = 42
 python3 - "$work/flow-ir/flow.zir" "$work/invalid-flow.zir" <<'PY'
 from pathlib import Path
 import sys

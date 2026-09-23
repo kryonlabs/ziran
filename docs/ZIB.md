@@ -7,7 +7,8 @@ See [Implementation status](IMPLEMENTATION_STATUS.md) for the remaining work.
 
 `ziran bundle --root DIR --entry module:function -o FILE file.zi|file.zir ...`
 links explicitly supplied modules. `ziran run FILE` validates and executes
-zero-argument scalar entry functions on a portable interpreter. The bundle is
+zero-argument integer, bool, or void entry functions on a portable interpreter.
+Called functions can use `float` and `double` scalar values. The bundle is
 `ZIB` plus a zero byte, a little-endian version, length-prefixed entry module
 and function names, a host capability count (currently zero), and a
 length-prefixed version 3 `.zir` payload. It includes all supplied modules.
