@@ -129,6 +129,59 @@ GO
     GO111MODULE=off go run "$output/ordinary_names.go" "$output/main.go"
 done
 
+cat > "$work/ffi_direct.zi" <<'EOF'
+#module "ffi_direct"
+Reverse :: (value: u32) -> u32 #extern "math/bits.Reverse32" #export
+Answer :: () -> i32 #export {
+    return (i32)Reverse((u32)0x54000000)
+}
+EOF
+cat > "$work/ffi_host.zi" <<'EOF'
+#module "ffi_host"
+Value :: () -> i32 #extern #export
+Answer :: () -> i32 #export {
+    return Value() + 1
+}
+EOF
+"$ziran" ir --root "$work" -o "$work/ffi-ir" \
+    "$work/ffi_direct.zi" "$work/ffi_host.zi"
+for input in source ir; do
+    if test "$input" = source; then
+        extension=zi
+        input_dir=$work
+    else
+        extension=zir
+        input_dir=$work/ffi-ir
+    fi
+    "$ziran" build --target=go --strict --pkg main --root "$work" \
+        -o "$work/ffi-go-$input" "$input_dir/ffi_direct.$extension" \
+        "$input_dir/ffi_host.$extension"
+    if grep -Fq 'github.com/waozixyz/kryon' \
+        "$work/ffi-go-$input/ffi_direct.go" \
+        "$work/ffi-go-$input/ffi_host.go"; then
+        echo 'Go FFI imported Kryon implicitly' >&2
+        exit 1
+    fi
+    cat > "$work/ffi-go-$input/main.go" <<'GO'
+package main
+type host struct{}
+func (host) Value() int32 { return 41 }
+func main() {
+    SetFfiHostHost(host{})
+    if FfiDirect_Answer() != 42 || FfiHost_Answer() != 42 {
+        panic("wrong FFI result")
+    }
+}
+GO
+    GO111MODULE=off go run "$work/ffi-go-$input/ffi_direct.go" \
+        "$work/ffi-go-$input/ffi_host.go" "$work/ffi-go-$input/main.go"
+done
+if "$ziran" build --target=go --runtime-implementation --root "$work" \
+    -o "$work/legacy-go" "$work/hello.zi" 2> "$work/legacy-go.err"; then
+    echo 'legacy Kryon runtime mode unexpectedly passed' >&2
+    exit 1
+fi
+
 cat > "$work/library.zi" <<'EOF'
 #module "library"
 Button :: (value: i32) -> i32 #export {

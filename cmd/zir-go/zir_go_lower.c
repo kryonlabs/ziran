@@ -17,16 +17,11 @@
 #define ZIR_GO_TEXT_MAX 8192
 #define ZIR_GO_NAME_MAX 256
 #define ZIR_GO_EXTERN_PARAM_MAX 16
-#define ZIR_GO_RUNTIME_IMPORT "github.com/waozixyz/kryon/go/kryon"
-#define ZIR_GO_RUNTIME_PKG "kr"
-
-static int runtime_output;
 static const ZirModule *type_scope;
-static char instance_receiver[ZIR_NAME_MAX];
 static char state_receiver[ZIR_NAME_MAX] = "st";
 
 typedef struct {
-    char kry[ZIR_GO_NAME_MAX];
+    char source[ZIR_GO_NAME_MAX];
     char go[ZIR_GO_NAME_MAX];
 } ZirGoLocalName;
 
@@ -103,7 +98,7 @@ static const char *
 go_local_name_for(const char *name)
 {
     for(int i = zir_go_local_count - 1; i >= 0; i--)
-        if(strcmp(zir_go_locals[i].kry, name) == 0)
+        if(strcmp(zir_go_locals[i].source, name) == 0)
             return zir_go_locals[i].go;
     return NULL;
 }
@@ -116,13 +111,13 @@ go_register_local_name(const char *name)
     if(name == NULL || name[0] == '\0')
         return;
     for(int i = 0; i < zir_go_local_count; i++)
-        if(strcmp(zir_go_locals[i].kry, name) == 0)
+        if(strcmp(zir_go_locals[i].source, name) == 0)
             return;
     go_local_ident(name, mapped, sizeof(mapped));
     if(strcmp(mapped, name) == 0 || zir_go_local_count >= 256)
         return;
-    snprintf(zir_go_locals[zir_go_local_count].kry,
-             sizeof(zir_go_locals[zir_go_local_count].kry), "%s", name);
+    snprintf(zir_go_locals[zir_go_local_count].source,
+             sizeof(zir_go_locals[zir_go_local_count].source), "%s", name);
     snprintf(zir_go_locals[zir_go_local_count].go,
              sizeof(zir_go_locals[zir_go_local_count].go), "%s", mapped);
     zir_go_local_count++;
@@ -336,7 +331,7 @@ module_fn_index(const ZirModule *m, const char *name, size_t len)
 }
 
 typedef struct {
-    char kry[ZIR_GO_NAME_MAX];
+    char source[ZIR_GO_NAME_MAX];
     char go[ZIR_GO_NAME_MAX * 2];
     char guard[ZIR_GO_NAME_MAX];
     int state_count;
@@ -361,7 +356,7 @@ go_global_function_index(const ZirModule *module, const char *name, size_t len)
     if(ResolveFunction(module, ident, &owner, &function) != 1)
         return -1;
     for(int i = 0; i < g_function_count; i++) {
-        if(g_functions[i].module == owner && strcmp(g_functions[i].kry, ident) == 0)
+        if(g_functions[i].module == owner && strcmp(g_functions[i].source, ident) == 0)
             return i;
     }
     return -1;
@@ -388,8 +383,8 @@ go_build_global_functions(const ZirProgram *const *progs, int prog_count)
                 if(fn->is_extern || g_function_count >= ZIR_GO_GLOBAL_FUNCTION_MAX)
                     continue;
                 camel_ident(fn->name, fname, sizeof(fname));
-                snprintf(g_functions[g_function_count].kry,
-                         sizeof(g_functions[0].kry), "%s", fn->name);
+                snprintf(g_functions[g_function_count].source,
+                         sizeof(g_functions[0].source), "%s", fn->name);
                 snprintf(g_functions[g_function_count].guard,
                          sizeof(g_functions[0].guard), "%s", guard);
                 snprintf(g_functions[g_function_count].go,
@@ -418,21 +413,21 @@ go_is_go_elided_lifecycle(const char *text)
 
 /* One '#extern' declaration bridged to a Go host method. */
 typedef struct {
-    char kry[ZIR_GO_NAME_MAX];        /* kry call name */
+    char source[ZIR_GO_NAME_MAX];        /* source call name */
     char go[ZIR_GO_NAME_MAX];         /* Host interface method */
     char go_import_path[ZIR_PATH_MAX];  /* direct Go package import path */
     char go_import_alias[ZIR_GO_NAME_MAX]; /* import alias for direct calls */
     char pnames[ZIR_GO_EXTERN_PARAM_MAX][ZIR_GO_NAME_MAX];  /* parameter names */
-    char ptypes[ZIR_GO_EXTERN_PARAM_MAX][ZIR_GO_NAME_MAX];  /* parameter kry types */
+    char ptypes[ZIR_GO_EXTERN_PARAM_MAX][ZIR_GO_NAME_MAX];  /* parameter source types */
     int pcount;
     char ret[ZIR_GO_NAME_MAX];
     char host_var[ZIR_GO_NAME_MAX + 8];   /* guard-prefixed host var */
     int direct_go;
 } ZirGoExtern;
 
-/* One enum member visible to expressions (bare kry name -> qualified Go const). */
+/* One enum member visible to expressions (bare source name -> qualified Go const). */
 typedef struct {
-    char kry[ZIR_GO_NAME_MAX];
+    char source[ZIR_GO_NAME_MAX];
     char go[ZIR_GO_NAME_MAX * 2];
     char val[ZIR_GO_TEXT_MAX];        /* explicit value text, or "" */
 } ZirGoEnumMember;
@@ -458,8 +453,8 @@ static int
 go_extern_index(const char *name, size_t len)
 {
     for(int i = 0; i < g_extern_count; i++) {
-        if(strlen(g_externs[i].kry) == len &&
-           strncmp(g_externs[i].kry, name, len) == 0)
+        if(strlen(g_externs[i].source) == len &&
+           strncmp(g_externs[i].source, name, len) == 0)
             return i;
     }
     return -1;
@@ -469,8 +464,8 @@ static ZirGoEnumMember *
 go_const_entry(const char *name, size_t len)
 {
     for(int i = 0; i < g_const_count; i++) {
-        if(strlen(g_const_table[i]->kry) == len &&
-           strncmp(g_const_table[i]->kry, name, len) == 0)
+        if(strlen(g_const_table[i]->source) == len &&
+           strncmp(g_const_table[i]->source, name, len) == 0)
             return g_const_table[i];
     }
     return NULL;
@@ -511,7 +506,7 @@ split_params(const char *args, ZirGoExtern *ex)
 /* Extract the Go method name from a '#extern "pkg.Fn"' target: the segment
  * after the last dot. */
 static void
-extern_go_name(const char *target, const char *kry, char *dst, size_t dst_size)
+extern_go_name(const char *target, const char *source, char *dst, size_t dst_size)
 {
     const char *dot = strrchr(target, '.');
     const char *base = dot != NULL ? dot + 1 : target;
@@ -522,7 +517,7 @@ extern_go_name(const char *target, const char *kry, char *dst, size_t dst_size)
             if(!is_ident_char((unsigned char)*c))
                 *c = '_';
     } else {
-        camel_ident(kry, dst, dst_size);
+        camel_ident(source, dst, dst_size);
     }
 }
 
@@ -564,14 +559,12 @@ extern_direct_go_target(const char *target, char *import_path,
         n++;
     }
     alias[n] = '\0';
-    if(strcmp(alias, ZIR_GO_RUNTIME_PKG) == 0 && n + 2 < alias_size)
-        snprintf(alias + n, alias_size - n, "pkg");
     return import_path[0] != '\0';
 }
 
 /* Register one extern (idempotent: first declaration wins). */
 static void
-add_extern(const char *kry, const char *args, const char *ret,
+add_extern(const char *source, const char *args, const char *ret,
            const char *target, ZirSourceSpan span)
 {
     ZirGoExtern *ex;
@@ -580,22 +573,18 @@ add_extern(const char *kry, const char *args, const char *ret,
         exit(1);
     }
 
-    if(go_extern_index(kry, strlen(kry)) >= 0 || g_extern_count >= 64)
+    if(go_extern_index(source, strlen(source)) >= 0 || g_extern_count >= 64)
         return;
     ex = &g_externs[g_extern_count++];
     memset(ex, 0, sizeof(*ex));
-    snprintf(ex->kry, sizeof(ex->kry), "%s", kry);
+    snprintf(ex->source, sizeof(ex->source), "%s", source);
     snprintf(ex->ret, sizeof(ex->ret), "%s", ret);
     split_params(args, ex);
-    extern_go_name(target, kry, ex->go, sizeof(ex->go));
+    extern_go_name(target, source, ex->go, sizeof(ex->go));
     ex->direct_go = extern_direct_go_target(target, ex->go_import_path,
                                             sizeof(ex->go_import_path),
                                             ex->go_import_alias,
                                             sizeof(ex->go_import_alias));
-    if(ex->direct_go &&
-       strcmp(ex->go_import_path, ZIR_GO_RUNTIME_IMPORT) == 0)
-        snprintf(ex->go_import_alias, sizeof(ex->go_import_alias), "%s",
-                 ZIR_GO_RUNTIME_PKG);
     /* Derive the host variable name from the module guard. */
     snprintf(ex->host_var, sizeof(ex->host_var), "%c%sHost",
              (char)tolower((unsigned char)g_guard[0]), g_guard + 1);
@@ -718,14 +707,14 @@ parse_enum(const ZirType *t)
             continue;
         ZirGoEnumMember *m = &e->members[e->count++];
         memset(m, 0, sizeof(*m));
-        snprintf(m->kry, sizeof(m->kry), "%s", name);
+        snprintf(m->source, sizeof(m->source), "%s", name);
         if(e->prefix[0] != '\0' &&
-           strncmp(m->kry, e->prefix, strlen(e->prefix)) == 0)
-            camel_ident(m->kry, m->go, sizeof(m->go));
+           strncmp(m->source, e->prefix, strlen(e->prefix)) == 0)
+            camel_ident(m->source, m->go, sizeof(m->go));
         else if(e->prefix[0] != '\0')
-            snprintf(m->go, sizeof(m->go), "%s%s", e->prefix, m->kry);
+            snprintf(m->go, sizeof(m->go), "%s%s", e->prefix, m->source);
         else
-            camel_ident(m->kry, m->go, sizeof(m->go));
+            camel_ident(m->source, m->go, sizeof(m->go));
         if(val != NULL)
             snprintf(m->val, sizeof(m->val), "%s", val);
         if(g_const_count < 512)
@@ -753,19 +742,11 @@ module_uses_identifier(const ZirModule *module, const char *name)
     return 0;
 }
 
-static int
-is_state_reference(const char *text)
-{
-    size_t length = strlen(state_receiver);
-    return !strncmp(text, state_receiver, length) && text[length] == '.';
-}
-
 /* (Re)build the per-module context: extern bridge + enum constants. Must run
  * before any expression or statement is emitted for the module. */
 static void
 go_set_module(const ZirModule *m, const char *guard)
 {
-    instance_receiver[0] = '\0';
     copy_text(state_receiver, sizeof(state_receiver), "st");
     for(int serial = 0; module_uses_identifier(m, state_receiver); serial++)
         snprintf(state_receiver, sizeof(state_receiver), "module_state_%d", serial);
@@ -795,77 +776,23 @@ go_set_module(const ZirModule *m, const char *guard)
     }
 }
 
-static int
-go_char_ptr_type(const char *type)
-{
-    char t[ZIR_GO_NAME_MAX];
-    size_t n;
 
-    snprintf(t, sizeof(t), "%s", type);
-    n = strlen(t);
-    while(n > 0 && (t[n - 1] == ' ' || t[n - 1] == '\t'))
-        t[--n] = '\0';
-    while(t[0] == ' ' || t[0] == '\t')
-        memmove(t, t + 1, strlen(t));
-    if(strncmp(t, "const ", 6) == 0)
-        memmove(t, t + 6, strlen(t + 6) + 1);
-    for(size_t i = 0; t[i] != '\0'; i++) {
-        if(t[i] == ' ' && t[i + 1] == '*') {
-            memmove(t + i, t + i + 1, strlen(t + i));
-            i = (size_t)-1;
-        }
-    }
-    return strcmp(t, "char*") == 0 || strcmp(t, "string") == 0;
-}
-
-static int
-go_expr_is_state_char_buffer(const char *expr)
-{
-    if(g_mod == NULL || !is_state_reference(expr))
-        return 0;
-    for(int i = 0; i < g_mod->state_count; i++) {
-        char name[ZIR_GO_NAME_MAX];
-
-        if(g_mod->state_fields[i].type[0] != '[' ||
-           strstr(g_mod->state_fields[i].type, "char") == NULL ||
-           strchr(g_mod->state_fields[i].type, '*') != NULL)
-            continue;
-        camel_ident(g_mod->state_fields[i].name, name, sizeof(name));
-        if(strcmp(expr + strlen(state_receiver) + 1, name) == 0)
-            return 1;
-    }
-    return 0;
-}
-
-static int
-go_expr_is_char_buffer_slice(const char *expr)
-{
-    size_t n = strlen(expr);
-
-    return n >= 3 && strcmp(expr + n - 3, "[:]") == 0;
-}
-
-/* Wrap a translated argument in a Go conversion for its kry parameter type,
+/* Wrap a translated argument in a Go conversion for its source parameter type,
  * so int/long/float widening across the host bridge always compiles. */
 static const char *
-conv_arg(const char *kry_type, const char *expr)
+conv_arg(const char *source_type, const char *expr)
 {
     static char buf[ZIR_GO_TEXT_MAX];
     char t[ZIR_GO_NAME_MAX];
 
-    snprintf(t, sizeof(t), "%s", kry_type);
+    snprintf(t, sizeof(t), "%s", source_type);
     {
         size_t n = strlen(t);
 
         while(n > 0 && (t[n - 1] == ' ' || t[n - 1] == '\t'))
             t[--n] = '\0';
     }
-    if(go_char_ptr_type(t) && go_expr_is_state_char_buffer(expr))
-        snprintf(buf, sizeof(buf), "%s.CString(%s[:])", ZIR_GO_RUNTIME_PKG,
-                 expr);
-    else if(go_char_ptr_type(t) && go_expr_is_char_buffer_slice(expr))
-        snprintf(buf, sizeof(buf), "%s.CString(%s)", ZIR_GO_RUNTIME_PKG, expr);
-    else if(strcmp(t, "int") == 0 || strcmp(t, "int32") == 0)
+    if(strcmp(t, "int") == 0 || strcmp(t, "int32") == 0)
         snprintf(buf, sizeof(buf), "int32(%s)", expr);
     else if(strcmp(t, "long") == 0 || strcmp(t, "long long") == 0 ||
             strcmp(t, "size_t") == 0 || strcmp(t, "ssize_t") == 0)
@@ -1169,9 +1096,6 @@ go_array_element_type(const char *gt, char *elem, size_t elem_size)
     while(*base == ' ' || *base == '\t')
         base++;
     snprintf(elem, elem_size, "%s", base);
-    if(strncmp(elem, ZIR_GO_RUNTIME_PKG ".", strlen(ZIR_GO_RUNTIME_PKG) + 1) == 0)
-        memmove(elem, elem + strlen(ZIR_GO_RUNTIME_PKG) + 1,
-                strlen(elem + strlen(ZIR_GO_RUNTIME_PKG) + 1) + 1);
     return elem[0] != '\0';
 }
 
@@ -1642,13 +1566,9 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                                                g_externs[xi].go_import_alias,
                                                g_externs[xi].go);
                     else {
-                        if(runtime_output && !*instance_receiver) {
-                            fprintf(stderr, "zir_go: runtime host calls require a function receiver: %s\n", ident);
-                            exit(1);
-                        }
                         dn += (size_t)snprintf(dst + dn, ZIR_GO_TEXT_MAX - dn,
                                                "%s.%s(",
-                                               runtime_output ? instance_receiver : g_externs[xi].host_var,
+                                               g_externs[xi].host_var,
                                                g_externs[xi].go);
                     }
                     if(!all_ws) {
@@ -1801,64 +1721,6 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                 p = q;
                 continue;
             }
-            /* runtime call? Capitalized identifiers route to the package API. */
-            if(isupper((unsigned char)ident[0]) && *skip_ws(q) == '(' &&
-               sfi < 0) {
-                if(runtime_output) {
-                    int match = -1;
-
-                    for(int ii = 0; ii < m->import_count && match < 0; ii++) {
-                        char import_guard[ZIR_GO_NAME_MAX];
-
-                        if(m->imports[ii].kind != ZIR_IMPORT_HEADER &&
-                           m->imports[ii].kind != ZIR_IMPORT_MODULE)
-                            continue;
-                        camel_ident(m->imports[ii].target, import_guard,
-                                        sizeof(import_guard));
-                        for(int gi = 0; gi < g_function_count; gi++) {
-                            if(strcmp(g_functions[gi].guard, import_guard) == 0 &&
-                               strlen(g_functions[gi].kry) == il &&
-                               strncmp(g_functions[gi].kry, ident, il) == 0) {
-                                match = gi;
-                                break;
-                            }
-                        }
-                    }
-                    for(int gi = 0; gi < g_function_count; gi++) {
-                        if(match >= 0)
-                            break;
-                        if(strlen(g_functions[gi].kry) == il &&
-                           strncmp(g_functions[gi].kry, ident, il) == 0) {
-                            match = gi;
-                        }
-                    }
-                    if(match >= 0) {
-                        size_t fl = strlen(g_functions[match].go);
-
-                        if(dn + fl + 16 < dst_size) {
-                            memcpy(dst + dn, g_functions[match].go, fl);
-                            dn += fl;
-                            dst[dn++] = '(';
-                        }
-                        p = skip_ws(q) + 1;
-                        continue;
-                    }
-                }
-                {
-                    int written = runtime_output ? 0 :
-                        snprintf(dst + dn, dst_size - dn,
-                                 "%s.", ZIR_GO_RUNTIME_PKG);
-
-                    if(written > 0)
-                        dn += (size_t)written;
-                }
-                if(dn + il + 1 < dst_size) {
-                    memcpy(dst + dn, ident, il);
-                    dn += il;
-                }
-                p = q;
-                continue;
-            }
             /* plain identifier: verbatim */
             if(dn + il + 1 < dst_size) {
                 const char *local = go_local_name_for(ident);
@@ -1921,7 +1783,7 @@ emit_indent(FILE *f, int n)
 
 /* Rewrite a C-style three-clause for header into Go:
  *   for int i = 0; i < n; i++   ->  for i := int32(0); i < n; i++
- * The header arrives raw (kry names, semicolons intact, no 'for', no '{');
+ * The header arrives raw (source names, semicolons intact, no 'for', no '{');
  * each clause is translated separately so tx_expr never sees the ';'. */
 static void
 lower_for_header(const ZirModule *m, char *head, size_t head_size)
@@ -2071,24 +1933,6 @@ resolve_body_symbol(void *context, const char *text, char *out, size_t size)
         }
     }
     tx_expr(context, text, out, size);
-    const char *arguments = strchr(text, '(');
-    if(runtime_output && arguments != NULL && *instance_receiver) {
-        char name[ZIR_NAME_MAX];
-        const ZirModule *owner = NULL;
-        const ZirFunction *callee = NULL;
-        size_t length = (size_t)(arguments - text);
-        if(length < sizeof(name)) {
-            memcpy(name, text, length);
-            name[length] = '\0';
-            trim_in_place(name);
-            if(ResolveFunction(module, name, &owner, &callee) == 1 &&
-               !callee->is_extern && callee->uses_host) {
-                char call[ZIR_GO_TEXT_MAX];
-                snprintf(call, sizeof(call), "%s.%s", instance_receiver, out);
-                copy_text(out, size, call);
-            }
-        }
-    }
 }
 
 static void
@@ -2101,16 +1945,7 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
     int saved_array_count = zir_go_array_count;
     int saved_local_count = zir_go_local_count;
 
-    instance_receiver[0] = '\0';
     zir_go_local_count = 0;
-    if(runtime_output && fn->uses_host) {
-        int collision;
-        int serial = 0;
-        do {
-            snprintf(instance_receiver, sizeof(instance_receiver), "instance_host_%d", serial++);
-            collision = module_uses_identifier(m, instance_receiver);
-        } while(collision);
-    }
     camel_ident(fn->name, fname, sizeof(fname));
     /* signature: (st *State, <converted args>) */
     {
@@ -2119,8 +1954,6 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
         int emitted = 0;
 
         fputs("func ", f);
-        if(*instance_receiver)
-            fprintf(f, "(%s *runtime) ", instance_receiver);
         fprintf(f, "%s_%s(", guard, fname);
         if(m->state_count > 0) {
             fprintf(f, "%s *%sState", state_receiver, guard);
@@ -2161,8 +1994,7 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
             fprintf(f, " %s", ret);
         fprintf(f, " {\n");
     }
-    if(EmitBody(f,m,fn,ZIR_GO,resolve_body_symbol,(void *)m,
-                runtime_output ? "number_runtime" : NULL)) {
+    if(EmitBody(f,m,fn,ZIR_GO,resolve_body_symbol,(void *)m,NULL)) {
         fprintf(f,"}\n\n");
         zir_go_array_count=saved_array_count;
         zir_go_local_count=saved_local_count;
@@ -2494,55 +2326,15 @@ go_validate_asserts(const ZirModule *m)
     return 1;
 }
 
-/* Pure language modules must compile without a UI runtime import. Scan the
- * generated body, ignoring Go comments and quoted text, before keeping it. */
-static int
-uses_runtime(FILE *f, long begin)
-{
-    int ch, quote = 0, line_comment = 0, block_comment = 0, previous = 0;
-    char ident[128];
-    size_t length = 0;
-    fflush(f);
-    fseek(f, begin, SEEK_SET);
-    while((ch = fgetc(f)) != EOF) {
-        if(line_comment) { if(ch == '\n') line_comment = 0; continue; }
-        if(block_comment) {
-            if(previous == '*' && ch == '/') block_comment = 0;
-            previous = ch; continue;
-        }
-        if(quote) {
-            if(ch == '\\' && quote != '`') { (void)fgetc(f); continue; }
-            if(ch == quote) quote = 0;
-            continue;
-        }
-        if(ch == '/' && previous == '/') { line_comment = 1; previous = 0; continue; }
-        if(ch == '*' && previous == '/') { block_comment = 1; previous = 0; continue; }
-        if(ch == '"' || ch == '\'' || ch == '`') { quote = ch; length = 0; continue; }
-        if(isalnum((unsigned char)ch) || ch == '_') {
-            if(length + 1 < sizeof(ident)) ident[length++] = (char)ch;
-        } else {
-            ident[length] = 0;
-            if(ch == '.' && !strcmp(ident, ZIR_GO_RUNTIME_PKG)) return 1;
-            length = 0;
-        }
-        previous = ch;
-    }
-    return 0;
-}
 
 int
 go_lower(const ZirProgram *const *progs, int prog_count,
           const char *root, const char *out_dir, const char *pkg,
-          int no_main, int runtime_implementation)
+          int no_main)
 {
     char path[1024];
     char seen_stems[64][512];
     int seen_count = 0;
-    if(runtime_implementation) {
-        /* Reserve the package support file before considering source basenames. */
-        snprintf(seen_stems[seen_count++], sizeof(seen_stems[0]), "numeric_support");
-    }
-
     go_build_global_functions(progs, prog_count);
     for(int pi = 0; pi < prog_count; pi++) {
         const ZirProgram *prog = progs[pi];
@@ -2578,15 +2370,10 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 return 1;
             }
             type_scope = m;
-            runtime_output = runtime_implementation;
             go_set_module(m, guard);
             fprintf(f, "// Code generated by zir_go from %s. DO NOT EDIT.\n",
                     m->source_path);
             fprintf(f, "package %s\n\n", pkg);
-            long runtime_import_begin = ftell(f);
-            fprintf(f, "import %s \"%s\"\n\n", ZIR_GO_RUNTIME_PKG,
-                    ZIR_GO_RUNTIME_IMPORT);
-            long runtime_import_end = ftell(f);
             for(int i = 0; i < g_extern_count; i++) {
                 int duplicate = 0;
 
@@ -2600,9 +2387,6 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                         break;
                     }
                 }
-                if(strcmp(g_externs[i].go_import_path,
-                          ZIR_GO_RUNTIME_IMPORT) == 0)
-                    duplicate = 1;
                 if(!duplicate)
                     fprintf(f, "import %s \"%s\"\n",
                             g_externs[i].go_import_alias,
@@ -2619,8 +2403,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 /* ZIR_IMPORT_EXTERN lowers either to direct Go imports above
                  * or to the Host interface below. */
             }
-            if(!runtime_implementation)
-                EmitNumbers(f,m,ZIR_GO);
+            EmitNumbers(f,m,ZIR_GO);
             /* '#extern' host bridge: one interface, one package var, one
              * setter. Generated frames call hostVar.Method(...) directly. */
             {
@@ -2634,7 +2417,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                         first_host = i;
                     host_count++;
                 }
-            if(host_count > 0 && !runtime_output) {
+            if(host_count > 0) {
                 fprintf(f, "// %sHost bridges '#extern' declarations to the",
                         guard);
                 fprintf(f, " embedding Go program.\ntype %sHost interface {\n",
@@ -2675,20 +2458,12 @@ go_lower(const ZirProgram *const *progs, int prog_count,
 
             for(int i = 0; i < m->type_count; i++) {
                 const ZirType *t = &m->types[i];
-                if(t->is_extern && !runtime_output)
+                if(t->is_extern)
                     continue;
 
                 if(!t->is_enum && t->name[0] == '#') {
-                    if(!runtime_output) {
-                        Diagnostic(t->span, "zir_go.type", "C typedef has no portable Go representation: %s", t->body);
-                        exit(1);
-                    }
-                    /* C-only typedef ('#type') in a runtime-implementation
-                     * module declares the C ABI — function-pointer callback
-                     * types and similar. Go emits nothing for it; extern
-                     * signatures are skipped below, so a reference from a
-                     * Go-visible function still fails as an unresolved type. */
-                    continue;
+                    Diagnostic(t->span, "zir_go.type", "C typedef has no portable Go representation: %s", t->body);
+                    exit(1);
                 }
 
                 if(t->is_slot) {
@@ -2818,11 +2593,6 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 lower_function(f, m, &m->functions[i], guard);
             }
 
-            if(!uses_runtime(f, runtime_import_end)) {
-                fseek(f, runtime_import_begin, SEEK_SET);
-                for(long k = runtime_import_begin; k < runtime_import_end; k++)
-                    fputc(k == runtime_import_end - 1 ? '\n' : ' ', f);
-            }
             rewind(f);
             FILE *output = fopen(path, "wb");
             if(output == NULL) {
@@ -2847,19 +2617,6 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 return 1;
             }
         }
-    }
-    if(runtime_implementation) {
-        snprintf(path, sizeof(path), "%s/numeric_support.go", out_dir);
-        mkdir_parent(path);
-        FILE *support = fopen(path, "w");
-        if(support == NULL) {
-            fprintf(stderr, "zir_go: cannot write %s\n", path);
-            return 1;
-        }
-        fprintf(support, "// Code generated by zir_go for shared runtime numeric support. DO NOT EDIT.\n");
-        fprintf(support, "package %s\n\n", pkg);
-        EmitNumberSupport(support, ZIR_GO, "number_runtime");
-        fclose(support);
     }
     return 0;
 }

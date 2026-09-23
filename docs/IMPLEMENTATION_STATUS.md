@@ -56,6 +56,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   when a record or function has a name previously reserved for Kryon UI. A
   standalone source and saved-IR test covers these name collisions. Generated
   Go defaults to package `ziran` unless `--pkg` overrides it.
+- Native Go no longer has an implicit Kryon package import or a separate
+  `--runtime-implementation` mode. Explicit Go extern targets generate package
+  imports; host externs use a declared embedding interface. Source and saved
+  `.zir` tests run both forms without Kryon.
 - `#ui`, `#style`, and old app/route forms are rejected. The embedded Kryon
   runtime declarations and copied `src/kry_std` implementation have been
   removed. JSON diagnostics no longer require Kryon code.
@@ -71,7 +75,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 ## Still required
 
 - Remove the remaining UI-specific parser, checker, IR, and backend paths,
-  including Go's legacy Kryon runtime and record conversion branches. Finish
+  including the unused JavaScript emitter path. Finish
   general typed block calls, named blocks, callable child slots, and imports
   for ordinary libraries. Current block-call coverage is a small leaf subset.
 - Make structured `.zir` authoritative: the current checker reconstructs
