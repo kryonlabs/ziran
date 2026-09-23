@@ -19,6 +19,10 @@ Container :: (props: Props, child: Child) -> i32 #export {
     child(props.value)
     return props.value + 1
 }
+
+PlainChild :: (value: i32) #export {
+    return
+}
 EOF
 cat > "$work/slotapp.zi" <<'EOF'
 #module "slotapp"
@@ -33,27 +37,26 @@ Answer :: () -> i32 #export {
         }
     }
     if observed != 41 { return 0 }
+    Container plain: {
+        value = 41
+        child = PlainChild
+    }
+    if plain != 42 { return 0 }
     return chosen
 }
 EOF
 
 "$ziran" ir --root "$work" -o "$work/ir" \
     "$work/slotlib.zi" "$work/slotapp.zi"
-if "$ziran" bundle --root "$work" --entry slotapp:Answer \
-    -o "$work/unsupported.zib" "$work/slotlib.zi" "$work/slotapp.zi" \
-    2> "$work/unsupported.err"; then
-    echo 'callable slot unexpectedly passed portable linking' >&2
-    exit 1
-fi
-grep -Fq 'callable slots are outside the portable subset: child' \
-    "$work/unsupported.err"
-
 for input in source saved; do
     if test "$input" = source; then
         set -- "$work/slotlib.zi" "$work/slotapp.zi"
     else
         set -- "$work/ir/slotlib.zir" "$work/ir/slotapp.zir"
     fi
+    "$ziran" bundle --root "$work" --entry slotapp:Answer \
+        -o "$work/$input.zib" "$@"
+    test "$("$ziran" run "$work/$input.zib")" = 42
     c_out="$work/c-$input"
     cpp_out="$work/cpp-$input"
     go_out="$work/go-$input"
@@ -87,3 +90,5 @@ GO
     GO111MODULE=off go run "$go_out/slotlib.go" \
         "$go_out/slotapp.go" "$go_out/main.go"
 done
+
+cmp "$work/source.zib" "$work/saved.zib"

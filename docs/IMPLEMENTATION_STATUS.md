@@ -15,7 +15,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   The call is resolved from its declaration, not its name.
 - A two-module named block can pass a synchronous `#slot` child that captures
   a caller local. Source and saved `.zir` builds execute the same result in C,
-  C++, and Go. Portable `.zib` execution still lacks callable slots.
+  C++, Go, and `.zib`. The portable linker retains both captured inline bodies
+  and imported named functions passed as slot values.
 - `check`, `ir`, `build`, and `bundle` discover extensionless imports
   transitively. Repeated `--module-path DIR` options locate ordinary libraries
   outside an app root; explicitly supplied modules take precedence. A separate
@@ -132,8 +133,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 - Remove the remaining UI-specific parser, checker, IR, and backend paths.
   Finish general typed block calls, callable child slots, and imports for
   ordinary libraries. Named result binding now works for the tested typed
-  record call, and one synchronous captured child slot works in native targets;
-  block-call coverage is still a small subset.
+  record call, and one synchronous captured child slot works in native targets
+  and `.zib`; block-call and slot coverage is still a small subset.
 - Make structured `.zir` authoritative: the current checker reconstructs
   expressions from serialized statement text, then compares the full checked
   serialization with the original. This rejects divergent stored fields but
@@ -142,7 +143,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   supported backend consume the same saved IR. Source, saved-IR, and mixed
   builds currently rerun the source checker across all modules.
 - Extend the `.zib` linker and verifier beyond the current subset: remaining
-  control flow, enum initializer expressions, arrays, slots, state, and all checked
+  control flow, enum initializer expressions, arrays, state, and all checked
   expressions. Extend host capabilities to portable records, handles, and
   equivalent behavior
   for all supported language features. The current bundle embeds checked

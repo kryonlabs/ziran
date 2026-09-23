@@ -27,10 +27,12 @@ typedef enum ValueKind {
     VALUE_REAL,
     VALUE_STRING,
     VALUE_ENUM,
-    VALUE_RECORD
+    VALUE_RECORD,
+    VALUE_SLOT
 } ValueKind;
 
 typedef struct Record Record;
+typedef struct Frame Frame;
 
 typedef struct Value {
     ValueKind kind;
@@ -42,6 +44,10 @@ typedef struct Value {
     size_t length;
     const ZirType *enumeration;
     Record *record;
+    const ZirType *slot_type;
+    const ZirModule *slot_module;
+    const ZirFunction *slot_function;
+    Frame *slot_frame;
 } Value;
 
 typedef struct RecordField {
@@ -81,13 +87,14 @@ typedef struct Vm {
     void *host_context;
 } Vm;
 
-typedef struct Frame {
+struct Frame {
     Vm *vm;
     const ZirModule *module;
     const ZirFunction *function;
+    Frame *parent;
     Local locals[VM_MAX_LOCALS];
     int local_count;
-} Frame;
+};
 
 static const ZirImport *
 host_import(const ZirModule *module, const char *name)
@@ -280,12 +287,53 @@ portable_type_at(const ZirModule *module, const char *type, int depth)
     if(depth >= VM_MAX_DEPTH)
         return 0;
     record = FindType(module, type, &owner);
-    if(record == NULL || record->is_slot || record->is_extern)
+    if(record == NULL || record->is_extern)
         return 0;
+    if(record->is_slot) {
+        const char *cursor = record->body;
+        int parameters = 0;
+        while(*cursor) {
+            char parameter_type[ZIR_NAME_MAX];
+            size_t length = 0;
+            while(*cursor == ' ' || *cursor == '\t')
+                cursor++;
+            if(*cursor == 0)
+                break;
+            if(!isalpha((unsigned char)*cursor) && *cursor != '_')
+                return 0;
+            while(isalnum((unsigned char)*cursor) || *cursor == '_')
+                cursor++;
+            while(*cursor == ' ' || *cursor == '\t')
+                cursor++;
+            if(*cursor++ != ':')
+                return 0;
+            while(*cursor == ' ' || *cursor == '\t')
+                cursor++;
+            while(isalnum((unsigned char)*cursor) || *cursor == '_') {
+                if(length + 1 >= sizeof(parameter_type))
+                    return 0;
+                parameter_type[length++] = *cursor++;
+            }
+            parameter_type[length] = 0;
+            if(length == 0 || ++parameters > VM_MAX_PARAMS ||
+               strcmp(parameter_type, "void") == 0 ||
+               !portable_type_at(owner, parameter_type, depth + 1))
+                return 0;
+            while(*cursor == ' ' || *cursor == '\t')
+                cursor++;
+            if(*cursor == 0)
+                break;
+            if(*cursor++ != ',' || *cursor == 0)
+                return 0;
+        }
+        return 1;
+    }
     if(record->is_enum)
         return enum_member_value(record, NULL, NULL);
     while((status = TypeNextField(record, &offset, &field)) == 1) {
+        const ZirType *field_type = FindType(owner, field.type, NULL);
         if(++count > VM_MAX_FIELDS || strcmp(field.type, "void") == 0 ||
+           (field_type != NULL && field_type->is_slot) ||
            !portable_type_at(owner, field.type, depth + 1))
             return 0;
     }
@@ -598,6 +646,9 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
     }
     if(target == VALUE_INVALID) {
         const ZirType *record = FindType(module, type, NULL);
+        if(record != NULL && record->is_slot &&
+           value.kind == VALUE_SLOT && value.slot_type == record)
+            return value;
         if(record != NULL && record->is_enum &&
            value.kind != VALUE_RECORD && value.kind != VALUE_VOID &&
            value.kind != VALUE_INVALID) {
@@ -612,6 +663,7 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         return int_value(0);
     }
     if(value.kind == VALUE_STRING || value.kind == VALUE_RECORD ||
+       value.kind == VALUE_SLOT ||
        value.kind == VALUE_VOID ||
        value.kind == VALUE_INVALID) {
         vm->failed = 1;
@@ -859,6 +911,34 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
                decode_string(expression->text, bytes, sizeof(bytes), &length);
     }
     case ZIR_EXPR_IDENT: {
+        if(expression->is_function_value) {
+            const ZirType *slot = FindType(module, expression->type, NULL);
+            ZirFunction signature = {0};
+            Parameter actual[VM_MAX_PARAMS], expected[VM_MAX_PARAMS];
+            int actual_count, expected_count;
+            if(slot == NULL || !slot->is_slot ||
+               ResolveFunction(module, expression->name,
+                               &owner, &callee) != 1 ||
+               callee == NULL || callee->is_extern ||
+               strlen(slot->body) >= sizeof(signature.args) ||
+               strcmp(callee->return_type, "void") != 0)
+                return 0;
+            copy_text(signature.args, sizeof(signature.args), slot->body);
+            actual_count = parse_parameters(owner, callee, actual);
+            expected_count = parse_parameters(module, &signature, expected);
+            if(actual_count < 0 || actual_count != expected_count)
+                return 0;
+            for(int i = 0; i < actual_count; i++) {
+                const ZirType *actual_type = FindType(owner, actual[i].type, NULL);
+                const ZirType *expected_type = FindType(module, expected[i].type, NULL);
+                if(actual_type != NULL || expected_type != NULL) {
+                    if(actual_type != expected_type)
+                        return 0;
+                } else if(strcmp(actual[i].type, expected[i].type) != 0)
+                    return 0;
+            }
+            return 1;
+        }
         if(strcmp(expression->name, "true") == 0 ||
            strcmp(expression->name, "false") == 0 ||
            binding_index(bindings, binding_count, expression->name) >= 0)
@@ -1006,6 +1086,31 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
     case ZIR_EXPR_CALL:
         if(expression->name[0] == 0)
             return 0;
+        if(expression->slot_type[0]) {
+            int index = binding_index(bindings, binding_count,
+                                      expression->name);
+            const ZirType *slot = FindType(module, expression->slot_type,
+                                           NULL);
+            ZirFunction signature = {0};
+            if(index < 0 || slot == NULL || !slot->is_slot ||
+               strcmp(bindings[index].type, expression->slot_type) != 0 ||
+               strlen(slot->body) >= sizeof(signature.args) ||
+               strcmp(expression->type, "void") != 0)
+                return 0;
+            copy_text(signature.args, sizeof(signature.args), slot->body);
+            int expected = parse_parameters(module, &signature, parameters);
+            if(expected < 0)
+                return 0;
+            for(int child = expression->first_child; child >= 0;
+                child = function->exprs[child].next_sibling) {
+                if(children >= expected ||
+                   !verify_expression(module, function, bindings,
+                                      binding_count, child, depth + 1))
+                    return 0;
+                children++;
+            }
+            return children == expected;
+        }
         int resolved = ResolveFunction(module, expression->name,
                                        &owner, &callee);
         const ZirImport *external = resolved == 0 ?
@@ -1089,6 +1194,9 @@ verify_sequence(const ZirModule *module, const ZirFunction *function,
         case ZIR_STMT_DECL:
             if(!portable_type(module, statement->type) ||
                strcmp(statement->type, "void") == 0 ||
+               (FindType(module, statement->type, NULL) != NULL &&
+                FindType(module, statement->type, NULL)->is_slot &&
+                statement->expr_root < 0) ||
                statement->name[0] == 0 || binding_count >= VM_MAX_LOCALS ||
                (statement->expr_root >= 0 &&
                 !verify_expression(module, function, bindings, binding_count,
@@ -1268,7 +1376,7 @@ VmVerify(const ZirProgram *program, const char *entry_module,
     if(program == NULL || entry_module == NULL || entry_function == NULL)
         return 0;
     entry = find_entry(program, entry_module, entry_function, &entry_owner);
-    if(entry == NULL || entry->is_extern ||
+    if(entry == NULL || entry->is_extern || entry->is_closure ||
        parse_parameters(entry_owner, entry, bindings) != 0 ||
        (strcmp(entry->return_type, "i32") != 0 &&
         strcmp(entry->return_type, "int") != 0 &&
@@ -1317,13 +1425,28 @@ VmVerify(const ZirProgram *program, const char *entry_module,
             const ZirFunction *function = &module->functions[f];
             int binding_count = parse_parameters(module, function, bindings);
             if(!function->checked || function->is_extern ||
-               function->is_closure || function->capture_count != 0 ||
                !portable_type(module, function->return_type) ||
                binding_count < 0) {
                 Diagnostic(function->span, "zib.function",
                               "function is outside the portable subset: %s",
                               function->name);
                 return 0;
+            }
+            for(int c = 0; c < function->capture_count; c++) {
+                if(binding_count >= VM_MAX_LOCALS ||
+                   !portable_type(module, function->captures[c].type)) {
+                    Diagnostic(function->span, "zib.capture",
+                               "capture is outside the portable subset: %s",
+                               function->name);
+                    return 0;
+                }
+                copy_text(bindings[binding_count].name,
+                          sizeof(bindings[binding_count].name),
+                          function->captures[c].name);
+                copy_text(bindings[binding_count].type,
+                          sizeof(bindings[binding_count].type),
+                          function->captures[c].type);
+                binding_count++;
             }
             if(!verify_sequence(module, function, 0, function->stmt_count,
                                 bindings, binding_count, 0, 0)) {
@@ -1347,7 +1470,17 @@ VmVerify(const ZirProgram *program, const char *entry_module,
 
 static Value run_function(Vm *vm, const ZirModule *module,
                           const ZirFunction *function, const Value *args,
-                          int arg_count);
+                          int arg_count, Frame *parent);
+
+static Local *
+find_local(Frame *frame, const char *name)
+{
+    for(Frame *scope = frame; scope != NULL; scope = scope->parent)
+        for(int i = scope->local_count - 1; i >= 0; i--)
+            if(strcmp(scope->locals[i].name, name) == 0)
+                return &scope->locals[i];
+    return NULL;
+}
 
 static Value *
 record_field(Record *record, const char *name)
@@ -1368,10 +1501,8 @@ assignment_slot(Frame *frame, int index, int depth)
         return NULL;
     const ZirExpr *expression = &frame->function->exprs[index];
     if(expression->kind == ZIR_EXPR_IDENT) {
-        for(int i = frame->local_count - 1; i >= 0; i--)
-            if(strcmp(frame->locals[i].name, expression->name) == 0)
-                return &frame->locals[i].value;
-        return NULL;
+        Local *local = find_local(frame, expression->name);
+        return local != NULL ? &local->value : NULL;
     }
     if(expression->kind != ZIR_EXPR_MEMBER)
         return NULL;
@@ -1569,17 +1700,32 @@ eval(Frame *frame, int index, int depth)
         value = literal_string(frame->vm, expression);
         break;
     case ZIR_EXPR_IDENT: {
+        if(expression->is_function_value) {
+            const ZirModule *owner = NULL;
+            const ZirFunction *function = NULL;
+            const ZirType *slot = FindType(frame->module,
+                                           expression->type, NULL);
+            if(slot == NULL || !slot->is_slot ||
+               ResolveFunction(frame->module, expression->name,
+                               &owner, &function) != 1 || function == NULL) {
+                frame->vm->failed = 1;
+                break;
+            }
+            value.kind = VALUE_SLOT;
+            value.slot_type = slot;
+            value.slot_module = owner;
+            value.slot_function = function;
+            value.slot_frame = function->is_closure ? frame : NULL;
+            break;
+        }
         if(strcmp(expression->name, "true") == 0)
             return int_value(1);
         if(strcmp(expression->name, "false") == 0)
             return int_value(0);
-        for(int i = frame->local_count - 1; i >= 0; i--) {
-            if(strcmp(frame->locals[i].name, expression->name) == 0) {
-                value = frame->locals[i].value;
-                return coerce(frame->vm, frame->module, value,
-                              expression->type);
-            }
-        }
+        Local *local = find_local(frame, expression->name);
+        if(local != NULL)
+            return coerce(frame->vm, frame->module, local->value,
+                          expression->type);
         const ZirModule *owner = NULL;
         const ZirType *enumeration = NULL;
         int32_t number;
@@ -1704,11 +1850,24 @@ eval(Frame *frame, int index, int depth)
         int count = 0;
         const ZirModule *owner = NULL;
         const ZirFunction *callee = NULL;
-        int resolved = ResolveFunction(frame->module, expression->name,
-                                       &owner, &callee);
-        const ZirImport *external = resolved == 0 ?
-            host_import(frame->module, expression->name) : NULL;
-        if((resolved != 1 || callee == NULL) && external == NULL) {
+        const ZirImport *external = NULL;
+        Frame *parent = NULL;
+        if(expression->slot_type[0]) {
+            Local *binding = find_local(frame, expression->name);
+            if(binding == NULL || binding->value.kind != VALUE_SLOT) {
+                frame->vm->failed = 1;
+                break;
+            }
+            owner = binding->value.slot_module;
+            callee = binding->value.slot_function;
+            parent = binding->value.slot_frame;
+        } else {
+            int resolved = ResolveFunction(frame->module, expression->name,
+                                           &owner, &callee);
+            external = resolved == 0 ?
+                host_import(frame->module, expression->name) : NULL;
+        }
+        if((owner == NULL || callee == NULL) && external == NULL) {
             frame->vm->failed = 1;
             break;
         }
@@ -1733,9 +1892,10 @@ eval(Frame *frame, int index, int depth)
                 signature.is_extern = 1;
                 signature.span = external->span;
                 value = run_function(frame->vm, frame->module,
-                                     &signature, args, count);
+                                     &signature, args, count, NULL);
             } else {
-                value = run_function(frame->vm, owner, callee, args, count);
+                value = run_function(frame->vm, owner, callee, args, count,
+                                     parent);
             }
         }
         break;
@@ -1879,7 +2039,7 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
 
 static Value
 run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
-             const Value *args, int arg_count)
+             const Value *args, int arg_count, Frame *parent)
 {
     Frame frame = {0};
     Parameter parameters[VM_MAX_PARAMS];
@@ -1947,6 +2107,7 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
     frame.vm = vm;
     frame.module = module;
     frame.function = function;
+    frame.parent = parent;
     for(int i = 0; i < count; i++) {
         copy_text(frame.locals[i].name, sizeof(frame.locals[i].name),
                  parameters[i].name);
@@ -1994,7 +2155,7 @@ VmRunWithHost(const ZirProgram *program, const char *entry_module,
     if(!VmVerify(program, entry_module, entry_function))
         return 0;
     entry = find_entry(program, entry_module, entry_function, &module);
-    Value value = run_function(&vm, module, entry, NULL, 0);
+    Value value = run_function(&vm, module, entry, NULL, 0, NULL);
     *result = value.integer;
     *has_result = strcmp(entry->return_type, "void") != 0;
     if(vm.failed) {

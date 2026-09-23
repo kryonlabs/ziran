@@ -42,9 +42,11 @@ entry function. The standalone `ziran run` command has no host bindings and
 rejects a call that needs one. The loader compares the capability list with
 the linked IR; the VM checks signatures before execution.
 Source and saved-IR bundle bytes match in scalar, record, and enum tests,
-including Kryon's geometry, layout, and popup ownership tests. Version 2 is
-experimental and has no compatibility promise. Host calls with records or
-pointers, graphical programs, arrays, slots, state, globals,
+including Kryon's geometry, layout, and popup ownership tests. Synchronous
+callable slots with captured locals and imported named functions run from
+source and saved IR. Version 2 is experimental and has no compatibility
+promise. Host calls with records or pointers, graphical programs, arrays,
+state, globals,
 `for`, and `switch` remain unsupported.
 
 ## Target contract

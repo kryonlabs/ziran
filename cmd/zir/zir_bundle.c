@@ -204,11 +204,14 @@ import_is_used(const ZirProgram *program, const ZirModule *module,
         for(int e = 0; e < function->expr_count; e++) {
             const ZirModule *owner = NULL;
             const ZirFunction *callee = NULL;
-            if(function->exprs[e].kind == ZIR_EXPR_CALL &&
-               ResolveFunction(module, function->exprs[e].name,
-                               &owner, &callee) == 1 &&
-               owner == import->resolved_module && callee != NULL)
-                return 1;
+            if((function->exprs[e].kind == ZIR_EXPR_CALL &&
+                function->exprs[e].slot_type[0] == '\0') ||
+               function->exprs[e].is_function_value) {
+                if(ResolveFunction(module, function->exprs[e].name,
+                                    &owner, &callee) == 1 &&
+                   owner == import->resolved_module && callee != NULL)
+                    return 1;
+            }
         }
     }
     for(int m = 0; m < program->module_count; m++) {
@@ -285,17 +288,15 @@ BundleLink(const ZirProgram *program, const char *entry_module,
                     const ZirModule *owner = NULL;
                     const ZirFunction *callee = NULL;
                     int target_m = -1, target_f = -1;
-                    if(expression->kind != ZIR_EXPR_CALL)
+                    if(expression->kind != ZIR_EXPR_CALL &&
+                       !expression->is_function_value)
+                        continue;
+                    if(expression->kind == ZIR_EXPR_CALL &&
+                       expression->slot_type[0] != '\0')
                         continue;
                     if(ResolveFunction(module, expression->name,
                                        &owner, &callee) != 1 ||
                        owner == NULL || callee == NULL) {
-                        if(expression->slot_type[0] != '\0') {
-                            Diagnostic(expression->span, "zib.slot",
-                                       "callable slots are outside the portable subset: %s",
-                                       expression->name);
-                            goto failed;
-                        }
                         int external = 0;
                         for(int i = 0; i < module->import_count; i++)
                             if(module->imports[i].kind == ZIR_IMPORT_EXTERN &&
@@ -346,6 +347,11 @@ BundleLink(const ZirProgram *program, const char *entry_module,
                    !mark_parameters(program, module, function,
                                     keep_types, &changed))
                     goto failed;
+                for(int c = 0; c < function->capture_count; c++)
+                    if(!mark_type(program, module,
+                                  function->captures[c].type,
+                                  keep_types, &changed))
+                        goto failed;
                 for(int s = 0; s < function->stmt_count; s++)
                     if(!mark_type(program, module, function->stmts[s].type,
                                   keep_types, &changed))
@@ -375,7 +381,17 @@ BundleLink(const ZirProgram *program, const char *entry_module,
             for(int t = 0; t < module->type_count; t++) {
                 if(!keep_types[m][t])
                     continue;
-                if(module->types[t].is_enum || module->types[t].is_slot)
+                if(module->types[t].is_slot) {
+                    ZirFunction signature = {0};
+                    if(strlen(module->types[t].body) >= sizeof(signature.args))
+                        goto failed;
+                    strcpy(signature.args, module->types[t].body);
+                    if(!mark_parameters(program, module, &signature,
+                                        keep_types, &changed))
+                        goto failed;
+                    continue;
+                }
+                if(module->types[t].is_enum)
                     continue;
                 size_t offset = 0;
                 ZirTypeField field;
