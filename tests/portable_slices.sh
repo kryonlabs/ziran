@@ -197,19 +197,6 @@ if "$ziran" check --root "$work" "$work/invalid_slice_escape.zi" \
     exit 1
 fi
 
-cat > "$work/invalid_slice_host.zi" <<'ZI'
-#module "invalid_slice_host"
-ReadHost :: (values: []i32) -> i32 #extern
-Run :: () -> i32 #export {
-    values: [1]i32 = {1}
-    return ReadHost(values[:])
-}
-ZI
-if "$ziran" check --root "$work" "$work/invalid_slice_host.zi" \
-    2> "$work/invalid_slice_host.err"; then
-    echo 'slice descriptor crossed a host call' >&2
-    exit 1
-fi
 cmp "$work/source.zib" "$work/saved.zib"
 
 for entry in ReadOutside WriteOutside RangeOutside RangeReverse; do

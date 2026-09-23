@@ -1566,7 +1566,10 @@ normalize_function_arrays(const ZirModule *module, ZirFunction *fn)
                           !ArrayValueType(type);
         if(type[0] == '[' && !host_buffer) {
             const char *problem = local_storage_error(module, type);
-            if(problem == NULL && (fn->is_extern || fn->is_closure))
+            if(problem == NULL &&
+               (fn->is_closure ||
+                (fn->is_extern && (i < 0 ||
+                 !SliceElementType(type, NULL, 0)))))
                 problem = "direct array signatures require an ordinary Ziran function";
             int bound = -1;
             if(problem == NULL && !SliceElementType(type, NULL, 0) &&
@@ -1604,10 +1607,9 @@ LinkImports(ZirProgram **programs, int count)
                 ZirImport *import = &module->imports[i];
                 import->resolved_module = NULL;
                 if(import->kind == ZIR_IMPORT_EXTERN &&
-                   (strstr(import->args, "[]") != NULL ||
-                    SliceElementType(import->return_type, NULL, 0))) {
+                   SliceElementType(import->return_type, NULL, 0)) {
                     Diagnostic(import->span, "check.slice_signature",
-                                  "slice signatures require an ordinary Ziran function");
+                                  "host calls cannot return borrowed slices");
                     return 0;
                 }
                 if(import->kind != ZIR_IMPORT_HEADER || strchr(import->target, '.') != NULL)

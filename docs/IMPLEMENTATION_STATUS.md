@@ -66,7 +66,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   generated C, C++, and Go agree on range creation, nested views, function
   parameters and returns, `.length`, indexed reads and writes, and array
   replacement while a view is live. Bounds failures reject execution. The
-  checker rejects slices in records and globals, host slice signatures, and
+  checker rejects slices in records and globals, host slice returns, and
   returns that borrow a local array. Unresolved and nested fixed-array bounds
   remain outside the portable subset.
   Borrowed arrays retain record elements written by called functions after
@@ -112,6 +112,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   bundle handle, capability enumeration, and bindings for integer, real, string,
   enum, plain record, and void calls. Record fields retain declared names and
   types, including nested records; returned fields are checked before use.
+  Numeric, boolean, and string slice parameters can cross a synchronous host
+  call. The host edits a typed element array, which the VM validates and copies
+  back into the borrowed Ziran array. Source and saved bundles and generated
+  C, C++, and Go run the same buffer example. The VM rejects overlapping
+  mutable host slice arguments and invalid returned element types.
   `BundleRun` checks all required bindings before execution.
   The CLI runner also checks required bindings before execution. Source and
   saved-IR bundles, unused extern pruning, list tampering, missing binding
@@ -202,8 +207,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   builds currently rerun the source checker across all modules.
 - Extend the `.zib` linker and verifier beyond the current subset: remaining
   control flow, enum initializer expressions, unresolved and nested arrays,
-  slice storage in aggregates and host calls, state, and all checked
-  expressions. Extend host capabilities to portable handles, arrays, and
+  slice storage in aggregates, host slice returns and record slice parameters,
+  state, and all checked expressions. Extend host capabilities to portable handles, arrays, and
   equivalent behavior
   for all supported language features. The current bundle embeds checked
   `.zir`; the linker follows direct function calls and retains the types

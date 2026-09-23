@@ -16,13 +16,15 @@ The split is underway. The current compiler can check and compile a tested
 subset of non-UI `.zi` to C, C++, and native Go. It can also save that subset as an
 experimental versioned `.zir` and build each native target from saved modules. It
 can build and run experimental `.zib` bundles for a non-graphical subset with
-scalars, plain records, and enums.
+scalars, strings, plain records, enums, fixed arrays, borrowed slices, and
+declared host capabilities. The portable runner does not yet execute every
+checked program.
 [Implementation status](docs/IMPLEMENTATION_STATUS.md)
 lists the remaining work. The [IR](docs/ZIR.md) and [bundle](docs/ZIB.md)
 documents distinguish the current format from the intended contracts.
 
-Run `make` to build the current toolchain and `make check` for its standalone
-smoke test. `build/bin/ziran` exposes `check`, `ir`, `fmt`,
+Run `make` to build the current toolchain and `make check` for its language,
+backend, and portable bundle tests. `build/bin/ziran` exposes `check`, `ir`, `fmt`,
 `build --target=c|cpp|go`, `bundle`, and `run`.
 
 For ordinary imports, pass the entry file and a library directory with

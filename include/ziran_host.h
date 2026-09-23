@@ -17,7 +17,8 @@ typedef enum VmHostValueKind {
     VM_HOST_UNSIGNED,
     VM_HOST_REAL,
     VM_HOST_STRING,
-    VM_HOST_RECORD
+    VM_HOST_RECORD,
+    VM_HOST_SLICE
 } VmHostValueKind;
 
 typedef struct VmHostField VmHostField;
@@ -32,6 +33,7 @@ typedef struct VmHostValue {
     size_t length;
     const VmHostField *fields;
     size_t field_count;
+    struct VmHostValue *elements;
 } VmHostValue;
 
 struct VmHostField {
@@ -41,8 +43,11 @@ struct VmHostField {
 
 /* Return nonzero after writing a result of the declared return type.
  * Record fields are in declaration order and carry their declared names and
- * types. Argument fields are borrowed for the call. Returned fields and
- * string bytes must remain valid until BundleRun returns. */
+ * types. Argument fields are borrowed for the call. A scalar or string slice
+ * argument has kind VM_HOST_SLICE, length elements, and a mutable elements array.
+ * Modify elements in place and keep the elements pointer and length intact;
+ * the VM validates and copies every element back after the call. Returned
+ * fields and string bytes must remain valid until BundleRun returns. */
 typedef int (*VmHostCall)(void *context, const char *module,
                           const char *function, const VmHostValue *args,
                           int arg_count, VmHostValue *result);

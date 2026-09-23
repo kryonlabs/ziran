@@ -402,14 +402,20 @@ portable_type(const ZirModule *module, const char *type)
     return portable_type_at(module, type, 0);
 }
 
-/* Host values have a declared, recursive record shape. Arrays and slots need
- * separate ownership and callback contracts before crossing this boundary. */
+/* Host values have a declared, recursive record shape. A slice parameter is
+ * copied into host values and copied back after the synchronous call. Arrays,
+ * slice returns, and slots need separate ownership contracts. */
 static int
-host_type_at(const ZirModule *module, const char *type, int depth)
+host_type_at(const ZirModule *module, const char *type, int depth,
+             int slice_parameter)
 {
-    if(depth >= VM_MAX_DEPTH || ArrayElementType(type, NULL, 0, NULL) ||
-       SliceElementType(type, NULL, 0))
+    char element[ZIR_NAME_MAX];
+    if(depth >= VM_MAX_DEPTH || ArrayElementType(type, NULL, 0, NULL))
         return 0;
+    if(SliceElementType(type, element, sizeof(element)))
+        return slice_parameter && depth == 0 &&
+               value_kind(element) != VALUE_INVALID &&
+               value_kind(element) != VALUE_VOID;
     if(value_kind(type) != VALUE_INVALID)
         return 1;
     const ZirModule *owner = NULL;
@@ -423,7 +429,7 @@ host_type_at(const ZirModule *module, const char *type, int depth)
     int count = 0, status;
     while((status = TypeNextField(record, &offset, &field)) == 1)
         if(++count > VM_MAX_FIELDS || !strcmp(field.type, "void") ||
-           !host_type_at(owner, field.type, depth + 1))
+           !host_type_at(owner, field.type, depth + 1, 0))
             return 0;
     return status == 0;
 }
@@ -1755,10 +1761,10 @@ VmVerify(const ZirProgram *program, const char *entry_module,
                 int count = parse_import_parameters(module,
                     &module->imports[i], parameters);
                 int host_signature =
-                    host_type_at(module, module->imports[i].return_type, 0) &&
+                    host_type_at(module, module->imports[i].return_type, 0, 0) &&
                     count >= 0;
                 for(int p = 0; host_signature && p < count; p++)
-                    host_signature = host_type_at(module, parameters[p].type, 0) &&
+                    host_signature = host_type_at(module, parameters[p].type, 0, 1) &&
                         strcmp(parameters[p].type, "void") != 0;
                 if(host_signature)
                     continue;
@@ -2555,8 +2561,16 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
 static void
 release_host_argument(VmHostValue *value, int depth)
 {
-    if(value->kind != VM_HOST_RECORD || value->fields == NULL ||
-       depth >= VM_MAX_DEPTH)
+    if(depth >= VM_MAX_DEPTH)
+        return;
+    if(value->kind == VM_HOST_SLICE) {
+        for(size_t i = 0; i < value->length && value->elements != NULL; i++)
+            release_host_argument(&value->elements[i], depth + 1);
+        free(value->elements);
+        value->elements = NULL;
+        return;
+    }
+    if(value->kind != VM_HOST_RECORD || value->fields == NULL)
         return;
     VmHostField *fields = (VmHostField *)value->fields;
     for(size_t i = 0; i < value->field_count; i++)
@@ -2572,6 +2586,28 @@ host_argument(const ZirModule *module, const char *type, Value value,
     if(depth >= VM_MAX_DEPTH)
         return 0;
     out->type = type;
+    char element[ZIR_NAME_MAX];
+    if(SliceElementType(type, element, sizeof(element))) {
+        if(value.kind != VALUE_SLICE ||
+           (value.length > 0 && value.array == NULL) ||
+           (value.array != NULL &&
+            (strcmp(value.array->element_type, element) != 0 ||
+             value.offset > (size_t)value.array->length ||
+             value.length > (size_t)value.array->length - value.offset)))
+            return 0;
+        out->kind = VM_HOST_SLICE;
+        out->length = value.length;
+        out->elements = calloc(value.length ? value.length : 1,
+                               sizeof(*out->elements));
+        if(out->elements == NULL)
+            return 0;
+        for(size_t i = 0; i < value.length; i++)
+            if(!host_argument(module, value.array->element_type,
+                              value.array->elements[value.offset + i],
+                              &out->elements[i], depth + 1))
+                return 0;
+        return 1;
+    }
     const ZirModule *owner = NULL;
     const ZirType *record = FindType(module, type, &owner);
     if(record != NULL && !record->is_enum) {
@@ -2683,6 +2719,44 @@ host_return(Vm *vm, const ZirModule *module, const char *type,
     else
         result.kind = VALUE_VOID;
     return coerce(vm, module, result, type);
+}
+
+static int
+host_copy_back(Vm *vm, const ZirModule *module, const char *type,
+               Value target, const VmHostValue *input)
+{
+    char element[ZIR_NAME_MAX];
+    if(!SliceElementType(type, element, sizeof(element)))
+        return 1;
+    if(input->kind != VM_HOST_SLICE || input->type == NULL ||
+       strcmp(input->type, type) != 0 || target.kind != VALUE_SLICE ||
+       target.length != input->length ||
+       (target.length > 0 &&
+        (target.array == NULL || input->elements == NULL))) {
+        vm->failed = 1;
+        return 0;
+    }
+    if(target.length == 0)
+        return 1;
+    Value *updates = calloc(target.length, sizeof(*updates));
+    if(updates == NULL) {
+        vm->failed = 1;
+        return 0;
+    }
+    for(size_t i = 0; i < target.length && !vm->failed; i++)
+        updates[i] = host_return(vm, module, element,
+                                 &input->elements[i], 1);
+    if(!vm->failed) {
+        for(size_t i = 0; i < target.length; i++) {
+            Value *slot = &target.array->elements[target.offset + i];
+            Value previous = *slot;
+            *slot = updates[i];
+            retire_value(previous, 0);
+        }
+        release_retired(vm);
+    }
+    free(updates);
+    return !vm->failed;
 }
 
 static const char *
@@ -2843,7 +2917,25 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
             vm->failed = 1;
             return result;
         }
+        for(int i = 0; i < count && !vm->failed; i++) {
+            if(args[i].kind != VALUE_SLICE || args[i].length == 0)
+                continue;
+            for(int j = i + 1; j < count; j++) {
+                if(args[j].kind != VALUE_SLICE || args[j].length == 0 ||
+                   args[i].array != args[j].array)
+                    continue;
+                if(args[i].offset < args[j].offset + args[j].length &&
+                   args[j].offset < args[i].offset + args[i].length) {
+                    Diagnostic(function->span, "zib.host_alias",
+                               "overlapping mutable host slice arguments require separate storage");
+                    vm->failed = 1;
+                    break;
+                }
+            }
+        }
         for(int i = 0; i < count; i++) {
+            if(vm->failed)
+                break;
             Value argument = coerce_expression(vm, module, args[i],
                                                parameters[i].type);
             if(vm->failed || !host_argument(module,
@@ -2858,6 +2950,9 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
                                     function->name, host_args, count,
                                     &host_result))
             vm->failed = 1;
+        for(int i = 0; i < count && !vm->failed; i++)
+            host_copy_back(vm, module, parameters[i].type,
+                           args[i], &host_args[i]);
         for(int i = 0; i < count; i++)
             release_host_argument(&host_args[i], 0);
         if(vm->failed)

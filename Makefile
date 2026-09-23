@@ -61,7 +61,10 @@ $(BIN_DIR)/host-capability-test: tests/host_capability_test.c $(BUILD_DIR)/libzi
 $(BIN_DIR)/record-host-test: tests/record_host_test.c $(BUILD_DIR)/libziran.a | $(BIN_DIR)
 	$(CC) -D_GNU_SOURCE -std=c11 -Iinclude -o $@ tests/record_host_test.c $(BUILD_DIR)/libziran.a
 
-check: all $(BIN_DIR)/bundle-link-test $(BIN_DIR)/host-capability-test $(BIN_DIR)/record-host-test
+$(BIN_DIR)/slice-host-test: tests/host_slice_test.c $(BUILD_DIR)/libziran.a | $(BIN_DIR)
+	$(CC) -D_GNU_SOURCE -std=c11 -Iinclude -o $@ tests/host_slice_test.c $(BUILD_DIR)/libziran.a
+
+check: all $(BIN_DIR)/bundle-link-test $(BIN_DIR)/host-capability-test $(BIN_DIR)/record-host-test $(BIN_DIR)/slice-host-test
 	$(BIN_DIR)/bundle-link-test
 	sh tests/standalone.sh $(BIN_DIR)/ziran
 	sh tests/portable_strings.sh $(BIN_DIR)/ziran
@@ -75,6 +78,7 @@ check: all $(BIN_DIR)/bundle-link-test $(BIN_DIR)/host-capability-test $(BIN_DIR
 	sh tests/native_nil.sh $(BIN_DIR)/ziran
 	sh tests/host_capability.sh $(BIN_DIR)/ziran $(BIN_DIR)/host-capability-test
 	sh tests/portable_host_records.sh $(BIN_DIR)/ziran $(BIN_DIR)/record-host-test
+	sh tests/host_slices.sh $(BIN_DIR)/ziran $(BIN_DIR)/slice-host-test
 
 clean:
 	rm -rf $(BUILD_DIR)
