@@ -12,8 +12,11 @@ Called functions can use `float` and `double` scalar values. The bundle is
 `ZIB` plus a zero byte, a little-endian version, length-prefixed entry module
 and function names, a host capability count (currently zero), and a
 length-prefixed version 3 `.zir` payload. The current linker follows direct
-function calls from the entry, includes their modules, and removes unused
-functions, modules, types, and imports before writing the payload.
+function calls from the entry, keeps record and enum declarations used by
+those functions (including types from imported modules and nested record
+fields), and removes unreachable functions, modules, types, and imports before
+writing the payload. Keeping a type declaration does not yet make record
+values executable in the portable interpreter.
 The reader rejects unsupported versions, truncated or trailing data, malformed
 embedded IR, semantic errors and divergent fields in saved IR, unresolved imports,
 unsupported capabilities, and functions

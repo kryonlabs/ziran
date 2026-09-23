@@ -4,9 +4,9 @@
 #include "zir.h"
 
 /* Versioned, pointer-free checked IR serialization. */
-int ProgramWriteZir(const ZirProgram *program, FILE *out);
-ZirProgram *ProgramReadZir(FILE *in, const char *path);
-int PathIsZir(const char *path);
+int ProgramWrite(const ZirProgram *program, FILE *out);
+ZirProgram *ProgramRead(FILE *in, const char *path);
+int PathIsIR(const char *path);
 ZirProgram *ProgramLoad(const char *path, const char *root);
 /* Check all inputs and reject saved IR that changes during semantic checking.
  * A NULL input_paths pointer marks every program as saved IR. */

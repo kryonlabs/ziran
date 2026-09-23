@@ -413,7 +413,7 @@ validate_program(const ZirProgram *program)
 }
 
 int
-ProgramWriteZir(const ZirProgram *program, FILE *out)
+ProgramWrite(const ZirProgram *program, FILE *out)
 {
     static const unsigned char magic[4] = {'Z', 'I', 'R', 0};
     if(program == NULL || out == NULL || !validate_program(program) ||
@@ -428,7 +428,7 @@ ProgramWriteZir(const ZirProgram *program, FILE *out)
 }
 
 ZirProgram *
-ProgramReadZir(FILE *in, const char *path)
+ProgramRead(FILE *in, const char *path)
 {
     unsigned char magic[4];
     uint32_t version, count;
@@ -485,7 +485,7 @@ failed:
 }
 
 int
-PathIsZir(const char *path)
+PathIsIR(const char *path)
 {
     size_t length = path ? strlen(path) : 0;
     return length > 4 && strcmp(path + length - 4, ".zir") == 0;
@@ -496,14 +496,14 @@ ProgramLoad(const char *path, const char *root)
 {
     ZirProgram *program;
     FILE *file;
-    if(!PathIsZir(path))
+    if(!PathIsIR(path))
         return parse_file(path, root);
     file = fopen(path, "rb");
     if(file == NULL) {
         Diagnostic(Span(path, 1, 1), "zir.input", "cannot open IR input");
         return NULL;
     }
-    program = ProgramReadZir(file, path);
+    program = ProgramRead(file, path);
     fclose(file);
     return program;
 }
@@ -519,7 +519,7 @@ CheckCanonicalPrograms(ZirProgram **programs, int count, int strict,
     int first_saved = -1;
     int valid = 0;
     for(int i = 0; i < count; i++) {
-        if(input_paths == NULL || PathIsZir(input_paths[i])) {
+        if(input_paths == NULL || PathIsIR(input_paths[i])) {
             if(first_saved < 0)
                 first_saved = i;
             saved_count++;
@@ -532,14 +532,14 @@ CheckCanonicalPrograms(ZirProgram **programs, int count, int strict,
     if(before == NULL || after == NULL)
         goto failed;
     for(int i = 0; i < count; i++)
-        if((input_paths == NULL || PathIsZir(input_paths[i])) &&
-           !ProgramWriteZir(programs[i], before))
+        if((input_paths == NULL || PathIsIR(input_paths[i])) &&
+           !ProgramWrite(programs[i], before))
             goto failed;
     if(!CheckPrograms(programs, count, strict))
         goto done;
     for(int i = 0; i < count; i++)
-        if((input_paths == NULL || PathIsZir(input_paths[i])) &&
-           !ProgramWriteZir(programs[i], after))
+        if((input_paths == NULL || PathIsIR(input_paths[i])) &&
+           !ProgramWrite(programs[i], after))
             goto failed;
     if(fseek(before, 0, SEEK_SET) || fseek(after, 0, SEEK_SET))
         goto failed;

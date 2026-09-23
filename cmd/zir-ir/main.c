@@ -45,7 +45,7 @@ write_program(const ZirProgram *program, const char *out_dir)
                       "cannot open IR output: %s", output);
         return 0;
     }
-    if(!ProgramWriteZir(program, file)) {
+    if(!ProgramWrite(program, file)) {
         Diagnostic(program->modules[0].span, "zir.output",
                       "cannot serialize checked IR: %s", output);
         fclose(file);

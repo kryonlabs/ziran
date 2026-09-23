@@ -42,7 +42,11 @@ $(BIN_DIR)/ziran-cpp: cmd/zir-cpp/main.c cmd/zir-cpp/zir_cpp_lower.c $(FRONTEND)
 $(BIN_DIR)/ziran-zib: cmd/zir-zib/main.c $(FRONTEND) $(PORTABLE) $(HEADERS) | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ cmd/zir-zib/main.c $(FRONTEND) $(PORTABLE)
 
-check: all
+$(BIN_DIR)/bundle-link-test: tests/bundle_link_test.c $(FRONTEND) $(PORTABLE) $(HEADERS) | $(BIN_DIR)
+	$(CC) $(CFLAGS) -o $@ tests/bundle_link_test.c $(FRONTEND) $(PORTABLE)
+
+check: all $(BIN_DIR)/bundle-link-test
+	$(BIN_DIR)/bundle-link-test
 	sh tests/standalone.sh $(BIN_DIR)/ziran
 
 clean:

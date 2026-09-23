@@ -36,8 +36,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   before execution. The linker follows direct calls and drops unreachable
   functions and modules; a record-bearing library can contribute only its
   reachable scalar functions to a portable bundle.
-- Extracted compiler function names no longer carry `Zir` or `zir_` prefixes;
-  IR types retain `Zir` names for now.
+- Compiler functions use short names without `Zir` or `zir_` prefixes,
+  including the IR serializer's `ProgramWrite`, `ProgramRead`, and `PathIsIR`.
+  IR data types retain `Zir` names for now.
 - Native Go no longer treats ordinary imported record types as types from the
   legacy Kryon Go runtime. The standalone record-call test asserts that no
   Kryon package import is generated.
@@ -67,8 +68,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   control flow, records, strings, arrays, slots, state, and all checked
   expressions. Add a real host capability contract and equivalent behavior
   for all supported language features. The current bundle embeds checked
-  `.zir`, but its linker handles direct function calls only. Kryon's old
-  `.krb` compiler remains in Kryon.
+  `.zir`; the linker follows direct function calls and retains the types
+  those functions use, but the portable interpreter cannot execute records.
+  Kryon's old `.krb` compiler remains in Kryon.
 - Complete native C++, C, and Go backend parity, FFI, capability checks, and
   language law tests independent of UI assumptions. The current `make check`
   only covers the stated C/C++/Go subset.
