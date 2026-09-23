@@ -955,7 +955,7 @@ slot_wrapper_name(const ZirModule *module, const ZirFunction *fn, int index,
 }
 
 /* C has no lexical function values. A file-scope adapter supplies the uniform
- * borrowed-context slot ABI while ordinary .kry functions keep their own ABI. */
+ * borrowed-context slot ABI while ordinary Ziran functions keep their own ABI. */
 void
 EmitSlotWrappers(FILE *out, const ZirModule *module, const ZirFunction *fn,
                     ZirTarget target, ZirResolveTarget resolver, void *context)

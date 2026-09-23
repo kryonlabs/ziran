@@ -2533,7 +2533,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                 /* K&R "} else {" / "} else if (...) {": the brace closes the
                  * if-body and the else re-opens a new one, so depth is net
                  * unchanged. Recorded as BLOCK_CLOSE plus an IF whose text
-                 * starts with "else" — the k2c lowering emits the "} else"
+                 * starts with "else" — the C lowering emits the "} else"
                  * itself and suppresses the duplicate close. */
                 const char *eq = t + 1;
 

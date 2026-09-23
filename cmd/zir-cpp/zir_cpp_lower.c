@@ -1,8 +1,7 @@
 /*
  * zir_cpp_lower.c - ZIR to C++ backend. Lowers a ZirProgram to .cpp/.hpp
- * source files that call the C Kryon runtime. Emitted declarations keep
- * C linkage (extern "C") so zir_cpp output interops with k2c modules and the
- * plain-C kryon_project files.
+ * source files that can call declared C host functions. Emitted declarations
+ * keep C linkage (extern "C") so generated C and C++ modules can interoperate.
  */
 #include "zir_cpp_lower.h"
 #include "zir.h"

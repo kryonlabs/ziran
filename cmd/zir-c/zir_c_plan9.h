@@ -8,8 +8,7 @@
  *
  * The pass is purely syntactic: types are recovered from cast-literal
  * expressions or from a return-type map built by scanning the project's
- * headers (--include-dir), the same way the kryon surface declares
- * single-line prototypes. */
+ * headers (--include-dir), including single-line prototypes. */
 
 /* Add a directory scanned (recursively, .h files) for prototypes when
  * resolving __auto_type initializers. Call before c_lower. */

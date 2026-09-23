@@ -2050,7 +2050,7 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
             snprintf(cond, sizeof(cond), "%s", rw);
             strip_block_brace(cond);
             /* 'guard cond' lowers to a plain if: the body is the exit path
-             * and must return by itself (k2c fires defers + returns; on the
+             * and must return by itself (the C backend fires defers and returns; on the
              * Go path defer runs at function exit anyway). */
             if(strncmp(cond, "guard ", 6) == 0)
                 memmove(cond, cond + 6, strlen(cond + 6) + 1);
