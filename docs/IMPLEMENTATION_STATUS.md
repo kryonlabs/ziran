@@ -79,6 +79,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   complete Image widget is not yet in the checked library.
   Kryon's shared style values and fill-state records now support Separator and
   Progress paint decisions as ordinary imported modules in those targets.
+  Kryon's Progress composition now selects fonts and computes layout in checked
+  `.zi`, using generic host glyph measurement and raster capabilities. Source
+  and saved `.zir`, `.zib`, C, C++, and Go tests cover that path. Resolved style
+  faces are still supplied by the caller; complete style lookup and widget
+  integration remain unfinished.
   Window placement and drag policy now runs from source and saved IR in native
   targets and `.zib`, with window flags imported from a normal Ziran module.
 - Reachable `#extern` host calls now appear as module/function
