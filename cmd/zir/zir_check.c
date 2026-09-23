@@ -13,7 +13,6 @@
 #include <string.h>
 
 typedef struct Binding {
-    int is_instance;
     char name[ZIR_NAME_MAX];
     char type[ZIR_NAME_MAX];
     int depth;
@@ -81,7 +80,6 @@ bind(Checker *c, const char *name, const char *type, ZirSourceSpan span)
     }
     copy_text(c->bindings[c->count].name, ZIR_NAME_MAX, name);
     copy_text(c->bindings[c->count].type, ZIR_NAME_MAX, type);
-    c->bindings[c->count].is_instance = 0;
     c->bindings[c->count++].depth = c->depth;
 }
 
@@ -95,15 +93,6 @@ function(Checker *c, const char *name, ZirSourceSpan span)
         c->failed = 1;
     }
     return found;
-}
-
-static int
-lexical_instance(Checker *c, const char *name)
-{
-    for(int i = c->count - 1; i >= 0; i--)
-        if(!strcmp(c->bindings[i].name, name))
-            return c->bindings[i].is_instance;
-    return c->parent ? lexical_instance(c->parent, name) : 0;
 }
 
 static const char *
@@ -130,7 +119,6 @@ lookup_lexical(Checker *c, const char *name)
     ZirCapture *capture = &captures[c->fn->capture_count++];
     copy_text(capture->name, sizeof(capture->name), name);
     copy_text(capture->type, sizeof(capture->type), type);
-    capture->is_instance = lexical_instance(c->parent, name);
     return capture->type;
 }
 
@@ -1352,9 +1340,9 @@ check_function(Checker *c, ZirFunction *fn)
         int errors_before_expression = c->errors;
         if(st->kind == ZIR_STMT_DECL)
             normalize_array(c->module, st->type, sizeof(st->type));
-        if(st->declared_block_call || st->is_instance)
+        if(st->declared_block_call)
             c->strict = 1;
-        if(st->kind == ZIR_STMT_DECL && !st->is_instance)
+        if(st->kind == ZIR_STMT_DECL)
             contextual_slot(c, st->expr_root, st->type);
         if(st->kind == ZIR_STMT_ASSIGN && st->lhs_root >= 0 &&
            c->fn->exprs[st->lhs_root].kind == ZIR_EXPR_IDENT)
@@ -1364,15 +1352,7 @@ check_function(Checker *c, ZirFunction *fn)
            *c->fn->exprs[st->expr_root].slot_type)
             st->kind = ZIR_STMT_EXPR;
         if(st->kind == ZIR_STMT_DECL) {
-            if(st->is_instance) {
-                const ZirType *record = FindType(c->module, st->type, NULL);
-                if(record == NULL || record->is_enum || record->is_slot)
-                    error(c, st->span, "instance state requires a declared record type", st->type);
-                const char *key_type = ScalarType(type);
-                if(st->expr_root < 0 || (strcmp(type, "integer") &&
-                   key_type[0] != 'i' && key_type[0] != 'u'))
-                    error(c, st->span, "instance key requires an integer", st->name);
-            } else if(!*st->type) copy_text(st->type, sizeof(st->type),
+            if(!*st->type) copy_text(st->type, sizeof(st->type),
                 !strcmp(type, "integer") ? "int" : !strcmp(type, "real") ? "double" : type);
             else if(!compatible(st->type, type)) error(c, st->span, "initializer type mismatch", st->name);
             if(st->type[0] == '[') {
@@ -1388,11 +1368,8 @@ check_function(Checker *c, ZirFunction *fn)
                     c->failed = 1;
                 }
             }
-            if(!st->is_instance)
-                check_borrowed_string(c, st->type, st->expr_root);
+            check_borrowed_string(c, st->type, st->expr_root);
             bind(c, st->name, st->type, st->span);
-            if(c->count && !strcmp(c->bindings[c->count - 1].name, st->name))
-                c->bindings[c->count - 1].is_instance = st->is_instance;
         } else if(st->kind == ZIR_STMT_ASSIGN) {
             const char *lhs = expression_type(c, st->lhs_root);
             const ZirType *destination = FindType(c->module, lhs, NULL);
@@ -1435,7 +1412,7 @@ check_function(Checker *c, ZirFunction *fn)
            st->kind == ZIR_STMT_WHILE || st->kind == ZIR_STMT_FOR || st->kind == ZIR_STMT_SWITCH)
             c->depth++;
         c->strict = strict;
-        if((st->declared_block_call || st->is_instance) && c->errors != errors_before_expression)
+        if(st->declared_block_call && c->errors != errors_before_expression)
             c->failed = 1;
     }
     for(int i = 0; i < fn->expr_count; i++) {
@@ -1464,15 +1441,6 @@ check_function(Checker *c, ZirFunction *fn)
     c->fn->checked = c->errors == errors_before;
     for(int expression = 0; expression < c->fn->expr_count; expression++)
         has_slots |= c->fn->exprs[expression].is_function_value;
-    int has_instances = 0;
-    for(int i = 0; i < c->fn->stmt_count; i++)
-        has_instances |= c->fn->stmts[i].is_instance;
-    c->fn->uses_host |= has_instances;
-    if(has_instances && (!c->fn->checked || !CanEmitBody(c->module, c->fn))) {
-        Diagnostic(c->fn->span, "check.instance_body",
-                      "instance state requires a fully checked portable body: %s", c->fn->name);
-        c->failed = 1;
-    }
     if(has_slots && !c->fn->is_extern &&
        (!c->fn->checked || !CanEmitBody(c->module, c->fn))) {
         Diagnostic(c->fn->span, "check.slot_body",

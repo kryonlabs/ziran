@@ -2354,8 +2354,8 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
             fprintf(f, " %s", ret);
         fprintf(f, " {\n");
     }
-    if(EmitBody(f,m,fn,ZIR_GO,resolve_body_symbol,(void *)m, instance_receiver,
-                   runtime_output ? "number_runtime" : NULL)) {
+    if(EmitBody(f,m,fn,ZIR_GO,resolve_body_symbol,(void *)m,
+                runtime_output ? "number_runtime" : NULL)) {
         fprintf(f,"}\n\n");
         zir_go_array_count=saved_array_count;
         zir_go_local_count=saved_local_count;

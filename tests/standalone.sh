@@ -32,7 +32,7 @@ python3 - "$work/ir/hello.zir" <<'PY'
 from pathlib import Path
 import sys
 data = Path(sys.argv[1]).read_bytes()
-assert data[:8] == b'ZIR\0\x03\0\0\0', data[:8]
+assert data[:8] == b'ZIR\0\x04\0\0\0', data[:8]
 PY
 "$ziran" build --target=c --root "$work" -o "$work/c" "$work/hello.zi"
 test -s "$work/c/hello.c"
@@ -687,6 +687,22 @@ if "$ziran" check --root "$work" "$work/ui_mode.zi" \
     exit 1
 fi
 grep -Fq '#ui is not a Ziran modifier' "$work/ui_mode.err"
+
+cat > "$work/instance_mode.zi" <<'EOF'
+#module "instance_mode"
+State :: struct {
+    value: i32
+}
+Main :: () {
+    state: State #instance(7)
+}
+EOF
+if "$ziran" check --root "$work" "$work/instance_mode.zi" \
+    2> "$work/instance_mode.err"; then
+    echo '#instance unexpectedly passed in Ziran' >&2
+    exit 1
+fi
+grep -Fq '#instance is not a Ziran modifier' "$work/instance_mode.err"
 
 cat > "$work/unknown_block.zi" <<'EOF'
 #module "unknown_block"

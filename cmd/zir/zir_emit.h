@@ -25,12 +25,11 @@ void EmitSlotWrappers(FILE *out, const ZirModule *module, const ZirFunction *fn,
                          ZirTarget target, ZirResolveTarget resolver, void *context);
 void EmitSlotType(FILE *out, const ZirType *slot, ZirTarget target,
                      ZirResolveTarget resolve_type, void *context);
-/* instance_host is the native Go implementation receiver, or an empty string
- * for application functions and the other targets. number_support overrides
- * the module-local numeric helper prefix when a package shares one definition. */
+/* number_support overrides the module-local numeric helper prefix when a
+ * package shares one definition. */
 int EmitBody(FILE *out, const ZirModule *module, const ZirFunction *fn,
                 ZirTarget target, ZirResolveTarget resolve, void *context,
-                const char *instance_host, const char *number_support);
+                const char *number_support);
 /* Dense-output switch for the Go target: remove the inlined-expression length
  * bound so single-use temporaries fold without a readability cap. Default off. */
 void EmitUseMinifiedOutput(int enabled);

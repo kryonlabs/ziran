@@ -352,16 +352,6 @@ EmitNumbers(FILE *out, const ZirModule *module, ZirTarget target)
     int used = 0;
     for(int i = 0; i < module->function_count; i++) used |= CanEmitBody(module, &module->functions[i]);
     if(!used) return;
-    if(target == ZIR_C || target == ZIR_CPP) {
-        int instances = 0;
-        for(int i = 0; i < module->function_count; i++) {
-            const ZirFunction *fn = &module->functions[i];
-            for(int j = 0; j < fn->stmt_count; j++)
-                instances |= fn->stmts[j].is_instance;
-        }
-        if(instances)
-            fputs("#include \"ui_instance_props.generated.h\"\n", out);
-    }
     number_prefix(module, p, sizeof(p));
     EmitNumberSupport(out, target, p);
 }
@@ -448,7 +438,6 @@ EmitNumberSupport(FILE *out, ZirTarget target, const char *p)
 typedef struct Local {
     char name[ZIR_NAME_MAX];
     int depth;
-    int is_instance;
 } Local;
 typedef struct Emitter {
     FILE *out;
@@ -457,7 +446,6 @@ typedef struct Emitter {
     ZirTarget target;
     ZirResolveTarget resolve;
     void *context;
-    const char *instance_host;
     int indent, serial, depth, local_count;
     Local *locals;
     char numbers[64];
@@ -771,10 +759,7 @@ resolve(Emitter *e, const char *name, char *out, size_t size)
 {
     for(int i = e->local_count - 1; i >= 0; i--)
         if(!strcmp(e->locals[i].name, name)) {
-            if(e->locals[i].is_instance)
-                format(out, size, e->target == ZIR_JS ? "%s.value" : "(*%s)", name);
-            else
-                copy_text(out, size, name);
+            copy_text(out, size, name);
             return;
         }
     for(int i = 0; i < e->fn->capture_count; i++) {
@@ -785,8 +770,6 @@ resolve(Emitter *e, const char *name, char *out, size_t size)
             char context[ZIR_NAME_MAX];
             capture_context_name(e->fn, context, sizeof(context));
             format(out, size, "(*%s->%s)", context, name);
-        } else if(capture->is_instance) {
-            format(out, size, e->target == ZIR_JS ? "%s.value" : "(*%s)", name);
         } else {
             copy_text(out, size, name);
         }
@@ -1169,7 +1152,7 @@ EmitSlotWrappers(FILE *out, const ZirModule *module, const ZirFunction *fn,
                         wrapper, capture_name, wrapper, capture_name);
             else
                 fprintf(out, "    (void)%s_opaque;\n", capture_name);
-            EmitBody(out, module, body, target, resolver, context, "", NULL);
+            EmitBody(out, module, body, target, resolver, context, NULL);
             fputs("}\n", out);
             continue;
         }
@@ -1247,7 +1230,7 @@ emit_function_value(Emitter *e, int index, char *out, size_t size)
         else
             line(e, "const %s = (%s) => {", temporary, signature);
         EmitBody(e->out, e->module, body, e->target, e->resolve, e->context,
-                    e->instance_host, e->numbers);
+                    e->numbers);
         line(e, e->target == ZIR_GO ? "}" : "};");
         copy_text(out, size, temporary);
         return;
@@ -1698,38 +1681,12 @@ emit_sequence(Emitter *e,int begin,int end)
         char value[ZIR_TEXT_MAX],lhs[ZIR_TEXT_MAX],result[ZIR_TEXT_MAX];
         switch(st->kind) {
         case ZIR_STMT_DECL:
-            if(st->is_instance) {
-                char instance_type[ZIR_NAME_MAX];
-                copy_text(instance_type, sizeof(instance_type), st->type);
-                if(e->target == ZIR_GO && e->resolve)
-                    e->resolve(e->context, st->type, instance_type, sizeof(instance_type));
-                const ZirExpr *key = &e->fn->exprs[st->expr_root];
-                emit_expr(e, st->expr_root, key->kind == ZIR_EXPR_INT ? "u64" : "i64",
-                          value, sizeof(value));
-                if(e->target == ZIR_GO && *e->instance_host)
-                    line(e, "%s := instanceState[%s](%s, uint64(%s))",
-                         st->name, instance_type, e->instance_host, value);
-                else if(e->target == ZIR_GO)
-                    line(e, "%s := kryon.InstanceState[%s](uint64(%s))",
-                         st->name, instance_type, value);
-                else if(e->target == ZIR_JS) {
-                    for(int depth = 0; depth < e->indent; depth++)
-                        fputs("    ", e->out);
-                    fprintf(e->out, "const %s = kryon.instanceState($rt, \"%s\", %s, () => (",
-                            st->name, st->type, value);
-                    EmitJsRecordValue(e->out, e->module, st->type, NULL);
-                    fputs("));\n", e->out);
-                } else
-                    line(e, "%s *%s = (%s *)InstanceState(\"%s\", (uint64_t)%s, sizeof(%s));",
-                         st->type, st->name, st->type, st->type, value, st->type);
-            } else if(st->expr_root>=0)emit_expr(e,st->expr_root,st->type,value,sizeof(value));
+            if(st->expr_root>=0)emit_expr(e,st->expr_root,st->type,value,sizeof(value));
             else if(record_type(e->module, st->type)) {
                 zero_record(e, st->type, value, sizeof(value));
             }
             else copy_text(value, sizeof(value), zero_value(st->type, e->target));
-            if(!st->is_instance)
-                declare(e,st->name,st->type,value);
-            e->locals[e->local_count].is_instance = st->is_instance;
+            declare(e,st->name,st->type,value);
             copy_text(e->locals[e->local_count].name,ZIR_NAME_MAX,st->name);e->locals[e->local_count++].depth=e->depth;
             break;
         case ZIR_STMT_ASSIGN:
@@ -1797,13 +1754,11 @@ emit_sequence(Emitter *e,int begin,int end)
 
 int
 EmitBody(FILE *out,const ZirModule *module,const ZirFunction *fn,ZirTarget target,
-            ZirResolveTarget resolver,void *context,const char *instance_host,
-            const char *number_support)
+            ZirResolveTarget resolver,void *context,const char *number_support)
 {
     Emitter e={0};char params[64][ZIR_TEXT_MAX];int count;
     if(!CanEmitBody(module, fn))return 0;
     e.out=out;e.module=module;e.fn=fn;e.target=target;e.resolve=resolver;e.context=context;e.indent=1;
-    e.instance_host = instance_host;
     e.minify = zir_minify_output;
     e.locals=calloc((size_t)fn->stmt_count+65,sizeof(*e.locals));
     if(!e.locals) { fprintf(stderr,"out of memory during scalar emission\n"); exit(1); }

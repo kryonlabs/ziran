@@ -762,7 +762,7 @@ static void
 lower_body(FILE *c, const ZirModule *m, const ZirCppModuleSyms *restab, int restab_count, const ZirFunction *fn)
 {
     BodySymbols symbols = {m, restab, restab_count};
-    if(EmitBody(c, m, fn, ZIR_CPP, resolve_body_symbol, &symbols, "", NULL)) return;
+    if(EmitBody(c, m, fn, ZIR_CPP, resolve_body_symbol, &symbols, NULL)) return;
     int indent = 1;
     int j;
     char shadow[LOWER_TEXT_MAX];   /* param + local names shadow functions */

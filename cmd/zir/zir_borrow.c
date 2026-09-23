@@ -118,7 +118,7 @@ expression_origin(BorrowCheck *check, int index)
             return (Origin){0}; /* Typed module-owned array or record storage. */
         if(SliceElementType(source->type, NULL, 0))
             return source->local >= 0 ? check->current->locals[source->local] : source->origin;
-        return (Origin){0, source->depth, source->captured == 2};
+        return (Origin){0, source->depth, 0};
     }
     case ZIR_EXPR_MEMBER:
     case ZIR_EXPR_INDEX:
@@ -180,8 +180,7 @@ check_function(BorrowCheck *check, BorrowFunction *function)
     }
     for(int i = 0; i < fn->capture_count; i++) {
         const ZirCapture *capture = &fn->captures[i];
-        add_binding(check, capture->name, capture->type, (Origin){0}, -1, 0,
-                    capture->is_instance ? 2 : 1);
+        add_binding(check, capture->name, capture->type, (Origin){0}, -1, 0, 1);
     }
     char parameters[64][ZIR_TEXT_MAX];
     int count = *skip_ws(fn->args) ?
@@ -220,7 +219,7 @@ check_function(BorrowCheck *check, BorrowFunction *function)
                     reject(check, statement->span, "slice initializer outlives its backing storage");
             }
             add_binding(check, statement->name, statement->type, (Origin){0}, i,
-                        check->depth, statement->is_instance ? 2 : 0);
+                        check->depth, 0);
         } else if(statement->kind == ZIR_STMT_ASSIGN && statement->lhs_root >= 0) {
             const ZirExpr *destination = &fn->exprs[statement->lhs_root];
             if(SliceElementType(destination->type, NULL, 0)) {

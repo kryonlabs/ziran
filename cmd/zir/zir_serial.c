@@ -34,7 +34,7 @@ typedef struct Reader {
 #define SPAN_FIELD(type, name) \
     {offsetof(type, name), sizeof(((type *)0)->name), FIELD_SPAN}
 #define FIELD_COUNT(fields) (sizeof(fields) / sizeof((fields)[0]))
-#define ZIR_FORMAT_VERSION 3u
+#define ZIR_FORMAT_VERSION 4u
 
 static const Field state_fields[] = {
     STRING_FIELD(ZirStateField, name), STRING_FIELD(ZirStateField, type),
@@ -53,7 +53,7 @@ static const Field statement_fields[] = {
     INTEGER_FIELD(ZirStmt, kind), STRING_FIELD(ZirStmt, text),
     STRING_FIELD(ZirStmt, callee), STRING_FIELD(ZirStmt, args),
     INTEGER_FIELD(ZirStmt, declared_block_call),
-    INTEGER_FIELD(ZirStmt, is_instance), INTEGER_FIELD(ZirStmt, expr_root),
+    INTEGER_FIELD(ZirStmt, expr_root),
     INTEGER_FIELD(ZirStmt, lhs_root), STRING_FIELD(ZirStmt, name),
     STRING_FIELD(ZirStmt, type), STRING_FIELD(ZirStmt, assignment_op),
     SPAN_FIELD(ZirStmt, span)
@@ -68,7 +68,7 @@ static const Field expression_fields[] = {
     SPAN_FIELD(ZirExpr, span)
 };
 static const Field capture_fields[] = {
-    INTEGER_FIELD(ZirCapture, is_instance), STRING_FIELD(ZirCapture, name),
+    STRING_FIELD(ZirCapture, name),
     STRING_FIELD(ZirCapture, type)
 };
 static const Field function_fields[] = {

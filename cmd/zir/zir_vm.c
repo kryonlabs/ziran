@@ -826,7 +826,7 @@ verify_sequence(const ZirModule *module, const ZirFunction *function,
         int close;
         switch(statement->kind) {
         case ZIR_STMT_DECL:
-            if(statement->is_instance || !portable_type(module, statement->type) ||
+            if(!portable_type(module, statement->type) ||
                strcmp(statement->type, "void") == 0 ||
                statement->name[0] == 0 || binding_count >= VM_MAX_LOCALS ||
                (statement->expr_root >= 0 &&

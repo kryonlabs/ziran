@@ -114,7 +114,6 @@ typedef struct ZirStmt {
     char callee[ZIR_NAME_MAX];
     char args[ZIR_TEXT_MAX];
     int declared_block_call; /* typed block invocation, resolved after imports */
-    int is_instance; /* typed record binding retained by its explicit key */
     int expr_root;      /* index into enclosing function exprs, or -1 */
     int lhs_root;       /* structured assignment destination, or -1 */
     char name[ZIR_NAME_MAX]; /* declaration binding */
@@ -140,7 +139,6 @@ typedef struct ZirExpr {
 } ZirExpr;
 
 typedef struct ZirCapture {
-    int is_instance;
     char name[ZIR_NAME_MAX];
     char type[ZIR_NAME_MAX];
 } ZirCapture;

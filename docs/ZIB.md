@@ -17,7 +17,7 @@ enum initializers support integer literals and references to preceding members j
 or `-`; other constant expressions remain outside this subset. The bundle is
 `ZIB` plus a zero byte, a little-endian version, length-prefixed entry module
 and function names, a host capability count (currently zero), and a
-length-prefixed version 3 `.zir` payload. The current linker follows direct
+length-prefixed version 4 `.zir` payload. The current linker follows direct
 function calls from the entry, keeps record and enum declarations used by
 those functions (including types from imported modules and nested record
 fields), and removes unreachable functions, modules, types, and imports before
