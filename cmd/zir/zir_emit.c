@@ -653,12 +653,35 @@ operation(const char *op)
 }
 
 static void
+go_bits_operand(const char *value, char *out, size_t size)
+{
+    /* Go rejects uint64(-1) as a constant conversion. A negative integer
+     * literal here represents its two's-complement bits, not an arithmetic
+     * conversion of a Go constant. Runtime expressions already convert. */
+    if(value[0] == '-' && isdigit((unsigned char)value[1])) {
+        char *end;
+        long long signed_value;
+        errno = 0;
+        signed_value = strtoll(value, &end, 0);
+        if(errno == 0 && *end == '\0') {
+            format(out, size, "uint64(%llu)",
+                   (unsigned long long)(uint64_t)signed_value);
+            return;
+        }
+    }
+    format(out, size, "uint64(%s)", value);
+}
+
+static void
 number(Emitter *e, const char *type, const char *a, const char *b, int op, char *out, size_t size)
 {
     char bits[ZIR_TEXT_MAX];
     int w = width(type), sign = signed_type(type);
     if(e->target == ZIR_GO) {
-        format(bits,sizeof(bits),"%s_bits(uint64(%s),uint64(%s),%d,%s,%d)",e->numbers,a,b,w,sign?"true":"false",op);
+        char left[ZIR_TEXT_MAX], right[ZIR_TEXT_MAX];
+        go_bits_operand(a, left, sizeof(left));
+        go_bits_operand(b, right, sizeof(right));
+        format(bits,sizeof(bits),"%s_bits(%s,%s,%d,%s,%d)",e->numbers,left,right,w,sign?"true":"false",op);
         format(out,size,"%s(%s)",TargetType(type,e->target),bits);
     } else {
         format(bits,sizeof(bits),"%s_bits((uint64_t)(%s),(uint64_t)(%s),%d,%d,%d)",e->numbers,a,b,w,sign,op);

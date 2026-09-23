@@ -9,14 +9,15 @@ See [Implementation status](IMPLEMENTATION_STATUS.md) for the remaining work.
 loads explicit inputs and their extensionless imports, then links reachable
 modules. `ziran run FILE` validates and executes
 zero-argument integer, bool, or void entry functions on a portable interpreter.
-Called functions can use `i32`, `u8`, `u32`, `u64`, `bool`, `float`, `double`, and
+Called functions can use `i32`, `i64`, `u8`, `u32`, `u64`, `bool`, `float`, `double`, and
 immutable `string` values, enums, and plain records with scalar, enum, string,
 or nested record fields. Strings support UTF-8 literals, byte length and
 read-only indexing, equality, parameters, returns, and record fields. Record defaults and literals,
 member reads and writes, scalar compound assignments, parameters, returns,
 and value copies execute in the interpreter. The unsigned integer subset includes
 bitwise `&`, `|`, `^`, `~`, shifts, and their compound assignments; `u64`
-comparisons, arithmetic, and shifts use the full unsigned range. Portable
+comparisons, arithmetic, and shifts use the full unsigned range. Signed `i64`
+arithmetic, casts, bitwise operations, and shifts are also supported. Portable
 enum initializers support integer literals and references to preceding members joined by `+`
 or `-`; other constant expressions remain outside this subset. The bundle is
 `ZIB` plus a zero byte, a little-endian version, length-prefixed entry module

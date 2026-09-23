@@ -39,10 +39,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   The test runs an imported two-module call and compares bundle bytes from
   source and saved IR. The current runner supports zero-argument entry
   functions with `i32`/`int`/`bool`/`void` results, and helper functions with
-  `u8`/`u32`/`u64`/`float`/`double`/`string`, enum, or plain record results. It supports scalar, enum,
+  `i64`/`u8`/`u32`/`u64`/`float`/`double`/`string`, enum, or plain record results. It supports scalar, enum,
   string, and record parameters and locals, nested record fields, defaults and record
   literals, value copies, member reads and writes, scalar compound assignments,
-  `u32` and `u64` bitwise operations and shifts, calls,
+  `i64`, `u32`, and `u64` bitwise operations and shifts, calls,
   arithmetic, comparisons, casts, assignments, `if`/`else`, `while`, lexical
   blocks, `break`, `continue`, and returns. It rejects host imports outside the
   scalar/string/void subset and
@@ -63,6 +63,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   and clipped-strip geometry have the same source and saved-IR target coverage.
   Kryon's shared style values and fill-state records now support Separator and
   Progress paint decisions as ordinary imported modules in those targets.
+  Window placement and drag policy now runs from source and saved IR in native
+  targets and `.zib`, with window flags imported from a normal Ziran module.
 - Reachable scalar `#extern` host calls now appear as module/function
   capabilities in `.zib`. The loader verifies the capability list against the
   linked IR. `build/libziran.a` and `include/ziran_host.h` expose an opaque

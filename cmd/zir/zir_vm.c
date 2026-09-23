@@ -115,7 +115,7 @@ value_kind(const char *type)
     if(strcmp(type, "i32") == 0 || strcmp(type, "int") == 0 ||
        strcmp(type, "integer") == 0 || strcmp(type, "bool") == 0 ||
        strcmp(type, "u32") == 0 || strcmp(type, "u8") == 0 ||
-       strcmp(type, "u64") == 0)
+       strcmp(type, "u64") == 0 || strcmp(type, "i64") == 0)
         return VALUE_INT;
     if(strcmp(type, "float") == 0 || strcmp(type, "f32") == 0 ||
        strcmp(type, "double") == 0 || strcmp(type, "f64") == 0 ||
@@ -466,6 +466,13 @@ integer_bits(Value value)
     return value.unsigned64 ? value.bits : (uint64_t)value.integer;
 }
 
+static int64_t
+signed64(uint64_t bits)
+{
+    return bits <= INT64_MAX ? (int64_t)bits :
+           -1 - (int64_t)(UINT64_MAX - bits);
+}
+
 static double
 as_real(Value value)
 {
@@ -626,9 +633,13 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         int unsigned_type = strcmp(type, "u32") == 0 ||
                             strcmp(type, "u8") == 0 ||
                             strcmp(type, "u64") == 0;
-        double lower = unsigned_type ? 0.0 : INT32_MIN;
+        double lower = unsigned_type ? 0.0 :
+                       strcmp(type, "i64") == 0 ? -9223372036854775808.0 :
+                       INT32_MIN;
         double upper = strcmp(type, "u64") == 0 ?
                        18446744073709551616.0 :
+                       strcmp(type, "i64") == 0 ?
+                       9223372036854775808.0 :
                        strcmp(type, "u32") == 0 ?
                        (double)UINT32_MAX + 1.0 :
                        strcmp(type, "u8") == 0 ? 256.0 :
@@ -640,6 +651,8 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         }
         if(strcmp(type, "u64") == 0)
             return uint_value((uint64_t)value.real);
+        if(strcmp(type, "i64") == 0)
+            return int_value((int64_t)value.real);
         if(strcmp(type, "u32") == 0)
             return int_value((uint32_t)value.real);
         if(strcmp(type, "u8") == 0)
@@ -648,6 +661,8 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
     }
     if(strcmp(type, "u64") == 0)
         return uint_value(integer_bits(value));
+    if(strcmp(type, "i64") == 0)
+        return int_value(signed64(integer_bits(value)));
     uint32_t bits = (uint32_t)integer_bits(value);
     if(strcmp(type, "u32") == 0)
         return int_value(bits);
@@ -823,9 +838,8 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         char *end;
         errno = 0;
         if(expression->text[0] == '-') {
-            long long number = strtoll(expression->text, &end, 0);
-            return errno == 0 && end != expression->text && *end == 0 &&
-                   number >= INT32_MIN;
+            (void)strtoll(expression->text, &end, 0);
+            return errno == 0 && end != expression->text && *end == 0;
         }
         (void)strtoull(expression->text, &end, 0);
         return errno == 0 && end != expression->text && *end == 0;
@@ -1375,6 +1389,9 @@ binary_value(Vm *vm, const char *op, Value left, Value right,
     int shift = strcmp(op, "<<") == 0 || strcmp(op, ">>") == 0;
     int unsigned64 = strcmp(left_type, "u64") == 0 ||
                      (!shift && strcmp(right_type, "u64") == 0);
+    int signed_wide = !unsigned64 &&
+        (strcmp(left_type, "i64") == 0 ||
+         (!shift && strcmp(right_type, "i64") == 0));
     uint64_t left_bits = integer_bits(left);
     uint64_t right_bits = integer_bits(right);
     double a = as_real(left), b = as_real(right);
@@ -1434,18 +1451,25 @@ binary_value(Vm *vm, const char *op, Value left, Value right,
         goto failed;
     }
     if(bitwise_operator(op)) {
-        if(unsigned64) {
+        if(unsigned64 || signed_wide) {
             if(strcmp(op, "&") == 0)
-                return uint_value(left_bits & right_bits);
+                return unsigned64 ? uint_value(left_bits & right_bits) :
+                                    int_value(signed64(left_bits & right_bits));
             if(strcmp(op, "|") == 0)
-                return uint_value(left_bits | right_bits);
+                return unsigned64 ? uint_value(left_bits | right_bits) :
+                                    int_value(signed64(left_bits | right_bits));
             if(strcmp(op, "^") == 0)
-                return uint_value(left_bits ^ right_bits);
+                return unsigned64 ? uint_value(left_bits ^ right_bits) :
+                                    int_value(signed64(left_bits ^ right_bits));
             if((!right.unsigned64 && right.integer < 0) || right_bits >= 64)
                 goto failed;
             if(strcmp(op, "<<") == 0)
-                return uint_value(left_bits << right_bits);
-            return uint_value(left_bits >> right_bits);
+                return unsigned64 ? uint_value(left_bits << right_bits) :
+                                    int_value(signed64(left_bits << right_bits));
+            if(unsigned64)
+                return uint_value(left_bits >> right_bits);
+            return int_value(signed64((uint64_t)(signed64(left_bits) >>
+                                                 right_bits)));
         }
         uint32_t a_bits = (uint32_t)left_bits;
         uint32_t b_bits = (uint32_t)right_bits;
@@ -1474,6 +1498,23 @@ binary_value(Vm *vm, const char *op, Value left, Value right,
             return uint_value(left_bits / right_bits);
         if(strcmp(op, "%") == 0 && right_bits != 0)
             return uint_value(left_bits % right_bits);
+        goto failed;
+    }
+    if(signed_wide) {
+        if(strcmp(op, "+") == 0)
+            return int_value(signed64(left_bits + right_bits));
+        if(strcmp(op, "-") == 0)
+            return int_value(signed64(left_bits - right_bits));
+        if(strcmp(op, "*") == 0)
+            return int_value(signed64(left_bits * right_bits));
+        if(right.integer == 0)
+            goto failed;
+        if(left.integer == INT64_MIN && right.integer == -1)
+            return int_value(strcmp(op, "/") == 0 ? INT64_MIN : 0);
+        if(strcmp(op, "/") == 0)
+            return int_value(left.integer / right.integer);
+        if(strcmp(op, "%") == 0)
+            return int_value(left.integer % right.integer);
         goto failed;
     }
     if(strcmp(op, "+") == 0) return int_value(left.integer + right.integer);
@@ -1554,7 +1595,8 @@ eval(Frame *frame, int index, int depth)
         if(strcmp(expression->op, "-") == 0)
             value = right.kind == VALUE_REAL ? real_value(-right.real) :
                     right.unsigned64 ? uint_value(UINT64_C(0) - right.bits) :
-                                       int_value(-right.integer);
+                                       int_value(signed64(UINT64_C(0) -
+                                                          integer_bits(right)));
         else if(strcmp(expression->op, "+") == 0)
             value = right;
         else if(strcmp(expression->op, "!") == 0)

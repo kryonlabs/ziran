@@ -62,6 +62,7 @@ check: all $(BIN_DIR)/bundle-link-test $(BIN_DIR)/host-capability-test
 	$(BIN_DIR)/bundle-link-test
 	sh tests/standalone.sh $(BIN_DIR)/ziran
 	sh tests/portable_strings.sh $(BIN_DIR)/ziran
+	sh tests/portable_i64.sh $(BIN_DIR)/ziran
 	sh tests/module_paths.sh $(BIN_DIR)/ziran
 	sh tests/language_contract.sh $(BIN_DIR)/ziran
 	sh tests/host_capability.sh $(BIN_DIR)/ziran $(BIN_DIR)/host-capability-test
