@@ -32,12 +32,16 @@ The reader rejects unsupported versions, truncated or trailing data, malformed
 embedded IR, semantic errors and divergent fields in saved IR, unresolved imports,
 unsupported capabilities, and functions outside the current portable subset.
 Reachable `#extern` host calls with scalar, string, or void signatures become
-explicit capabilities. An embedding C host calls `VmRunWithHost` and supplies
-a callback for each required function. The standalone `ziran run` command has
-no host bindings and rejects a call that needs one. The loader compares the
-capability list with the linked IR; the VM checks signatures before execution.
+explicit capabilities. An embedding C host links `build/libziran.a`, includes
+`ziran_host.h`, opens a bundle with `BundleOpen`, and inspects its required
+module/function names with `BundleCapabilityCount`, `BundleCapabilityModule`,
+and `BundleCapabilityFunction`. It passes `HostBinding` entries to `BundleRun`.
+The runner checks that every required binding is present before executing the
+entry function. The standalone `ziran run` command has no host bindings and
+rejects a call that needs one. The loader compares the capability list with
+the linked IR; the VM checks signatures before execution.
 Source and saved-IR bundle bytes match in scalar, record, and enum tests,
-including Kryon's geometry, layout, and popup ownership tests. Version 1 is
+including Kryon's geometry, layout, and popup ownership tests. Version 2 is
 experimental and has no compatibility promise. Host calls with records or
 pointers, graphical programs, arrays, slots, state, globals,
 `for`, and `switch` remain unsupported.

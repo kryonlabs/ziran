@@ -1,4 +1,5 @@
 CC ?= cc
+AR ?= ar
 CFLAGS ?= -O2
 CFLAGS += -D_GNU_SOURCE -std=c11 -Iinclude -Icmd/zir
 
@@ -10,10 +11,19 @@ FRONTEND := cmd/zir/zir.c cmd/zir/zir_parse.c cmd/zir/zir_text.c \
     cmd/zir/zir_emit.c cmd/zir/zir_serial.c cmd/zir/zir_load.c \
     cmd/zir/zir_diagnostic.c
 PORTABLE := cmd/zir/zir_bundle.c cmd/zir/zir_vm.c
-HEADERS := $(wildcard cmd/zir/*.h)
+HEADERS := $(wildcard cmd/zir/*.h) $(wildcard include/*.h)
+LIB_SOURCES := $(FRONTEND) $(PORTABLE) cmd/zir/zir_host.c
+LIB_OBJECTS := $(patsubst cmd/zir/%.c,$(BUILD_DIR)/obj/%.o,$(LIB_SOURCES))
 
 .PHONY: all check clean
-all: $(BIN_DIR)/ziran $(BIN_DIR)/zi-fmt $(BIN_DIR)/ziran-ir $(BIN_DIR)/ziran-c $(BIN_DIR)/ziran-go $(BIN_DIR)/ziran-cpp $(BIN_DIR)/ziran-zib
+all: $(BIN_DIR)/ziran $(BIN_DIR)/zi-fmt $(BIN_DIR)/ziran-ir $(BIN_DIR)/ziran-c $(BIN_DIR)/ziran-go $(BIN_DIR)/ziran-cpp $(BIN_DIR)/ziran-zib $(BUILD_DIR)/libziran.a
+
+$(BUILD_DIR)/obj/%.o: cmd/zir/%.c $(HEADERS)
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/libziran.a: $(LIB_OBJECTS)
+	$(AR) rcs $@ $^
 
 $(BIN_DIR):
 	mkdir -p $@
@@ -39,14 +49,14 @@ $(BIN_DIR)/ziran-go: cmd/zir-go/main.c cmd/zir-go/zir_go_lower.c $(FRONTEND) $(H
 $(BIN_DIR)/ziran-cpp: cmd/zir-cpp/main.c cmd/zir-cpp/zir_cpp_lower.c $(FRONTEND) $(HEADERS) | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ cmd/zir-cpp/main.c cmd/zir-cpp/zir_cpp_lower.c $(FRONTEND)
 
-$(BIN_DIR)/ziran-zib: cmd/zir-zib/main.c $(FRONTEND) $(PORTABLE) $(HEADERS) | $(BIN_DIR)
-	$(CC) $(CFLAGS) -o $@ cmd/zir-zib/main.c $(FRONTEND) $(PORTABLE)
+$(BIN_DIR)/ziran-zib: cmd/zir-zib/main.c $(BUILD_DIR)/libziran.a $(HEADERS) | $(BIN_DIR)
+	$(CC) $(CFLAGS) -o $@ cmd/zir-zib/main.c $(BUILD_DIR)/libziran.a
 
 $(BIN_DIR)/bundle-link-test: tests/bundle_link_test.c $(FRONTEND) $(PORTABLE) $(HEADERS) | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ tests/bundle_link_test.c $(FRONTEND) $(PORTABLE)
 
-$(BIN_DIR)/host-capability-test: tests/host_capability_test.c $(FRONTEND) $(PORTABLE) $(HEADERS) | $(BIN_DIR)
-	$(CC) $(CFLAGS) -o $@ tests/host_capability_test.c $(FRONTEND) $(PORTABLE)
+$(BIN_DIR)/host-capability-test: tests/host_capability_test.c $(BUILD_DIR)/libziran.a | $(BIN_DIR)
+	$(CC) -D_GNU_SOURCE -std=c11 -Iinclude -o $@ tests/host_capability_test.c $(BUILD_DIR)/libziran.a
 
 check: all $(BIN_DIR)/bundle-link-test $(BIN_DIR)/host-capability-test
 	$(BIN_DIR)/bundle-link-test

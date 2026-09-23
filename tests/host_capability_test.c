@@ -1,5 +1,4 @@
-#include "zir_bundle.h"
-#include "zir_vm.h"
+#include "ziran_host.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -48,19 +47,26 @@ host_call(void *context, const char *module, const char *function,
 int
 main(int argc, char **argv)
 {
-    char module[ZIR_NAME_MAX], function[ZIR_NAME_MAX];
     long long result = 0;
     int has_result = 0, calls = 0;
+    const char *names[] = {"AddTenHost", "ByteCountHost", "DoubleHost",
+                           "EchoHost"};
+    HostBinding bindings[4];
     assert(argc == 2);
-    FILE *file = fopen(argv[1], "rb");
-    assert(file != NULL);
-    ZirProgram *program = BundleRead(file, argv[1], module, sizeof(module),
-                                     function, sizeof(function));
-    fclose(file);
-    assert(program != NULL);
-    assert(VmRunWithHost(program, module, function, host_call, &calls,
-                         &result, &has_result));
+    Bundle *bundle = BundleOpen(argv[1]);
+    assert(bundle != NULL);
+    assert(BundleCapabilityCount(bundle) == 4);
+    for(size_t i = 0; i < 4; i++) {
+        assert(strcmp(BundleCapabilityModule(bundle, i), "host_api") == 0);
+        assert(strcmp(BundleCapabilityFunction(bundle, i), names[i]) == 0);
+        bindings[i] = (HostBinding){"host_api", names[i], host_call, &calls};
+    }
+    assert(BundleCapabilityModule(bundle, 4) == NULL);
+    assert(BundleCapabilityFunction(bundle, 4) == NULL);
+    assert(!BundleRun(bundle, bindings, 3, &result, &has_result));
+    assert(calls == 0);
+    assert(BundleRun(bundle, bindings, 4, &result, &has_result));
     assert(has_result && result == 42 && calls == 4);
-    ProgramFree(program);
+    BundleClose(bundle);
     return 0;
 }

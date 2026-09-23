@@ -58,7 +58,7 @@ if "$ziran" run "$work/source.zib" 2> "$work/missing.err"; then
     echo 'bundle unexpectedly ran without its host capabilities' >&2
     exit 1
 fi
-grep -Fq 'missing host capability: host_api:EchoHost' "$work/missing.err"
+grep -Fq 'missing host capability: host_api:AddTenHost' "$work/missing.err"
 python3 - "$work/source.zib" "$work/tampered.zib" <<'PY'
 from pathlib import Path
 import sys

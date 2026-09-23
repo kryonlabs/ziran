@@ -6,6 +6,7 @@
 #include "zir_serial.h"
 #include "zir_load.h"
 #include "zir_vm.h"
+#include "ziran_host.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -127,32 +128,19 @@ done:
 static int
 run_command(int argc, char **argv)
 {
-    char entry_module[ZIR_NAME_MAX], entry_function[ZIR_NAME_MAX];
     long long result;
     int has_result;
-    FILE *file;
-    ZirProgram *program;
     if(argc != 1) {
         usage();
         return 1;
     }
-    file = fopen(argv[0], "rb");
-    if(file == NULL) {
-        Diagnostic(Span(argv[0], 1, 1), "zib.input",
-                      "cannot open bundle");
+    Bundle *bundle = BundleOpen(argv[0]);
+    if(bundle == NULL)
         return 1;
-    }
-    program = BundleRead(file, argv[0], entry_module,
-                            sizeof(entry_module), entry_function,
-                            sizeof(entry_function));
-    fclose(file);
-    if(program == NULL)
-        return 1;
-    int ok = VmRun(program, entry_module, entry_function,
-                      &result, &has_result);
+    int ok = BundleRun(bundle, NULL, 0, &result, &has_result);
     if(ok && has_result)
         printf("%lld\n", result);
-    ProgramFree(program);
+    BundleClose(bundle);
     return ok ? 0 : 1;
 }
 

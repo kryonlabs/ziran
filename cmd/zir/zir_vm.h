@@ -2,31 +2,8 @@
 #define ZIRAN_ZIR_VM_H
 
 #include "zir.h"
+#include "ziran_host.h"
 #include <stdint.h>
-
-typedef enum VmHostValueKind {
-    VM_HOST_VOID,
-    VM_HOST_INTEGER,
-    VM_HOST_UNSIGNED,
-    VM_HOST_REAL,
-    VM_HOST_STRING
-} VmHostValueKind;
-
-typedef struct VmHostValue {
-    VmHostValueKind kind;
-    const char *type;
-    int64_t integer;
-    uint64_t bits;
-    double real;
-    const unsigned char *data;
-    size_t length;
-} VmHostValue;
-
-/* Return nonzero only after writing a result of the declared return type.
- * String bytes returned by a host must remain valid until VmRunWithHost ends. */
-typedef int (*VmHostCall)(void *context, const char *module,
-                          const char *function, const VmHostValue *args,
-                          int arg_count, VmHostValue *result);
 
 /* Initial portable scalar execution subset. Verification precedes execution. */
 int VmVerify(const ZirProgram *program, const char *entry_module,

@@ -1,0 +1,60 @@
+#ifndef ZIRAN_HOST_H
+#define ZIRAN_HOST_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct Bundle Bundle;
+
+typedef enum VmHostValueKind {
+    VM_HOST_VOID,
+    VM_HOST_INTEGER,
+    VM_HOST_UNSIGNED,
+    VM_HOST_REAL,
+    VM_HOST_STRING
+} VmHostValueKind;
+
+typedef struct VmHostValue {
+    VmHostValueKind kind;
+    const char *type;
+    int64_t integer;
+    uint64_t bits;
+    double real;
+    const unsigned char *data;
+    size_t length;
+} VmHostValue;
+
+/* Return nonzero after writing a result of the declared return type.
+ * Returned string bytes must remain valid until BundleRun returns. */
+typedef int (*VmHostCall)(void *context, const char *module,
+                          const char *function, const VmHostValue *args,
+                          int arg_count, VmHostValue *result);
+
+typedef struct HostBinding {
+    const char *module;
+    const char *function;
+    VmHostCall call;
+    void *context;
+} HostBinding;
+
+/* Open and validate a version 2 portable bundle. Close releases all names. */
+Bundle *BundleOpen(const char *path);
+void BundleClose(Bundle *bundle);
+size_t BundleCapabilityCount(const Bundle *bundle);
+const char *BundleCapabilityModule(const Bundle *bundle, size_t index);
+const char *BundleCapabilityFunction(const Bundle *bundle, size_t index);
+
+/* Every required capability must have exactly one binding before execution.
+ * Integer/bool entry results are returned in result; void sets has_result=0. */
+int BundleRun(const Bundle *bundle, const HostBinding *bindings,
+              size_t binding_count, long long *result, int *has_result);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

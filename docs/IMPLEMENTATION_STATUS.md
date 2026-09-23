@@ -44,7 +44,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   literals, value copies, member reads and writes, scalar compound assignments,
   `u32` and `u64` bitwise operations and shifts, calls,
   arithmetic, comparisons, casts, assignments, `if`/`else`, `while`, lexical
-  blocks, `break`, `continue`, and returns. It rejects host imports and
+  blocks, `break`, `continue`, and returns. It rejects host imports outside the
+  scalar/string/void subset and
   unsupported statements before writing a bundle. Loop, branch, and real
   arithmetic programs are compared against generated C, C++, and Go in
   `make check`. The bundle loader also reruns the language checker and laws
@@ -64,10 +65,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   Progress paint decisions as ordinary imported modules in those targets.
 - Reachable scalar `#extern` host calls now appear as module/function
   capabilities in `.zib`. The loader verifies the capability list against the
-  linked IR, and an embedding C host can execute integer, real, string, and
-  void calls through `VmRunWithHost`. The CLI runner reports a missing host
-  capability. Source and saved-IR bundles, unused extern pruning, list
-  tampering, and unsupported record signatures are tested. Record and pointer
+  linked IR. `build/libziran.a` and `include/ziran_host.h` expose an opaque
+  bundle handle, capability enumeration, and bindings for integer, real, string,
+  and void calls. `BundleRun` checks all required bindings before execution.
+  The CLI runner also checks required bindings before execution. Source and
+  saved-IR bundles, unused extern pruning, list tampering, missing binding
+  preflight, and unsupported record signatures are tested. Record and pointer
   host calls remain unsupported.
 - Portable strings now carry immutable UTF-8 bytes with exact byte lengths,
   including embedded nulls. The verifier and interpreter cover literals,
