@@ -1468,8 +1468,11 @@ binary_value(Vm *vm, const char *op, Value left, Value right,
                                     int_value(signed64(left_bits << right_bits));
             if(unsigned64)
                 return uint_value(left_bits >> right_bits);
-            return int_value(signed64((uint64_t)(signed64(left_bits) >>
-                                                 right_bits)));
+            uint64_t shifted = left_bits >> right_bits;
+            if((left_bits & UINT64_C(0x8000000000000000)) != 0 &&
+               right_bits > 0)
+                shifted |= UINT64_MAX << (64 - right_bits);
+            return int_value(signed64(shifted));
         }
         uint32_t a_bits = (uint32_t)left_bits;
         uint32_t b_bits = (uint32_t)right_bits;
