@@ -15,7 +15,8 @@ parallelism, and [Migration](docs/MIGRATION.md) for the two-repository cutover.
 The split is underway. The current compiler can check and compile a tested
 subset of non-UI `.zi` to C, C++, and native Go. It can also save that subset as an
 experimental versioned `.zir` and build each native target from saved modules. It
-can build and run experimental `.zib` bundles for a non-graphical scalar subset.
+can build and run experimental `.zib` bundles for a non-graphical subset with
+scalars and plain records.
 [Implementation status](docs/IMPLEMENTATION_STATUS.md)
 lists the remaining work. The [IR](docs/ZIR.md) and [bundle](docs/ZIB.md)
 documents distinguish the current format from the intended contracts.

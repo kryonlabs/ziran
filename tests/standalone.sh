@@ -284,6 +284,58 @@ assert b'UnusedRecord' not in data
 assert b'dead_library' not in data
 assert b'UnusedDead' not in data
 PY
+cat > "$work/record_shapes.zi" <<'EOF'
+#module "record_shapes"
+Point :: struct {
+    x: i32
+}
+Rectangle :: struct {
+    origin: Point
+    width: i32
+}
+Unused :: struct {
+    value: i32
+}
+EOF
+cat > "$work/record_operations.zi" <<'EOF'
+#module "record_operations"
+#import "record_shapes"
+Measure :: (rect: Rectangle) -> i32 #export {
+    return rect.origin.x + rect.width
+}
+Widen :: (rect: Rectangle) -> Rectangle #export {
+    out: Rectangle = rect
+    out.width = 100
+    return out
+}
+EOF
+cat > "$work/record_application.zi" <<'EOF'
+#module "record_application"
+#import "record_shapes"
+#import "record_operations"
+Answer :: () -> i32 #export {
+    rect: Rectangle
+    rect.origin.x = 2
+    rect.width = 40
+    wide: Rectangle = Widen(rect)
+    if rect.width != 40 || wide.width != 100 { return 0 }
+    return Measure(rect)
+}
+EOF
+"$ziran" bundle --root "$work" --entry record_application:Answer \
+    -o "$work/record.zib" "$work/record_shapes.zi" \
+    "$work/record_operations.zi" "$work/record_application.zi"
+test "$("$ziran" run "$work/record.zib")" = 42
+"$ziran" ir --root "$work" -o "$work/record-ir" \
+    "$work/record_shapes.zi" "$work/record_operations.zi" \
+    "$work/record_application.zi"
+"$ziran" bundle --root "$work" --entry record_application:Answer \
+    -o "$work/record-from-ir.zib" \
+    "$work/record-ir/record_shapes.zir" \
+    "$work/record-ir/record_operations.zir" \
+    "$work/record-ir/record_application.zir"
+cmp "$work/record.zib" "$work/record-from-ir.zib"
+test "$("$ziran" run "$work/record-from-ir.zib")" = 42
 python3 - "$work/flow-ir/flow.zir" "$work/invalid-flow.zir" <<'PY'
 from pathlib import Path
 import sys
@@ -397,7 +449,7 @@ if "$ziran" bundle --root "$work" --entry unsupported_bundle:Answer \
     echo 'unsupported portable data type unexpectedly bundled' >&2
     exit 1
 fi
-grep -Fq 'outside the portable scalar subset' "$work/unsupported-bundle.err"
+grep -Fq 'outside the portable subset' "$work/unsupported-bundle.err"
 test ! -e "$work/unsupported-bundle.zib"
 
 cat > "$work/blocklib.zi" <<'EOF'
