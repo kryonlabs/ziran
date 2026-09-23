@@ -787,9 +787,12 @@ cat > "$work/blockapp.zi" <<'EOF'
 #import "blocklib"
 Answer :: () -> i32 #export {
     Button: {
+        value = 1
+    }
+    Button chosen: {
         value = 41
     }
-    return 42
+    return chosen
 }
 EOF
 "$ziran" build --target=c --strict --root "$work" -o "$work/blocks" \
@@ -826,6 +829,33 @@ ${CC:-cc} -Iinclude -I"$work/blocks-from-ir" \
     "$work/blocks-from-ir/blocklib.c" "$work/blocks-from-ir/blockapp.c" \
     "$work/blocks-from-ir/main.c" -o "$work/blocks-from-ir/app"
 "$work/blocks-from-ir/app"
+"$ziran" bundle --root "$work" --entry blockapp:Answer \
+    -o "$work/blocks-source.zib" "$work/blocklib.zi" "$work/blockapp.zi"
+"$ziran" bundle --root "$work/blocks-ir" --entry blockapp:Answer \
+    -o "$work/blocks-saved.zib" "$work/blocks-ir/blocklib.zir" \
+    "$work/blocks-ir/blockapp.zir"
+cmp "$work/blocks-source.zib" "$work/blocks-saved.zib"
+test "$("$ziran" run "$work/blocks-source.zib")" = 42
+test "$("$ziran" run "$work/blocks-saved.zib")" = 42
+cat > "$work/void_block.zi" <<'EOF'
+#module "void_block"
+Props :: struct {
+    value: i32
+}
+Apply :: (props: Props) #export {
+}
+Main :: () {
+    Apply named: {
+        value = 1
+    }
+}
+EOF
+if "$ziran" check --root "$work" "$work/void_block.zi" \
+    2> "$work/void_block.err"; then
+    echo 'named void block unexpectedly passed' >&2
+    exit 1
+fi
+grep -Fq 'named block call requires a return value' "$work/void_block.err"
 "$ziran" build --target=go --strict --pkg main --root "$work" \
     -o "$work/blocks-go-ir" "$work/blocks-ir/blocklib.zir" \
     "$work/blocks-ir/blockapp.zir"

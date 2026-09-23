@@ -1040,6 +1040,7 @@ inherit_block_call_metadata(ZirStmt *statement, const ZirStmt *source)
 static int
 lower_block_call(Checker *c, int index, const ZirModule *owner,
                       const ZirType *props, const char *temporary,
+                      const char *return_type,
                       char parameters[][ZIR_TEXT_MAX], int parameter_count)
 {
     const ZirStmt *source = &c->fn->stmts[index];
@@ -1149,8 +1150,12 @@ lower_block_call(Checker *c, int index, const ZirModule *owner,
         length += (size_t)added;
     }
     {
-        ZirStmt *call = block_statement(&lowered, ZIR_STMT_EXPR, span,
-                                         "%s(%s)", source->callee, arguments);
+        ZirStmt *call = source->text[0] != '\0' ?
+            block_statement(&lowered, ZIR_STMT_DECL, span,
+                            "%s: %s = %s(%s)", source->text, return_type,
+                            source->callee, arguments) :
+            block_statement(&lowered, ZIR_STMT_EXPR, span,
+                            "%s(%s)", source->callee, arguments);
         if(call == NULL)
             goto failed;
         inherit_block_call_metadata(call, source);
@@ -1208,6 +1213,9 @@ resolve_block_calls(Checker *c)
             diagnostic = "block calls require a Ziran function declaration";
         else if(count < 1 || count == 64 || props == NULL || props->is_enum || props->is_slot)
             diagnostic = "block-call declaration requires one typed record parameter";
+        else if(statement->text[0] != '\0' &&
+                strcmp(declaration->return_type, "void") == 0)
+            diagnostic = "named block call requires a return value";
         if(diagnostic != NULL) {
             Diagnostic(statement->span, "check.callee", "%s: %s", diagnostic, statement->callee);
             c->failed = 1;
@@ -1230,7 +1238,9 @@ resolve_block_calls(Checker *c)
                              strstr(c->fn->stmts[s].args, temporary) != NULL;
             }
         } while(collision);
-        int added = lower_block_call(c, i, owner, props, temporary, parameters, count);
+        int added = lower_block_call(c, i, owner, props, temporary,
+                                     declaration->return_type,
+                                     parameters, count);
         if(added < 0)
             return 0;
         i += added - 1;

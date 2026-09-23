@@ -27,6 +27,9 @@ function signature and record/slot types. Its semantics do not depend on the
 callee's spelling. `Button`, `Text`, and `Image` mean nothing until imported or
 declared. Kryon's `Image(ImageProps)` is an ordinary library API, including
 when used for semantic images.
+For a typed record call, `Function result: { ... }` binds the call's non-void
+return value to `result`; `Function: { ... }` discards it. Both use the same
+ordinary function declaration.
 
 Ziran has no `#ui` function modifier, app/route syntax, widget fallback,
 `#style` directive, DOM fields in its IR, or renderer-specific type checks.

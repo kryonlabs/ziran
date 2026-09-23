@@ -10,8 +10,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `build --target=c|cpp|go` for `.zi` or saved `.zir` input.
 - `make check` passes standalone non-UI programs, a two-module import, and an
   imported typed record block call named `Button` through generated C, C++,
-  and native Go. Source and saved `.zir` builds execute for the tested subset.
+  and native Go. A named block binds its non-void result, with source and saved
+  `.zir` builds across those targets and matching source/saved `.zib` execution.
   The call is resolved from its declaration, not its name.
+- A two-module named block can pass a synchronous `#slot` child that captures
+  a caller local. Source and saved `.zir` builds execute the same result in C,
+  C++, and Go. Portable `.zib` execution still lacks callable slots.
 - `check`, `ir`, `build`, and `bundle` discover extensionless imports
   transitively. Repeated `--module-path DIR` options locate ordinary libraries
   outside an app root; explicitly supplied modules take precedence. A separate
@@ -126,8 +130,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 ## Still required
 
 - Remove the remaining UI-specific parser, checker, IR, and backend paths.
-  Finish general typed block calls, named blocks, callable child slots, and imports
-  for ordinary libraries. Current block-call coverage is a small leaf subset.
+  Finish general typed block calls, callable child slots, and imports for
+  ordinary libraries. Named result binding now works for the tested typed
+  record call, and one synchronous captured child slot works in native targets;
+  block-call coverage is still a small subset.
 - Make structured `.zir` authoritative: the current checker reconstructs
   expressions from serialized statement text, then compares the full checked
   serialization with the original. This rejects divergent stored fields but

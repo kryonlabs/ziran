@@ -470,6 +470,7 @@ parse_direct_call_statement(const char *text, char *name, size_t name_size,
 
 typedef struct BlockCall {
     char callee[ZIR_NAME_MAX];
+    char name[ZIR_NAME_MAX];
     ZirSourceSpan span;
     char props[ZIR_TEXT_MAX];
     int close_depth;
@@ -517,6 +518,8 @@ parse_block_call_header(const char *text, char *callee, size_t callee_size,
             name[n++] = *p;
         p++;
     }
+    if((size_t)(p - start) >= name_size)
+        return 0;
     name[n] = '\0';
     while(*p == ' ' || *p == '\t')
         p++;
@@ -586,7 +589,8 @@ block_call_open(ZirFunction *fn, BlockCall *block, ZirSourceSpan span, int closi
     if(!closing)
         die_at(span, "block content requires a declared slot parameter");
     source_span = block->span.path[0] != '\0' ? block->span : span;
-    statement = FunctionAddBlockCall(fn, block->callee, block->props, "",
+    statement = FunctionAddBlockCall(fn, block->callee, block->props,
+                                     block->name,
                                      source_span);
     if(statement == NULL)
         die("out of memory parsing block call");
@@ -2595,9 +2599,10 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                                          block_name, sizeof(block_name))) {
                     BlockCall *block;
 
-                    if(block_name[0] != '\0')
+                    if(block_name[0] != '\0' &&
+                       !is_identifier_text(block_name))
                         die_at(Span(rel, line_no, 1),
-                               "named block calls are not supported yet");
+                               "invalid block result name: %s", block_name);
                     if(block_call_count > 0)
                         block_call_open(fn, &block_calls[block_call_count - 1],
                                       Span(rel, line_no,
@@ -2612,6 +2617,8 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                                              pending_end_column);
                     snprintf(block->callee, sizeof(block->callee), "%s",
                              block_callee);
+                    snprintf(block->name, sizeof(block->name), "%s",
+                             block_name);
                     block->close_depth = depth + 1;
                     depth++;
                     continue;
