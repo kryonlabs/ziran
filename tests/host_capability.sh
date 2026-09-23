@@ -10,6 +10,7 @@ cat > "$work/host_api.zi" <<'EOF'
 AddTenHost :: (value: i32) -> i32 #extern
 ByteCountHost :: (value: string) -> i32 #extern
 DoubleHost :: (value: float) -> float #extern
+EchoHost :: (value: u32) -> u32 #extern
 UnusedHost :: () -> i32 #extern
 AddTen :: (value: i32) -> i32 #export {
     return AddTenHost(value)
@@ -20,11 +21,15 @@ ByteCount :: (value: string) -> i32 #export {
 Double :: (value: float) -> float #export {
     return DoubleHost(value)
 }
+Echo :: (value: u32) -> u32 #export {
+    return EchoHost(value)
+}
 EOF
 cat > "$work/application.zi" <<'EOF'
 #module "application"
 #import "host_api"
 Answer :: () -> i32 #export {
+    if Echo((u32)4294967295) != (u32)4294967295 { return 0 }
     return AddTen(28) + ByteCount("hi") + (i32)Double(1.0)
 }
 EOF
@@ -44,7 +49,7 @@ for _ in range(2):
     length, = struct.unpack_from('<I', data, offset)
     offset += 4 + length
 count, = struct.unpack_from('<I', data, offset)
-assert count == 3, count
+assert count == 4, count
 assert b'UnusedHost' not in data
 PY
 "$host_test" "$work/source.zib"
@@ -53,7 +58,7 @@ if "$ziran" run "$work/source.zib" 2> "$work/missing.err"; then
     echo 'bundle unexpectedly ran without its host capabilities' >&2
     exit 1
 fi
-grep -Fq 'missing host capability: host_api:AddTenHost' "$work/missing.err"
+grep -Fq 'missing host capability: host_api:EchoHost' "$work/missing.err"
 python3 - "$work/source.zib" "$work/tampered.zib" <<'PY'
 from pathlib import Path
 import sys

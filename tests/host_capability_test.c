@@ -35,6 +35,13 @@ host_call(void *context, const char *module, const char *function,
         result->real = args[0].real * 2.0;
         return 1;
     }
+    if(strcmp(function, "EchoHost") == 0 &&
+       args[0].kind == VM_HOST_UNSIGNED &&
+       strcmp(args[0].type, "u32") == 0) {
+        result->kind = VM_HOST_UNSIGNED;
+        result->bits = args[0].bits;
+        return 1;
+    }
     return 0;
 }
 
@@ -53,7 +60,7 @@ main(int argc, char **argv)
     assert(program != NULL);
     assert(VmRunWithHost(program, module, function, host_call, &calls,
                          &result, &has_result));
-    assert(has_result && result == 42 && calls == 3);
+    assert(has_result && result == 42 && calls == 4);
     ProgramFree(program);
     return 0;
 }
