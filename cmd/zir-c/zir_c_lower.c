@@ -1470,12 +1470,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
             continue;
         emit_guard_open(h, ty->guard);
         if(ty->is_enum) {
-            /* Native contracts retain their public C enum tags. */
-            int native = FindRuntimeType(ty->name, NULL) != NULL;
-            if(native)
-                fprintf(h, "\ntypedef enum %s {\n", ty->name);
-            else
-                fprintf(h, "\ntypedef int32_t %s;\nenum {\n", ty->name);
+            fprintf(h, "\ntypedef int32_t %s;\nenum {\n", ty->name);
             {
                 const char *line = ty->body;
 
@@ -1499,10 +1494,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
                     line = nl ? nl + 1 : NULL;
                 }
             }
-            if(native)
-                fprintf(h, "} %s;\n", ty->name);
-            else
-                fprintf(h, "};\n");
+            fprintf(h, "};\n");
             continue;
         }
         fprintf(h, "\ntypedef struct %s {\n", ty->name);

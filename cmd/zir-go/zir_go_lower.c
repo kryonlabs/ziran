@@ -669,8 +669,7 @@ parse_enum(const ZirType *t)
         e = &g_enums[g_enum_count++];
         memset(e, 0, sizeof(*e));
         camel_ident(t->name, e->go_type, sizeof(e->go_type));
-        if(FindRuntimeType(t->name, NULL) == NULL)
-            camel_ident(t->name, e->prefix, sizeof(e->prefix));
+        camel_ident(t->name, e->prefix, sizeof(e->prefix));
     }
     while(*p != '\0') {
         char line[ZIR_GO_TEXT_MAX];
@@ -1012,8 +1011,7 @@ static int
 source_record(const ZirModule *module, const char *name)
 {
     const ZirType *record = FindType(module, name, NULL);
-    return record != NULL && !record->is_enum &&
-           record != FindRuntimeType(name, NULL);
+    return record != NULL && !record->is_enum;
 }
 
 static int
@@ -1902,7 +1900,7 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                     char prefix[ZIR_GO_NAME_MAX] = "";
                     char member[ZIR_GO_NAME_MAX];
                     copy_text(member, sizeof(member), ident);
-                    if(strcmp(type->name, "#enum") != 0 && FindRuntimeType(type->name, NULL) == NULL) {
+                    if(strcmp(type->name, "#enum") != 0) {
                         camel_ident(type->name, prefix, sizeof(prefix));
                         /* The definition side (parse_enum) keeps members that
                          * already carry the enum prefix flat; mirror that
@@ -1966,12 +1964,6 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                     p = q;
                     continue;
                 }
-            }
-            if(FindRuntimeEnumMember(ident) != NULL) {
-                dn += (size_t)snprintf(dst + dn, dst_size - dn, "%s%s",
-                    runtime_output ? "" : ZIR_GO_RUNTIME_PKG ".", ident);
-                p = q;
-                continue;
             }
             if(go_is_array_name(ident, il)) {
                 if(q[0] == '[' && q[1] == ':' && q[2] == ']') {
@@ -2922,21 +2914,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                                 snprintf(val, sizeof(val), "%s + 1",
                                          e->members[mI - 1].go);
                             }
-                            /* Native contracts preserve their public enum types.
-                             * An explicit scalar cast declares a flag constant's
-                             * representation without changing its numeric value. */
-                            char scalar[ZIR_NAME_MAX] = "";
-                            const char *close = strchr(mem->val, ')');
-                            if(mem->val[0] == '(' && close != NULL &&
-                               (size_t)(close - mem->val - 1) < sizeof(scalar)) {
-                                memcpy(scalar, mem->val + 1, (size_t)(close - mem->val - 1));
-                                trim_in_place(scalar);
-                            }
-                            if(FindRuntimeType(t->name, NULL) != NULL &&
-                               !*ScalarType(scalar))
-                                fprintf(f, "\t%s %s = %s\n", mem->go, e->go_type, val);
-                            else
-                                fprintf(f, "\t%s = %s\n", mem->go, val);
+                            fprintf(f, "\t%s = %s\n", mem->go, val);
                         }
                         fprintf(f, ")\n\n");
                     } else {

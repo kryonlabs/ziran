@@ -261,8 +261,6 @@ typedef struct ZirProgram {
 int ResolveFunction(const ZirModule *module, const char *name,
                        const ZirModule **owner, const ZirFunction **function);
 /* Runtime contracts are parsed from embedded declaration sources. */
-const ZirType *FindRuntimeEnumMember(const char *name);
-const ZirType *FindRuntimeType(const char *name, const ZirModule **owner);
 const ZirType *FindType(const ZirModule *module, const char *name,
                           const ZirModule **owner);
 int ResolveEnumMember(const ZirModule *module, const char *name,

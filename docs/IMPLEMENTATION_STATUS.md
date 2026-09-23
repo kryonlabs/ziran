@@ -47,6 +47,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 - Compiler functions use short names without `Zir` or `zir_` prefixes,
   including the IR serializer's `ProgramWrite`, `ProgramRead`, and `PathIsIR`.
   IR data types retain `Zir` names for now.
+- The inherited runtime type and enum-member lookup stubs are gone. Local and
+  imported declarations now supply those names without a compiler fallback.
 - Native Go no longer treats ordinary imported record types as types from the
   legacy Kryon Go runtime. The standalone record-call test asserts that no
   Kryon package import is generated.

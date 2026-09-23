@@ -646,8 +646,6 @@ expression_type(Checker *c, int index)
     case ZIR_EXPR_IDENT:
         if(!strcmp(e->name, "true") || !strcmp(e->name, "false")) type = "bool";
         else type = lookup(c, e->name);
-        if(!*type && FindRuntimeEnumMember(e->name) != NULL)
-            type = "integer";   /* runtime enum member; the emitter resolves it */
         if(!*type) error(c, e->span, "unresolved name", e->name);
         break;
     case ZIR_EXPR_CALL: {

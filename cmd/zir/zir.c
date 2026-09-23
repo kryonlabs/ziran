@@ -230,22 +230,6 @@ ResolveFunction(const ZirModule *module, const char *name,
 }
 
 const ZirType *
-FindRuntimeEnumMember(const char *name)
-{
-    (void)name;
-    return NULL;
-}
-
-const ZirType *
-FindRuntimeType(const char *name, const ZirModule **owner)
-{
-    if(owner != NULL)
-        *owner = NULL;
-    (void)name;
-    return NULL;
-}
-
-const ZirType *
 FindType(const ZirModule *module, const char *name, const ZirModule **owner)
 {
     const ZirType *found = NULL;
@@ -276,8 +260,6 @@ FindType(const ZirModule *module, const char *name, const ZirModule **owner)
             scope = target;
         }
     }
-    if(found == NULL)
-        return FindRuntimeType(name, owner);
     if(owner)
         *owner = scope;
     return found;

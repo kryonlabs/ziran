@@ -1465,12 +1465,6 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             break;
         }
         resolve(e, expr->name, result, sizeof(result));
-        if(e->target == ZIR_GO &&
-           FindRuntimeEnumMember(expr->name) != NULL) {
-            const char *target = TargetType(type, ZIR_GO);
-            copy_text(a, sizeof(a), result);
-            format(result, sizeof(result), "%s(%s)", target != NULL ? target : type, a);
-        }
         pure = 1;
         break;
     case ZIR_EXPR_STRING:
