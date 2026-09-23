@@ -58,10 +58,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `make check`. The bundle loader also reruns the language checker and laws
   before execution. The linker follows direct calls and drops unreachable
   functions and modules, while retaining reachable record and enum declarations.
-  Fixed arrays with numeric bounds are tested through source and saved IR in
+  Fixed arrays with numeric or resolved named bounds are tested through source and saved IR in
   C, C++, Go, and `.zib`, including imported record element types, value-copy
-  isolation, and portable bounds failures. Symbolic bounds and slices remain
-  outside the portable subset.
+  isolation, and portable bounds failures. Linked bundles retain needed
+  compile-time definitions for named bounds, including constants-only imports.
+  Unresolved bounds and slices remain outside the portable subset.
   The test runs record and enum functions across imported modules. Kryon's
   complete geometry, layout, and group calculation test also runs in `.zib`
   from source and saved `.zir`. Kryon's accessibility, drag and drop, theme,

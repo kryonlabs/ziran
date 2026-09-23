@@ -27,7 +27,9 @@ length-prefixed version 4 `.zir` payload. The current linker follows direct
 function calls from the entry, keeps record and enum declarations used by
 those functions (including types from imported modules and nested record
 fields), and removes unreachable functions, modules, types, and imports before
-writing the payload. Enum member references keep their declaration even when
+writing the payload. Compile-time definitions and imported modules needed by
+named array bounds remain available when the bundle rechecks saved IR. Enum
+member references keep their declaration even when
 the expression uses the member as an integer without an explicit enum cast.
 The reader rejects unsupported versions, truncated or trailing data, malformed
 embedded IR, semantic errors and divergent fields in saved IR, unresolved imports,
