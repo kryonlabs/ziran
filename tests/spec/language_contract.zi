@@ -1,17 +1,4 @@
-#import "kryon.h"
-
-ANSWER :: #run 6 * 7
-#assert ANSWER == 42, "spec #run assertion failed"
-#assert 1 + 1 == 2, "spec arithmetic assertion failed"
-
-state {
-    count: int = 0
-}
-
-app "Spec Contract" {
-    size 320 240
-    fps 60
-}
+#module "language_contract"
 
 # Fixed-capacity array fields and borrowed string byte access are portable
 # strict expressions: every backend must lower them identically.
@@ -49,14 +36,11 @@ ContractBytesReady :: (bytes: ContractBytes) -> bool #export {
     return bytes.filled == 4 && bytes.data[0] != bytes.data[3]
 }
 
-App :: () #ui {
-    Screen root: {
-        Background(GetThemeBackground())
-        Background(GetThemeSurface())
-        Text((TextProps){.bounds={Scale(8), Scale(8), 0, 0}, .text="Spec Contract", .wrap=TextWrapNone})
-        if count < 42 {
-            count = count + 1
-        }
-        Text((TextProps){.bounds={Scale(8), Scale(32), 0, 0}, .text="ready", .wrap=TextWrapNone})
-    }
+Answer :: () -> i32 #export {
+    bytes: ContractBytes
+    bytes = ContractFillBytes(bytes, (u32)10)
+    if !ContractBytesReady(bytes) { return 0 }
+    if ContractByteAt(bytes, 3) != (u32)13 { return 0 }
+    if ContractSumBytes("Aé") != 429 { return 0 }
+    return 6 * 7
 }

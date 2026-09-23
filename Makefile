@@ -50,6 +50,7 @@ check: all $(BIN_DIR)/bundle-link-test
 	sh tests/standalone.sh $(BIN_DIR)/ziran
 	sh tests/portable_strings.sh $(BIN_DIR)/ziran
 	sh tests/module_paths.sh $(BIN_DIR)/ziran
+	sh tests/language_contract.sh $(BIN_DIR)/ziran
 
 clean:
 	rm -rf $(BUILD_DIR)

@@ -19,6 +19,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   including generated C and `.zib`. Kryon's drag policy test loads its `src/ui/`
   library from an app entry file through the same path, across C, C++, Go,
   and portable bundles.
+- Module inputs accept `.zi` source and `.zir` IR only; `.kry`, `.kir`, and
+  `.krb` are rejected by the shared loader. Kryon owns the UI test fixtures;
+  Ziran keeps a non-UI array and UTF-8 byte law fixture that runs from source
+  and saved IR through native C, C++, and Go.
 - `ziran ir` writes experimental binary `.zir` version 4 after checking all
   input modules together. C, C++, and Go can read saved modules without reparsing
   `.zi`; their imports are relinked from serialized module identities. The

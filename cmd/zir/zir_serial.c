@@ -497,6 +497,13 @@ ProgramLoad(const char *path, const char *root)
 {
     ZirProgram *program;
     FILE *file;
+    size_t length = path ? strlen(path) : 0;
+    if(!PathIsIR(path) &&
+       !(length > 3 && strcmp(path + length - 3, ".zi") == 0)) {
+        Diagnostic(Span(path, 1, 1), "module.extension",
+                   "module input must be .zi source or .zir IR");
+        return NULL;
+    }
     if(!PathIsIR(path))
         return parse_file(path, root);
     file = fopen(path, "rb");

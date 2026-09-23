@@ -56,3 +56,13 @@ if "$ziran" check --diagnostics=json --root "$work/app" "$work/app/main.zi" \
     exit 1
 fi
 grep -Fq 'module.not_found' "$work/missing.err"
+
+for extension in kry kir krb; do
+    cp "$work/lib/base.zi" "$work/app/legacy.$extension"
+    if "$ziran" check --diagnostics=json --root "$work/app" \
+        "$work/app/legacy.$extension" 2> "$work/legacy.err"; then
+        echo "legacy .$extension module unexpectedly succeeded" >&2
+        exit 1
+    fi
+    grep -Fq 'module.extension' "$work/legacy.err"
+done
