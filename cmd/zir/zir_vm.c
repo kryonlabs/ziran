@@ -117,6 +117,12 @@ typedef struct Vm {
     void *host_context;
 } Vm;
 
+struct VmInstance {
+    Vm vm;
+    const ZirModule *module;
+    const ZirFunction *entry;
+};
+
 struct Frame {
     Vm *vm;
     const ZirModule *module;
@@ -2775,41 +2781,71 @@ initialize_globals(Vm *vm, const ZirProgram *program)
     return 1;
 }
 
+VmInstance *
+VmInstanceOpen(const ZirProgram *program, const char *entry_module,
+               const char *entry_function, VmHostCall host, void *context)
+{
+    if(!VmVerify(program, entry_module, entry_function))
+        return NULL;
+    VmInstance *instance = calloc(1, sizeof(*instance));
+    if(instance == NULL)
+        return NULL;
+    instance->vm.host = host;
+    instance->vm.host_context = context;
+    instance->entry = find_entry(program, entry_module, entry_function,
+                                 &instance->module);
+    if(instance->entry == NULL ||
+       !initialize_globals(&instance->vm, program)) {
+        VmInstanceClose(instance);
+        return NULL;
+    }
+    return instance;
+}
+
+int
+VmInstanceRun(VmInstance *instance, long long *result, int *has_result)
+{
+    if(instance == NULL || result == NULL || has_result == NULL ||
+       instance->vm.failed)
+        return 0;
+    Vm *vm = &instance->vm;
+    vm->steps = 0;
+    Value value = run_function(vm, instance->module, instance->entry,
+                               NULL, 0, NULL);
+    *result = value.integer;
+    *has_result = strcmp(instance->entry->return_type, "void") != 0;
+    if(vm->failed) {
+        Diagnostic(instance->entry->span, "zib.runtime",
+                      "portable execution failed");
+        return 0;
+    }
+    return 1;
+}
+
+void
+VmInstanceClose(VmInstance *instance)
+{
+    if(instance == NULL)
+        return;
+    free_records(&instance->vm);
+    free_arrays(&instance->vm);
+    free_strings(&instance->vm);
+    free(instance->vm.globals);
+    free(instance);
+}
+
 int
 VmRunWithHost(const ZirProgram *program, const char *entry_module,
               const char *entry_function, VmHostCall host, void *context,
               long long *result, int *has_result)
 {
-    const ZirModule *module;
-    const ZirFunction *entry;
-    Vm vm = {.host = host, .host_context = context};
-    if(!VmVerify(program, entry_module, entry_function))
+    VmInstance *instance = VmInstanceOpen(program, entry_module,
+        entry_function, host, context);
+    if(instance == NULL)
         return 0;
-    if(!initialize_globals(&vm, program)) {
-        free_records(&vm);
-        free_arrays(&vm);
-        free_strings(&vm);
-        free(vm.globals);
-        return 0;
-    }
-    entry = find_entry(program, entry_module, entry_function, &module);
-    Value value = run_function(&vm, module, entry, NULL, 0, NULL);
-    *result = value.integer;
-    *has_result = strcmp(entry->return_type, "void") != 0;
-    if(vm.failed) {
-        Diagnostic(entry->span, "zib.runtime",
-                      "portable execution failed");
-        free_records(&vm);
-        free_arrays(&vm);
-        free_strings(&vm);
-        free(vm.globals);
-        return 0;
-    }
-    free_records(&vm);
-    free_arrays(&vm);
-    free_strings(&vm);
-    free(vm.globals);
-    return 1;
+    int ok = VmInstanceRun(instance, result, has_result);
+    VmInstanceClose(instance);
+    return ok;
 }
 
 int

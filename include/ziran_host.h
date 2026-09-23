@@ -9,6 +9,7 @@ extern "C" {
 #endif
 
 typedef struct Bundle Bundle;
+typedef struct BundleInstance BundleInstance;
 
 typedef enum VmHostValueKind {
     VM_HOST_VOID,
@@ -64,6 +65,17 @@ const char *BundleCapabilityFunction(const Bundle *bundle, size_t index);
  * Integer/bool entry results are returned in result; void sets has_result=0. */
 int BundleRun(const Bundle *bundle, const HostBinding *bindings,
               size_t binding_count, long long *result, int *has_result);
+
+/* An instance preserves module globals across runs of the bundle entry.
+ * Keep the Bundle and any binding contexts alive until the instance closes.
+ * Binding names and the binding array are copied during instantiation.
+ * A runtime failure makes the instance unusable. */
+BundleInstance *BundleInstantiate(const Bundle *bundle,
+                                   const HostBinding *bindings,
+                                   size_t binding_count);
+int BundleInstanceRun(BundleInstance *instance, long long *result,
+                      int *has_result);
+void BundleInstanceClose(BundleInstance *instance);
 
 #ifdef __cplusplus
 }

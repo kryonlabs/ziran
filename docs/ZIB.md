@@ -53,10 +53,11 @@ positional literals, element reads and writes, and value copies, including
 arrays inside imported records. Indexing is bounds-checked. Version 2 is
 experimental and has no compatibility promise. Host calls with pointers,
 arrays, or slots remain unsupported. Default-initialized module globals of
-portable value types work within one `BundleRun`; each run starts with fresh
-global values. Explicit global initializers, complete graphical runtime
-integration, slices, unresolved or nested fixed arrays, module state, `for`,
-and `switch` remain unsupported.
+portable value types work within one `BundleRun`; each call starts with fresh
+global values. `BundleInstantiate` creates an instance whose globals persist
+across `BundleInstanceRun` calls. Explicit global initializers, complete
+graphical runtime integration, slices, unresolved or nested fixed arrays,
+module state, `for`, and `switch` remain unsupported.
 
 ## Target contract
 

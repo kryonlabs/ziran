@@ -14,4 +14,12 @@ int VmRunWithHost(const ZirProgram *program, const char *entry_module,
                   const char *entry_function, VmHostCall host, void *context,
                   long long *result, int *has_result);
 
+typedef struct VmInstance VmInstance;
+VmInstance *VmInstanceOpen(const ZirProgram *program,
+                           const char *entry_module,
+                           const char *entry_function,
+                           VmHostCall host, void *context);
+int VmInstanceRun(VmInstance *instance, long long *result, int *has_result);
+void VmInstanceClose(VmInstance *instance);
+
 #endif

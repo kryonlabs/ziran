@@ -3,6 +3,7 @@ set -eu
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ziran=${1:-"$repo/build/bin/ziran"}
+ziran_lib=${ZIRAN_LIB:-"$repo/build/libziran.a"}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
@@ -124,3 +125,58 @@ if "$ziran" bundle --root "$work" --entry invalid:Answer \
 fi
 grep -q 'portable globals need a value type and default initialization' \
     "$work/error"
+
+cat > "$work/session.zi" <<'ZI'
+#module "session"
+counter :: i32 #global
+Answer :: () -> i32 #export {
+    counter += 1
+    return counter
+}
+ZI
+"$ziran" ir --root "$work" -o "$work/session-ir" "$work/session.zi"
+"$ziran" bundle --root "$work" --entry session:Answer \
+    -o "$work/session-source.zib" "$work/session.zi"
+"$ziran" bundle --root "$work/session-ir" --entry session:Answer \
+    -o "$work/session-saved.zib" "$work/session-ir/session.zir"
+cmp "$work/session-source.zib" "$work/session-saved.zib"
+cat > "$work/instance.c" <<'C'
+#include "ziran_host.h"
+#include <assert.h>
+
+static void check(BundleInstance *instance, long long expected)
+{
+    long long value = 0;
+    int has_value = 0;
+    assert(BundleInstanceRun(instance, &value, &has_value));
+    assert(has_value && value == expected);
+}
+
+int main(int argc, char **argv)
+{
+    assert(argc == 2);
+    Bundle *bundle = BundleOpen(argv[1]);
+    assert(bundle != NULL);
+    BundleInstance *first = BundleInstantiate(bundle, NULL, 0);
+    BundleInstance *second = BundleInstantiate(bundle, NULL, 0);
+    assert(first != NULL && second != NULL);
+    check(first, 1);
+    check(first, 2);
+    check(second, 1);
+    check(first, 3);
+    BundleInstanceClose(first);
+    BundleInstanceClose(second);
+    long long value = 0;
+    int has_value = 0;
+    assert(BundleRun(bundle, NULL, 0, &value, &has_value));
+    assert(has_value && value == 1);
+    assert(BundleRun(bundle, NULL, 0, &value, &has_value));
+    assert(has_value && value == 1);
+    BundleClose(bundle);
+    return 0;
+}
+C
+"${CC:-cc}" ${VM_CFLAGS:-} -std=c11 -I"$repo/include" \
+    "$work/instance.c" "$ziran_lib" ${VM_LDFLAGS:-} -o "$work/instance"
+"$work/instance" "$work/session-source.zib"
+"$work/instance" "$work/session-saved.zib"

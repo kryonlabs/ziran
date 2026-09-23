@@ -111,7 +111,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   imported function calls, and reclaims replaced values without losing
   globals reached by a caller. Source and saved `.zir`, `.zib`, C, C++, and Go
   tests cover value isolation and repeated mutation. Each `BundleRun` starts
-  fresh; explicit initializers and persistent VM sessions are not supported.
+  fresh; `BundleInstantiate` preserves globals across repeated
+  `BundleInstanceRun` calls on one instance. Explicit initializers remain
+  unsupported.
 - Portable execution borrows read-only record and array parameters and
   reclaims temporary values after ordinary function calls while retaining
   copied results. A repeated nested call over a 4,096-record array checks

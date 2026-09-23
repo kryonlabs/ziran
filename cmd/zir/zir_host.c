@@ -103,6 +103,22 @@ typedef struct BindingSet {
     size_t count;
 } BindingSet;
 
+struct BundleInstance {
+    BindingSet set;
+    HostBinding *owned_bindings;
+    VmInstance *vm;
+};
+
+static char *
+copy_binding_name(const char *name)
+{
+    size_t length = strlen(name) + 1;
+    char *copy = malloc(length);
+    if(copy != NULL)
+        memcpy(copy, name, length);
+    return copy;
+}
+
 static const HostBinding *
 find_binding(const BindingSet *set, const char *module, const char *function)
 {
@@ -123,13 +139,12 @@ dispatch(void *context, const char *module, const char *function,
                                             function, args, arg_count, result);
 }
 
-int
-BundleRun(const Bundle *bundle, const HostBinding *bindings,
-          size_t binding_count, long long *result, int *has_result)
+static int
+validate_bindings(const Bundle *bundle, const HostBinding *bindings,
+                  size_t binding_count)
 {
     BindingSet set = {bindings, binding_count};
-    if(bundle == NULL || result == NULL || has_result == NULL ||
-       (binding_count != 0 && bindings == NULL))
+    if(bundle == NULL || (binding_count != 0 && bindings == NULL))
         return 0;
     for(size_t i = 0; i < binding_count; i++) {
         if(bindings[i].module == NULL || bindings[i].function == NULL ||
@@ -153,7 +168,85 @@ BundleRun(const Bundle *bundle, const HostBinding *bindings,
             return 0;
         }
     }
-    return VmRunWithHost(bundle->program, bundle->entry_module,
-                          bundle->entry_function, dispatch, &set,
-                          result, has_result);
+    return 1;
+}
+
+BundleInstance *
+BundleInstantiate(const Bundle *bundle, const HostBinding *bindings,
+                  size_t binding_count)
+{
+    if(!validate_bindings(bundle, bindings, binding_count))
+        return NULL;
+    BundleInstance *instance = calloc(1, sizeof(*instance));
+    if(instance == NULL)
+        return NULL;
+    instance->set.count = binding_count;
+    if(binding_count > 0) {
+        instance->owned_bindings = calloc(binding_count,
+                                          sizeof(*instance->owned_bindings));
+        if(instance->owned_bindings == NULL) {
+            BundleInstanceClose(instance);
+            return NULL;
+        }
+        for(size_t i = 0; i < binding_count; i++) {
+            instance->owned_bindings[i].module =
+                copy_binding_name(bindings[i].module);
+            instance->owned_bindings[i].function =
+                copy_binding_name(bindings[i].function);
+            instance->owned_bindings[i].call = bindings[i].call;
+            instance->owned_bindings[i].context = bindings[i].context;
+            if(instance->owned_bindings[i].module == NULL ||
+               instance->owned_bindings[i].function == NULL) {
+                BundleInstanceClose(instance);
+                return NULL;
+            }
+        }
+    }
+    instance->set.bindings = instance->owned_bindings;
+    instance->vm = VmInstanceOpen(bundle->program, bundle->entry_module,
+                                   bundle->entry_function,
+                                   dispatch, &instance->set);
+    if(instance->vm == NULL) {
+        BundleInstanceClose(instance);
+        return NULL;
+    }
+    return instance;
+}
+
+int
+BundleInstanceRun(BundleInstance *instance, long long *result,
+                  int *has_result)
+{
+    return instance != NULL && VmInstanceRun(instance->vm, result,
+                                              has_result);
+}
+
+void
+BundleInstanceClose(BundleInstance *instance)
+{
+    if(instance == NULL)
+        return;
+    VmInstanceClose(instance->vm);
+    for(size_t i = 0; i < instance->set.count &&
+        instance->owned_bindings != NULL; i++) {
+        free((void *)instance->owned_bindings[i].module);
+        free((void *)instance->owned_bindings[i].function);
+    }
+    free(instance->owned_bindings);
+    free(instance);
+}
+
+int
+BundleRun(const Bundle *bundle, const HostBinding *bindings,
+          size_t binding_count, long long *result, int *has_result)
+{
+    if(result == NULL || has_result == NULL)
+        return 0;
+    BundleInstance *instance = BundleInstantiate(bundle, bindings,
+                                                 binding_count);
+    if(instance == NULL)
+        return 0;
+    int ok = BundleInstanceRun(instance, result, has_result);
+    BundleInstanceClose(instance);
+    return ok;
 }
