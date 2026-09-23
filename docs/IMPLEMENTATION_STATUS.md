@@ -39,14 +39,16 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   source/IR C build runs.
 - `ziran bundle --root DIR --entry module:function -o FILE` builds an
   experimental version 2 `.zib` from source or saved IR. `ziran run FILE`
-  loads and executes the validated scalar, plain record, and enum subset without a
+  loads and executes the validated scalar, plain record, enum, and fixed-array
+  subset without a
   display or Kryon.
   The test runs an imported two-module call and compares bundle bytes from
   source and saved IR. The current runner supports zero-argument entry
   functions with `i32`/`int`/`bool`/`void` results, and helper functions with
   `i64`/`u8`/`u32`/`u64`/`float`/`double`/`string`, enum, or plain record results. It supports scalar, enum,
-  string, and record parameters and locals, nested record fields, defaults and record
-  literals, value copies, member reads and writes, scalar compound assignments,
+  string, record, and fixed-array parameters and locals, nested record fields,
+  defaults and record and array literals, value copies, member and array reads
+  and writes, scalar compound assignments,
   `i64`, `u32`, and `u64` bitwise operations and shifts, calls,
   arithmetic, comparisons, casts, assignments, `if`/`else`, `while`, lexical
   blocks, `break`, `continue`, and returns. It rejects host imports outside the
@@ -56,6 +58,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `make check`. The bundle loader also reruns the language checker and laws
   before execution. The linker follows direct calls and drops unreachable
   functions and modules, while retaining reachable record and enum declarations.
+  Fixed arrays with numeric bounds are tested through source and saved IR in
+  C, C++, Go, and `.zib`, including imported record element types, value-copy
+  isolation, and portable bounds failures. Symbolic bounds and slices remain
+  outside the portable subset.
   The test runs record and enum functions across imported modules. Kryon's
   complete geometry, layout, and group calculation test also runs in `.zib`
   from source and saved `.zir`. Kryon's accessibility, drag and drop, theme,
@@ -148,7 +154,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   supported backend consume the same saved IR. Source, saved-IR, and mixed
   builds currently rerun the source checker across all modules.
 - Extend the `.zib` linker and verifier beyond the current subset: remaining
-  control flow, enum initializer expressions, arrays, state, and all checked
+  control flow, enum initializer expressions, symbolic and nested arrays,
+  slices, state, and all checked
   expressions. Extend host capabilities to portable records, handles, and
   equivalent behavior
   for all supported language features. The current bundle embeds checked

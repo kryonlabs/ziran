@@ -44,10 +44,12 @@ the linked IR; the VM checks signatures before execution.
 Source and saved-IR bundle bytes match in scalar, record, and enum tests,
 including Kryon's geometry, layout, and popup ownership tests. Synchronous
 callable slots with captured locals and imported named functions run from
-source and saved IR. Version 2 is experimental and has no compatibility
-promise. Host calls with records or pointers, graphical programs, arrays,
-state, globals,
-`for`, and `switch` remain unsupported.
+source and saved IR. Fixed arrays with numeric capacities support defaults,
+positional literals, element reads and writes, and value copies, including
+arrays inside imported records. Indexing is bounds-checked. Version 2 is
+experimental and has no compatibility promise. Host calls with records,
+pointers, or arrays, graphical programs, slices, symbolic or nested fixed
+arrays, state, globals, `for`, and `switch` remain unsupported.
 
 ## Target contract
 

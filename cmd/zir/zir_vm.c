@@ -13,7 +13,8 @@
 enum { VM_MAX_PARAMS = 16, VM_MAX_LOCALS = 64, VM_MAX_DEPTH = 128,
        VM_MAX_STEPS = 1000000, VM_MAX_FIELDS = 64,
        VM_MAX_ENUM_MEMBERS = 64,
-       VM_MAX_RECORD_BYTES = 64 * 1024 * 1024 };
+       VM_MAX_RECORD_BYTES = 64 * 1024 * 1024,
+       VM_MAX_ARRAY_BYTES = 64 * 1024 * 1024 };
 
 typedef struct Parameter {
     char name[ZIR_NAME_MAX];
@@ -28,10 +29,12 @@ typedef enum ValueKind {
     VALUE_STRING,
     VALUE_ENUM,
     VALUE_RECORD,
+    VALUE_ARRAY,
     VALUE_SLOT
 } ValueKind;
 
 typedef struct Record Record;
+typedef struct Array Array;
 typedef struct Frame Frame;
 
 typedef struct Value {
@@ -44,6 +47,7 @@ typedef struct Value {
     size_t length;
     const ZirType *enumeration;
     Record *record;
+    Array *array;
     const ZirType *slot_type;
     const ZirModule *slot_module;
     const ZirFunction *slot_function;
@@ -61,6 +65,14 @@ struct Record {
     const ZirType *type;
     int field_count;
     RecordField fields[];
+};
+
+struct Array {
+    Array *next;
+    const ZirModule *owner;
+    char element_type[ZIR_NAME_MAX];
+    int length;
+    Value elements[];
 };
 
 typedef struct StringLiteral {
@@ -81,7 +93,9 @@ typedef struct Vm {
     int steps;
     int failed;
     size_t record_bytes;
+    size_t array_bytes;
     Record *records;
+    Array *arrays;
     StringLiteral *strings;
     VmHostCall host;
     void *host_context;
@@ -278,6 +292,8 @@ portable_type_at(const ZirModule *module, const char *type, int depth)
 {
     const ZirModule *owner = NULL;
     const ZirType *record;
+    char element[ZIR_NAME_MAX];
+    int capacity;
     size_t offset = 0;
     ZirTypeField field;
     int count = 0;
@@ -286,6 +302,13 @@ portable_type_at(const ZirModule *module, const char *type, int depth)
         return 1;
     if(depth >= VM_MAX_DEPTH)
         return 0;
+    if(ArrayElementType(type, element, sizeof(element), &capacity)) {
+        const ZirType *element_type = FindType(module, element, NULL);
+        return capacity > 0 && element[0] != '[' &&
+               (element_type == NULL || !element_type->is_slot) &&
+               (size_t)capacity <= VM_MAX_ARRAY_BYTES / sizeof(Value) &&
+               portable_type_at(module, element, depth + 1);
+    }
     record = FindType(module, type, &owner);
     if(record == NULL || record->is_extern)
         return 0;
@@ -560,14 +583,58 @@ allocate_record(Vm *vm, const ZirModule *owner,
     return record;
 }
 
+static Array *
+allocate_array(Vm *vm, const ZirModule *owner, const char *element,
+               int length)
+{
+    if(length <= 0 || (size_t)length >
+       (VM_MAX_ARRAY_BYTES - sizeof(Array)) / sizeof(Value)) {
+        vm->failed = 1;
+        return NULL;
+    }
+    size_t bytes = sizeof(Array) + (size_t)length * sizeof(Value);
+    if(bytes > VM_MAX_ARRAY_BYTES - vm->array_bytes) {
+        vm->failed = 1;
+        return NULL;
+    }
+    Array *array = calloc(1, bytes);
+    if(array == NULL) {
+        vm->failed = 1;
+        return NULL;
+    }
+    array->next = vm->arrays;
+    array->owner = owner;
+    copy_text(array->element_type, sizeof(array->element_type), element);
+    array->length = length;
+    vm->arrays = array;
+    vm->array_bytes += bytes;
+    return array;
+}
+
 static Value default_value(Vm *vm, const ZirModule *module,
                            const char *type, int depth);
 
 static Value
 clone_value(Vm *vm, Value value, int depth)
 {
-    if(value.kind != VALUE_RECORD || vm->failed)
+    if(vm->failed || (value.kind != VALUE_RECORD &&
+                      value.kind != VALUE_ARRAY))
         return value;
+    if(value.kind == VALUE_ARRAY) {
+        if(value.array == NULL || depth >= VM_MAX_DEPTH) {
+            vm->failed = 1;
+            return int_value(0);
+        }
+        Array *copy = allocate_array(vm, value.array->owner,
+                                     value.array->element_type,
+                                     value.array->length);
+        if(copy == NULL)
+            return int_value(0);
+        for(int i = 0; i < copy->length && !vm->failed; i++)
+            copy->elements[i] = clone_value(vm,
+                value.array->elements[i], depth + 1);
+        return (Value){.kind = VALUE_ARRAY, .array = copy};
+    }
     if(value.record == NULL || depth >= VM_MAX_DEPTH) {
         vm->failed = 1;
         return int_value(0);
@@ -589,12 +656,27 @@ static Value
 default_value(Vm *vm, const ZirModule *module, const char *type, int depth)
 {
     ValueKind kind = value_kind(type);
+    char element[ZIR_NAME_MAX];
+    int capacity;
     if(kind == VALUE_INT)
         return int_value(0);
     if(kind == VALUE_REAL)
         return real_value(0.0);
     if(kind == VALUE_STRING)
         return string_value((const unsigned char *)"", 0);
+    if(ArrayElementType(type, element, sizeof(element), &capacity)) {
+        if(depth >= VM_MAX_DEPTH || capacity <= 0 || element[0] == '[') {
+            vm->failed = 1;
+            return int_value(0);
+        }
+        Array *array = allocate_array(vm, module, element, capacity);
+        if(array == NULL)
+            return int_value(0);
+        for(int i = 0; i < capacity && !vm->failed; i++)
+            array->elements[i] = default_value(vm, module, element,
+                                               depth + 1);
+        return (Value){.kind = VALUE_ARRAY, .array = array};
+    }
     const ZirModule *owner = NULL;
     const ZirType *record_type = FindType(module, type, &owner);
     if(record_type != NULL && record_type->is_enum)
@@ -645,6 +727,22 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         return string_value((const unsigned char *)"", 0);
     }
     if(target == VALUE_INVALID) {
+        char element[ZIR_NAME_MAX];
+        int capacity;
+        if(ArrayElementType(type, element, sizeof(element), &capacity)) {
+            if(value.kind != VALUE_ARRAY || value.array == NULL ||
+               capacity != value.array->length) {
+                vm->failed = 1;
+                return int_value(0);
+            }
+            Array *copy = allocate_array(vm, module, element, capacity);
+            if(copy == NULL)
+                return int_value(0);
+            for(int i = 0; i < capacity && !vm->failed; i++)
+                copy->elements[i] = coerce(vm, module,
+                    value.array->elements[i], element);
+            return (Value){.kind = VALUE_ARRAY, .array = copy};
+        }
         const ZirType *record = FindType(module, type, NULL);
         if(record != NULL && record->is_slot &&
            value.kind == VALUE_SLOT && value.slot_type == record)
@@ -663,6 +761,7 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         return int_value(0);
     }
     if(value.kind == VALUE_STRING || value.kind == VALUE_RECORD ||
+       value.kind == VALUE_ARRAY ||
        value.kind == VALUE_SLOT ||
        value.kind == VALUE_VOID ||
        value.kind == VALUE_INVALID) {
@@ -757,6 +856,13 @@ parse_parameters(const ZirModule *module, const ZirFunction *function,
         while(*cursor == ' ' || *cursor == '\t')
             cursor++;
         start = cursor;
+        if(*cursor == '[') {
+            cursor++;
+            while(isalnum((unsigned char)*cursor) || *cursor == '_')
+                cursor++;
+            if(*cursor++ != ']')
+                return -1;
+        }
         while((*cursor >= 'a' && *cursor <= 'z') ||
               (*cursor >= 'A' && *cursor <= 'Z') ||
               (*cursor >= '0' && *cursor <= '9') || *cursor == '_')
@@ -809,7 +915,8 @@ assignment_root(const ZirFunction *function, int index)
         const ZirExpr *expression = &function->exprs[index];
         if(expression->kind == ZIR_EXPR_IDENT)
             return expression->name;
-        if(expression->kind != ZIR_EXPR_MEMBER)
+        if(expression->kind != ZIR_EXPR_MEMBER &&
+           expression->kind != ZIR_EXPR_INDEX)
             return NULL;
         index = expression->left;
     }
@@ -1005,6 +1112,27 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
                (source != NULL && source->is_enum);
     }
     case ZIR_EXPR_COMPOUND: {
+        char element[ZIR_NAME_MAX];
+        int capacity;
+        if(ArrayElementType(expression->name, element,
+                            sizeof(element), &capacity)) {
+            int position = 0;
+            if(capacity <= 0 ||
+               strcmp(expression->type, expression->name) != 0)
+                return 0;
+            for(int child = expression->first_child; child >= 0;
+                child = function->exprs[child].next_sibling) {
+                if(child >= function->expr_count || ++position > capacity)
+                    return 0;
+                const ZirExpr *item = &function->exprs[child];
+                if(item->kind != ZIR_EXPR_FIELD_INIT ||
+                   strcmp(item->op, "=") == 0 ||
+                   !verify_expression(module, function, bindings,
+                                      binding_count, item->right, depth + 1))
+                    return 0;
+            }
+            return 1;
+        }
         const ZirType *record = FindType(module, expression->name, NULL);
         unsigned char seen[VM_MAX_FIELDS] = {0};
         int children = 0;
@@ -1065,16 +1193,26 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
                         strcmp(ScalarType(field.type), expression->type) == 0);
         return 0;
     }
-    case ZIR_EXPR_INDEX:
-        return expression->left >= 0 && expression->left < function->expr_count &&
-               expression->right >= 0 && expression->right < function->expr_count &&
-               strcmp(function->exprs[expression->left].type, "string") == 0 &&
-               strcmp(expression->type, "u8") == 0 &&
-               integer_type(function->exprs[expression->right].type) &&
-               verify_expression(module, function, bindings, binding_count,
-                                 expression->left, depth + 1) &&
-               verify_expression(module, function, bindings, binding_count,
-                                 expression->right, depth + 1);
+    case ZIR_EXPR_INDEX: {
+        if(expression->left < 0 || expression->left >= function->expr_count ||
+           expression->right < 0 || expression->right >= function->expr_count ||
+           !integer_type(function->exprs[expression->right].type) ||
+           !verify_expression(module, function, bindings, binding_count,
+                              expression->left, depth + 1) ||
+           !verify_expression(module, function, bindings, binding_count,
+                              expression->right, depth + 1))
+            return 0;
+        const char *base = function->exprs[expression->left].type;
+        if(strcmp(base, "string") == 0)
+            return strcmp(expression->type, "u8") == 0;
+        char element[ZIR_NAME_MAX];
+        int capacity;
+        return ArrayElementType(base, element, sizeof(element), &capacity) &&
+               capacity > 0 &&
+               (strcmp(expression->type, element) == 0 ||
+                (ScalarType(element)[0] != 0 &&
+                 strcmp(expression->type, ScalarType(element)) == 0));
+    }
     case ZIR_EXPR_CONDITIONAL:
         return verify_expression(module, function, bindings, binding_count,
                                  expression->left, depth + 1) &&
@@ -1471,6 +1609,7 @@ VmVerify(const ZirProgram *program, const char *entry_module,
 static Value run_function(Vm *vm, const ZirModule *module,
                           const ZirFunction *function, const Value *args,
                           int arg_count, Frame *parent);
+static Value eval(Frame *frame, int index, int depth);
 
 static Local *
 find_local(Frame *frame, const char *name)
@@ -1503,6 +1642,18 @@ assignment_slot(Frame *frame, int index, int depth)
     if(expression->kind == ZIR_EXPR_IDENT) {
         Local *local = find_local(frame, expression->name);
         return local != NULL ? &local->value : NULL;
+    }
+    if(expression->kind == ZIR_EXPR_INDEX) {
+        Value *base = assignment_slot(frame, expression->left, depth + 1);
+        Value index_value = eval(frame, expression->right, depth + 1);
+        if(base == NULL || base->kind != VALUE_ARRAY ||
+           base->array == NULL || index_value.kind != VALUE_INT ||
+           (!index_value.unsigned64 && index_value.integer < 0) ||
+           integer_bits(index_value) >= (uint64_t)base->array->length) {
+            frame->vm->failed = 1;
+            return NULL;
+        }
+        return &base->array->elements[integer_bits(index_value)];
     }
     if(expression->kind != ZIR_EXPR_MEMBER)
         return NULL;
@@ -1782,8 +1933,31 @@ eval(Frame *frame, int index, int depth)
     case ZIR_EXPR_COMPOUND: {
         value = default_value(frame->vm, frame->module,
                               expression->name, depth + 1);
-        if(frame->vm->failed || value.kind != VALUE_RECORD)
+        if(frame->vm->failed)
             break;
+        if(value.kind == VALUE_ARRAY) {
+            int position = 0;
+            for(int child = expression->first_child; child >= 0;
+                child = frame->function->exprs[child].next_sibling) {
+                if(child >= frame->function->expr_count ||
+                   position >= value.array->length) {
+                    frame->vm->failed = 1;
+                    break;
+                }
+                const ZirExpr *item = &frame->function->exprs[child];
+                Value initialized = eval(frame, item->right, depth + 1);
+                if(frame->vm->failed)
+                    break;
+                value.array->elements[position++] = coerce(frame->vm,
+                    value.array->owner, initialized,
+                    value.array->element_type);
+            }
+            break;
+        }
+        if(value.kind != VALUE_RECORD) {
+            frame->vm->failed = 1;
+            break;
+        }
         int count = 0;
         for(int child = expression->first_child; child >= 0;
             child = frame->function->exprs[child].next_sibling) {
@@ -1828,17 +2002,28 @@ eval(Frame *frame, int index, int depth)
             value = *field;
         break;
     }
-    case ZIR_EXPR_INDEX:
-        left = eval(frame, expression->left, depth + 1);
+    case ZIR_EXPR_INDEX: {
+        /* Indexing a stored array borrows its backing values. Copying the
+         * entire array for each read would exhaust the VM allocation budget
+         * in an ordinary loop. The result is coerced below as a value. */
+        Value *stored = assignment_slot(frame, expression->left, depth + 1);
+        left = stored != NULL && stored->kind == VALUE_ARRAY ?
+               *stored : eval(frame, expression->left, depth + 1);
         right = eval(frame, expression->right, depth + 1);
-        if(left.kind != VALUE_STRING || right.kind != VALUE_INT ||
-           (!right.unsigned64 && right.integer < 0) ||
-           integer_bits(right) >= left.length) {
+        if(right.kind != VALUE_INT ||
+           (!right.unsigned64 && right.integer < 0)) {
             frame->vm->failed = 1;
             break;
         }
-        value = int_value(left.data[integer_bits(right)]);
+        if(left.kind == VALUE_STRING && integer_bits(right) < left.length)
+            value = int_value(left.data[integer_bits(right)]);
+        else if(left.kind == VALUE_ARRAY && left.array != NULL &&
+                integer_bits(right) < (uint64_t)left.array->length)
+            value = left.array->elements[integer_bits(right)];
+        else
+            frame->vm->failed = 1;
         break;
+    }
     case ZIR_EXPR_CONDITIONAL:
         left = eval(frame, expression->left, depth + 1);
         if(!frame->vm->failed)
@@ -2135,6 +2320,16 @@ free_records(Vm *vm)
 }
 
 static void
+free_arrays(Vm *vm)
+{
+    while(vm->arrays != NULL) {
+        Array *next = vm->arrays->next;
+        free(vm->arrays);
+        vm->arrays = next;
+    }
+}
+
+static void
 free_strings(Vm *vm)
 {
     while(vm->strings != NULL) {
@@ -2162,10 +2357,12 @@ VmRunWithHost(const ZirProgram *program, const char *entry_module,
         Diagnostic(entry->span, "zib.runtime",
                       "portable execution failed");
         free_records(&vm);
+        free_arrays(&vm);
         free_strings(&vm);
         return 0;
     }
     free_records(&vm);
+    free_arrays(&vm);
     free_strings(&vm);
     return 1;
 }

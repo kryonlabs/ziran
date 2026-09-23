@@ -143,6 +143,9 @@ static int
 mark_type(const ZirProgram *program, const ZirModule *scope,
           const char *name, unsigned char **keep_types, int *changed)
 {
+    char element[ZIR_NAME_MAX];
+    if(ArrayElementType(name, element, sizeof(element), NULL))
+        return mark_type(program, scope, element, keep_types, changed);
     const ZirModule *owner = NULL;
     const ZirType *type = FindType(scope, name, &owner);
     return type == NULL ||
@@ -164,6 +167,15 @@ mark_parameters(const ZirProgram *program, const ZirModule *module,
             cursor++;
         char type[ZIR_NAME_MAX];
         size_t length = 0;
+        if(*cursor == '[') {
+            do {
+                if(length + 1 >= sizeof(type))
+                    return 0;
+                type[length++] = *cursor++;
+            } while(*cursor && type[length - 1] != ']');
+            if(type[length - 1] != ']')
+                return 0;
+        }
         while((isalnum((unsigned char)*cursor) || *cursor == '_') &&
               length + 1 < sizeof(type))
             type[length++] = *cursor++;
