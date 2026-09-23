@@ -551,6 +551,70 @@ func main() { if UnsignedBits_Answer() != 42 { panic("wrong bits result") } }
 EOF
 GO111MODULE=off go run "$work/unsigned-bits-go/unsigned_bits.go" \
     "$work/unsigned-bits-go/main.go"
+cat > "$work/u64_boundary.zi" <<'EOF'
+#module "u64_boundary"
+Answer :: () -> i32 #export {
+    high: u64 = (u64)0x8000000000000000
+    maximum: u64 = (u64)0xffffffffffffffff
+    if high <= (u64)0x7fffffffffffffff { return 0 }
+    if maximum <= high { return 0 }
+    if maximum + (u64)1 != (u64)0 { return 0 }
+    if high >> (u64)63 != (u64)1 { return 0 }
+    if (u64)1 << (u64)63 != high { return 0 }
+    if (maximum & high) != high { return 0 }
+    if (maximum ^ high) != (u64)0x7fffffffffffffff { return 0 }
+    value: u64 = maximum
+    value -= (u64)41
+    if value / (u64)2 != (u64)9223372036854775787 { return 0 }
+    if (u32)maximum != (u32)0xffffffff { return 0 }
+    return 42
+}
+EOF
+"$ziran" ir --root "$work" -o "$work/u64-ir" "$work/u64_boundary.zi"
+"$ziran" bundle --root "$work" --entry u64_boundary:Answer \
+    -o "$work/u64.zib" "$work/u64_boundary.zi"
+"$ziran" bundle --root "$work" --entry u64_boundary:Answer \
+    -o "$work/u64-ir.zib" "$work/u64-ir/u64_boundary.zir"
+cmp "$work/u64.zib" "$work/u64-ir.zib"
+test "$("$ziran" run "$work/u64.zib")" = 42
+test "$("$ziran" run "$work/u64-ir.zib")" = 42
+for input in source ir; do
+    if test "$input" = source; then
+        extension=zi
+        input_dir=$work
+    else
+        extension=zir
+        input_dir=$work/u64-ir
+    fi
+    "$ziran" build --target=c --strict --root "$work" \
+        -o "$work/u64-c-$input" "$input_dir/u64_boundary.$extension"
+    cat > "$work/u64-c-$input/main.c" <<'C'
+#include "u64_boundary.h"
+int main(void) { return Answer() == 42 ? 0 : 1; }
+C
+    ${CC:-cc} -Iinclude -I"$work/u64-c-$input" \
+        "$work/u64-c-$input/u64_boundary.c" \
+        "$work/u64-c-$input/main.c" -o "$work/u64-c-$input/app"
+    "$work/u64-c-$input/app"
+    "$ziran" build --target=cpp --strict --root "$work" \
+        -o "$work/u64-cpp-$input" "$input_dir/u64_boundary.$extension"
+    cat > "$work/u64-cpp-$input/main.cpp" <<'CPP'
+#include "u64_boundary.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+CPP
+    ${CXX:-c++} -Iinclude -I"$work/u64-cpp-$input" \
+        "$work/u64-cpp-$input/u64_boundary.cpp" \
+        "$work/u64-cpp-$input/main.cpp" -o "$work/u64-cpp-$input/app"
+    "$work/u64-cpp-$input/app"
+    "$ziran" build --target=go --strict --pkg main --root "$work" \
+        -o "$work/u64-go-$input" "$input_dir/u64_boundary.$extension"
+    cat > "$work/u64-go-$input/main.go" <<'GO'
+package main
+func main() { if U64Boundary_Answer() != 42 { panic("wrong u64 result") } }
+GO
+    GO111MODULE=off go run "$work/u64-go-$input/u64_boundary.go" \
+        "$work/u64-go-$input/main.go"
+done
 python3 - "$work/flow-ir/flow.zir" "$work/invalid-flow.zir" <<'PY'
 from pathlib import Path
 import sys

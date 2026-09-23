@@ -8,11 +8,12 @@ See [Implementation status](IMPLEMENTATION_STATUS.md) for the remaining work.
 `ziran bundle --root DIR --entry module:function -o FILE file.zi|file.zir ...`
 links explicitly supplied modules. `ziran run FILE` validates and executes
 zero-argument integer, bool, or void entry functions on a portable interpreter.
-Called functions can use `i32`, `u8`, `u32`, `bool`, `float`, and `double` scalars,
+Called functions can use `i32`, `u8`, `u32`, `u64`, `bool`, `float`, and `double` scalars,
 enums, and plain records with scalar, enum, or nested record fields. Record defaults and literals,
 member reads and writes, scalar compound assignments, parameters, returns,
-and value copies execute in the interpreter. The `u32` subset includes
-bitwise `&`, `|`, `^`, `~`, shifts, and their compound assignments. Portable
+and value copies execute in the interpreter. The unsigned integer subset includes
+bitwise `&`, `|`, `^`, `~`, shifts, and their compound assignments; `u64`
+comparisons, arithmetic, and shifts use the full unsigned range. Portable
 enum initializers support integer literals and references to preceding members joined by `+`
 or `-`; other constant expressions remain outside this subset. The bundle is
 `ZIB` plus a zero byte, a little-endian version, length-prefixed entry module
@@ -27,7 +28,7 @@ The reader rejects unsupported versions, truncated or trailing data, malformed
 embedded IR, semantic errors and divergent fields in saved IR, unresolved imports,
 unsupported capabilities, and functions outside the current portable subset.
 Source and saved-IR bundle bytes match in scalar, record, and enum tests,
-including Kryon's complete geometry, layout, and group calculation test. Version 1 is
+including Kryon's geometry, layout, and popup ownership tests. Version 1 is
 experimental and has no compatibility promise. Host imports, graphical
 programs, strings, arrays, slots, state, globals,
 `for`, and `switch` remain unsupported.

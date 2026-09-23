@@ -28,10 +28,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   The test runs an imported two-module call and compares bundle bytes from
   source and saved IR. The current runner supports zero-argument entry
   functions with `i32`/`int`/`bool`/`void` results, and helper functions with
-  `u8`/`u32`/`float`/`double`, enum, or plain record results. It supports scalar, enum,
+  `u8`/`u32`/`u64`/`float`/`double`, enum, or plain record results. It supports scalar, enum,
   and record parameters and locals, nested record fields, defaults and record
   literals, value copies, member reads and writes, scalar compound assignments,
-  `u32` bitwise operations and shifts, calls,
+  `u32` and `u64` bitwise operations and shifts, calls,
   arithmetic, comparisons, casts, assignments, `if`/`else`, `while`, lexical
   blocks, `break`, `continue`, and returns. It rejects host imports and
   unsupported statements before writing a bundle. Loop, branch, and real
@@ -42,7 +42,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   The test runs record and enum functions across imported modules. Kryon's
   complete geometry, layout, and group calculation test also runs in `.zib`
   from source and saved `.zir`. Kryon's accessibility, drag and drop, theme,
-  and popup policies also build and run as `.zib` bundles from both inputs,
+  and popup policies, including popup ownership with frame IDs above `INT64_MAX`,
+  also build and run as `.zib` bundles from both inputs,
   independently of the UI runtime.
 - Compiler functions use short names without `Zir` or `zir_` prefixes,
   including the IR serializer's `ProgramWrite`, `ProgramRead`, and `PathIsIR`.
