@@ -52,6 +52,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 - Native Go no longer treats ordinary imported record types as types from the
   legacy Kryon Go runtime. The standalone record-call test asserts that no
   Kryon package import is generated.
+- Native Go now uses declared record fields and ordinary call resolution even
+  when a record or function has a name previously reserved for Kryon UI. A
+  standalone source and saved-IR test covers these name collisions. Generated
+  Go defaults to package `ziran` unless `--pkg` overrides it.
 - `#ui`, `#style`, and old app/route forms are rejected. The embedded Kryon
   runtime declarations and copied `src/kry_std` implementation have been
   removed. JSON diagnostics no longer require Kryon code.

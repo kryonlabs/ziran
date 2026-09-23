@@ -27,7 +27,7 @@ main(int argc, char **argv)
 {
     const char *root = NULL;
     const char *out_dir = NULL;
-    const char *pkg = "krygen";
+    const char *pkg = "ziran";
     int no_main = 0;
     int strict = 0;
     int minify = 0;

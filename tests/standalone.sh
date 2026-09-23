@@ -77,6 +77,57 @@ GO111MODULE=off go run "$work/go/hello.go" "$work/go/main.go"
     -o "$work/go-ir" "$work/ir/hello.zir"
 cp "$work/go/main.go" "$work/go-ir/main.go"
 GO111MODULE=off go run "$work/go-ir/hello.go" "$work/go-ir/main.go"
+"$ziran" build --target=go --strict --root "$work" \
+    -o "$work/go-default-package" "$work/hello.zi"
+grep -Fxq 'package ziran' "$work/go-default-package/hello.go"
+
+cat > "$work/ordinary_names.zi" <<'EOF'
+#module "ordinary_names"
+ModalProps :: struct {
+    text: string
+}
+TextFieldProps :: struct {
+    text: string
+    text_size: i32
+}
+TableViewProps :: struct {
+    copy_text: string
+}
+NumericFloat :: () -> i32 #export {
+    return 20
+}
+DragSingle :: () -> i32 #export {
+    return 22
+}
+Answer :: () -> i32 #export {
+    modal: ModalProps
+    modal.text = "hello"
+    field: TextFieldProps
+    field.text = "hello"
+    field.text_size = 5
+    table: TableViewProps
+    table.copy_text = "hello"
+    if modal.text.length != 5 || field.text.length != field.text_size ||
+        table.copy_text.length != 5 { return 0 }
+    return NumericFloat() + DragSingle()
+}
+EOF
+"$ziran" ir --root "$work" -o "$work/ordinary-ir" \
+    "$work/ordinary_names.zi"
+for input in "$work/ordinary_names.zi" "$work/ordinary-ir/ordinary_names.zir"; do
+    output="$work/ordinary-go-$(basename "$input")"
+    "$ziran" build --target=go --strict --pkg main --root "$work" \
+        -o "$output" "$input"
+    if grep -Fq 'github.com/waozixyz/kryon' "$output/ordinary_names.go"; then
+        echo 'ordinary names pulled in the Kryon Go runtime' >&2
+        exit 1
+    fi
+    cat > "$output/main.go" <<'GO'
+package main
+func main() { if OrdinaryNames_Answer() != 42 { panic("wrong result") } }
+GO
+    GO111MODULE=off go run "$output/ordinary_names.go" "$output/main.go"
+done
 
 cat > "$work/library.zi" <<'EOF'
 #module "library"

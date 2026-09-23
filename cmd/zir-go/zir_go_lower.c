@@ -128,7 +128,7 @@ go_register_local_name(const char *name)
     zir_go_local_count++;
 }
 
-/* stem of "path/app.kry" -> "app": Go output is flat (one package per
+/* stem of "path/app.zi" -> "app": Go output is flat (one package per
  * output directory), so nested source trees must not nest the output. */
 static void
 stem_from_source(const char *src, char *dst, size_t dst_size)
@@ -596,7 +596,7 @@ add_extern(const char *kry, const char *args, const char *ret,
        strcmp(ex->go_import_path, ZIR_GO_RUNTIME_IMPORT) == 0)
         snprintf(ex->go_import_alias, sizeof(ex->go_import_alias), "%s",
                  ZIR_GO_RUNTIME_PKG);
-    /* guard "KryApp" -> host var "kryAppHost" */
+    /* Derive the host variable name from the module guard. */
     snprintf(ex->host_var, sizeof(ex->host_var), "%c%sHost",
              (char)tolower((unsigned char)g_guard[0]), g_guard + 1);
 }
@@ -994,9 +994,8 @@ split_top(const char *s, char parts[][ZIR_GO_TEXT_MAX], int max)
 }
 
 /* "(Vector2){a,b}" style compound literal: p points after "(". */
-/* C field order for the Props/Spec types .kry writes positionally, e.g.
- * Image((ImageProps){"path", ...}). Designated initializers do not need
- * this table; positional parts index into it. Names are the Go field names. */
+/* Positional record literals use declaration order. Names are the Go field
+ * names after identifier conversion. */
 static void
 resolve_slot_type(void *context, const char *source, char *out, size_t size)
 {
@@ -1015,7 +1014,7 @@ source_record(const ZirModule *module, const char *name)
 }
 
 static int
-props_field_at(const ZirModule *module, const char *type, int index,
+record_field_at(const ZirModule *module, const char *type, int index,
                char *name, size_t name_size)
 {
     const ZirType *record = FindType(module, type, NULL);
@@ -1036,8 +1035,8 @@ props_field_at(const ZirModule *module, const char *type, int index,
     return 0;
 }
 
-/* .kry array variables ('name: [N] T' state or local): references used in
- * slice-typed Go fields append '[:]' so one .kry table/list definition can
+/* Array variables ('name: [N] T' state or local): references used in
+ * slice-typed Go fields append '[:]' so one table/list definition can
  * feed both generated C arrays and generated Go slices. */
 static char zir_go_array_names[24][ZIR_GO_NAME_MAX];
 static int zir_go_array_count;
@@ -1155,88 +1154,6 @@ go_is_array_name(const char *ident, size_t len)
     return 0;
 }
 
-/* Go Props fields that are bool while .kry writes C ints (0/1). */
-static int
-bool_prop_field(const char *field)
-{
-    static const char *names[] = {"Disabled", "DrawMenu", "Active",
-                                  "Secure", "Closeable", "Italic",
-                                  "FocusSelected", "Resizable",
-                                  "SeparatorBefore", "HasLeadingAction",
-                                  "HasDropdown", "Vertical", "Angle", NULL};
-    int i;
-
-    for(i = 0; names[i] != NULL; i++)
-        if(strcmp(names[i], field) == 0)
-            return 1;
-    return 0;
-}
-
-static int
-slice_prop_field(const char *type, const char *field)
-{
-    if(strcmp(type, "DropdownProps") == 0 &&
-       (strcmp(field, "Options") == 0 || strcmp(field, "Items") == 0))
-        return 1;
-    if(strcmp(type, "SegmentedControlProps") == 0 &&
-       strcmp(field, "Options") == 0)
-        return 1;
-    if(strcmp(type, "ButtonProps") == 0 && strcmp(field, "Items") == 0)
-        return 1;
-    if(strcmp(type, "ListBoxProps") == 0 &&
-       (strcmp(field, "Items") == 0 || strcmp(field, "Selected") == 0 || strcmp(field, "ItemKeys") == 0))
-        return 1;
-    if(strcmp(type, "TreeViewProps") == 0 && strcmp(field, "Items") == 0)
-        return 1;
-    if(strcmp(type, "NavigationBarProps") == 0 && strcmp(field, "Items") == 0)
-        return 1;
-    if(strcmp(type, "TabBarProps") == 0 && strcmp(field, "Tabs") == 0)
-        return 1;
-    if(strcmp(type, "BottomIconRowProps") == 0 && strcmp(field, "Items") == 0)
-        return 1;
-    if(strcmp(type, "ToolbarProps") == 0 &&
-       (strcmp(field, "Options") == 0 || strcmp(field, "Actions") == 0))
-        return 1;
-    if(strcmp(type, "ModalProps") == 0 &&
-       (strcmp(field, "Actions") == 0 || strcmp(field, "Text") == 0))
-        return 1;
-    if(strcmp(type, "DragDropProps") == 0 &&
-       (strcmp(field, "Data") == 0 || strcmp(field, "Output") == 0))
-        return 1;
-    if(strcmp(type, "PlotProps") == 0 && strcmp(field, "Values") == 0)
-        return 1;
-    if(strcmp(type, "DragProps") == 0 &&
-       (strcmp(field, "FloatValues") == 0 || strcmp(field, "IntValues") == 0))
-        return 1;
-    if(strcmp(type, "SliderProps") == 0 &&
-       (strcmp(field, "FloatValues") == 0 || strcmp(field, "IntValues") == 0))
-        return 1;
-    if(strcmp(type, "InputProps") == 0 &&
-       (strcmp(field, "FloatValues") == 0 || strcmp(field, "IntValues") == 0 ||
-        strcmp(field, "DoubleValues") == 0))
-        return 1;
-    if(strcmp(type, "ColorPickerProps") == 0 && strcmp(field, "Values") == 0)
-        return 1;
-    if(strcmp(type, "MenuGroup") == 0 && strcmp(field, "Items") == 0)
-        return 1;
-    if(strcmp(type, "MenuItem") == 0 && strcmp(field, "Submenu") == 0)
-        return 1;
-    if(strcmp(type, "MenuProps") == 0 &&
-       (strcmp(field, "Items") == 0 || strcmp(field, "Menus") == 0))
-        return 1;
-    if(strcmp(type, "RouterProps") == 0 && strcmp(field, "Routes") == 0)
-        return 1;
-    if(strcmp(type, "TableViewProps") == 0 &&
-       (strcmp(field, "Columns") == 0 || strcmp(field, "Rows") == 0 ||
-        strcmp(field, "ColumnWidths") == 0 ||
-        strcmp(field, "ColumnEnabled") == 0 ||
-        strcmp(field, "ColumnOrder") == 0))
-        return 1;
-    if(strcmp(type, "TableRow") == 0 && strcmp(field, "Cells") == 0)
-        return 1;
-    return 0;
-}
-
 static int
 go_array_element_type(const char *gt, char *elem, size_t elem_size)
 {
@@ -1330,42 +1247,10 @@ go_translate_array_literal(const ZirModule *m, const char *gt,
     return 1;
 }
 
-/* Legacy host props still accept integer flags. Expressions that already
- * produce bool must not acquire a second integer-to-bool conversion. */
-static int
-boolean_expression(const ZirModule *module, const char *source)
-{
-    ZirFunction parsed = {0};
-    int root = ParseExpr(&parsed, module, source, Span(module->source_path, 1, 1));
-    int result = 0;
-    if(root >= 0) {
-        const ZirExpr *expr = &parsed.exprs[root];
-        result = (expr->kind == ZIR_EXPR_IDENT &&
-                  (!strcmp(expr->name, "true") || !strcmp(expr->name, "false"))) ||
-                 (expr->kind == ZIR_EXPR_CAST && !strcmp(expr->name, "bool")) ||
-                 (expr->kind == ZIR_EXPR_UNARY && !strcmp(expr->op, "!")) ||
-                 (expr->kind == ZIR_EXPR_BINARY &&
-                  (!strcmp(expr->op, "==") || !strcmp(expr->op, "!=") ||
-                   !strcmp(expr->op, "<") || !strcmp(expr->op, ">") ||
-                   !strcmp(expr->op, "<=") || !strcmp(expr->op, ">=") ||
-                   !strcmp(expr->op, "&&") || !strcmp(expr->op, "||")));
-        if(!result && expr->kind == ZIR_EXPR_IDENT) {
-            int field = state_field_index(module, expr->name,
-                                          strlen(expr->name));
-            result = field >= 0 &&
-                     !strcmp(ScalarType(module->state_fields[field].type),
-                             "bool");
-        }
-    }
-    free(parsed.exprs);
-    return result;
-}
-
 static const char *
 tx_compound(const ZirModule *m, const char *p, char *dst, size_t *dn)
 {
     char type[ZIR_GO_NAME_MAX];
-    char first_field[ZIR_GO_NAME_MAX];
     size_t tn = 0;
 
     while(*p != '\0' && *p != ')' && tn + 1 < sizeof(type))
@@ -1382,12 +1267,8 @@ tx_compound(const ZirModule *m, const char *p, char *dst, size_t *dn)
 
         snprintf(qtype, sizeof(qtype), "%s", type);
         p++;
-        /* Props/Spec use C designated initializers. Translate them to named
-         * Go fields and give the untyped bounds literal its Rectangle type. */
         int declared_record = source_record(m, type);
-        if(declared_record || strstr(type, "Props") != NULL ||
-           strstr(type, "Spec") != NULL ||
-           props_field_at(m, type, 0, first_field, sizeof(first_field))) {
+        if(declared_record) {
             char raw[ZIR_GO_TEXT_MAX], parts[32][ZIR_GO_TEXT_MAX];
             size_t rn = 0;
             int depth = 1;
@@ -1421,7 +1302,7 @@ tx_compound(const ZirModule *m, const char *p, char *dst, size_t *dn)
                         positional++;
                         continue;
                     }
-                    if(!props_field_at(m, type, positional++, field, sizeof(field))) {
+                    if(!record_field_at(m, type, positional++, field, sizeof(field))) {
                         fprintf(stderr, "zir_go: no positional field %d in %s\n", positional, type);
                         exit(1);
                     }
@@ -1433,11 +1314,6 @@ tx_compound(const ZirModule *m, const char *p, char *dst, size_t *dn)
                     go_field_ident(part + 1, field, sizeof(field));
                     source = skip_ws(eq + 1);
                 }
-                if(strcmp(field, "TextSize") == 0 &&
-                   (!declared_record ||
-                    strcmp(type, "TextFieldProps") == 0 ||
-                    strcmp(type, "TextAreaProps") == 0))
-                    continue;
                 char field_type[ZIR_NAME_MAX] = "";
                 const ZirType *contract = FindType(m, type, NULL);
                 ZirTypeField member;
@@ -1449,14 +1325,6 @@ tx_compound(const ZirModule *m, const char *p, char *dst, size_t *dn)
                         copy_text(field_type, sizeof(field_type), member.type);
                         break;
                     }
-                }
-                /* Remaining host records use their legacy geometry convention. */
-                if(!*field_type && !declared_record) {
-                    if(!strcmp(field, "Bounds") || !strcmp(field, "Trigger") ||
-                       !strcmp(field, "Indicators"))
-                        copy_text(field_type, sizeof(field_type), "Rectangle");
-                    else if(!strcmp(field, "Color"))
-                        copy_text(field_type, sizeof(field_type), "Color");
                 }
                 if(*source == '{' && *field_type) {
                     char typed[ZIR_GO_TEXT_MAX];
@@ -1474,37 +1342,11 @@ tx_compound(const ZirModule *m, const char *p, char *dst, size_t *dn)
                         copy_text(value, sizeof(value), converted);
                     }
                 }
-                if((strcmp(type, "TextFieldProps") == 0 ||
-                    strcmp(type, "TextAreaProps") == 0) &&
-                   strcmp(field, "Text") == 0 && is_state_reference(value))
-                    strncat(value, "[:]", sizeof(value) - strlen(value) - 1);
-                if(strcmp(type, "MenuItem") == 0 &&
-                   (strcmp(field, "Label") == 0 ||
-                    strcmp(field, "Accelerator") == 0) &&
-                   strcmp(value, "nil") == 0)
-                    snprintf(value, sizeof(value), "\"\"");
-                if(slice_prop_field(type, field) && strcmp(value, "nil") != 0 &&
-                   !go_expr_is_char_buffer_slice(value))
-                    strncat(value, "[:]", sizeof(value) - strlen(value) - 1);
                 go_collapse_duplicate_slices(value);
                 if(emitted++)
                     *dn += (size_t)snprintf(dst + *dn, ZIR_GO_TEXT_MAX - *dn, ", ");
-                if(!declared_record && ((!strcmp(field_type, "bool") ||
-                    (!*field_type && bool_prop_field(field))) ||
-                    (strcmp(type, "TextProps") == 0 &&
-                     strcmp(field, "Selectable") == 0) ||
-                    (strcmp(type, "TableViewProps") == 0 && strcmp(field, "CustomCells") == 0) ||
-                    (strcmp(type, "CollapsibleProps") == 0 &&
-                     (strcmp(field, "Tree") == 0 || strcmp(field, "Leaf") == 0 ||
-                      strcmp(field, "Selected") == 0)) ||
-                    (strcmp(type, "MenuItem") == 0 &&
-                     strcmp(field, "Checked") == 0)) &&
-                   !boolean_expression(m, source))
-                    *dn += (size_t)snprintf(dst + *dn, ZIR_GO_TEXT_MAX - *dn,
-                                            "%s: (%s != 0)", field, value);
-                else
-                    *dn += (size_t)snprintf(dst + *dn, ZIR_GO_TEXT_MAX - *dn,
-                                            "%s: %s", field, value);
+                *dn += (size_t)snprintf(dst + *dn, ZIR_GO_TEXT_MAX - *dn,
+                                        "%s: %s", field, value);
             }
             if(*dn + 2 < ZIR_GO_TEXT_MAX)
                 dst[(*dn)++] = '}';
@@ -1914,41 +1756,6 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                         camel_ident(ident, member, sizeof(member));
                     }
                     dn += (size_t)snprintf(dst + dn, dst_size - dn, "%s%s", prefix, member);
-                    p = q;
-                    continue;
-                }
-                if(strlen("NumericFloat") == il &&
-                   strncmp("NumericFloat", ident, il) == 0) {
-                    dn += (size_t)snprintf(dst + dn, dst_size - dn,
-                        "%sNumericFloat", runtime_output ? "" : ZIR_GO_RUNTIME_PKG ".");
-                    p = q;
-                    continue;
-                }
-                if(strlen("NumericInt") == il &&
-                   strncmp("NumericInt", ident, il) == 0) {
-                    dn += (size_t)snprintf(dst + dn, dst_size - dn,
-                        "%sNumericInt", runtime_output ? "" : ZIR_GO_RUNTIME_PKG ".");
-                    p = q;
-                    continue;
-                }
-                if(strlen("NumericDouble") == il &&
-                   strncmp("NumericDouble", ident, il) == 0) {
-                    dn += (size_t)snprintf(dst + dn, dst_size - dn,
-                        "%sNumericDouble", runtime_output ? "" : ZIR_GO_RUNTIME_PKG ".");
-                    p = q;
-                    continue;
-                }
-                if(strlen("DragSingle") == il &&
-                   strncmp("DragSingle", ident, il) == 0) {
-                    dn += (size_t)snprintf(dst + dn, dst_size - dn,
-                        "%sDragSingle", runtime_output ? "" : ZIR_GO_RUNTIME_PKG ".");
-                    p = q;
-                    continue;
-                }
-                if(strlen("DragRange") == il &&
-                   strncmp("DragRange", ident, il) == 0) {
-                    dn += (size_t)snprintf(dst + dn, dst_size - dn,
-                        "%sDragRange", runtime_output ? "" : ZIR_GO_RUNTIME_PKG ".");
                     p = q;
                     continue;
                 }
@@ -2928,33 +2735,6 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                             char fname[ZIR_GO_NAME_MAX], gt[ZIR_GO_NAME_MAX];
                             go_field_ident(field.name, fname, sizeof(fname));
                             require_go_type(field.type, gt, sizeof(gt), t->span);
-                            if(strcmp(t->name, "TableViewProps") == 0 &&
-                               (strcmp(fname, "CopyText") == 0 ||
-                                strcmp(fname, "PastedText") == 0))
-                                snprintf(gt, sizeof(gt), "*string");
-                            if(strcmp(t->name, "ModalProps") == 0 &&
-                               strcmp(fname, "Text") == 0)
-                                snprintf(gt, sizeof(gt), "[]byte");
-                            if((strcmp(t->name, "TextFieldProps") == 0 ||
-                                strcmp(t->name, "TextAreaProps") == 0) &&
-                               strcmp(fname, "Text") == 0)
-                                snprintf(gt, sizeof(gt), "[]byte");
-                            if((strcmp(t->name, "TextFieldProps") == 0 ||
-                                strcmp(t->name, "TextAreaProps") == 0) &&
-                               strcmp(fname, "Focused") == 0)
-                                snprintf(gt, sizeof(gt), "*bool");
-                            if(strcmp(t->name, "TextFieldProps") == 0 &&
-                               strcmp(fname, "CommitPressed") == 0)
-                                snprintf(gt, sizeof(gt), "*bool");
-                            if((strcmp(t->name, "TextFieldProps") == 0 ||
-                                strcmp(t->name, "TextAreaProps") == 0) &&
-                               strcmp(fname, "TextSize") == 0)
-                                continue;
-                            if(slice_prop_field(t->name, fname) && gt[0] == '*') {
-                                char elem[ZIR_GO_NAME_MAX];
-                                snprintf(elem, sizeof(elem), "%s", gt + 1);
-                                snprintf(gt, sizeof(gt), "[]%s", elem);
-                            }
                             fprintf(f, "\t%s %s\n", fname, gt);
                         }
                         if(status < 0) {
