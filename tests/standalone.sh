@@ -741,10 +741,10 @@ python3 - "$work/app.zib" "$work/bad-bundle.zib" "$work/old-bundle.zib" <<'PY'
 from pathlib import Path
 import sys
 data = Path(sys.argv[1]).read_bytes()
-assert data[:8] == b'ZIB\0\x01\0\0\0', data[:8]
+assert data[:8] == b'ZIB\0\x02\0\0\0', data[:8]
 Path(sys.argv[2]).write_bytes(data[:17])
 old = bytearray(data)
-old[4] = 2
+old[4] = 1
 Path(sys.argv[3]).write_bytes(old)
 PY
 if "$ziran" run "$work/bad-bundle.zib" 2> "$work/bad-bundle.err"; then

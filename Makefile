@@ -45,12 +45,16 @@ $(BIN_DIR)/ziran-zib: cmd/zir-zib/main.c $(FRONTEND) $(PORTABLE) $(HEADERS) | $(
 $(BIN_DIR)/bundle-link-test: tests/bundle_link_test.c $(FRONTEND) $(PORTABLE) $(HEADERS) | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ tests/bundle_link_test.c $(FRONTEND) $(PORTABLE)
 
-check: all $(BIN_DIR)/bundle-link-test
+$(BIN_DIR)/host-capability-test: tests/host_capability_test.c $(FRONTEND) $(PORTABLE) $(HEADERS) | $(BIN_DIR)
+	$(CC) $(CFLAGS) -o $@ tests/host_capability_test.c $(FRONTEND) $(PORTABLE)
+
+check: all $(BIN_DIR)/bundle-link-test $(BIN_DIR)/host-capability-test
 	$(BIN_DIR)/bundle-link-test
 	sh tests/standalone.sh $(BIN_DIR)/ziran
 	sh tests/portable_strings.sh $(BIN_DIR)/ziran
 	sh tests/module_paths.sh $(BIN_DIR)/ziran
 	sh tests/language_contract.sh $(BIN_DIR)/ziran
+	sh tests/host_capability.sh $(BIN_DIR)/ziran $(BIN_DIR)/host-capability-test
 
 clean:
 	rm -rf $(BUILD_DIR)

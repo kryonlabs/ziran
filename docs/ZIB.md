@@ -3,7 +3,7 @@
 This describes the target contract and the experimental subset that ships now.
 See [Implementation status](IMPLEMENTATION_STATUS.md) for the remaining work.
 
-## Experimental version 1
+## Experimental version 2
 
 `ziran bundle --root DIR [--module-path DIR] --entry module:function -o FILE file.zi|file.zir ...`
 loads explicit inputs and their extensionless imports, then links reachable
@@ -20,7 +20,8 @@ comparisons, arithmetic, and shifts use the full unsigned range. Portable
 enum initializers support integer literals and references to preceding members joined by `+`
 or `-`; other constant expressions remain outside this subset. The bundle is
 `ZIB` plus a zero byte, a little-endian version, length-prefixed entry module
-and function names, a host capability count (currently zero), and a
+and function names, a host capability count and its required module/function
+names, and a
 length-prefixed version 4 `.zir` payload. The current linker follows direct
 function calls from the entry, keeps record and enum declarations used by
 those functions (including types from imported modules and nested record
@@ -30,10 +31,15 @@ the expression uses the member as an integer without an explicit enum cast.
 The reader rejects unsupported versions, truncated or trailing data, malformed
 embedded IR, semantic errors and divergent fields in saved IR, unresolved imports,
 unsupported capabilities, and functions outside the current portable subset.
+Reachable `#extern` host calls with scalar, string, or void signatures become
+explicit capabilities. An embedding C host calls `VmRunWithHost` and supplies
+a callback for each required function. The standalone `ziran run` command has
+no host bindings and rejects a call that needs one. The loader compares the
+capability list with the linked IR; the VM checks signatures before execution.
 Source and saved-IR bundle bytes match in scalar, record, and enum tests,
 including Kryon's geometry, layout, and popup ownership tests. Version 1 is
-experimental and has no compatibility promise. Host imports, graphical
-programs, arrays, slots, state, globals,
+experimental and has no compatibility promise. Host calls with records or
+pointers, graphical programs, arrays, slots, state, globals,
 `for`, and `switch` remain unsupported.
 
 ## Target contract

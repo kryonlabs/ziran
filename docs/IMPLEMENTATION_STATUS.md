@@ -33,7 +33,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   expression nodes. Deterministic output is checked on a sample, and a mixed
   source/IR C build runs.
 - `ziran bundle --root DIR --entry module:function -o FILE` builds an
-  experimental version 1 `.zib` from source or saved IR. `ziran run FILE`
+  experimental version 2 `.zib` from source or saved IR. `ziran run FILE`
   loads and executes the validated scalar, plain record, and enum subset without a
   display or Kryon.
   The test runs an imported two-module call and compares bundle bytes from
@@ -62,6 +62,13 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   and clipped-strip geometry have the same source and saved-IR target coverage.
   Kryon's shared style values and fill-state records now support Separator and
   Progress paint decisions as ordinary imported modules in those targets.
+- Reachable scalar `#extern` host calls now appear as module/function
+  capabilities in `.zib`. The loader verifies the capability list against the
+  linked IR, and an embedding C host can execute integer, real, string, and
+  void calls through `VmRunWithHost`. The CLI runner reports a missing host
+  capability. Source and saved-IR bundles, unused extern pruning, list
+  tampering, and unsupported record signatures are tested. Record and pointer
+  host calls remain unsupported.
 - Portable strings now carry immutable UTF-8 bytes with exact byte lengths,
   including embedded nulls. The verifier and interpreter cover literals,
   equality, read-only byte indexing, `.length`, parameters, returns, and
@@ -123,7 +130,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   builds currently rerun the source checker across all modules.
 - Extend the `.zib` linker and verifier beyond the current subset: remaining
   control flow, enum initializer expressions, arrays, slots, state, and all checked
-  expressions. Add a real host capability contract and equivalent behavior
+  expressions. Extend host capabilities to portable records, handles, and
+  equivalent behavior
   for all supported language features. The current bundle embeds checked
   `.zir`; the linker follows direct function calls and retains the types
   those functions use. The portable interpreter executes plain records and

@@ -9,7 +9,23 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { ZIB_VERSION = 1, ZIB_MAX_IR_BYTES = 256 * 1024 * 1024 };
+enum { ZIB_VERSION = 2, ZIB_MAX_IR_BYTES = 256 * 1024 * 1024,
+       ZIB_MAX_CAPABILITIES = 4096 };
+
+typedef struct CapabilityName {
+    char module[ZIR_NAME_MAX];
+    char function[ZIR_NAME_MAX];
+} CapabilityName;
+
+static int
+count_capabilities(const ZirProgram *program)
+{
+    int count = 0;
+    for(int m = 0; m < program->module_count; m++)
+        for(int i = 0; i < program->modules[m].import_count; i++)
+            count += program->modules[m].imports[i].kind == ZIR_IMPORT_EXTERN;
+    return count;
+}
 
 static int
 write_u32(FILE *out, uint32_t value)
@@ -168,6 +184,16 @@ import_is_used(const ZirProgram *program, const ZirModule *module,
                const unsigned char *keep, unsigned char **keep_types,
                const ZirImport *import)
 {
+    if(import->kind == ZIR_IMPORT_EXTERN) {
+        for(int f = 0; f < module->function_count; f++)
+            if(keep[f])
+                for(int e = 0; e < module->functions[f].expr_count; e++)
+                    if(module->functions[f].exprs[e].kind == ZIR_EXPR_CALL &&
+                       strcmp(module->functions[f].exprs[e].name,
+                              import->name) == 0)
+                        return 1;
+        return 0;
+    }
     if(import->kind != ZIR_IMPORT_HEADER ||
        import->resolved_module == NULL)
         return 0;
@@ -264,6 +290,14 @@ BundleLink(const ZirProgram *program, const char *entry_module,
                     if(ResolveFunction(module, expression->name,
                                        &owner, &callee) != 1 ||
                        owner == NULL || callee == NULL) {
+                        int external = 0;
+                        for(int i = 0; i < module->import_count; i++)
+                            if(module->imports[i].kind == ZIR_IMPORT_EXTERN &&
+                               strcmp(module->imports[i].name,
+                                      expression->name) == 0)
+                                external = 1;
+                        if(external)
+                            continue;
                         Diagnostic(expression->span, "zib.call",
                                    "unresolved portable call: %s",
                                    expression->name);
@@ -459,15 +493,22 @@ BundleWrite(FILE *out, const ZirProgram *program,
     length = ok ? ftell(payload) : -1;
     if(length <= 0 || length > ZIB_MAX_IR_BYTES || fseek(payload, 0, SEEK_SET))
         ok = 0;
+    int capabilities = count_capabilities(program);
+    if(capabilities > ZIB_MAX_CAPABILITIES)
+        ok = 0;
     if(ok) {
         ok = fwrite("ZIB\0", 1, 4, out) == 4 &&
              write_u32(out, ZIB_VERSION) &&
              write_name(out, entry_module) &&
              write_name(out, entry_function) &&
-             write_u32(out, 0) && /* explicit host capability count */
-             write_u32(out, (uint32_t)length) &&
-             copy_bytes(payload, out, (uint32_t)length) &&
-             fflush(out) == 0;
+             write_u32(out, (uint32_t)capabilities);
+        for(int m = 0; ok && m < program->module_count; m++)
+            for(int i = 0; ok && i < program->modules[m].import_count; i++)
+                if(program->modules[m].imports[i].kind == ZIR_IMPORT_EXTERN)
+                    ok = write_name(out, program->modules[m].name) &&
+                         write_name(out, program->modules[m].imports[i].name);
+        ok = ok && write_u32(out, (uint32_t)length) &&
+             copy_bytes(payload, out, (uint32_t)length) && fflush(out) == 0;
     }
     fclose(payload);
     return ok;
@@ -482,6 +523,7 @@ BundleRead(FILE *in, const char *path,
     uint32_t version, capability_count, length;
     FILE *payload = NULL;
     ZirProgram *program = NULL;
+    CapabilityName *capabilities = NULL;
     const char *problem = "invalid or truncated bundle";
     if(in == NULL || path == NULL || entry_module == NULL ||
        entry_function == NULL)
@@ -498,10 +540,20 @@ BundleRead(FILE *in, const char *path,
        !read_name(in, entry_function, function_size) ||
        !read_u32(in, &capability_count))
         goto failed;
-    if(capability_count != 0) {
-        problem = "bundle requires unsupported host capabilities";
+    if(capability_count > ZIB_MAX_CAPABILITIES) {
+        problem = "bundle has too many host capabilities";
         goto failed;
     }
+    capabilities = calloc(capability_count ? capability_count : 1,
+                          sizeof(*capabilities));
+    if(capabilities == NULL)
+        goto failed;
+    for(uint32_t i = 0; i < capability_count; i++)
+        if(!read_name(in, capabilities[i].module,
+                      sizeof(capabilities[i].module)) ||
+           !read_name(in, capabilities[i].function,
+                      sizeof(capabilities[i].function)))
+            goto failed;
     if(!read_u32(in, &length) || length == 0 || length > ZIB_MAX_IR_BYTES)
         goto failed;
     payload = tmpfile();
@@ -513,17 +565,36 @@ BundleRead(FILE *in, const char *path,
         problem = "invalid embedded ZIR";
         goto failed;
     }
+    if(capability_count != (uint32_t)count_capabilities(program)) {
+        problem = "bundle capability list differs from linked IR";
+        goto failed;
+    }
+    uint32_t next_capability = 0;
+    for(int m = 0; m < program->module_count; m++)
+        for(int i = 0; i < program->modules[m].import_count; i++)
+            if(program->modules[m].imports[i].kind == ZIR_IMPORT_EXTERN) {
+                if(strcmp(capabilities[next_capability].module,
+                          program->modules[m].name) != 0 ||
+                   strcmp(capabilities[next_capability].function,
+                          program->modules[m].imports[i].name) != 0) {
+                    problem = "bundle capability list differs from linked IR";
+                    goto failed;
+                }
+                next_capability++;
+            }
     if(!CheckCanonicalPrograms(&program, 1, 1, NULL) ||
        !CheckLaws(&program, 1)) {
         problem = "embedded ZIR failed semantic checking";
         goto failed;
     }
     fclose(payload);
+    free(capabilities);
     return program;
 failed:
     Diagnostic(Span(path, 1, 1), "zib.invalid", "%s", problem);
     if(payload != NULL)
         fclose(payload);
+    free(capabilities);
     ProgramFree(program);
     return NULL;
 }

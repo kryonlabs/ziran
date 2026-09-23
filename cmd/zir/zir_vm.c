@@ -77,6 +77,8 @@ typedef struct Vm {
     size_t record_bytes;
     Record *records;
     StringLiteral *strings;
+    VmHostCall host;
+    void *host_context;
 } Vm;
 
 typedef struct Frame {
@@ -86,6 +88,16 @@ typedef struct Frame {
     Local locals[VM_MAX_LOCALS];
     int local_count;
 } Frame;
+
+static const ZirImport *
+host_import(const ZirModule *module, const char *name)
+{
+    for(int i = 0; i < module->import_count; i++)
+        if(module->imports[i].kind == ZIR_IMPORT_EXTERN &&
+           strcmp(module->imports[i].name, name) == 0)
+            return &module->imports[i];
+    return NULL;
+}
 
 typedef enum Flow {
     FLOW_NEXT,
@@ -704,6 +716,15 @@ parse_parameters(const ZirModule *module, const ZirFunction *function,
 }
 
 static int
+parse_import_parameters(const ZirModule *module, const ZirImport *import,
+                        Parameter *parameters)
+{
+    ZirFunction signature = {0};
+    copy_text(signature.args, sizeof(signature.args), import->args);
+    return parse_parameters(module, &signature, parameters);
+}
+
+static int
 binding_index(const Parameter *bindings, int count, const char *name)
 {
     for(int i = count - 1; i >= 0; i--)
@@ -969,9 +990,14 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
                verify_expression(module, function, bindings, binding_count,
                                  expression->third, depth + 1);
     case ZIR_EXPR_CALL:
-        if(expression->name[0] == 0 ||
-           ResolveFunction(module, expression->name, &owner, &callee) != 1 ||
-           callee == NULL || callee->is_extern)
+        if(expression->name[0] == 0)
+            return 0;
+        int resolved = ResolveFunction(module, expression->name,
+                                       &owner, &callee);
+        const ZirImport *external = resolved == 0 ?
+            host_import(module, expression->name) : NULL;
+        if((resolved != 1 || callee == NULL) &&
+           (external == NULL || external->extern_kind != ZIR_EXTERN_HOST))
             return 0;
         for(int child = expression->first_child; child >= 0;
             child = function->exprs[child].next_sibling) {
@@ -980,7 +1006,9 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
                                   child, depth + 1))
                 return 0;
         }
-        return parse_parameters(owner, callee, parameters) == children;
+        return external != NULL ?
+            parse_import_parameters(module, external, parameters) == children :
+            parse_parameters(owner, callee, parameters) == children;
     default:
         return 0;
     }
@@ -1244,13 +1272,28 @@ VmVerify(const ZirProgram *program, const char *entry_module,
                               "duplicate module identity: %s", module->name);
                 return 0;
             }
-        for(int i = 0; i < module->import_count; i++)
+        for(int i = 0; i < module->import_count; i++) {
+            if(module->imports[i].kind == ZIR_IMPORT_EXTERN &&
+               module->imports[i].extern_kind == ZIR_EXTERN_HOST) {
+                Parameter parameters[VM_MAX_PARAMS];
+                int count = parse_import_parameters(module,
+                    &module->imports[i], parameters);
+                int scalar_signature =
+                    value_kind(module->imports[i].return_type) != VALUE_INVALID &&
+                    count >= 0;
+                for(int p = 0; scalar_signature && p < count; p++)
+                    scalar_signature = value_kind(parameters[p].type) != VALUE_INVALID &&
+                        value_kind(parameters[p].type) != VALUE_VOID;
+                if(scalar_signature)
+                    continue;
+            }
             if(module->imports[i].kind != ZIR_IMPORT_HEADER ||
                module->imports[i].resolved_module == NULL) {
                 Diagnostic(module->imports[i].span, "zib.capability",
-                              "portable execution requires an included Ziran module");
+                              "portable execution requires an included Ziran module or scalar host capability");
                 return 0;
             }
+        }
         if(module->global_count || module->state_count || module->define_count) {
             Diagnostic(module->span, "zib.module",
                           "globals, state, and defines are outside the portable subset");
@@ -1616,8 +1659,11 @@ eval(Frame *frame, int index, int depth)
         int count = 0;
         const ZirModule *owner = NULL;
         const ZirFunction *callee = NULL;
-        if(ResolveFunction(frame->module, expression->name,
-                           &owner, &callee) != 1 || callee == NULL) {
+        int resolved = ResolveFunction(frame->module, expression->name,
+                                       &owner, &callee);
+        const ZirImport *external = resolved == 0 ?
+            host_import(frame->module, expression->name) : NULL;
+        if((resolved != 1 || callee == NULL) && external == NULL) {
             frame->vm->failed = 1;
             break;
         }
@@ -1629,8 +1675,24 @@ eval(Frame *frame, int index, int depth)
             }
             args[count++] = eval(frame, child, depth + 1);
         }
-        if(!frame->vm->failed)
-            value = run_function(frame->vm, owner, callee, args, count);
+        if(!frame->vm->failed) {
+            if(external != NULL) {
+                ZirFunction signature = {0};
+                copy_text(signature.name, sizeof(signature.name),
+                          external->name);
+                copy_text(signature.args, sizeof(signature.args),
+                          external->args);
+                copy_text(signature.return_type,
+                          sizeof(signature.return_type),
+                          external->return_type);
+                signature.is_extern = 1;
+                signature.span = external->span;
+                value = run_function(frame->vm, frame->module,
+                                     &signature, args, count);
+            } else {
+                value = run_function(frame->vm, owner, callee, args, count);
+            }
+        }
         break;
     }
     default:
@@ -1782,6 +1844,60 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
         vm->failed = 1;
         return result;
     }
+    if(function->is_extern) {
+        VmHostValue host_args[VM_MAX_PARAMS] = {0};
+        VmHostValue host_result = {0};
+        if(vm->host == NULL) {
+            Diagnostic(function->span, "zib.capability",
+                       "missing host capability: %s:%s",
+                       module->name, function->name);
+            vm->failed = 1;
+            return result;
+        }
+        for(int i = 0; i < count; i++) {
+            Value argument = coerce(vm, module, args[i], parameters[i].type);
+            host_args[i].type = parameters[i].type;
+            host_args[i].integer = argument.integer;
+            host_args[i].bits = argument.bits;
+            host_args[i].real = argument.real;
+            host_args[i].data = argument.data;
+            host_args[i].length = argument.length;
+            host_args[i].kind = argument.kind == VALUE_REAL ? VM_HOST_REAL :
+                argument.kind == VALUE_STRING ? VM_HOST_STRING :
+                (parameters[i].type[0] == 'u' ? VM_HOST_UNSIGNED :
+                 VM_HOST_INTEGER);
+        }
+        host_result.type = function->return_type;
+        if(vm->failed || !vm->host(vm->host_context, module->name,
+                                   function->name, host_args, count,
+                                   &host_result)) {
+            vm->failed = 1;
+            return result;
+        }
+        ValueKind expected = value_kind(function->return_type);
+        VmHostValueKind expected_host = expected == VALUE_VOID ? VM_HOST_VOID :
+            expected == VALUE_REAL ? VM_HOST_REAL :
+            expected == VALUE_STRING ? VM_HOST_STRING :
+            function->return_type[0] == 'u' ? VM_HOST_UNSIGNED :
+            VM_HOST_INTEGER;
+        if(host_result.kind != expected_host ||
+           (expected_host == VM_HOST_STRING && host_result.data == NULL &&
+            host_result.length != 0)) {
+            vm->failed = 1;
+            return result;
+        }
+        if(expected_host == VM_HOST_REAL)
+            result = real_value(host_result.real);
+        else if(expected_host == VM_HOST_STRING)
+            result = string_value(host_result.data, host_result.length);
+        else if(expected_host == VM_HOST_UNSIGNED)
+            result = uint_value(host_result.bits);
+        else if(expected_host == VM_HOST_INTEGER)
+            result = int_value(host_result.integer);
+        else
+            result.kind = VALUE_VOID;
+        return coerce(vm, module, result, function->return_type);
+    }
     vm->depth++;
     frame.vm = vm;
     frame.module = module;
@@ -1823,12 +1939,13 @@ free_strings(Vm *vm)
 }
 
 int
-VmRun(const ZirProgram *program, const char *entry_module,
-         const char *entry_function, long long *result, int *has_result)
+VmRunWithHost(const ZirProgram *program, const char *entry_module,
+              const char *entry_function, VmHostCall host, void *context,
+              long long *result, int *has_result)
 {
     const ZirModule *module;
     const ZirFunction *entry;
-    Vm vm = {0};
+    Vm vm = {.host = host, .host_context = context};
     if(!VmVerify(program, entry_module, entry_function))
         return 0;
     entry = find_entry(program, entry_module, entry_function, &module);
@@ -1845,4 +1962,12 @@ VmRun(const ZirProgram *program, const char *entry_module,
     free_records(&vm);
     free_strings(&vm);
     return 1;
+}
+
+int
+VmRun(const ZirProgram *program, const char *entry_module,
+      const char *entry_function, long long *result, int *has_result)
+{
+    return VmRunWithHost(program, entry_module, entry_function,
+                         NULL, NULL, result, has_result);
 }
