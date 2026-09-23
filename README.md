@@ -31,7 +31,7 @@ For ordinary imports, pass the entry file and a library directory with
 transitively from `.zi` or saved `.zir`. For example:
 
 ```sh
-build/bin/ziran check --root app --module-path ../kryon/zi app/main.zi
+build/bin/ziran check --root app --module-path ../kryon/src/ui app/main.zi
 ```
 
 Imports with a dotted target, such as `#import "stdio.h"`, remain host headers.
