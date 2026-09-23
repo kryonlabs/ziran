@@ -39,6 +39,14 @@ EOF
 
 "$ziran" ir --root "$work" -o "$work/ir" \
     "$work/slotlib.zi" "$work/slotapp.zi"
+if "$ziran" bundle --root "$work" --entry slotapp:Answer \
+    -o "$work/unsupported.zib" "$work/slotlib.zi" "$work/slotapp.zi" \
+    2> "$work/unsupported.err"; then
+    echo 'callable slot unexpectedly passed portable linking' >&2
+    exit 1
+fi
+grep -Fq 'callable slots are outside the portable subset: child' \
+    "$work/unsupported.err"
 
 for input in source saved; do
     if test "$input" = source; then

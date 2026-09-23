@@ -290,6 +290,12 @@ BundleLink(const ZirProgram *program, const char *entry_module,
                     if(ResolveFunction(module, expression->name,
                                        &owner, &callee) != 1 ||
                        owner == NULL || callee == NULL) {
+                        if(expression->slot_type[0] != '\0') {
+                            Diagnostic(expression->span, "zib.slot",
+                                       "callable slots are outside the portable subset: %s",
+                                       expression->name);
+                            goto failed;
+                        }
                         int external = 0;
                         for(int i = 0; i < module->import_count; i++)
                             if(module->imports[i].kind == ZIR_IMPORT_EXTERN &&
