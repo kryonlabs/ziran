@@ -546,6 +546,7 @@ VmVerify(const ZirProgram *program, const char *entry_module,
             const ZirFunction *function = &module->functions[f];
             int binding_count = parse_parameters(function, bindings);
             if(!function->checked || function->is_extern ||
+               function->is_closure || function->capture_count != 0 ||
                !scalar_type(function->return_type) ||
                binding_count < 0) {
                 Diagnostic(function->span, "zib.function",

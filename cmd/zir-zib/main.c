@@ -45,6 +45,7 @@ bundle_command(int argc, char **argv)
     char entry_module[ZIR_NAME_MAX], entry_function[ZIR_NAME_MAX];
     ZirProgram **programs = NULL;
     ZirProgram merged = {0};
+    ZirProgram *linked = NULL;
     FILE *file = NULL;
     for(int i = 0; i < argc; i++) {
         if(strcmp(argv[i], "--root") == 0 && i + 1 < argc)
@@ -91,7 +92,11 @@ bundle_command(int argc, char **argv)
     for(int i = 0; i < count; i++)
         for(int m = 0; m < programs[i]->module_count; m++)
             merged.modules[position++] = programs[i]->modules[m];
-    if(!VmVerify(&merged, entry_module, entry_function))
+    ZirProgram *merged_ptr = &merged;
+    if(!LinkImports(&merged_ptr, 1))
+        goto done;
+    linked = BundleLink(&merged, entry_module, entry_function);
+    if(linked == NULL || !VmVerify(linked, entry_module, entry_function))
         goto done;
     file = fopen(output, "wb");
     if(file == NULL) {
@@ -99,7 +104,7 @@ bundle_command(int argc, char **argv)
                       "cannot open bundle output");
         goto done;
     }
-    if(!BundleWrite(file, &merged, entry_module, entry_function)) {
+    if(!BundleWrite(file, linked, entry_module, entry_function)) {
         Diagnostic(Span(output, 1, 1), "zib.output",
                       "cannot write bundle");
         goto done;
@@ -110,6 +115,7 @@ done:
         result = 1;
     if(result != 0 && file != NULL)
         remove(output);
+    ProgramFree(linked);
     free(merged.modules);
     for(int i = 0; i < count; i++)
         ProgramFree(programs[i]);

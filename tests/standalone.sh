@@ -236,6 +236,54 @@ test "$("$ziran" run "$work/reals.zib")" = 42
     -o "$work/reals-from-ir.zib" "$work/reals-ir/reals.zir"
 cmp "$work/reals.zib" "$work/reals-from-ir.zib"
 test "$("$ziran" run "$work/reals-from-ir.zib")" = 42
+cat > "$work/reachable_library.zi" <<'EOF'
+#module "reachable_library"
+Props :: struct {
+    value: i32
+}
+UnusedRecord :: (props: Props) -> i32 #export {
+    return props.value
+}
+Scale :: (value: float) -> float #export {
+    return value * 1.5
+}
+EOF
+cat > "$work/dead_library.zi" <<'EOF'
+#module "dead_library"
+UnusedDead :: () -> i32 #export {
+    return 99
+}
+EOF
+cat > "$work/reachable_app.zi" <<'EOF'
+#module "reachable_app"
+#import "reachable_library"
+Answer :: () -> i32 #export {
+    if Scale(2.0) == 3.0 { return 42 }
+    return 0
+}
+EOF
+"$ziran" bundle --root "$work" --entry reachable_app:Answer \
+    -o "$work/reachable.zib" "$work/reachable_library.zi" \
+    "$work/dead_library.zi" "$work/reachable_app.zi"
+test "$("$ziran" run "$work/reachable.zib")" = 42
+"$ziran" ir --root "$work" -o "$work/reachable-ir" \
+    "$work/reachable_library.zi" "$work/dead_library.zi" \
+    "$work/reachable_app.zi"
+"$ziran" bundle --root "$work" --entry reachable_app:Answer \
+    -o "$work/reachable-from-ir.zib" \
+    "$work/reachable-ir/reachable_library.zir" \
+    "$work/reachable-ir/dead_library.zir" \
+    "$work/reachable-ir/reachable_app.zir"
+cmp "$work/reachable.zib" "$work/reachable-from-ir.zib"
+test "$("$ziran" run "$work/reachable-from-ir.zib")" = 42
+python3 - "$work/reachable.zib" <<'PY'
+from pathlib import Path
+import sys
+data = Path(sys.argv[1]).read_bytes()
+assert b'UnusedRecord' not in data
+assert b'dead_library' not in data
+assert b'UnusedDead' not in data
+PY
 python3 - "$work/flow-ir/flow.zir" "$work/invalid-flow.zir" <<'PY'
 from pathlib import Path
 import sys

@@ -70,6 +70,225 @@ copy_bytes(FILE *in, FILE *out, uint32_t count)
     return 1;
 }
 
+static int
+copy_function(ZirFunction *target, const ZirFunction *source)
+{
+    *target = *source;
+    target->stmts = NULL;
+    target->exprs = NULL;
+    target->captures = NULL;
+    if(source->stmt_count > 0) {
+        target->stmts = malloc((size_t)source->stmt_count * sizeof(*target->stmts));
+        if(target->stmts == NULL)
+            return 0;
+        memcpy(target->stmts, source->stmts,
+               (size_t)source->stmt_count * sizeof(*target->stmts));
+    }
+    if(source->expr_count > 0) {
+        target->exprs = malloc((size_t)source->expr_count * sizeof(*target->exprs));
+        if(target->exprs == NULL)
+            return 0;
+        memcpy(target->exprs, source->exprs,
+               (size_t)source->expr_count * sizeof(*target->exprs));
+    }
+    if(source->capture_count > 0) {
+        target->captures = malloc((size_t)source->capture_count *
+                                  sizeof(*target->captures));
+        if(target->captures == NULL)
+            return 0;
+        memcpy(target->captures, source->captures,
+               (size_t)source->capture_count * sizeof(*target->captures));
+    }
+    return 1;
+}
+
+static int
+import_is_called(const ZirModule *module, const unsigned char *keep,
+                 const ZirImport *import)
+{
+    if(import->kind != ZIR_IMPORT_HEADER ||
+       import->resolved_module == NULL)
+        return 0;
+    for(int f = 0; f < module->function_count; f++) {
+        if(!keep[f])
+            continue;
+        const ZirFunction *function = &module->functions[f];
+        for(int e = 0; e < function->expr_count; e++) {
+            const ZirModule *owner = NULL;
+            const ZirFunction *callee = NULL;
+            if(function->exprs[e].kind == ZIR_EXPR_CALL &&
+               ResolveFunction(module, function->exprs[e].name,
+                               &owner, &callee) == 1 &&
+               owner == import->resolved_module && callee != NULL)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+ZirProgram *
+BundleLink(const ZirProgram *program, const char *entry_module,
+           const char *entry_function)
+{
+    unsigned char **keep = NULL;
+    ZirProgram *linked = NULL;
+    int entry_m = -1, entry_f = -1;
+    int selected_modules = 0;
+    if(program == NULL || entry_module == NULL || entry_function == NULL)
+        return NULL;
+    keep = calloc((size_t)program->module_count, sizeof(*keep));
+    if(keep == NULL)
+        return NULL;
+    for(int m = 0; m < program->module_count; m++) {
+        const ZirModule *module = &program->modules[m];
+        for(int other = 0; other < m; other++)
+            if(strcmp(program->modules[other].name, module->name) == 0) {
+                Diagnostic(module->span, "zib.module",
+                           "duplicate module identity: %s", module->name);
+                goto failed;
+            }
+        keep[m] = calloc((size_t)(module->function_count > 0 ?
+                                  module->function_count : 1), 1);
+        if(keep[m] == NULL)
+            goto failed;
+        if(strcmp(module->name, entry_module) != 0)
+            continue;
+        for(int f = 0; f < module->function_count; f++)
+            if(strcmp(module->functions[f].name, entry_function) == 0) {
+                if(entry_f >= 0) {
+                    Diagnostic(module->functions[f].span, "zib.entry",
+                               "ambiguous bundle entry: %s", entry_function);
+                    goto failed;
+                }
+                entry_m = m;
+                entry_f = f;
+            }
+    }
+    if(entry_m < 0) {
+        Diagnostic(Span("<bundle>", 1, 1), "zib.entry",
+                   "bundle entry was not found: %s:%s",
+                   entry_module, entry_function);
+        goto failed;
+    }
+    keep[entry_m][entry_f] = 1;
+    for(int changed = 1; changed;) {
+        changed = 0;
+        for(int m = 0; m < program->module_count; m++) {
+            const ZirModule *module = &program->modules[m];
+            for(int f = 0; f < module->function_count; f++) {
+                const ZirFunction *function = &module->functions[f];
+                if(!keep[m][f])
+                    continue;
+                for(int e = 0; e < function->expr_count; e++) {
+                    const ZirExpr *expression = &function->exprs[e];
+                    const ZirModule *owner = NULL;
+                    const ZirFunction *callee = NULL;
+                    int target_m = -1, target_f = -1;
+                    if(expression->kind != ZIR_EXPR_CALL)
+                        continue;
+                    if(ResolveFunction(module, expression->name,
+                                       &owner, &callee) != 1 ||
+                       owner == NULL || callee == NULL) {
+                        Diagnostic(expression->span, "zib.call",
+                                   "unresolved portable call: %s",
+                                   expression->name);
+                        goto failed;
+                    }
+                    for(int candidate = 0; candidate < program->module_count;
+                        candidate++)
+                        if(owner == &program->modules[candidate])
+                            target_m = candidate;
+                    if(target_m >= 0)
+                        for(int candidate = 0;
+                            candidate < program->modules[target_m].function_count;
+                            candidate++)
+                            if(callee == &program->modules[target_m].functions[candidate])
+                                target_f = candidate;
+                    if(target_f < 0) {
+                        Diagnostic(expression->span, "zib.call",
+                                   "call is outside the linked program: %s",
+                                   expression->name);
+                        goto failed;
+                    }
+                    if(!keep[target_m][target_f]) {
+                        keep[target_m][target_f] = 1;
+                        changed = 1;
+                    }
+                }
+            }
+        }
+    }
+    for(int m = 0; m < program->module_count; m++)
+        for(int f = 0; f < program->modules[m].function_count; f++)
+            if(keep[m][f]) {
+                selected_modules++;
+                break;
+            }
+    linked = ProgramNew();
+    if(linked == NULL)
+        goto failed;
+    linked->modules = calloc((size_t)selected_modules, sizeof(*linked->modules));
+    if(linked->modules == NULL)
+        goto failed;
+    linked->module_count = linked->module_cap = selected_modules;
+    int out = 0;
+    for(int m = 0; m < program->module_count; m++) {
+        const ZirModule *source = &program->modules[m];
+        ZirModule *target;
+        int kept_functions = 0, kept_imports = 0;
+        for(int f = 0; f < source->function_count; f++)
+            kept_functions += keep[m][f] != 0;
+        if(kept_functions == 0)
+            continue;
+        target = &linked->modules[out++];
+        *target = *source;
+        target->globals = NULL; target->global_count = target->global_cap = 0;
+        target->state_fields = NULL; target->state_count = target->state_cap = 0;
+        target->defines = NULL; target->define_count = target->define_cap = 0;
+        target->asserts = NULL; target->assert_count = target->assert_cap = 0;
+        target->types = NULL; target->type_count = target->type_cap = 0;
+        target->imports = NULL; target->import_count = target->import_cap = 0;
+        target->functions = NULL;
+        target->function_count = target->function_cap = 0;
+        target->functions = calloc((size_t)kept_functions,
+                                   sizeof(*target->functions));
+        if(target->functions == NULL)
+            goto failed;
+        target->function_count = target->function_cap = kept_functions;
+        int next = 0;
+        for(int f = 0; f < source->function_count; f++)
+            if(keep[m][f] && !copy_function(&target->functions[next++],
+                                           &source->functions[f]))
+                goto failed;
+        for(int i = 0; i < source->import_count; i++)
+            kept_imports += import_is_called(source, keep[m],
+                                             &source->imports[i]);
+        if(kept_imports > 0) {
+            target->imports = calloc((size_t)kept_imports,
+                                     sizeof(*target->imports));
+            if(target->imports == NULL)
+                goto failed;
+            target->import_count = target->import_cap = kept_imports;
+            int next_import = 0;
+            for(int i = 0; i < source->import_count; i++)
+                if(import_is_called(source, keep[m], &source->imports[i]))
+                    target->imports[next_import++] = source->imports[i];
+        }
+    }
+    if(!LinkImports(&linked, 1))
+        goto failed;
+    for(int m = 0; m < program->module_count; m++)
+        free(keep[m]);
+    free(keep);
+    return linked;
+failed:
+    for(int m = 0; m < program->module_count; m++)
+        free(keep[m]);
+    free(keep);
+    ProgramFree(linked);
+    return NULL;
+}
+
 int
 BundleWrite(FILE *out, const ZirProgram *program,
                const char *entry_module, const char *entry_function)

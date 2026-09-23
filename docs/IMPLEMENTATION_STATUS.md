@@ -33,7 +33,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   unsupported statements before writing a bundle. Loop, branch, and real
   arithmetic programs are compared against generated C, C++, and Go in
   `make check`. The bundle loader also reruns the language checker and laws
-  before execution.
+  before execution. The linker follows direct calls and drops unreachable
+  functions and modules; a record-bearing library can contribute only its
+  reachable scalar functions to a portable bundle.
 - Extracted compiler function names no longer carry `Zir` or `zir_` prefixes;
   IR types retain `Zir` names for now.
 - Native Go no longer treats ordinary imported record types as types from the
@@ -65,8 +67,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   control flow, records, strings, arrays, slots, state, and all checked
   expressions. Add a real host capability contract and equivalent behavior
   for all supported language features. The current bundle embeds checked
-  `.zir` and contains every supplied module; it does not prune unreachable
-  code. Kryon's old `.krb` compiler remains in Kryon.
+  `.zir`, but its linker handles direct function calls only. Kryon's old
+  `.krb` compiler remains in Kryon.
 - Complete native C++, C, and Go backend parity, FFI, capability checks, and
   language law tests independent of UI assumptions. The current `make check`
   only covers the stated C/C++/Go subset.
