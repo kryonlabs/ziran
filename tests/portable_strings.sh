@@ -1,0 +1,101 @@
+#!/bin/sh
+set -eu
+
+ziran=$1
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+
+cat > "$work/strings.zi" <<'EOF'
+#module "strings"
+
+Pair :: struct {
+    first: string
+    second: string
+}
+
+Same :: (left: string, right: string) -> bool {
+    return left == right
+}
+
+Answer :: () -> i32 #export {
+    empty: string
+    if empty.length != 0 || empty != "" { return 0 }
+    text: string = "a\u00e9\x00z"
+    if text.length != 5 { return 0 }
+    if text[0] != (u8)97 || text[1] != (u8)0xc3 ||
+       text[2] != (u8)0xa9 || text[3] != (u8)0 ||
+       text[4] != (u8)122 { return 0 }
+    pair: Pair
+    pair.first = text
+    pair.second = "a\u00e9\x00z"
+    if !Same(pair.first, pair.second) { return 0 }
+    if pair.first == "a\u00e9z" { return 0 }
+    if "\U0001f642".length != 4 { return 0 }
+    return 42
+}
+EOF
+
+"$ziran" check --root "$work" "$work/strings.zi"
+"$ziran" ir --root "$work" -o "$work/ir" "$work/strings.zi"
+"$ziran" bundle --root "$work" --entry strings:Answer \
+    -o "$work/source.zib" "$work/strings.zi"
+"$ziran" bundle --root "$work" --entry strings:Answer \
+    -o "$work/ir.zib" "$work/ir/strings.zir"
+cmp "$work/source.zib" "$work/ir.zib"
+test "$("$ziran" run "$work/source.zib")" = 42
+test "$("$ziran" run "$work/ir.zib")" = 42
+
+for input in source ir; do
+    if test "$input" = source; then
+        filename="$work/strings.zi"
+    else
+        filename="$work/ir/strings.zir"
+    fi
+    for target in c cpp go; do
+        output="$work/$target-$input"
+        if test "$target" = go; then
+            "$ziran" build --target=go --strict --pkg main --root "$work" \
+                -o "$output" "$filename"
+            cat > "$output/main.go" <<'GO'
+package main
+func main() { if Strings_Answer() != 42 { panic("wrong string result") } }
+GO
+            GO111MODULE=off go run "$output/strings.go" "$output/main.go"
+        elif test "$target" = c; then
+            "$ziran" build --target=c --strict --root "$work" \
+                -o "$output" "$filename"
+            cat > "$output/main.c" <<'C'
+#include "strings.h"
+int main(void) { return Answer() == 42 ? 0 : 1; }
+C
+            ${CC:-cc} -Iinclude -I"$output" "$output/strings.c" \
+                "$output/main.c" -o "$output/app"
+            "$output/app"
+        else
+            "$ziran" build --target=cpp --strict --root "$work" \
+                -o "$output" "$filename"
+            cat > "$output/main.cpp" <<'CPP'
+#include "strings.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+CPP
+            ${CXX:-c++} -Iinclude -I"$output" "$output/strings.cpp" \
+                "$output/main.cpp" -o "$output/app"
+            "$output/app"
+        fi
+    done
+done
+
+cat > "$work/bad_index.zi" <<'EOF'
+#module "bad_index"
+Answer :: () -> i32 #export {
+    text: string = "a"
+    return (i32)text[1]
+}
+EOF
+"$ziran" bundle --root "$work" --entry bad_index:Answer \
+    -o "$work/bad_index.zib" "$work/bad_index.zi"
+if "$ziran" run "$work/bad_index.zib" 2> "$work/bad_index.err"; then
+    echo 'out-of-range string index unexpectedly ran' >&2
+    exit 1
+fi
+grep -Fq 'portable execution failed' "$work/bad_index.err"

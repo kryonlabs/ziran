@@ -28,8 +28,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   The test runs an imported two-module call and compares bundle bytes from
   source and saved IR. The current runner supports zero-argument entry
   functions with `i32`/`int`/`bool`/`void` results, and helper functions with
-  `u8`/`u32`/`u64`/`float`/`double`, enum, or plain record results. It supports scalar, enum,
-  and record parameters and locals, nested record fields, defaults and record
+  `u8`/`u32`/`u64`/`float`/`double`/`string`, enum, or plain record results. It supports scalar, enum,
+  string, and record parameters and locals, nested record fields, defaults and record
   literals, value copies, member reads and writes, scalar compound assignments,
   `u32` and `u64` bitwise operations and shifts, calls,
   arithmetic, comparisons, casts, assignments, `if`/`else`, `while`, lexical
@@ -42,9 +42,14 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   The test runs record and enum functions across imported modules. Kryon's
   complete geometry, layout, and group calculation test also runs in `.zib`
   from source and saved `.zir`. Kryon's accessibility, drag and drop, theme,
-  popup, transition fade, and numeric input policies also build and run as `.zib` bundles
+  popup, transition fade, numeric input, and text row policies also build and run as `.zib` bundles
   from both inputs, independently of the UI runtime. The popup ownership test
   includes frame IDs above `INT64_MAX`.
+- Portable strings now carry immutable UTF-8 bytes with exact byte lengths,
+  including embedded nulls. The verifier and interpreter cover literals,
+  equality, read-only byte indexing, `.length`, parameters, returns, and
+  record fields. `make check` compares source and saved-IR bundles with C,
+  C++, and Go on a string program and rejects out-of-range indexing.
 - Compiler functions use short names without `Zir` or `zir_` prefixes,
   including the IR serializer's `ProgramWrite`, `ProgramRead`, and `PathIsIR`.
   IR data types retain `Zir` names for now.
@@ -96,7 +101,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   supported backend consume the same saved IR. Source, saved-IR, and mixed
   builds currently rerun the source checker across all modules.
 - Extend the `.zib` linker and verifier beyond the current subset: remaining
-  control flow, enum initializer expressions, strings, arrays, slots, state, and all checked
+  control flow, enum initializer expressions, arrays, slots, state, and all checked
   expressions. Add a real host capability contract and equivalent behavior
   for all supported language features. The current bundle embeds checked
   `.zir`; the linker follows direct function calls and retains the types

@@ -25,6 +25,7 @@ typedef enum ValueKind {
     VALUE_VOID,
     VALUE_INT,
     VALUE_REAL,
+    VALUE_STRING,
     VALUE_ENUM,
     VALUE_RECORD
 } ValueKind;
@@ -37,6 +38,8 @@ typedef struct Value {
     uint64_t bits;
     int unsigned64;
     double real;
+    const unsigned char *data;
+    size_t length;
     const ZirType *enumeration;
     Record *record;
 } Value;
@@ -54,6 +57,13 @@ struct Record {
     RecordField fields[];
 };
 
+typedef struct StringLiteral {
+    struct StringLiteral *next;
+    const ZirExpr *expression;
+    size_t length;
+    unsigned char data[];
+} StringLiteral;
+
 typedef struct Local {
     char name[ZIR_NAME_MAX];
     char type[ZIR_NAME_MAX];
@@ -66,6 +76,7 @@ typedef struct Vm {
     int failed;
     size_t record_bytes;
     Record *records;
+    StringLiteral *strings;
 } Vm;
 
 typedef struct Frame {
@@ -98,6 +109,8 @@ value_kind(const char *type)
        strcmp(type, "double") == 0 || strcmp(type, "f64") == 0 ||
        strcmp(type, "real") == 0)
         return VALUE_REAL;
+    if(strcmp(type, "string") == 0)
+        return VALUE_STRING;
     return VALUE_INVALID;
 }
 
@@ -296,6 +309,137 @@ real_value(double real)
 }
 
 static Value
+string_value(const unsigned char *data, size_t length)
+{
+    Value value = {.kind = VALUE_STRING, .data = data, .length = length};
+    return value;
+}
+
+/* Decode one checked source literal into immutable UTF-8 bytes. The same
+ * escapes and Unicode validity rules apply to native and portable strings. */
+static int
+decode_string(const char *source, unsigned char *out, size_t capacity,
+              size_t *length)
+{
+    size_t size = strlen(source);
+    size_t used = 0;
+    int remaining = 0;
+    unsigned int scalar = 0, minimum = 0;
+    if(size < 2 || source[0] != '"' || source[size - 1] != '"')
+        return 0;
+    for(size_t i = 1; i + 1 < size; i++) {
+        unsigned int value = (unsigned char)source[i];
+        int unicode_escape = 0;
+        if(value == '\\') {
+            if(++i + 1 >= size)
+                return 0;
+            value = (unsigned char)source[i];
+            const char *escapes = "0abfnrtv\\\"";
+            const unsigned char values[] = {0, 7, 8, 12, 10, 13, 9, 11, '\\', '"'};
+            const char *found = strchr(escapes, (int)value);
+            if(found != NULL) {
+                value = values[found - escapes];
+            } else if(value == 'x' || value == 'u' || value == 'U') {
+                unicode_escape = value != 'x';
+                int digits = value == 'x' ? 2 : value == 'u' ? 4 : 8;
+                value = 0;
+                for(int d = 0; d < digits; d++) {
+                    if(++i + 1 >= size)
+                        return 0;
+                    int digit = (unsigned char)source[i];
+                    if(digit >= '0' && digit <= '9') digit -= '0';
+                    else if(digit >= 'a' && digit <= 'f') digit -= 'a' - 10;
+                    else if(digit >= 'A' && digit <= 'F') digit -= 'A' - 10;
+                    else return 0;
+                    value = value * 16 + (unsigned int)digit;
+                }
+                if(value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff))
+                    return 0;
+            } else {
+                return 0;
+            }
+        } else if(value == '"') {
+            return 0;
+        }
+        unsigned char bytes[4] = {(unsigned char)value, 0, 0, 0};
+        int count = 1;
+        if(unicode_escape && value >= 128) {
+            if(value < 0x800) {
+                bytes[0] = 0xc0 | (value >> 6);
+                bytes[1] = 0x80 | (value & 63);
+                count = 2;
+            } else if(value < 0x10000) {
+                bytes[0] = 0xe0 | (value >> 12);
+                bytes[1] = 0x80 | ((value >> 6) & 63);
+                bytes[2] = 0x80 | (value & 63);
+                count = 3;
+            } else {
+                bytes[0] = 0xf0 | (value >> 18);
+                bytes[1] = 0x80 | ((value >> 12) & 63);
+                bytes[2] = 0x80 | ((value >> 6) & 63);
+                bytes[3] = 0x80 | (value & 63);
+                count = 4;
+            }
+        }
+        for(int d = 0; d < count; d++) {
+            unsigned char byte = bytes[d];
+            if(remaining) {
+                if((byte & 0xc0) != 0x80)
+                    return 0;
+                scalar = (scalar << 6) | (byte & 63);
+                remaining--;
+                if(!remaining && (scalar < minimum || scalar > 0x10ffff ||
+                    (scalar >= 0xd800 && scalar <= 0xdfff)))
+                    return 0;
+            } else if(byte >= 128) {
+                if(byte >= 0xc2 && byte <= 0xdf) {
+                    remaining = 1;
+                    scalar = byte & 31;
+                    minimum = 0x80;
+                } else if(byte >= 0xe0 && byte <= 0xef) {
+                    remaining = 2;
+                    scalar = byte & 15;
+                    minimum = 0x800;
+                } else if(byte >= 0xf0 && byte <= 0xf4) {
+                    remaining = 3;
+                    scalar = byte & 7;
+                    minimum = 0x10000;
+                } else {
+                    return 0;
+                }
+            }
+            if(used >= capacity)
+                return 0;
+            out[used++] = byte;
+        }
+    }
+    if(remaining)
+        return 0;
+    *length = used;
+    return 1;
+}
+
+static Value
+literal_string(Vm *vm, const ZirExpr *expression)
+{
+    for(StringLiteral *item = vm->strings; item != NULL; item = item->next)
+        if(item->expression == expression)
+            return string_value(item->data, item->length);
+    size_t capacity = strlen(expression->text);
+    StringLiteral *item = malloc(sizeof(*item) + capacity + 1);
+    if(item == NULL || !decode_string(expression->text, item->data,
+                                      capacity + 1, &item->length)) {
+        free(item);
+        vm->failed = 1;
+        return string_value((const unsigned char *)"", 0);
+    }
+    item->expression = expression;
+    item->next = vm->strings;
+    vm->strings = item;
+    return string_value(item->data, item->length);
+}
+
+static Value
 enum_value(const ZirType *type, int32_t integer)
 {
     Value value = {.kind = VALUE_ENUM, .integer = integer,
@@ -382,6 +526,8 @@ default_value(Vm *vm, const ZirModule *module, const char *type, int depth)
         return int_value(0);
     if(kind == VALUE_REAL)
         return real_value(0.0);
+    if(kind == VALUE_STRING)
+        return string_value((const unsigned char *)"", 0);
     const ZirModule *owner = NULL;
     const ZirType *record_type = FindType(module, type, &owner);
     if(record_type != NULL && record_type->is_enum)
@@ -425,6 +571,12 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         Value empty = {.kind = VALUE_VOID};
         return empty;
     }
+    if(target == VALUE_STRING) {
+        if(value.kind == VALUE_STRING)
+            return value;
+        vm->failed = 1;
+        return string_value((const unsigned char *)"", 0);
+    }
     if(target == VALUE_INVALID) {
         const ZirType *record = FindType(module, type, NULL);
         if(record != NULL && record->is_enum &&
@@ -440,7 +592,8 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         vm->failed = 1;
         return int_value(0);
     }
-    if(value.kind == VALUE_RECORD || value.kind == VALUE_VOID ||
+    if(value.kind == VALUE_STRING || value.kind == VALUE_RECORD ||
+       value.kind == VALUE_VOID ||
        value.kind == VALUE_INVALID) {
         vm->failed = 1;
         return int_value(0);
@@ -664,6 +817,12 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         return errno == 0 && end != expression->text && *end == 0 &&
                isfinite(number);
     }
+    case ZIR_EXPR_STRING: {
+        unsigned char bytes[ZIR_TEXT_MAX];
+        size_t length;
+        return strcmp(expression->type, "string") == 0 &&
+               decode_string(expression->text, bytes, sizeof(bytes), &length);
+    }
     case ZIR_EXPR_IDENT: {
         if(strcmp(expression->name, "true") == 0 ||
            strcmp(expression->name, "false") == 0 ||
@@ -684,7 +843,10 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
                                  expression->right, depth + 1) &&
                (strcmp(expression->op, "~") == 0 ?
                 integer_type(function->exprs[expression->right].type) :
-                scalar_type(function->exprs[expression->right].type));
+                strcmp(expression->op, "!") == 0 ?
+                strcmp(function->exprs[expression->right].type, "bool") == 0 :
+                value_kind(function->exprs[expression->right].type) == VALUE_INT ||
+                value_kind(function->exprs[expression->right].type) == VALUE_REAL);
     case ZIR_EXPR_BINARY: {
         if(!binary_operator(expression->op) ||
            !verify_expression(module, function, bindings, binding_count,
@@ -694,6 +856,12 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
             return 0;
         const char *left_type = function->exprs[expression->left].type;
         const char *right_type = function->exprs[expression->right].type;
+        if(strcmp(left_type, "string") == 0 ||
+           strcmp(right_type, "string") == 0)
+            return strcmp(left_type, "string") == 0 &&
+                   strcmp(right_type, "string") == 0 &&
+                   (strcmp(expression->op, "==") == 0 ||
+                    strcmp(expression->op, "!=") == 0);
         const ZirType *left_enum = FindType(module, left_type, NULL);
         const ZirType *right_enum = FindType(module, right_type, NULL);
         if(left_enum != NULL && left_enum->is_enum)
@@ -714,6 +882,10 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
             return 0;
         const char *source_type = function->exprs[expression->right].type;
         const ZirType *source = FindType(module, source_type, NULL);
+        if(strcmp(expression->name, "string") == 0 ||
+           strcmp(source_type, "string") == 0)
+            return strcmp(expression->name, "string") == 0 &&
+                   strcmp(source_type, "string") == 0;
         return scalar_type(source_type) ||
                (source != NULL && source->is_enum);
     }
@@ -759,6 +931,11 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         if(expression->left < 0 || expression->left >= function->expr_count)
             return 0;
         const ZirExpr *base = &function->exprs[expression->left];
+        if(strcmp(base->type, "string") == 0)
+            return strcmp(expression->name, "length") == 0 &&
+                   strcmp(expression->type, "i32") == 0 &&
+                   verify_expression(module, function, bindings, binding_count,
+                                     expression->left, depth + 1);
         const ZirType *record = FindType(module, base->type, NULL);
         size_t offset = 0;
         ZirTypeField field;
@@ -773,10 +950,20 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
                         strcmp(ScalarType(field.type), expression->type) == 0);
         return 0;
     }
+    case ZIR_EXPR_INDEX:
+        return expression->left >= 0 && expression->left < function->expr_count &&
+               expression->right >= 0 && expression->right < function->expr_count &&
+               strcmp(function->exprs[expression->left].type, "string") == 0 &&
+               strcmp(expression->type, "u8") == 0 &&
+               integer_type(function->exprs[expression->right].type) &&
+               verify_expression(module, function, bindings, binding_count,
+                                 expression->left, depth + 1) &&
+               verify_expression(module, function, bindings, binding_count,
+                                 expression->right, depth + 1);
     case ZIR_EXPR_CONDITIONAL:
         return verify_expression(module, function, bindings, binding_count,
                                  expression->left, depth + 1) &&
-               scalar_type(function->exprs[expression->left].type) &&
+               strcmp(function->exprs[expression->left].type, "bool") == 0 &&
                verify_expression(module, function, bindings, binding_count,
                                  expression->right, depth + 1) &&
                verify_expression(module, function, bindings, binding_count,
@@ -891,6 +1078,8 @@ verify_sequence(const ZirModule *module, const ZirFunction *function,
                     function->exprs[statement->expr_root].type;
                 if(operation == NULL || !scalar_type(destination) ||
                    !scalar_type(source) ||
+                   strcmp(destination, "string") == 0 ||
+                   strcmp(source, "string") == 0 ||
                    strcmp(destination, "bool") == 0 ||
                    strcmp(destination, "void") == 0 ||
                    strcmp(source, "bool") == 0 ||
@@ -933,7 +1122,8 @@ verify_sequence(const ZirModule *module, const ZirFunction *function,
                     saw_else = 1;
                 else if(!verify_expression(module, function, bindings,
                                            binding_count, head->expr_root, 0) ||
-                        !scalar_type(function->exprs[head->expr_root].type))
+                        strcmp(function->exprs[head->expr_root].type,
+                               "bool") != 0)
                     return 0;
                 if(!verify_sequence(module, function, branch + 1, close,
                                     bindings, binding_count, loop_depth,
@@ -950,7 +1140,8 @@ verify_sequence(const ZirModule *module, const ZirFunction *function,
             if(close < 0 || statement->expr_root < 0 ||
                !verify_expression(module, function, bindings, binding_count,
                                   statement->expr_root, 0) ||
-               !scalar_type(function->exprs[statement->expr_root].type) ||
+               strcmp(function->exprs[statement->expr_root].type,
+                      "bool") != 0 ||
                !verify_sequence(module, function, i + 1, close, bindings,
                                 binding_count, loop_depth + 1, depth + 1))
                 return 0;
@@ -1146,6 +1337,18 @@ binary_value(Vm *vm, const char *op, Value left, Value right,
     double a = as_real(left), b = as_real(right);
     if(vm->failed || left.kind == VALUE_VOID || right.kind == VALUE_VOID)
         goto failed;
+    if(left.kind == VALUE_STRING || right.kind == VALUE_STRING) {
+        if(left.kind != VALUE_STRING || right.kind != VALUE_STRING)
+            goto failed;
+        int equal = left.length == right.length &&
+                    (left.length == 0 ||
+                     memcmp(left.data, right.data, left.length) == 0);
+        if(strcmp(op, "==") == 0)
+            return int_value(equal);
+        if(strcmp(op, "!=") == 0)
+            return int_value(!equal);
+        goto failed;
+    }
     if(left.kind == VALUE_ENUM || right.kind == VALUE_ENUM) {
         if(left.kind != VALUE_ENUM || right.kind != VALUE_ENUM ||
            left.enumeration != right.enumeration)
@@ -1275,6 +1478,9 @@ eval(Frame *frame, int index, int depth)
             frame->vm->failed = 1;
         break;
     }
+    case ZIR_EXPR_STRING:
+        value = literal_string(frame->vm, expression);
+        break;
     case ZIR_EXPR_IDENT: {
         if(strcmp(expression->name, "true") == 0)
             return int_value(1);
@@ -1375,6 +1581,11 @@ eval(Frame *frame, int index, int depth)
     }
     case ZIR_EXPR_MEMBER: {
         left = eval(frame, expression->left, depth + 1);
+        if(left.kind == VALUE_STRING &&
+           strcmp(expression->name, "length") == 0) {
+            value = int_value((int64_t)left.length);
+            break;
+        }
         Value *field = left.kind == VALUE_RECORD ?
                        record_field(left.record, expression->name) : NULL;
         if(field == NULL)
@@ -1383,6 +1594,17 @@ eval(Frame *frame, int index, int depth)
             value = *field;
         break;
     }
+    case ZIR_EXPR_INDEX:
+        left = eval(frame, expression->left, depth + 1);
+        right = eval(frame, expression->right, depth + 1);
+        if(left.kind != VALUE_STRING || right.kind != VALUE_INT ||
+           (!right.unsigned64 && right.integer < 0) ||
+           integer_bits(right) >= left.length) {
+            frame->vm->failed = 1;
+            break;
+        }
+        value = int_value(left.data[integer_bits(right)]);
+        break;
     case ZIR_EXPR_CONDITIONAL:
         left = eval(frame, expression->left, depth + 1);
         if(!frame->vm->failed)
@@ -1590,6 +1812,16 @@ free_records(Vm *vm)
     }
 }
 
+static void
+free_strings(Vm *vm)
+{
+    while(vm->strings != NULL) {
+        StringLiteral *next = vm->strings->next;
+        free(vm->strings);
+        vm->strings = next;
+    }
+}
+
 int
 VmRun(const ZirProgram *program, const char *entry_module,
          const char *entry_function, long long *result, int *has_result)
@@ -1607,8 +1839,10 @@ VmRun(const ZirProgram *program, const char *entry_module,
         Diagnostic(entry->span, "zib.runtime",
                       "portable execution failed");
         free_records(&vm);
+        free_strings(&vm);
         return 0;
     }
     free_records(&vm);
+    free_strings(&vm);
     return 1;
 }

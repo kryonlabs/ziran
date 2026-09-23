@@ -760,9 +760,8 @@ grep -Fq 'unsupported ZIB version' "$work/old-bundle.err"
 cat > "$work/unsupported-bundle.zi" <<'EOF'
 #module "unsupported_bundle"
 Answer :: () -> i32 #export {
-    value: string = "hello"
-    unused value
-    return 42
+    value: [2]i32
+    return value[0] + 42
 }
 EOF
 if "$ziran" bundle --root "$work" --entry unsupported_bundle:Answer \

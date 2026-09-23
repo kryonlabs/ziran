@@ -48,6 +48,7 @@ $(BIN_DIR)/bundle-link-test: tests/bundle_link_test.c $(FRONTEND) $(PORTABLE) $(
 check: all $(BIN_DIR)/bundle-link-test
 	$(BIN_DIR)/bundle-link-test
 	sh tests/standalone.sh $(BIN_DIR)/ziran
+	sh tests/portable_strings.sh $(BIN_DIR)/ziran
 
 clean:
 	rm -rf $(BUILD_DIR)

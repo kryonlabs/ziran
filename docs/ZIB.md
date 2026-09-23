@@ -8,8 +8,10 @@ See [Implementation status](IMPLEMENTATION_STATUS.md) for the remaining work.
 `ziran bundle --root DIR --entry module:function -o FILE file.zi|file.zir ...`
 links explicitly supplied modules. `ziran run FILE` validates and executes
 zero-argument integer, bool, or void entry functions on a portable interpreter.
-Called functions can use `i32`, `u8`, `u32`, `u64`, `bool`, `float`, and `double` scalars,
-enums, and plain records with scalar, enum, or nested record fields. Record defaults and literals,
+Called functions can use `i32`, `u8`, `u32`, `u64`, `bool`, `float`, `double`, and
+immutable `string` values, enums, and plain records with scalar, enum, string,
+or nested record fields. Strings support UTF-8 literals, byte length and
+read-only indexing, equality, parameters, returns, and record fields. Record defaults and literals,
 member reads and writes, scalar compound assignments, parameters, returns,
 and value copies execute in the interpreter. The unsigned integer subset includes
 bitwise `&`, `|`, `^`, `~`, shifts, and their compound assignments; `u64`
@@ -30,7 +32,7 @@ unsupported capabilities, and functions outside the current portable subset.
 Source and saved-IR bundle bytes match in scalar, record, and enum tests,
 including Kryon's geometry, layout, and popup ownership tests. Version 1 is
 experimental and has no compatibility promise. Host imports, graphical
-programs, strings, arrays, slots, state, globals,
+programs, arrays, slots, state, globals,
 `for`, and `switch` remain unsupported.
 
 ## Target contract
