@@ -73,6 +73,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   and release policy also runs from source and saved `.zir` across native
   targets and `.zib` through ordinary module imports. Image fit, placeholder,
   and clipped-strip geometry have the same source and saved-IR target coverage.
+  Kryon's `ImageProps` record now uses portable strings for asset paths and
+  alt text. Its fit, source selection, draw eligibility, and default tint
+  decisions are tested with that record across C, C++, Go, and `.zib`. The
+  complete Image widget is not yet in the checked library.
   Kryon's shared style values and fill-state records now support Separator and
   Progress paint decisions as ordinary imported modules in those targets.
   Window placement and drag policy now runs from source and saved IR in native
