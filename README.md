@@ -4,10 +4,9 @@ Ziran is a general-purpose language. Its source files use `.zi`, its checked
 intermediate representation uses `.zir`, and its portable linked programs use
 `.zib`. None of those formats assumes a graphical application.
 
-Kryon is being migrated into a separate UI library written in Ziran. In the
-intended design, programs import its widgets as ordinary library declarations.
-Ziran rejects `#ui` and has no implicit Kryon dependency, but inherited
-Kryon-specific backend paths still need removal.
+Kryon is being migrated into a separate UI library written in Ziran. Programs
+import its checked widgets as ordinary library declarations. Ziran rejects
+`#ui` and has no implicit Kryon dependency or widget-specific backend calls.
 See [Architecture](docs/ARCHITECTURE.md) for the intended boundary,
 [Language direction](docs/LANGUAGE_DIRECTION.md) for laws, LLM tooling, and
 parallelism, and [Migration](docs/MIGRATION.md) for the two-repository cutover.
