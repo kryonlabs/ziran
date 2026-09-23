@@ -8,24 +8,27 @@ See [Implementation status](IMPLEMENTATION_STATUS.md) for the remaining work.
 `ziran bundle --root DIR --entry module:function -o FILE file.zi|file.zir ...`
 links explicitly supplied modules. `ziran run FILE` validates and executes
 zero-argument integer, bool, or void entry functions on a portable interpreter.
-Called functions can use `float` and `double` scalars and plain records with
-scalar or nested record fields. Record defaults, member reads and writes,
-parameters, returns, and value copies execute in the interpreter. The bundle is
+Called functions can use `float` and `double` scalars, enums, and plain records
+with scalar, enum, or nested record fields. Record defaults and literals,
+member reads and writes, scalar compound assignments, parameters, returns,
+and value copies execute in the interpreter. Portable enum initializers
+support integer literals and references to preceding members joined by `+`
+or `-`; other constant expressions remain outside this subset. The bundle is
 `ZIB` plus a zero byte, a little-endian version, length-prefixed entry module
 and function names, a host capability count (currently zero), and a
 length-prefixed version 3 `.zir` payload. The current linker follows direct
 function calls from the entry, keeps record and enum declarations used by
 those functions (including types from imported modules and nested record
 fields), and removes unreachable functions, modules, types, and imports before
-writing the payload. Record and enum declarations are retained, but enum values
-are not yet executable in the interpreter.
+writing the payload. Enum member references keep their declaration even when
+the expression uses the member as an integer without an explicit enum cast.
 The reader rejects unsupported versions, truncated or trailing data, malformed
 embedded IR, semantic errors and divergent fields in saved IR, unresolved imports,
 unsupported capabilities, and functions outside the current portable subset.
-Source and saved-IR bundle bytes match in scalar and record tests, including
-Kryon's real geometry, layout, and group calculations. Version 1 is
+Source and saved-IR bundle bytes match in scalar, record, and enum tests,
+including Kryon's complete geometry, layout, and group calculation test. Version 1 is
 experimental and has no compatibility promise. Host imports, graphical
-programs, record literals, enums, strings, arrays, slots, state, globals,
+programs, strings, arrays, slots, state, globals,
 `for`, and `switch` remain unsupported.
 
 ## Target contract

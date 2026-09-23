@@ -336,6 +336,59 @@ test "$("$ziran" run "$work/record.zib")" = 42
     "$work/record-ir/record_application.zir"
 cmp "$work/record.zib" "$work/record-from-ir.zib"
 test "$("$ziran" run "$work/record-from-ir.zib")" = 42
+cat > "$work/modes.zi" <<'EOF'
+#module "modes"
+Mode :: enum {
+    Off = -1
+    On
+    Later = On + 4
+}
+Settings :: struct {
+    mode: Mode
+    number: i32
+}
+Bump :: (settings: Settings) -> Settings #export {
+    out: Settings = settings
+    out.number += 2
+    return out
+}
+EOF
+cat > "$work/mode_app.zi" <<'EOF'
+#module "mode_app"
+#import "modes"
+Answer :: () -> i32 #export {
+    if Off != -1 || On != 0 || Later != 4 { return 0 }
+    settings: Settings = (Settings){.mode = (Mode)Later, .number = 40}
+    updated: Settings = Bump(settings)
+    if settings.number != 40 || updated.number != 42 { return 0 }
+    if updated.mode != (Mode)Later { return 0 }
+    return updated.number
+}
+EOF
+"$ziran" bundle --root "$work" --entry mode_app:Answer \
+    -o "$work/modes.zib" "$work/modes.zi" "$work/mode_app.zi"
+test "$("$ziran" run "$work/modes.zib")" = 42
+"$ziran" ir --root "$work" -o "$work/modes-ir" \
+    "$work/modes.zi" "$work/mode_app.zi"
+"$ziran" bundle --root "$work" --entry mode_app:Answer \
+    -o "$work/modes-from-ir.zib" \
+    "$work/modes-ir/modes.zir" "$work/modes-ir/mode_app.zir"
+cmp "$work/modes.zib" "$work/modes-from-ir.zib"
+test "$("$ziran" run "$work/modes-from-ir.zib")" = 42
+cat > "$work/direct_enum.zi" <<'EOF'
+#module "direct_enum"
+Step :: enum {
+    First = 3
+    Second
+    Last = Second + 4
+}
+Answer :: () -> i32 #export {
+    return Last
+}
+EOF
+"$ziran" bundle --root "$work" --entry direct_enum:Answer \
+    -o "$work/direct-enum.zib" "$work/direct_enum.zi"
+test "$("$ziran" run "$work/direct-enum.zib")" = 8
 python3 - "$work/flow-ir/flow.zir" "$work/invalid-flow.zir" <<'PY'
 from pathlib import Path
 import sys

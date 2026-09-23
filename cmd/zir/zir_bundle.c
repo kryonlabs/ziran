@@ -104,13 +104,10 @@ copy_function(ZirFunction *target, const ZirFunction *source)
 }
 
 static int
-mark_type(const ZirProgram *program, const ZirModule *scope,
-          const char *name, unsigned char **keep_types, int *changed)
+mark_type_pointer(const ZirProgram *program, const ZirModule *owner,
+                  const ZirType *type, unsigned char **keep_types,
+                  int *changed)
 {
-    const ZirModule *owner = NULL;
-    const ZirType *type = FindType(scope, name, &owner);
-    if(type == NULL)
-        return 1;
     for(int m = 0; m < program->module_count; m++) {
         if(owner != &program->modules[m])
             continue;
@@ -124,6 +121,16 @@ mark_type(const ZirProgram *program, const ZirModule *scope,
             }
     }
     return 0;
+}
+
+static int
+mark_type(const ZirProgram *program, const ZirModule *scope,
+          const char *name, unsigned char **keep_types, int *changed)
+{
+    const ZirModule *owner = NULL;
+    const ZirType *type = FindType(scope, name, &owner);
+    return type == NULL ||
+           mark_type_pointer(program, owner, type, keep_types, changed);
 }
 
 static int
@@ -313,6 +320,16 @@ BundleLink(const ZirProgram *program, const char *entry_module,
                        !mark_type(program, module, expression->name,
                                   keep_types, &changed))
                         goto failed;
+                    if(expression->kind == ZIR_EXPR_IDENT) {
+                        const ZirModule *owner = NULL;
+                        const ZirType *type = NULL;
+                        int resolved = ResolveEnumMember(module,
+                            expression->name, &owner, &type);
+                        if(resolved > 0 &&
+                            !mark_type_pointer(program, owner, type,
+                                               keep_types, &changed))
+                            goto failed;
+                    }
                 }
             }
             for(int t = 0; t < module->type_count; t++) {

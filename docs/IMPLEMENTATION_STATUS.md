@@ -23,23 +23,24 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   source/IR C build runs.
 - `ziran bundle --root DIR --entry module:function -o FILE` builds an
   experimental version 1 `.zib` from source or saved IR. `ziran run FILE`
-  loads and executes the validated scalar and plain record subset without a
+  loads and executes the validated scalar, plain record, and enum subset without a
   display or Kryon.
   The test runs an imported two-module call and compares bundle bytes from
   source and saved IR. The current runner supports zero-argument entry
   functions with `i32`/`int`/`bool`/`void` results, and helper functions with
-  `float`/`double` or plain record results. It supports scalar and record
-  parameters and locals, nested record fields, default records, value copies,
-  member reads and writes, calls,
+  `float`/`double`, enum, or plain record results. It supports scalar, enum,
+  and record parameters and locals, nested record fields, defaults and record
+  literals, value copies, member reads and writes, scalar compound assignments, calls,
   arithmetic, comparisons, casts, assignments, `if`/`else`, `while`, lexical
   blocks, `break`, `continue`, and returns. It rejects host imports and
   unsupported statements before writing a bundle. Loop, branch, and real
   arithmetic programs are compared against generated C, C++, and Go in
   `make check`. The bundle loader also reruns the language checker and laws
   before execution. The linker follows direct calls and drops unreachable
-  functions and modules, while retaining reachable record declarations. The
-  test runs record functions across imported modules. Kryon's layout and group
-  calculations also run in `.zib` from source and saved `.zir`.
+  functions and modules, while retaining reachable record and enum declarations.
+  The test runs record and enum functions across imported modules. Kryon's
+  complete geometry, layout, and group calculation test also runs in `.zib`
+  from source and saved `.zir`.
 - Compiler functions use short names without `Zir` or `zir_` prefixes,
   including the IR serializer's `ProgramWrite`, `ProgramRead`, and `PathIsIR`.
   IR data types retain `Zir` names for now.
@@ -69,12 +70,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   supported backend consume the same saved IR. Source, saved-IR, and mixed
   builds currently rerun the source checker across all modules.
 - Extend the `.zib` linker and verifier beyond the current subset: remaining
-  control flow, record literals, enums, strings, arrays, slots, state, and all checked
+  control flow, enum initializer expressions, strings, arrays, slots, state, and all checked
   expressions. Add a real host capability contract and equivalent behavior
   for all supported language features. The current bundle embeds checked
   `.zir`; the linker follows direct function calls and retains the types
-  those functions use; the portable interpreter executes plain records but
-  cannot yet execute enum values or record literals.
+  those functions use. The portable interpreter executes plain records and
+  enums but does not yet cover every checked expression or native feature.
   Kryon's old `.krb` compiler remains in Kryon.
 - Complete native C++, C, and Go backend parity, FFI, capability checks, and
   language law tests independent of UI assumptions. The current `make check`
