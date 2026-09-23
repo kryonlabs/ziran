@@ -52,7 +52,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   popup, transition fade, numeric input, text row, and drag policies also build
   and run as `.zib` bundles
   from both inputs, independently of the UI runtime. The popup ownership test
-  includes frame IDs above `INT64_MAX`.
+  includes frame IDs above `INT64_MAX`. Swipe direction, drag, cancellation,
+  and release policy also runs from source and saved `.zir` across native
+  targets and `.zib` through ordinary module imports.
 - Portable strings now carry immutable UTF-8 bytes with exact byte lengths,
   including embedded nulls. The verifier and interpreter cover literals,
   equality, read-only byte indexing, `.length`, parameters, returns, and
