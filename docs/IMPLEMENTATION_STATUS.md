@@ -86,8 +86,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   320-rule table through its checked style cascade. Kryon's one-argument
   `Progress` painter now reads an installed rule table from an ordinary Ziran
   global and uses Ziran-defined default faces. KSS text can populate that
-  table through a checked parser bridge. Retained tree submission and the
-  pointer-backed native style loader remain unfinished.
+  table through a checked parser bridge. Kryon's checked retained tree now
+  keeps node identity across persistent bundle runs. Progress and Separator
+  submit generic paint commands that are rasterized after a successful tree
+  commit. Retained layout, input routing, other widgets, and the pointer-backed
+  native style loader remain unfinished.
   Window placement and drag policy now runs from source and saved IR in native
   targets and `.zib`, with window flags imported from a normal Ziran module.
 - Reachable `#extern` host calls now appear as module/function
