@@ -782,6 +782,10 @@ literal(Emitter *e, const ZirExpr *expr, const char *type, int negative, char *o
     unsigned long long value;
     for(const char *p = expr->text; *p; p++) if(*p != '_') raw[length++] = *p;
     raw[length] = 0;
+    if(raw[0] == '-') {
+        negative = !negative;
+        memmove(raw, raw + 1, length);
+    }
     errno = 0;
     value = strtoull(raw,&end,0);
     if(end == raw || errno == ERANGE) fatal(expr,"integer literal is out of range");

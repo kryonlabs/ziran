@@ -67,6 +67,20 @@ static void
 bind(Checker *c, const char *name, const char *type, ZirSourceSpan span)
 {
     if(!*name) return;
+    for(int pass = 0; pass < 2; pass++) {
+        int count = pass == 0 ? 1 : c->module->import_count;
+        for(int i = 0; i < count; i++) {
+            const ZirModule *scope = pass == 0 ? c->module :
+                                     c->module->imports[i].resolved_module;
+            if(scope == NULL)
+                continue;
+            for(int d = 0; d < scope->define_count; d++)
+                if(!strcmp(scope->defines[d].name, name)) {
+                    error(c, span, "binding shadows a compile-time definition", name);
+                    return;
+                }
+        }
+    }
     for(int i = c->count - 1; i >= 0 && c->bindings[i].depth == c->depth; i--)
         if(!strcmp(c->bindings[i].name, name)) {
             error(c, span, "duplicate binding", name);
@@ -666,7 +680,19 @@ expression_type(Checker *c, int index)
         if(!strcmp(e->name, "true") || !strcmp(e->name, "false")) type = "bool";
         else if(!strcmp(e->name, "nil")) type = "null";
         else type = lookup(c, e->name);
-        if(!*type) error(c, e->span, "unresolved name", e->name);
+        if(!*type) {
+            int64_t value = 0;
+            int status = bound_constant(c->module, e->name, 0, &value);
+            if(status == 1) {
+                snprintf(e->text, sizeof(e->text), "%lld", (long long)value);
+                e->kind = ZIR_EXPR_INT;
+                type = "integer";
+            } else if(status < 0) {
+                error(c, e->span, "invalid or ambiguous integer constant", e->name);
+            } else {
+                error(c, e->span, "unresolved name", e->name);
+            }
+        }
         break;
     case ZIR_EXPR_CALL: {
         const char *binding = lookup(c, e->name);

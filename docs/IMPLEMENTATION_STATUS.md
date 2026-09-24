@@ -65,6 +65,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   portable bounds failures. Linked bundles retain needed
   compile-time definitions for bound expressions, including constants-only
   imports.
+  Integer `NAME :: value` definitions in the checked arithmetic subset can be
+  used in function expressions. Imported and negative values fold to checked
+  IR literals. The checker rejects local bindings that would collide with
+  generated C/C++ definitions.
   Portable slices borrow fixed-array storage. Source and saved IR bundles and
   generated C, C++, and Go agree on range creation, nested views, function
   parameters and returns, `.length`, indexed reads and writes, and array

@@ -13,6 +13,7 @@ BASE :: 1
 CAPACITY :: BASE + 1
 THREE :: CAPACITY + 1
 ROWS :: 2
+NEGATIVE :: -1
 
 Point :: struct {
     x: i32
@@ -94,6 +95,7 @@ ReadLoop :: () -> i32 {
 }
 
 Answer :: () -> i32 #export {
+    if CAPACITY != 2 || NEGATIVE != -1 { return 0 }
     computed: [(CAPACITY + 1) * 2]i32
     computed[5] = 42
     if computed[5] != 42 { return 0 }
@@ -259,3 +261,19 @@ if "$ziran" check --root "$work" "$work/invalid_capacity.zi" \
 fi
 grep -Fq 'array capacity is not a valid bounded integer constant' \
     "$work/invalid-capacity.err"
+
+cat > "$work/invalid_shadow.zi" <<'EOF'
+#module "invalid_shadow"
+CAPACITY :: 2
+Answer :: () -> i32 {
+    CAPACITY: i32 = 42
+    return CAPACITY
+}
+EOF
+if "$ziran" check --root "$work" "$work/invalid_shadow.zi" \
+    2> "$work/invalid-shadow.err"; then
+    echo 'local binding shadowed a compile-time definition' >&2
+    exit 1
+fi
+grep -Fq 'binding shadows a compile-time definition' \
+    "$work/invalid-shadow.err"
