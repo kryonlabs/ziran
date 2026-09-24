@@ -21,7 +21,7 @@ Kryon's widget or runtime policy.
 ## Current state and remaining work
 
 The old Kryon `.kry` compiler and `.krb` runtime have been removed. All 191
-maintained Kryon UI modules are `.zi` sources. After the Jai syntax change, 78
+maintained Kryon UI modules are `.zi` sources. After the Jai syntax change, 86
 modules pass source checking and native backend compilation with the current
 Ziran compiler; the complete Kryon library build is still red. Platform host
 integration and application behavior gates remain incomplete. Inbe has moved
