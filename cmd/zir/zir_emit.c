@@ -286,7 +286,8 @@ supported_expression(const ZirModule *module, const ZirFunction *fn, int index)
         break;
     case ZIR_EXPR_FIELD_INIT: break;
     case ZIR_EXPR_INT: case ZIR_EXPR_FLOAT: case ZIR_EXPR_IDENT: case ZIR_EXPR_STRING: break;
-    case ZIR_EXPR_MEMBER: case ZIR_EXPR_INDEX: case ZIR_EXPR_SLICE: break;
+    case ZIR_EXPR_MEMBER: case ZIR_EXPR_POINTER_MEMBER:
+    case ZIR_EXPR_INDEX: case ZIR_EXPR_SLICE: break;
     case ZIR_EXPR_BINARY: case ZIR_EXPR_CONDITIONAL: break;
     case ZIR_EXPR_UNARY:
         if(!strcmp(e->op, "&") || !strcmp(e->op, "*")) return 0;
@@ -325,6 +326,7 @@ CanEmitBody(const ZirModule *module, const ZirFunction *fn)
         case ZIR_STMT_ASSIGN:
             if(st->lhs_root < 0 || (fn->exprs[st->lhs_root].kind != ZIR_EXPR_IDENT &&
                 fn->exprs[st->lhs_root].kind != ZIR_EXPR_MEMBER &&
+                fn->exprs[st->lhs_root].kind != ZIR_EXPR_POINTER_MEMBER &&
                 fn->exprs[st->lhs_root].kind != ZIR_EXPR_INDEX)) return 0;
             break;
         case ZIR_STMT_IF: if(!strncmp(st->text, "guard", 5)) return 0; break;
@@ -729,6 +731,8 @@ slice_index(Emitter *e, const char *type, const char *base, const char *index,
     format(out, size, "((%s *)%s.data)[SliceIndex(%s, (int64_t)%s)]", mapped, base, base, index);
 }
 
+static int member_path(const ZirFunction *fn, int index);
+
 static void
 emit_destination(Emitter *e, int index, char *out, size_t size)
 {
@@ -738,12 +742,19 @@ emit_destination(Emitter *e, int index, char *out, size_t size)
         e->pure = 1;
         return;
     }
-    if(expr->kind == ZIR_EXPR_MEMBER) {
+    if(expr->kind == ZIR_EXPR_MEMBER || expr->kind == ZIR_EXPR_POINTER_MEMBER) {
         char base[ZIR_TEXT_MAX], field[ZIR_NAME_MAX];
-        emit_destination(e, expr->left, base, sizeof(base));
+        if(expr->kind == ZIR_EXPR_POINTER_MEMBER &&
+           !member_path(e->fn, expr->left))
+            emit_expr(e, expr->left, e->fn->exprs[expr->left].type,
+                      base, sizeof(base));
+        else
+            emit_destination(e, expr->left, base, sizeof(base));
         if(e->target == ZIR_GO) go_field_ident(expr->name, field, sizeof(field));
         else copy_text(field, sizeof(field), expr->name);
-        format(out, size, "%s.%s", base, field);
+        format(out, size, "%s%s%s", base,
+               expr->kind == ZIR_EXPR_POINTER_MEMBER && e->target != ZIR_GO ? "->" : ".",
+               field);
         e->pure = 1;
         return;
     }
@@ -1235,7 +1246,8 @@ member_path(const ZirFunction *fn, int index)
     const ZirExpr *expr = &fn->exprs[index];
     if(expr->kind == ZIR_EXPR_IDENT)
         return 1;
-    return expr->kind == ZIR_EXPR_MEMBER && member_path(fn, expr->left);
+    return (expr->kind == ZIR_EXPR_MEMBER ||
+            expr->kind == ZIR_EXPR_POINTER_MEMBER) && member_path(fn, expr->left);
 }
 
 static void
@@ -1288,7 +1300,8 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         e->pure = 1;
         return;
     }
-    case ZIR_EXPR_MEMBER: {
+    case ZIR_EXPR_MEMBER:
+    case ZIR_EXPR_POINTER_MEMBER: {
         char field[ZIR_NAME_MAX];
         int base_pure;
         /* Reading a field needs a snapshot of that field, not a copy of every
@@ -1310,7 +1323,9 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         }
         if(e->target == ZIR_GO) go_field_ident(expr->name, field, sizeof(field));
         else copy_text(field, sizeof(field), expr->name);
-        format(result, sizeof(result), "%s.%s", a, field);
+        format(result, sizeof(result), "%s%s%s", a,
+               expr->kind == ZIR_EXPR_POINTER_MEMBER && e->target != ZIR_GO ? "->" : ".",
+               field);
         pure = base_pure;
         break;
     }

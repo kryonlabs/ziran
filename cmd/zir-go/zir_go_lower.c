@@ -1911,7 +1911,8 @@ static void
 resolve_body_symbol(void *context, const char *text, char *out, size_t size)
 {
     const ZirModule *module = context;
-    if((SliceElementType(text, NULL, 0) || FindType(module, text, NULL) != NULL) &&
+    if((SliceElementType(text, NULL, 0) || strchr(text, '*') != NULL ||
+        FindType(module, text, NULL) != NULL) &&
        go_type(text, out, size))
         return;
     for(int i = 0; i < module->global_count; i++) {
