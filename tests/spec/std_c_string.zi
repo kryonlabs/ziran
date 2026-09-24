@@ -1,0 +1,15 @@
+#import "c_string"
+
+#program_export
+main :: () -> s32 {
+    bytes: [4]u8
+    if !CopyCString("AB", bytes[:]) ||
+        bytes[0] != cast(u8)65 || bytes[1] != cast(u8)66 ||
+        bytes[2] != cast(u8)0 { return 1 }
+    if CopyCString("ABCD", bytes[:]) { return 2 }
+    if CopyCString("A\x00B", bytes[:]) { return 3 }
+    if !CopyCString("", bytes[:]) || bytes[0] != cast(u8)0 {
+        return 4
+    }
+    return 0
+}
