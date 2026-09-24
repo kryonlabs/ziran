@@ -4,7 +4,7 @@ set -eu
 usage()
 {
     cat <<'USAGE'
-usage: ziran fmt [--check] file.zi [...]
+usage: zi-fmt [--check] file.zi [...]
 
 Formats Ziran source with stable indentation and simple spacing cleanup.
 USAGE
@@ -20,7 +20,7 @@ fi
 
 status=0
 for file in "$@"; do
-    [ -f "$file" ] || { printf 'ziran fmt: not found: %s\n' "$file" >&2; status=1; continue; }
+    [ -f "$file" ] || { printf 'zi-fmt: not found: %s\n' "$file" >&2; status=1; continue; }
     tmp=${TMPDIR:-/tmp}/zi-fmt.$$.tmp
     awk '
     function trim(s) {
@@ -100,7 +100,7 @@ for file in "$@"; do
     }' "$file" > "$tmp"
     if [ "$check" -eq 1 ]; then
         if ! cmp -s "$file" "$tmp"; then
-            printf 'ziran fmt: would reformat %s\n' "$file" >&2
+            printf 'zi-fmt: would reformat %s\n' "$file" >&2
             status=1
         fi
         rm -f "$tmp"

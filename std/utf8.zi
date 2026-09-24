@@ -1,0 +1,41 @@
+# Advance one Unicode scalar in an immutable UTF-8 string. An invalid byte
+# advances by one so callers always make progress and never split a valid
+# multibyte sequence.
+Continuation :: (byte: u8) -> bool {
+    return byte >= cast(u8)128 && byte <= cast(u8)191
+}
+
+#program_export
+Next :: (value: string, at: s32) -> s32 {
+    if at < 0 { return 0 }
+    if at >= value.length { return value.length }
+    lead: u8 = value[at]
+    if lead < cast(u8)128 { return at + 1 }
+    if lead >= cast(u8)194 && lead <= cast(u8)223 && at + 1 < value.length &&
+       Continuation(value[at + 1]) { return at + 2 }
+    if lead >= cast(u8)224 && lead <= cast(u8)239 && at + 2 < value.length &&
+       Continuation(value[at + 1]) && Continuation(value[at + 2]) {
+        if lead == cast(u8)224 && value[at + 1] < cast(u8)160 { return at + 1 }
+        if lead == cast(u8)237 && value[at + 1] >= cast(u8)160 { return at + 1 }
+        return at + 3
+    }
+    if lead >= cast(u8)240 && lead <= cast(u8)244 && at + 3 < value.length &&
+       Continuation(value[at + 1]) && Continuation(value[at + 2]) &&
+       Continuation(value[at + 3]) {
+        if lead == cast(u8)240 && value[at + 1] < cast(u8)144 { return at + 1 }
+        if lead == cast(u8)244 && value[at + 1] >= cast(u8)144 { return at + 1 }
+        return at + 4
+    }
+    return at + 1
+}
+
+#program_export
+Count :: (value: string) -> s32 {
+    at: s32 = 0
+    count: s32 = 0
+    while at < value.length {
+        at = Next(value, at)
+        count = count + 1
+    }
+    return count
+}

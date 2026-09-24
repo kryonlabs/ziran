@@ -2,6 +2,7 @@
 #include "zir_bundle.h"
 #include "zir_check.h"
 #include "zir_parse.h"
+#include "zir_serial.h"
 
 #include <assert.h>
 #include <stdlib.h>
@@ -31,28 +32,27 @@ int
 main(void)
 {
     static const char shapes[] =
-        "#module \"shapes\"\n"
         "Point :: struct {\n"
-        "    x: i32\n"
+        "    x: s32\n"
         "}\n"
         "Rectangle :: struct {\n"
         "    origin: Point\n"
-        "    width: i32\n"
+        "    width: s32\n"
         "}\n"
         "Unused :: struct {\n"
-        "    value: i32\n"
+        "    value: s32\n"
         "}\n";
     static const char operations[] =
-        "#module \"operations\"\n"
         "#import \"shapes\"\n"
-        "Measure :: (rect: Rectangle) -> i32 #export {\n"
+        "#program_export\n"
+        "Measure :: (rect: Rectangle) -> s32 {\n"
         "    return rect.origin.x + rect.width\n"
         "}\n";
     static const char application[] =
-        "#module \"application\"\n"
         "#import \"operations\"\n"
         "#import \"shapes\"\n"
-        "Answer :: () -> i32 #export {\n"
+        "#program_export\n"
+        "Answer :: () -> s32 {\n"
         "    rect: Rectangle\n"
         "    rect.origin.x = 2\n"
         "    rect.width = 40\n"
@@ -100,9 +100,99 @@ main(void)
     assert(FindType(application_module, "Rectangle", NULL) != NULL);
     assert(FindType(operation_module, "Point", NULL) != NULL);
 
+    /* A checked IR graph cannot contain a cycle that would recurse forever
+     * in a backend or the portable verifier. */
+    ZirExpr *first = &linked->modules[linked->module_count - 1].functions[0].exprs[0];
+    int original_left = first->left;
+    first->left = 0;
+    FILE *cycle_output = tmpfile();
+    assert(cycle_output != NULL);
+    assert(!ProgramWrite(linked, cycle_output));
+    fclose(cycle_output);
+    first->left = original_left;
+    ZirFunction *entry = &linked->modules[linked->module_count - 1].functions[0];
+    int parent = -1;
+    for(int i = 0; i < entry->expr_count; i++)
+        if(entry->exprs[i].first_child >= 0) {
+            parent = i;
+            break;
+        }
+    assert(parent >= 0);
+    ZirExpr *child = &entry->exprs[entry->exprs[parent].first_child];
+    int original_sibling = child->next_sibling;
+    child->next_sibling = parent;
+    cycle_output = tmpfile();
+    assert(cycle_output != NULL);
+    assert(!ProgramWrite(linked, cycle_output));
+    fclose(cycle_output);
+    child->next_sibling = original_sibling;
+
     ProgramFree(linked);
     free(merged.modules);
     for(int i = 0; i < 3; i++)
         ProgramFree(programs[i]);
+
+    static const char legacy_source[] =
+        "#program_export\n"
+        "Legacy :: () -> void {\n"
+        "    goto done\n"
+        "    done:\n"
+        "    return\n"
+        "}\n";
+    ZirProgram *legacy = parse_source_text("legacy.zi", legacy_source);
+    assert(legacy != NULL);
+    ZirProgram *legacy_set[] = {legacy};
+    assert(CheckPrograms(legacy_set, 1, 0));
+    assert(!CheckCanonicalPrograms(legacy_set, 1, 0, NULL));
+    ProgramFree(legacy);
+
+    static const char variant_source[] =
+        "Choice :: variant { Empty, Number: s32 }\n"
+        "#program_export\n"
+        "Answer :: () -> s32 {\n"
+        "    return Choice_Tag(Choice_Number(42))\n"
+        "}\n";
+    ZirProgram *variant = parse_source_text("choice.zi", variant_source);
+    assert(variant != NULL);
+    ZirProgram *variant_set[] = {variant};
+    assert(CheckPrograms(variant_set, 1, 1));
+    ZirFunction *constructor = NULL;
+    for(int f = 0; f < variant->modules[0].function_count; f++)
+        if(!strcmp(variant->modules[0].functions[f].name, "Choice_Number"))
+            constructor = &variant->modules[0].functions[f];
+    assert(constructor != NULL && constructor->stmt_count > 0);
+    /* Generated bodies do not cross the saved-IR trust boundary. */
+    strcpy(constructor->stmts[0].text, "forged body");
+    FILE *saved = tmpfile();
+    assert(saved != NULL && ProgramWrite(variant, saved));
+    assert(fseek(saved, 0, SEEK_SET) == 0);
+    ZirProgram *reloaded = ProgramRead(saved, "choice.zir");
+    assert(reloaded != NULL);
+    ZirFunction *restored = NULL;
+    for(int f = 0; f < reloaded->modules[0].function_count; f++)
+        if(!strcmp(reloaded->modules[0].functions[f].name, "Choice_Number"))
+            restored = &reloaded->modules[0].functions[f];
+    assert(restored != NULL && restored->stmt_count > 0);
+    assert(strcmp(restored->stmts[0].text, "forged body") != 0);
+    ZirProgram *reloaded_set[] = {reloaded};
+    assert(CheckCanonicalPrograms(reloaded_set, 1, 1, NULL));
+    fclose(saved);
+    ProgramFree(reloaded);
+    ProgramFree(variant);
+
+    static const char ordinary_source[] =
+        "#program_export\n"
+        "Answer :: () -> s32 { return 42 }\n";
+    ZirProgram *ordinary = parse_source_text("ordinary.zi", ordinary_source);
+    assert(ordinary != NULL);
+    ZirProgram *ordinary_set[] = {ordinary};
+    assert(CheckPrograms(ordinary_set, 1, 1));
+    ordinary->modules[0].functions[0].is_generated = 1;
+    saved = tmpfile();
+    assert(saved != NULL && ProgramWrite(ordinary, saved));
+    assert(fseek(saved, 0, SEEK_SET) == 0);
+    assert(ProgramRead(saved, "forged.zir") == NULL);
+    fclose(saved);
+    ProgramFree(ordinary);
     return 0;
 }

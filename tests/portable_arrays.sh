@@ -7,7 +7,6 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/arraylib.zi" <<'EOF'
-#module "arraylib"
 
 BASE :: 1
 CAPACITY :: BASE + 1
@@ -16,7 +15,7 @@ ROWS :: 2
 NEGATIVE :: -1
 
 Point :: struct {
-    x: i32
+    x: s32
 }
 
 Box :: struct {
@@ -24,31 +23,33 @@ Box :: struct {
 }
 
 Matrix :: struct {
-    values: [ROWS][THREE]i32
+    values: [ROWS][THREE]s32
     names: [ROWS][THREE + 1]char
 }
 
-matrix_state :: Matrix #global
+matrix_state: Matrix;
 
-MatrixGlobalAnswer :: () -> i32 #export {
+#program_export
+MatrixGlobalAnswer :: () -> s32 {
     matrix_state.values[1][2] = 42
-    matrix_state.names[1][2] = (char)65
-    if matrix_state.names[1][2] != (char)65 { return 0 }
+    matrix_state.names[1][2] = cast(char)65
+    if matrix_state.names[1][2] != cast(char)65 { return 0 }
     return matrix_state.values[1][2]
 }
 
-MatrixAnswer :: () -> i32 #export {
+#program_export
+MatrixAnswer :: () -> s32 {
     matrix: Matrix
     expanded: [CAPACITY * 2]char
-    expanded[3] = (char)65
-    if expanded[3] != (char)65 { return 0 }
+    expanded[3] = cast(char)65
+    if expanded[3] != cast(char)65 { return 0 }
     matrix.values[0][0] = 40
     matrix.values[1][2] = 2
-    matrix.names[1][2] = (char)120
+    matrix.names[1][2] = cast(char)120
     copy: Matrix = matrix
     matrix.values[0][0] = 0
-    matrix.names[1][2] = (char)121
-    if copy.names[1][2] != (char)120 || copy.names[0][0] != 0 {
+    matrix.names[1][2] = cast(char)121
+    if copy.names[1][2] != cast(char)120 || copy.names[0][0] != 0 {
         return 0
     }
     return copy.values[0][0] + copy.values[1][2]
@@ -58,35 +59,38 @@ LargeBox :: struct {
     values: [4096]Point
 }
 
-RoundTripLarge :: (box: LargeBox) -> LargeBox #export {
+#program_export
+RoundTripLarge :: (box: LargeBox) -> LargeBox {
     copy: LargeBox = box
     copy.values[0].x = 42
     return copy
 }
 
-CheckLarge :: (box: LargeBox) -> bool #export {
+#program_export
+CheckLarge :: (box: LargeBox) -> bool {
     updated: LargeBox = RoundTripLarge(box)
     return box.values[0].x == 41 && updated.values[0].x == 42
 }
 
-SumBox :: (box: Box) -> i32 #export {
+#program_export
+SumBox :: (box: Box) -> s32 {
     return box.values[0].x + box.values[1].x
 }
 
-SumArray :: (values: [THREE]i32) -> i32 #export {
+#program_export
+SumArray :: (values: [THREE]s32) -> s32 {
     return values[0] + values[1]
 }
 EOF
 
 cat > "$work/arrayapp.zi" <<'EOF'
-#module "arrayapp"
 #import "arraylib"
 
-ReadLoop :: () -> i32 {
-    values: [4096]i32
+ReadLoop :: () -> s32 {
+    values: [4096]s32
     values[0] = 42
-    total: i32 = 0
-    index: i32 = 0
+    total: s32 = 0
+    index: s32 = 0
     while index < 300 {
         total += values[0]
         index += 1
@@ -94,15 +98,16 @@ ReadLoop :: () -> i32 {
     return total / 300
 }
 
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     if CAPACITY != 2 || NEGATIVE != -1 { return 0 }
-    computed: [(CAPACITY + 1) * 2]i32
+    computed: [(CAPACITY + 1) * 2]s32
     computed[5] = 42
     if computed[5] != 42 { return 0 }
     if ReadLoop() != 42 { return 0 }
     large: LargeBox
     large.values[0].x = 41
-    iteration: i32 = 0
+    iteration: s32 = 0
     while iteration < 80 {
         if !CheckLarge(large) { return 0 }
         iteration += 1
@@ -116,8 +121,8 @@ Answer :: () -> i32 #export {
     if large.values[0].x != 41 || moving.values[0].x != 42 {
         return 0
     }
-    values: [THREE]i32 = {41, 1, 0}
-    copy: [THREE]i32 = values
+    values: [THREE]s32 = .[41, 1, 0]
+    copy: [THREE]s32 = values
     values[0] = 0
     if SumArray(copy) != 42 { return 0 }
     point: Point
@@ -134,15 +139,17 @@ Answer :: () -> i32 #export {
     return MatrixAnswer()
 }
 
-OutOfBounds :: () -> i32 #export {
-    values: [1]i32
-    index: i32 = 1
+#program_export
+OutOfBounds :: () -> s32 {
+    values: [1]s32
+    index: s32 = 1
     return values[index]
 }
 
-NestedOutOfBounds :: () -> i32 #export {
+#program_export
+NestedOutOfBounds :: () -> s32 {
     matrix: Matrix
-    column: i32 = 3
+    column: s32 = 3
     return matrix.values[0][column]
 }
 EOF
@@ -197,14 +204,13 @@ done
 cmp "$work/source.zib" "$work/saved.zib"
 
 cat > "$work/capacity.zi" <<'EOF'
-#module "capacity"
 LENGTH :: 1 + 1
 EOF
 cat > "$work/capacity_app.zi" <<'EOF'
-#module "capacity_app"
 #import "capacity"
-Answer :: () -> i32 #export {
-    values: [LENGTH * 2]i32 = {40, 0, 0, 2}
+#program_export
+Answer :: () -> s32 {
+    values: [LENGTH * 2]s32 = .[40, 0, 0, 2]
     return values[0] + values[3]
 }
 EOF
@@ -235,9 +241,8 @@ fi
 grep -Fq 'portable execution failed' "$work/nested-out-of-bounds.err"
 
 cat > "$work/unresolved_inner.zi" <<'EOF'
-#module "unresolved_inner"
 Matrix :: struct {
-    values: [2][MISSING * 2]i32
+    values: [2][MISSING * 2]s32
 }
 EOF
 if "$ziran" check --root "$work" "$work/unresolved_inner.zi" \
@@ -249,9 +254,8 @@ grep -Fq 'array capacity requires a known integer constant' \
     "$work/unresolved-inner.err"
 
 cat > "$work/invalid_capacity.zi" <<'EOF'
-#module "invalid_capacity"
 Values :: struct {
-    items: [2 / 0]i32
+    items: [2 / 0]s32
 }
 EOF
 if "$ziran" check --root "$work" "$work/invalid_capacity.zi" \
@@ -263,10 +267,9 @@ grep -Fq 'array capacity is not a valid bounded integer constant' \
     "$work/invalid-capacity.err"
 
 cat > "$work/invalid_shadow.zi" <<'EOF'
-#module "invalid_shadow"
 CAPACITY :: 2
-Answer :: () -> i32 {
-    CAPACITY: i32 = 42
+Answer :: () -> s32 {
+    CAPACITY: s32 = 42
     return CAPACITY
 }
 EOF

@@ -1,0 +1,4 @@
+Option :: variant($T: Type) {
+    None
+    Some: T
+}

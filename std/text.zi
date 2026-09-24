@@ -1,0 +1,43 @@
+# ASCII-only case folding keeps the result identical across native targets
+# and the portable runner. UTF-8 bytes outside ASCII compare unchanged.
+#program_export
+LowerASCII :: (value: u8) -> u8 {
+    if value >= cast(u8)65 && value <= cast(u8)90 {
+        return value + cast(u8)32
+    }
+    return value
+}
+
+#program_export
+StartsWithFoldASCII :: (value: string, prefix: string) -> bool {
+    if prefix.length > value.length { return false }
+    index: s32 = 0
+    while index < prefix.length {
+        if LowerASCII(value[index]) != LowerASCII(prefix[index]) {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+#program_export
+ContainsFoldASCII :: (value: string, needle: string) -> bool {
+    if needle.length == 0 { return true }
+    if needle.length > value.length { return false }
+    start: s32 = 0
+    while start <= value.length - needle.length {
+        index: s32 = 0
+        same: bool = true
+        while index < needle.length {
+            if LowerASCII(value[start + index]) != LowerASCII(needle[index]) {
+                same = false
+                break
+            }
+            index = index + 1
+        }
+        if same { return true }
+        start = start + 1
+    }
+    return false
+}

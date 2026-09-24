@@ -59,7 +59,7 @@ typedef struct HostBinding {
     void *context;
 } HostBinding;
 
-/* Open and validate a version 2 portable bundle. Close releases all names. */
+/* Open and validate a version 7 portable bundle. Close releases all names. */
 Bundle *BundleOpen(const char *path);
 void BundleClose(Bundle *bundle);
 size_t BundleCapabilityCount(const Bundle *bundle);

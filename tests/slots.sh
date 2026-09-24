@@ -7,37 +7,38 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/slotlib.zi" <<'EOF'
-#module "slotlib"
 
-Child :: (value: i32) #slot
+Child :: (value: s32) #slot
 
 Props :: struct {
-    value: i32
+    value: s32
 }
 
-Container :: (props: Props, child: Child) -> i32 #export {
+#program_export
+Container :: (props: Props, child: Child) -> s32 {
     child(props.value)
     return props.value + 1
 }
 
-PlainChild :: (value: i32) #export {
+#program_export
+PlainChild :: (value: s32) {
     return
 }
 EOF
 cat > "$work/slotapp.zi" <<'EOF'
-#module "slotapp"
 #import "slotlib"
 
 Marker :: struct {
-    value: i32
+    value: s32
 }
 
-Answer :: () -> i32 #export {
-    observed: i32 = 0
+#program_export
+Answer :: () -> s32 {
+    observed: s32 = 0
     marker: Marker
     Container chosen: {
         value = 41
-        child = (value: i32) #slot {
+        child = (value: s32) #slot {
             observed = value
             marker.value = value
         }

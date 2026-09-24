@@ -399,7 +399,7 @@ go_build_global_functions(const ZirProgram *const *progs, int prog_count)
 
 static int split_top(const char *s, char parts[][ZIR_GO_TEXT_MAX], int max);
 
-/* One '#extern' declaration bridged to a Go host method. */
+/* One '#foreign host_api' declaration bridged to a Go host method. */
 typedef struct {
     char source[ZIR_GO_NAME_MAX];        /* source call name */
     char go[ZIR_GO_NAME_MAX];         /* Host interface method */
@@ -491,7 +491,7 @@ split_params(const char *args, ZirGoExtern *ex)
     }
 }
 
-/* Extract the Go method name from a '#extern "pkg.Fn"' target: the segment
+/* Extract the Go method name from a resolved #foreign package target: the segment
  * after the last dot. */
 static void
 extern_go_name(const char *target, const char *source, char *dst, size_t dst_size)
@@ -510,7 +510,7 @@ extern_go_name(const char *target, const char *source, char *dst, size_t dst_siz
 }
 
 /* A fully-qualified Go extern target uses an import path plus function name,
- * e.g. '#extern "github.com/waozixyz/pass.Generate"'. Short targets like
+ * e.g. 'github.com/waozixyz/pass.Generate'. Short targets like
  * 'smoke.QueryJobs' intentionally keep the historical host-interface bridge. */
 static int
 extern_direct_go_target(const char *target, char *import_path,
@@ -578,7 +578,7 @@ add_extern(const char *source, const char *args, const char *ret,
              (char)tolower((unsigned char)g_guard[0]), g_guard + 1);
 }
 
-/* Parse "name :: (args) -> ret #extern \"pkg.Fn\"" from a raw extern import
+/* Parse "name :: (args) -> ret #foreign library;" from a raw foreign import
  * line (the ZirImport.signature keeps the whole declaration). */
 static void
 parse_extern_import(const ZirImport *imp)
@@ -588,7 +588,7 @@ parse_extern_import(const ZirImport *imp)
     char target[ZIR_PATH_MAX];
     const char *lp = strchr(imp->signature, '(');
     const char *rp = lp != NULL ? strchr(lp, ')') : NULL;
-    const char *dir = strstr(imp->signature, "#extern");
+    const char *dir = strstr(imp->signature, "#foreign");
 
     args[0] = '\0';
     snprintf(ret, sizeof(ret), "void");
@@ -1215,7 +1215,7 @@ tx_compound(const ZirModule *m, const char *p, char *dst, size_t *dn)
                         continue;
                     }
                     if(!record_field_at(m, type, positional++, field, sizeof(field))) {
-                        fprintf(stderr, "zir_go: no positional field %d in %s\n", positional, type);
+                        fprintf(stderr, "zi2go: no positional field %d in %s\n", positional, type);
                         exit(1);
                     }
                 } else {
@@ -1309,7 +1309,8 @@ is_module_constant(const ZirModule *module, const char *name)
             if(scope == NULL)
                 continue;
             for(int j = 0; j < scope->define_count; j++) {
-                if(!strcmp(scope->defines[j].name, name))
+                if((pass == 0 || scope->defines[j].is_public) &&
+                   !strcmp(scope->defines[j].name, name))
                     return 1;
             }
         }
@@ -1508,7 +1509,7 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                 p = q;
                 continue;
             }
-            /* '#extern' bridge: direct Go import for fully-qualified targets,
+            /* '#foreign' bridge: direct Go import for fully-qualified targets,
              * otherwise the historical host-interface method. The check
              * precedes the module-function path because extern prototypes
              * also sit in the function table (bodyless). */
@@ -2243,6 +2244,10 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
                 fprintf(f, "return\n");
             break;
         }
+        case ZIR_STMT_UNREACHABLE:
+            emit_indent(f, indent);
+            fprintf(f, "panic(\"unreachable\")\n");
+            break;
         case ZIR_STMT_BREAK:
         case ZIR_STMT_CONTINUE:
             emit_indent(f, indent);
@@ -2292,18 +2297,18 @@ go_validate_asserts(const ZirModule *m)
 
         if(a->guard[0] != '\0') {
             fprintf(stderr,
-                    "zir_go: %s:%d: guarded #assert is not supported by the Go backend: %s\n",
+                    "zi2go: %s:%d: guarded #assert is not supported by the Go backend: %s\n",
                     a->span.path, a->span.line, a->message);
             return 0;
         }
         if(!a->known) {
             fprintf(stderr,
-                    "zir_go: %s:%d: unresolved #assert is not supported by the Go backend: %s\n",
+                    "zi2go: %s:%d: unresolved #assert is not supported by the Go backend: %s\n",
                     a->span.path, a->span.line, a->condition);
             return 0;
         }
         if(!a->value) {
-            fprintf(stderr, "zir_go: %s:%d: #assert failed: %s\n",
+            fprintf(stderr, "zi2go: %s:%d: #assert failed: %s\n",
                     a->span.path, a->span.line, a->message);
             return 0;
         }
@@ -2334,7 +2339,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
             for(int si = 0; si < seen_count; si++) {
                 if(strcmp(seen_stems[si], stem) == 0) {
                     fprintf(stderr,
-                            "zir_go: duplicate source basename %s "
+                            "zi2go: duplicate source basename %s "
                             "(Go output is flat)\n", stem);
                     return 1;
                 }
@@ -2351,12 +2356,12 @@ go_lower(const ZirProgram *const *progs, int prog_count,
             mkdir_parent(path);
             f = tmpfile();
             if(f == NULL) {
-                fprintf(stderr, "zir_go: cannot write %s\n", path);
+                fprintf(stderr, "zi2go: cannot write %s\n", path);
                 return 1;
             }
             type_scope = m;
             go_set_module(m, guard);
-            fprintf(f, "// Code generated by zir_go from %s. DO NOT EDIT.\n",
+            fprintf(f, "// Code generated by zi2go from %s. DO NOT EDIT.\n",
                     m->source_path);
             fprintf(f, "package %s\n\n", pkg);
             for(int i = 0; i < g_extern_count; i++) {
@@ -2389,7 +2394,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                  * or to the Host interface below. */
             }
             EmitNumbers(f,m,ZIR_GO);
-            /* '#extern' host bridge: one interface, one package var, one
+            /* '#foreign host_api' bridge: one interface, one package var, one
              * setter. Generated frames call hostVar.Method(...) directly. */
             {
                 int first_host = -1;
@@ -2403,7 +2408,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                     host_count++;
                 }
             if(host_count > 0) {
-                fprintf(f, "// %sHost bridges '#extern' declarations to the",
+                fprintf(f, "// %sHost bridges '#foreign host_api' declarations to the",
                         guard);
                 fprintf(f, " embedding Go program.\ntype %sHost interface {\n",
                         guard);
@@ -2430,7 +2435,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 fprintf(f, "}\n\n");
                 fprintf(f, "var %s %sHost\n\n",
                         g_externs[first_host].host_var, guard);
-                fprintf(f, "// Set%sHost wires the '#extern' bridge before",
+                fprintf(f, "// Set%sHost wires the '#foreign host_api' bridge before",
                         guard);
                 fprintf(f, " the first frame runs.\nfunc Set%sHost(host %sHost)",
                         guard, guard);
@@ -2443,7 +2448,8 @@ go_lower(const ZirProgram *const *progs, int prog_count,
 
             for(int i = 0; i < m->type_count; i++) {
                 const ZirType *t = &m->types[i];
-                if(t->is_extern)
+                if(t->is_extern || t->is_variant_template ||
+                   t->is_record_template)
                     continue;
 
                 if(!t->is_enum && t->name[0] == '#') {
@@ -2570,7 +2576,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 }
                 fprintf(f, "}\n\n");
             }
-            /* functions ('#extern' prototypes have no body: they lower to
+            /* functions ('#foreign' prototypes have no body: they lower to
              * Host interface methods, not Go functions) */
             for(int i = 0; i < m->function_count; i++) {
                 if(m->functions[i].is_extern || m->functions[i].is_closure)
@@ -2581,7 +2587,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
             rewind(f);
             FILE *output = fopen(path, "wb");
             if(output == NULL) {
-                fprintf(stderr, "zir_go: cannot write %s\n", path);
+                fprintf(stderr, "zi2go: cannot write %s\n", path);
                 fclose(f);
                 return 1;
             }
@@ -2598,7 +2604,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
             failed |= fclose(output) != 0;
             fclose(f);
             if(failed) {
-                fprintf(stderr, "zir_go: cannot finish %s\n", path);
+                fprintf(stderr, "zi2go: cannot finish %s\n", path);
                 return 1;
             }
         }

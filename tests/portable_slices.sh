@@ -7,22 +7,22 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/viewlib.zi" <<'ZI'
-#module "viewlib"
-Tail :: (values: []i32) -> []i32 #export {
+#program_export
+Tail :: (values: []s32) -> []s32 {
     return values[1:]
 }
 
-Sum :: (values: []i32) -> i32 #export {
+#program_export
+Sum :: (values: []s32) -> s32 {
     return values[0] + values[1]
 }
 ZI
 
 cat > "$work/slices.zi" <<'ZI'
-#module "slices"
 #import "viewlib"
 
 Point :: struct {
-    x: i32
+    x: s32
 }
 
 Cell :: struct {
@@ -30,56 +30,57 @@ Cell :: struct {
     tail: Point
 }
 
-WriteCell :: (cells: []Cell, index: i32, value: i32) -> i32 {
-    cells[index] = (Cell){(Point){value}, (Point){value + 1}}
+WriteCell :: (cells: []Cell, index: s32, value: s32) -> s32 {
+    cells[index] = Cell.{Point.{value}, Point.{value + 1}}
     return 1
 }
 
-ReplaceBorrowedRecord :: () -> i32 {
+ReplaceBorrowedRecord :: () -> s32 {
     cells: [2]Cell
     view: []Cell = cells[:]
     WriteCell(view, 0, 20)
     WriteCell(view, 1, 30)
     first: Cell = view[0]
-    first.tail = (Point){21}
+    first.tail = Point.{21}
     view[0] = first
     return view[0].head.x + view[0].tail.x + view[1].head.x - 29
 }
 
-state :: [2]i32 #global
+state: [2]s32;
 
-GlobalView :: () -> []i32 {
+GlobalView :: () -> []s32 {
     return state[:]
 }
 
-ReplaceGlobalWhileBorrowed :: () -> i32 {
+ReplaceGlobalWhileBorrowed :: () -> s32 {
     state[0] = 1
     state[1] = 2
-    view: []i32 = GlobalView()
-    replacement: [2]i32 = {40, 2}
+    view: []s32 = GlobalView()
+    replacement: [2]s32 = .[40, 2]
     state = replacement
     return view[0] + view[1]
 }
 
-ReplaceWhileBorrowed :: () -> i32 {
-    values: [2]i32 = {1, 2}
-    view: []i32 = values[:]
-    replacement: [2]i32 = {40, 2}
+ReplaceWhileBorrowed :: () -> s32 {
+    values: [2]s32 = .[1, 2]
+    view: []s32 = values[:]
+    replacement: [2]s32 = .[40, 2]
     values = replacement
     return view[0] + view[1]
 }
 
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     if ReplaceBorrowedRecord() != 42 { return -5 }
     if ReplaceWhileBorrowed() != 42 { return -1 }
-    global_result: i32 = ReplaceGlobalWhileBorrowed()
+    global_result: s32 = ReplaceGlobalWhileBorrowed()
     if global_result != 42 { return global_result }
-    empty: []i32
+    empty: []s32
     if empty.length != 0 { return -3 }
-    values: [4]i32 = {1, 2, 3, 4}
-    part: []i32 = values[1:3]
+    values: [4]s32 = .[1, 2, 3, 4]
+    part: []s32 = values[1:3]
     part[0] = 40
-    tail: []i32 = Tail(part)
+    tail: []s32 = Tail(part)
     if part.length != 2 || tail.length != 1 ||
         tail[0] != 3 || values[1] != 40 { return -4 }
     points: [2]Point
@@ -89,30 +90,34 @@ Answer :: () -> i32 #export {
     return Sum(part) - 1
 }
 
-ReadOutside :: () -> i32 #export {
-    values: [2]i32 = {1, 2}
-    view: []i32 = values[:]
+#program_export
+ReadOutside :: () -> s32 {
+    values: [2]s32 = .[1, 2]
+    view: []s32 = values[:]
     return view[2]
 }
 
-WriteOutside :: () -> i32 #export {
-    values: [2]i32 = {1, 2}
-    view: []i32 = values[:]
+#program_export
+WriteOutside :: () -> s32 {
+    values: [2]s32 = .[1, 2]
+    view: []s32 = values[:]
     view[2] = 3
     return values[0]
 }
 
-RangeOutside :: () -> i32 #export {
-    values: [2]i32 = {1, 2}
-    view: []i32 = values[0:3]
+#program_export
+RangeOutside :: () -> s32 {
+    values: [2]s32 = .[1, 2]
+    view: []s32 = values[0:3]
     return view.length
 }
 
-RangeReverse :: () -> i32 #export {
-    values: [2]i32 = {1, 2}
-    low: i32 = 2
-    high: i32 = 1
-    view: []i32 = values[low:high]
+#program_export
+RangeReverse :: () -> s32 {
+    values: [2]s32 = .[1, 2]
+    low: s32 = 2
+    high: s32 = 1
+    view: []s32 = values[low:high]
     return view.length
 }
 ZI
@@ -163,9 +168,8 @@ CPP
 done
 
 cat > "$work/invalid_slice_record.zi" <<'ZI'
-#module "invalid_slice_record"
 Bad :: struct {
-    values: []i32
+    values: []s32
 }
 ZI
 if "$ziran" check --root "$work" "$work/invalid_slice_record.zi" \
@@ -175,8 +179,7 @@ if "$ziran" check --root "$work" "$work/invalid_slice_record.zi" \
 fi
 
 cat > "$work/invalid_slice_global.zi" <<'ZI'
-#module "invalid_slice_global"
-view :: []i32 #global
+view: []s32;
 ZI
 if "$ziran" check --root "$work" "$work/invalid_slice_global.zi" \
     2> "$work/invalid_slice_global.err"; then
@@ -185,9 +188,9 @@ if "$ziran" check --root "$work" "$work/invalid_slice_global.zi" \
 fi
 
 cat > "$work/invalid_slice_escape.zi" <<'ZI'
-#module "invalid_slice_escape"
-Escape :: () -> []i32 #export {
-    values: [2]i32 = {1, 2}
+#program_export
+Escape :: () -> []s32 {
+    values: [2]s32 = .[1, 2]
     return values[:]
 }
 ZI

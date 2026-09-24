@@ -7,14 +7,13 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/shapes.zi" <<'EOF'
-#module "shapes"
 Tone :: enum {
     ToneNormal = 0
     ToneAccent = 1
 }
 Point :: struct {
-    x: i32
-    y: i32
+    x: s32
+    y: s32
 }
 Packet :: struct {
     point: Point
@@ -23,19 +22,20 @@ Packet :: struct {
 }
 EOF
 cat > "$work/record_host.zi" <<'EOF'
-#module "record_host"
+host_api :: #system_library "host_api";
 #import "shapes"
-TransformHost :: (packet: Packet) -> Packet #extern
-Answer :: () -> i32 #export {
+TransformHost :: (packet: Packet) -> Packet #foreign host_api;
+#program_export
+Answer :: () -> s32 {
     packet: Packet
     packet.point.x = 40
     packet.point.y = 1
     packet.label = "in"
-    packet.tone = (Tone)ToneNormal
+    packet.tone = cast(Tone)ToneNormal
     transformed: Packet = TransformHost(packet)
     if transformed.point.x != 41 || transformed.point.y != 1 ||
        transformed.label != "ok" ||
-       transformed.tone != (Tone)ToneAccent { return 0 }
+       transformed.tone != cast(Tone)ToneAccent { return 0 }
     return 42
 }
 EOF

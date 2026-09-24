@@ -1,48 +1,52 @@
-#module "language_contract"
 
 # Fixed-capacity array fields and borrowed string byte access are portable
 # strict expressions: every backend must lower them identically.
 
 ContractBytes :: struct {
     data: [4]u32
-    filled: i32
+    filled: s32
 }
 
-ContractSumBytes :: (text: string) -> i32 #export {
-    total: i32 = 0
-    index: i32 = 0
+#program_export
+ContractSumBytes :: (text: string) -> s32 {
+    total: s32 = 0
+    index: s32 = 0
     while index < text.length {
-        total = total + (i32)text[index]
+        total = total + cast(s32)text[index]
         index = index + 1
     }
     return total
 }
 
-ContractFillBytes :: (bytes: ContractBytes, seed: u32) -> ContractBytes #export {
-    index: i32 = 0
+#program_export
+ContractFillBytes :: (bytes: ContractBytes, seed: u32) -> ContractBytes {
+    index: s32 = 0
     while index < 4 {
-        bytes.data[index] = seed + (u32)index
+        bytes.data[index] = seed + cast(u32)index
         index = index + 1
     }
     bytes.filled = 4
     return bytes
 }
 
-ContractByteAt :: (bytes: ContractBytes, index: i32) -> u32 #export {
+#program_export
+ContractByteAt :: (bytes: ContractBytes, index: s32) -> u32 {
     return bytes.data[index]
 }
 
-ContractBytesReady :: (bytes: ContractBytes) -> bool #export {
+#program_export
+ContractBytesReady :: (bytes: ContractBytes) -> bool {
     return bytes.filled == 4 && bytes.data[0] != bytes.data[3]
 }
 
-Answer :: () -> i32 #export {
-    lower: i64 = (i64)(-2147483648)
-    if lower + (i64)2147483647 != (i64)(-1) { return 0 }
+#program_export
+Answer :: () -> s32 {
+    lower: s64 = cast(s64)(-2147483648)
+    if lower + cast(s64)2147483647 != cast(s64)(-1) { return 0 }
     bytes: ContractBytes
-    bytes = ContractFillBytes(bytes, (u32)10)
+    bytes = ContractFillBytes(bytes, cast(u32)10)
     if !ContractBytesReady(bytes) { return 0 }
-    if ContractByteAt(bytes, 3) != (u32)13 { return 0 }
+    if ContractByteAt(bytes, 3) != cast(u32)13 { return 0 }
     if ContractSumBytes("Aé") != 429 { return 0 }
     return 6 * 7
 }

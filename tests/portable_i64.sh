@@ -5,19 +5,19 @@ ziran=$1
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 cat > "$work/wide.zi" <<'EOF'
-#module "wide"
 
-Answer :: () -> i32 #export {
-    high: i64 = (i64)2147483647 + (i64)100
-    if high != (i64)2147483747 { return 0 }
-    low: i64 = (i64)(-2147483648) - (i64)100
-    if low != (i64)(-2147483748) { return 0 }
-    if ((i64)(-1) >> (i64)1) != (i64)(-1) { return 0 }
-    maximum: i64 = (i64)9223372036854775807
-    minimum: i64 = maximum + (i64)1
-    if minimum >= (i64)0 { return 0 }
-    if minimum / (i64)(-1) != minimum { return 0 }
-    if ((i64)1 << (i64)63) >= (i64)0 { return 0 }
+#program_export
+Answer :: () -> s32 {
+    high: s64 = cast(s64)2147483647 + cast(s64)100
+    if high != cast(s64)2147483747 { return 0 }
+    low: s64 = cast(s64)(-2147483648) - cast(s64)100
+    if low != cast(s64)(-2147483748) { return 0 }
+    if (cast(s64)(-1) >> cast(s64)1) != cast(s64)(-1) { return 0 }
+    maximum: s64 = cast(s64)9223372036854775807
+    minimum: s64 = maximum + cast(s64)1
+    if minimum >= cast(s64)0 { return 0 }
+    if minimum / cast(s64)(-1) != minimum { return 0 }
+    if (cast(s64)1 << cast(s64)63) >= cast(s64)0 { return 0 }
     return 42
 }
 EOF

@@ -3,13 +3,15 @@
 This describes the target contract and the experimental subset that ships now.
 See [Implementation status](IMPLEMENTATION_STATUS.md) for the remaining work.
 
-## Experimental version 2
+## Experimental version 7
 
-`ziran bundle --root DIR [--module-path DIR] --entry module:function -o FILE file.zi|file.zir ...`
+`zi2zib bundle --root DIR [--module-path DIR] --entry module:function -o FILE file.zi|file.zir ...`
 loads explicit inputs and their extensionless imports, then links reachable
-modules. `ziran run FILE` validates and executes
+modules. `zi2zib run FILE` validates and executes
 zero-argument integer, bool, or void entry functions on a portable interpreter.
-Called functions can use `i32`, `i64`, `u8`, `u32`, `u64`, `bool`, `float`, `double`, and
+Called functions can use the IR scalar types `i32`, `i64`, `u8`, `u32`, `u64`,
+`bool`, `float`, and `double` (spelled `s32`, `s64`, `float32`, and `float64`
+where applicable in current `.zi` source), plus
 immutable `string` values, enums, and plain records with scalar, enum, string,
 or nested record fields. Strings support UTF-8 literals, byte length and
 read-only indexing, equality, parameters, returns, and record fields. Record defaults and literals,
@@ -23,7 +25,7 @@ or `-`; other constant expressions remain outside this subset. The bundle is
 `ZIB` plus a zero byte, a little-endian version, length-prefixed entry module
 and function names, a host capability count and its required module/function
 names, and a
-length-prefixed version 4 `.zir` payload. The current linker follows direct
+length-prefixed version 10 `.zir` payload. The current linker follows direct
 function calls from the entry, keeps record and enum declarations used by
 those functions (including types from imported modules and nested record
 fields), and removes unreachable functions, modules, types, and imports before
@@ -34,13 +36,13 @@ the expression uses the member as an integer without an explicit enum cast.
 The reader rejects unsupported versions, truncated or trailing data, malformed
 embedded IR, semantic errors and divergent fields in saved IR, unresolved imports,
 unsupported capabilities, and functions outside the current portable subset.
-Reachable `#extern` host calls with scalar, string, enum, plain record, or void signatures become
+Reachable `#foreign host_api` calls with scalar, string, enum, plain record, or void signatures become
 explicit capabilities. An embedding C host links `build/libziran.a`, includes
 `ziran_host.h`, opens a bundle with `BundleOpen`, and inspects its required
 module/function names with `BundleCapabilityCount`, `BundleCapabilityModule`,
 and `BundleCapabilityFunction`. It passes `HostBinding` entries to `BundleRun`.
 The runner checks that every required binding is present before executing the
-entry function. The standalone `ziran run` command has no host bindings and
+entry function. The standalone `zi2zib run` command has no host bindings and
 rejects a call that needs one. The loader compares the capability list with
 the linked IR; the VM checks signatures before execution and verifies returned
 record field names and types. Record fields may themselves contain records,
@@ -55,7 +57,7 @@ callable slots with captured locals and imported named functions run from
 source and saved IR. Fixed arrays with numeric or resolved integer
 constant-expression capacities support defaults,
 positional literals, element reads and writes, and value copies, including
-nested arrays and `char` arrays inside imported records. Indexing is bounds-checked. Version 2 is
+nested arrays and `char` arrays inside imported records. Indexing is bounds-checked. Version 7 is
 experimental and has no compatibility promise. Host calls with pointers,
 arrays, or slots remain unsupported. Default-initialized module globals of
 portable value types work within one `BundleRun`; each call starts with fresh

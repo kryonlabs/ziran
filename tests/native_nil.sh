@@ -7,32 +7,48 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/pointers.zi" <<'EOF'
-#module "pointers"
 #import "helper"
 
-Present :: (value: *i32) -> bool #export {
-    return value != nil
+Cell :: struct {
+    value: s32
 }
 
-Choose :: (use_value: bool, value: *i32) -> *i32 #export {
-    return use_value ? value : nil
+#program_export
+Present :: (value: *s32) -> bool {
+    return value != null
 }
 
-Answer :: () -> i32 #export {
-    pointer: *i32 = nil
+#program_export
+Choose :: (use_value: bool, value: *s32) -> *s32 {
+    return ifx use_value then value else null
+}
+
+#program_export
+Answer :: () -> s32 {
+    pointer: *s32 = null
+    value: s32 = 41
+    pointer = *value
+    <<pointer = <<pointer + 1
+    if value != 42 { return 0 }
+    pointer = null
+    cell: Cell
+    cell.value = 41
+    cell_pointer: *Cell = *cell
+    cell_pointer.value = 42
+    if cell.value != 42 { return 0 }
     if Present(pointer) { return 0 }
-    if Present(nil) { return 0 }
-    if RejectNull(nil) { return 0 }
-    if Choose(false, pointer) != nil { return 0 }
-    pointer = nil
+    if Present(null) { return 0 }
+    if RejectNull(null) { return 0 }
+    if Choose(false, pointer) != null { return 0 }
+    pointer = null
     return 42
 }
 EOF
 
 cat > "$work/helper.zi" <<'EOF'
-#module "helper"
-RejectNull :: (value: *i32) -> bool #export {
-    return value != nil
+#program_export
+RejectNull :: (value: *s32) -> bool {
+    return value != null
 }
 EOF
 
@@ -78,45 +94,94 @@ CPP
 done
 
 cat > "$work/invalid.zi" <<'EOF'
-#module "invalid"
-Wrong :: () -> i32 {
-    value: i32 = nil
+Wrong :: () -> s32 {
+    value: s32 = null
     return value
 }
 EOF
 if "$ziran" check --root "$work" "$work/invalid.zi" \
     2> "$work/invalid.err"; then
-    echo 'integer accepted nil initializer' >&2
+    echo 'integer accepted null initializer' >&2
     exit 1
 fi
 grep -Fq 'initializer type mismatch' "$work/invalid.err"
 
 cat > "$work/invalid.zi" <<'EOF'
-#module "invalid"
-Wrong :: () -> i32 {
-    value := nil
+Wrong :: () -> s32 {
+    value := null
     return 0
 }
 EOF
 if "$ziran" check --root "$work" "$work/invalid.zi" \
     2> "$work/invalid.err"; then
-    echo 'untyped nil binding was accepted' >&2
+    echo 'untyped null binding was accepted' >&2
     exit 1
 fi
-grep -Fq 'nil requires an explicit pointer type' "$work/invalid.err"
+grep -Fq 'null requires an explicit pointer type' "$work/invalid.err"
 
 cat > "$work/invalid.zi" <<'EOF'
-#module "invalid"
 Wrong :: () -> const char* {
+    return null
+}
+EOF
+if "$ziran" check --root "$work" "$work/invalid.zi" \
+    2> "$work/invalid.err"; then
+    echo 'C-style const pointer type was accepted' >&2
+    exit 1
+fi
+grep -Fq 'const qualifier is not Jai syntax' "$work/invalid.err"
+
+cat > "$work/invalid.zi" <<'EOF'
+Wrong :: () -> *s32 {
     return nil
 }
 EOF
 if "$ziran" check --root "$work" "$work/invalid.zi" \
     2> "$work/invalid.err"; then
-    echo 'Go string ABI accepted a nullable char pointer' >&2
+    echo 'non-Jai nil literal was accepted' >&2
     exit 1
 fi
-grep -Fq 'return type mismatch' "$work/invalid.err"
+grep -Fq 'nil is not Jai syntax; use null' "$work/invalid.err"
+
+cat > "$work/invalid.zi" <<'EOF'
+Wrong :: () -> s32 {
+    value: s32 = 42
+    pointer: *s32 = &value
+    return <<pointer
+}
+EOF
+if "$ziran" check --root "$work" "$work/invalid.zi" \
+    2> "$work/invalid.err"; then
+    echo 'C-style address-of was accepted' >&2
+    exit 1
+fi
+grep -Fq 'C-style address-of is not valid Jai syntax' "$work/invalid.err"
+
+cat > "$work/invalid.zi" <<'EOF'
+Wrong :: () -> s32 {
+    value: s32 = 42
+    return <<value
+}
+EOF
+if "$ziran" check --root "$work" "$work/invalid.zi" \
+    2> "$work/invalid.err"; then
+    echo 'dereference of a scalar was accepted' >&2
+    exit 1
+fi
+grep -Fq 'dereference requires a pointer' "$work/invalid.err"
+
+cat > "$work/invalid.zi" <<'EOF'
+Wrong :: () -> s32 {
+    pointer: *s32 = *42
+    return 0
+}
+EOF
+if "$ziran" check --root "$work" "$work/invalid.zi" \
+    2> "$work/invalid.err"; then
+    echo 'address of a literal was accepted' >&2
+    exit 1
+fi
+grep -Fq 'address-of requires an assignable expression' "$work/invalid.err"
 
 if "$ziran" bundle --root "$work" --entry pointers:Answer \
     -o "$work/pointers.zib" "$work/pointers.zi" \

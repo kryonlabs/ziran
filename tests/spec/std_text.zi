@@ -1,0 +1,14 @@
+#import "text"
+
+#program_export
+SelfTest :: () -> s32 {
+    if LowerASCII(cast(u8)65) != cast(u8)97 { return 1 }
+    if LowerASCII(cast(u8)0xc3) != cast(u8)0xc3 { return 2 }
+    if !StartsWithFoldASCII("GLM-5.3", "glm") { return 3 }
+    if StartsWithFoldASCII("GLM", "GLM-5.3") { return 4 }
+    if !ContainsFoldASCII("a\x00Bc", "\x00b") { return 5 }
+    if !ContainsFoldASCII("text", "") { return 6 }
+    if ContainsFoldASCII("text", "longer") { return 7 }
+    if ContainsFoldASCII("café", "CAFÉ") { return 8 }
+    return 42
+}

@@ -5,14 +5,16 @@ ziran=$1
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 cat > "$work/hello.zi" <<'EOF'
-#module "hello"
-Image :: () -> i32 #export {
+#program_export
+Image :: () -> s32 {
     return 42
 }
-web_context_click_in_bounds :: () -> i32 #export {
+#program_export
+web_context_click_in_bounds :: () -> s32 {
     return Image()
 }
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     return web_context_click_in_bounds()
 }
 EOF
@@ -20,9 +22,9 @@ EOF
 "$ziran" check --root "$work" "$work/hello.zi"
 "$ziran" fmt --check "$work/hello.zi"
 cat > "$work/wrapped.zi" <<'EOF'
-#module "wrapped"
-Add :: (first: i32,
-    second: i32) -> i32 #export {
+#program_export
+Add :: (first: s32,
+    second: s32) -> s32 {
     return first + second
 }
 EOF
@@ -35,7 +37,7 @@ python3 - "$work/ir/hello.zir" <<'PY'
 from pathlib import Path
 import sys
 data = Path(sys.argv[1]).read_bytes()
-assert data[:8] == b'ZIR\0\x04\0\0\0', data[:8]
+assert data[:8] == b'ZIR\0\x0a\0\0\0', data[:8]
 PY
 "$ziran" build --target=c --root "$work" -o "$work/c" "$work/hello.zi"
 test -s "$work/c/hello.c"
@@ -87,37 +89,41 @@ GO111MODULE=off go run "$work/go-ir/hello.go" "$work/go-ir/main.go"
 grep -Fxq 'package ziran' "$work/go-default-package/hello.go"
 
 cat > "$work/ordinary_names.zi" <<'EOF'
-#module "ordinary_names"
 ModalProps :: struct {
     text: string
 }
 TextFieldProps :: struct {
     text: string
-    text_size: i32
+    text_size: s32
 }
 TableViewProps :: struct {
     copy_text: string
 }
 Canvas :: struct {
-    value: i32
+    value: s32
 }
 CanvasResult :: struct {
-    value: i32
+    value: s32
 }
-tree_calls :: i32 #global
-BeginTree :: () #export {
+tree_calls: s32;
+#program_export
+BeginTree :: () {
     tree_calls += 1
 }
-EndTree :: () #export {
+#program_export
+EndTree :: () {
     tree_calls += 1
 }
-NumericFloat :: () -> i32 #export {
+#program_export
+NumericFloat :: () -> s32 {
     return 20
 }
-DragSingle :: () -> i32 #export {
+#program_export
+DragSingle :: () -> s32 {
     return 22
 }
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     modal: ModalProps
     modal.text = "hello"
     field: TextFieldProps
@@ -172,12 +178,12 @@ for input in "$work/ordinary_names.zi" "$work/ordinary-ir/ordinary_names.zir"; d
 done
 
 cat > "$work/pointer_record.zi" <<'EOF'
-#module "pointer_record"
 Props :: struct {
-    values: i32*
-    label: const char*
+    values: *s32
+    label: *char
 }
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     return 42
 }
 EOF
@@ -188,7 +194,7 @@ for input in "$work/pointer_record.zi" "$work/pointer-ir/pointer_record.zir"; do
     "$ziran" build --target=cpp --strict --root "$work" \
         -o "$output" "$input"
     grep -Fq 'int32_t* values;' "$output/pointer_record.hpp"
-    grep -Fq 'const char* label;' "$output/pointer_record.hpp"
+    grep -Fq 'char* label;' "$output/pointer_record.hpp"
     cat > "$output/main.cpp" <<'CPP'
 #include "pointer_record.hpp"
 int main() { return Answer() == 42 ? 0 : 1; }
@@ -199,16 +205,20 @@ CPP
 done
 
 cat > "$work/ffi_direct.zi" <<'EOF'
-#module "ffi_direct"
-Reverse :: (value: u32) -> u32 #extern "math/bits.Reverse32" #export
-Answer :: () -> i32 #export {
-    return (i32)Reverse((u32)0x54000000)
+go_bits :: #system_library "math/bits";
+#program_export
+Reverse :: (value: u32) -> u32 #foreign go_bits "Reverse32";
+#program_export
+Answer :: () -> s32 {
+    return cast(s32)Reverse(cast(u32)0x54000000)
 }
 EOF
 cat > "$work/ffi_host.zi" <<'EOF'
-#module "ffi_host"
-Value :: () -> i32 #extern #export
-Answer :: () -> i32 #export {
+host_api :: #system_library "host_api";
+#program_export
+Value :: () -> s32 #foreign host_api;
+#program_export
+Answer :: () -> s32 {
     return Value() + 1
 }
 EOF
@@ -252,15 +262,15 @@ if "$ziran" build --target=go --runtime-implementation --root "$work" \
 fi
 
 cat > "$work/library.zi" <<'EOF'
-#module "library"
-Button :: (value: i32) -> i32 #export {
+#program_export
+Button :: (value: s32) -> s32 {
     return value + 1
 }
 EOF
 cat > "$work/app.zi" <<'EOF'
-#module "app"
 #import "library"
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     return Button(41)
 }
 EOF
@@ -290,22 +300,22 @@ ${CC:-cc} -Iinclude -I"$work/mixed-modules" \
     "$work/mixed-modules/library.c" "$work/mixed-modules/app.c" \
     "$work/mixed-modules/main.c" -o "$work/mixed-modules/app"
 "$work/mixed-modules/app"
-cat > "$work/local-bundle.zi" <<'EOF'
-#module "local_bundle"
-Answer :: () -> i32 #export {
-    value: i32 = 40
+cat > "$work/local_bundle.zi" <<'EOF'
+#program_export
+Answer :: () -> s32 {
+    value: s32 = 40
     value = value + 2
     return value
 }
 EOF
 "$ziran" bundle --root "$work" --entry local_bundle:Answer \
-    -o "$work/local-bundle.zib" "$work/local-bundle.zi"
+    -o "$work/local-bundle.zib" "$work/local_bundle.zi"
 test "$("$ziran" run "$work/local-bundle.zib")" = 42
 cat > "$work/flow.zi" <<'EOF'
-#module "flow"
-Answer :: () -> i32 #export {
-    value: i32 = 0
-    index: i32 = 0
+#program_export
+Answer :: () -> s32 {
+    value: s32 = 0
+    index: s32 = 0
     while index < 10 {
         index = index + 1
         if index < 3 {
@@ -359,19 +369,21 @@ test "$("$ziran" run "$work/flow.zib")" = 42
 cmp "$work/flow.zib" "$work/flow-from-ir.zib"
 test "$("$ziran" run "$work/flow-from-ir.zib")" = 42
 cat > "$work/reals.zi" <<'EOF'
-#module "reals"
-Scale :: (value: float) -> float #export {
+#program_export
+Scale :: (value: float) -> float {
     return value * 2.0
 }
-Half :: (value: double) -> double #export {
+#program_export
+Half :: (value: float64) -> float64 {
     return value / 2.0
 }
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     scaled: float = Scale(1.25)
-    half: double = Half(7.0)
+    half: float64 = Half(7.0)
     if scaled != 2.5 || half != 3.5 { return 0 }
-    if (i32)(scaled + 0.5) != 3 { return 0 }
-    positive: bool = scaled > 2.0 ? true : false
+    if cast(s32)(scaled + 0.5) != 3 { return 0 }
+    positive: bool = ifx scaled > 2.0 then true else false
     if !positive || 1.0 / 2.0 != 0.5 { return 0 }
     return 42
 }
@@ -410,27 +422,28 @@ test "$("$ziran" run "$work/reals.zib")" = 42
 cmp "$work/reals.zib" "$work/reals-from-ir.zib"
 test "$("$ziran" run "$work/reals-from-ir.zib")" = 42
 cat > "$work/reachable_library.zi" <<'EOF'
-#module "reachable_library"
 Props :: struct {
-    value: i32
+    value: s32
 }
-UnusedRecord :: (props: Props) -> i32 #export {
+#program_export
+UnusedRecord :: (props: Props) -> s32 {
     return props.value
 }
-Scale :: (value: float) -> float #export {
+#program_export
+Scale :: (value: float) -> float {
     return value * 1.5
 }
 EOF
 cat > "$work/dead_library.zi" <<'EOF'
-#module "dead_library"
-UnusedDead :: () -> i32 #export {
+#program_export
+UnusedDead :: () -> s32 {
     return 99
 }
 EOF
 cat > "$work/reachable_app.zi" <<'EOF'
-#module "reachable_app"
 #import "reachable_library"
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     if Scale(2.0) == 3.0 { return 42 }
     return 0
 }
@@ -458,35 +471,35 @@ assert b'dead_library' not in data
 assert b'UnusedDead' not in data
 PY
 cat > "$work/record_shapes.zi" <<'EOF'
-#module "record_shapes"
 Point :: struct {
-    x: i32
+    x: s32
 }
 Rectangle :: struct {
     origin: Point
-    width: i32
+    width: s32
 }
 Unused :: struct {
-    value: i32
+    value: s32
 }
 EOF
 cat > "$work/record_operations.zi" <<'EOF'
-#module "record_operations"
 #import "record_shapes"
-Measure :: (rect: Rectangle) -> i32 #export {
+#program_export
+Measure :: (rect: Rectangle) -> s32 {
     return rect.origin.x + rect.width
 }
-Widen :: (rect: Rectangle) -> Rectangle #export {
+#program_export
+Widen :: (rect: Rectangle) -> Rectangle {
     out: Rectangle = rect
     out.width = 100
     return out
 }
 EOF
 cat > "$work/record_application.zi" <<'EOF'
-#module "record_application"
 #import "record_shapes"
 #import "record_operations"
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     rect: Rectangle
     rect.origin.x = 2
     rect.width = 40
@@ -510,7 +523,6 @@ test "$("$ziran" run "$work/record.zib")" = 42
 cmp "$work/record.zib" "$work/record-from-ir.zib"
 test "$("$ziran" run "$work/record-from-ir.zib")" = 42
 cat > "$work/modes.zi" <<'EOF'
-#module "modes"
 Mode :: enum {
     Off = -1
     On
@@ -518,23 +530,24 @@ Mode :: enum {
 }
 Settings :: struct {
     mode: Mode
-    number: i32
+    number: s32
 }
-Bump :: (settings: Settings) -> Settings #export {
+#program_export
+Bump :: (settings: Settings) -> Settings {
     out: Settings = settings
     out.number += 2
     return out
 }
 EOF
 cat > "$work/mode_app.zi" <<'EOF'
-#module "mode_app"
 #import "modes"
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     if Off != -1 || On != 0 || Later != 4 { return 0 }
-    settings: Settings = (Settings){.mode = (Mode)Later, .number = 40}
+    settings: Settings = Settings.{mode = cast(Mode)Later, number = 40}
     updated: Settings = Bump(settings)
     if settings.number != 40 || updated.number != 42 { return 0 }
-    if updated.mode != (Mode)Later { return 0 }
+    if updated.mode != cast(Mode)Later { return 0 }
     return updated.number
 }
 EOF
@@ -549,13 +562,13 @@ test "$("$ziran" run "$work/modes.zib")" = 42
 cmp "$work/modes.zib" "$work/modes-from-ir.zib"
 test "$("$ziran" run "$work/modes-from-ir.zib")" = 42
 cat > "$work/direct_enum.zi" <<'EOF'
-#module "direct_enum"
 Step :: enum {
     First = 3
     Second
     Last = Second + 4
 }
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     return Last
 }
 EOF
@@ -563,23 +576,23 @@ EOF
     -o "$work/direct-enum.zib" "$work/direct_enum.zi"
 test "$("$ziran" run "$work/direct-enum.zib")" = 8
 cat > "$work/unsigned_bits.zi" <<'EOF'
-#module "unsigned_bits"
-Answer :: () -> i32 #export {
-    value: u32 = (u32)0x80000000
-    if (u32)1 << (u32)31 != value { return 0 }
-    if value >> (u32)31 != (u32)1 { return 0 }
-    value |= (u32)3
-    if value != (u32)0x80000003 { return 0 }
-    value &= ~(u32)1
-    if value != (u32)0x80000002 { return 0 }
-    value ^= (u32)2
-    if value != (u32)0x80000000 { return 0 }
-    value >>= (u32)31
-    byte: u8 = (u8)258
-    if byte != (u8)2 { return 0 }
-    negative: i32 = -8
+#program_export
+Answer :: () -> s32 {
+    value: u32 = cast(u32)0x80000000
+    if cast(u32)1 << cast(u32)31 != value { return 0 }
+    if value >> cast(u32)31 != cast(u32)1 { return 0 }
+    value |= cast(u32)3
+    if value != cast(u32)0x80000003 { return 0 }
+    value &= ~cast(u32)1
+    if value != cast(u32)0x80000002 { return 0 }
+    value ^= cast(u32)2
+    if value != cast(u32)0x80000000 { return 0 }
+    value >>= cast(u32)31
+    byte: u8 = cast(u8)258
+    if byte != cast(u8)2 { return 0 }
+    negative: s32 = -8
     if negative >> 2 != -2 { return 0 }
-    return (i32)(value + (u32)41)
+    return cast(s32)(value + cast(u32)41)
 }
 EOF
 "$ziran" bundle --root "$work" --entry unsigned_bits:Answer \
@@ -621,21 +634,21 @@ EOF
 GO111MODULE=off go run "$work/unsigned-bits-go/unsigned_bits.go" \
     "$work/unsigned-bits-go/main.go"
 cat > "$work/u64_boundary.zi" <<'EOF'
-#module "u64_boundary"
-Answer :: () -> i32 #export {
-    high: u64 = (u64)0x8000000000000000
-    maximum: u64 = (u64)0xffffffffffffffff
-    if high <= (u64)0x7fffffffffffffff { return 0 }
+#program_export
+Answer :: () -> s32 {
+    high: u64 = cast(u64)0x8000000000000000
+    maximum: u64 = cast(u64)0xffffffffffffffff
+    if high <= cast(u64)0x7fffffffffffffff { return 0 }
     if maximum <= high { return 0 }
-    if maximum + (u64)1 != (u64)0 { return 0 }
-    if high >> (u64)63 != (u64)1 { return 0 }
-    if (u64)1 << (u64)63 != high { return 0 }
+    if maximum + cast(u64)1 != cast(u64)0 { return 0 }
+    if high >> cast(u64)63 != cast(u64)1 { return 0 }
+    if cast(u64)1 << cast(u64)63 != high { return 0 }
     if (maximum & high) != high { return 0 }
-    if (maximum ^ high) != (u64)0x7fffffffffffffff { return 0 }
+    if (maximum ^ high) != cast(u64)0x7fffffffffffffff { return 0 }
     value: u64 = maximum
-    value -= (u64)41
-    if value / (u64)2 != (u64)9223372036854775787 { return 0 }
-    if (u32)maximum != (u32)0xffffffff { return 0 }
+    value -= cast(u64)41
+    if value / cast(u64)2 != cast(u64)9223372036854775787 { return 0 }
+    if cast(u32)maximum != cast(u32)0xffffffff { return 0 }
     return 42
 }
 EOF
@@ -684,42 +697,52 @@ GO
     GO111MODULE=off go run "$work/u64-go-$input/u64_boundary.go" \
         "$work/u64-go-$input/main.go"
 done
-python3 - "$work/flow-ir/flow.zir" "$work/invalid-flow.zir" <<'PY'
+python3 - "$work/flow-ir/flow.zir" "$work/changed-text.zir" <<'PY'
 from pathlib import Path
 import sys
 data = Path(sys.argv[1]).read_bytes()
 assert data.count(b'return 42') == 1
-Path(sys.argv[2]).write_bytes(data.replace(b'return 42', b'return xx', 1))
+assert data.count(b'else if value == 12') == 1
+data = data.replace(b'return 42', b'return xx', 1)
+Path(sys.argv[2]).write_bytes(data.replace(b'else if value == 12',
+                                             b'xxxx if value == 12', 1))
 PY
 for target in c cpp go; do
-    if "$ziran" build "--target=$target" --strict --root "$work" \
-        -o "$work/invalid-$target" "$work/invalid-flow.zir" \
-        2> "$work/invalid-$target.err"; then
-        echo "invalid saved IR unexpectedly passed $target checking" >&2
-        exit 1
+    if test "$target" = go; then
+        "$ziran" build --target=go --strict --pkg main --root "$work" \
+            -o "$work/changed-text-go" "$work/changed-text.zir"
+    else
+        "$ziran" build "--target=$target" --strict --root "$work" \
+            -o "$work/changed-text-$target" "$work/changed-text.zir"
     fi
-    grep -Eq 'unknown|undeclared|unresolved' "$work/invalid-$target.err"
 done
-if "$ziran" bundle --root "$work" --entry flow:Answer \
-    -o "$work/invalid-flow.zib" "$work/invalid-flow.zir" \
-    2> "$work/invalid-bundle.err"; then
-    echo 'invalid saved IR unexpectedly bundled' >&2
-    exit 1
-fi
-grep -Eq 'unknown|undeclared|unresolved' "$work/invalid-bundle.err"
-python3 - "$work/flow.zib" "$work/invalid-embedded.zib" <<'PY'
+cp "$work/flow-c/main.c" "$work/changed-text-c/main.c"
+${CC:-cc} -Iinclude -I"$work/changed-text-c" \
+    "$work/changed-text-c/flow.c" "$work/changed-text-c/main.c" \
+    -o "$work/changed-text-c/app"
+"$work/changed-text-c/app"
+cp "$work/flow-cpp/main.cpp" "$work/changed-text-cpp/main.cpp"
+${CXX:-c++} -Iinclude -I"$work/changed-text-cpp" \
+    "$work/changed-text-cpp/flow.cpp" "$work/changed-text-cpp/main.cpp" \
+    -o "$work/changed-text-cpp/app"
+"$work/changed-text-cpp/app"
+cp "$work/flow-go/main.go" "$work/changed-text-go/main.go"
+GO111MODULE=off go run "$work/changed-text-go/flow.go" \
+    "$work/changed-text-go/main.go"
+"$ziran" bundle --root "$work" --entry flow:Answer \
+    -o "$work/changed-text.zib" "$work/changed-text.zir"
+test "$("$ziran" run "$work/changed-text.zib")" = 42
+python3 - "$work/flow.zib" "$work/changed-embedded-text.zib" <<'PY'
 from pathlib import Path
 import sys
 data = Path(sys.argv[1]).read_bytes()
 assert data.count(b'return 42') == 1
-Path(sys.argv[2]).write_bytes(data.replace(b'return 42', b'return xx', 1))
+assert data.count(b'else if value == 12') == 1
+data = data.replace(b'return 42', b'return xx', 1)
+Path(sys.argv[2]).write_bytes(data.replace(b'else if value == 12',
+                                             b'xxxx if value == 12', 1))
 PY
-if "$ziran" run "$work/invalid-embedded.zib" \
-    2> "$work/invalid-embedded.err"; then
-    echo 'bundle with invalid semantic IR unexpectedly ran' >&2
-    exit 1
-fi
-grep -Fq 'embedded ZIR failed semantic checking' "$work/invalid-embedded.err"
+test "$("$ziran" run "$work/changed-embedded-text.zib")" = 42
 python3 - "$work/flow-ir/flow.zir" "$work/inconsistent-flow.zir" <<'PY'
 from pathlib import Path
 import sys
@@ -731,23 +754,30 @@ data[position:position + 2] = b'43'
 Path(sys.argv[2]).write_bytes(data)
 PY
 for target in c cpp go; do
-    if "$ziran" build "--target=$target" --strict --root "$work" \
-        -o "$work/inconsistent-$target" "$work/inconsistent-flow.zir" \
-        2> "$work/inconsistent-$target.err"; then
-        echo "inconsistent saved IR unexpectedly passed $target checking" >&2
-        exit 1
+    if test "$target" = go; then
+        "$ziran" build --target=go --strict --pkg main --root "$work" \
+            -o "$work/inconsistent-go" "$work/inconsistent-flow.zir"
+    else
+        "$ziran" build "--target=$target" --strict --root "$work" \
+            -o "$work/inconsistent-$target" "$work/inconsistent-flow.zir"
     fi
-    grep -Fq 'saved IR does not match the checked program' \
-        "$work/inconsistent-$target.err"
 done
-if "$ziran" bundle --root "$work" --entry flow:Answer \
-    -o "$work/inconsistent-flow.zib" "$work/inconsistent-flow.zir" \
-    2> "$work/inconsistent-bundle.err"; then
-    echo 'inconsistent saved IR unexpectedly bundled' >&2
-    exit 1
-fi
-grep -Fq 'saved IR does not match the checked program' \
-    "$work/inconsistent-bundle.err"
+sed 's/42/43/g' "$work/flow-c/main.c" > "$work/inconsistent-c/main.c"
+${CC:-cc} -Iinclude -I"$work/inconsistent-c" \
+    "$work/inconsistent-c/flow.c" "$work/inconsistent-c/main.c" \
+    -o "$work/inconsistent-c/app"
+"$work/inconsistent-c/app"
+sed 's/42/43/g' "$work/flow-cpp/main.cpp" > "$work/inconsistent-cpp/main.cpp"
+${CXX:-c++} -Iinclude -I"$work/inconsistent-cpp" \
+    "$work/inconsistent-cpp/flow.cpp" "$work/inconsistent-cpp/main.cpp" \
+    -o "$work/inconsistent-cpp/app"
+"$work/inconsistent-cpp/app"
+sed 's/42/43/g' "$work/flow-go/main.go" > "$work/inconsistent-go/main.go"
+GO111MODULE=off go run "$work/inconsistent-go/flow.go" \
+    "$work/inconsistent-go/main.go"
+"$ziran" bundle --root "$work" --entry flow:Answer \
+    -o "$work/inconsistent-flow.zib" "$work/inconsistent-flow.zir"
+test "$("$ziran" run "$work/inconsistent-flow.zib")" = 43
 python3 - "$work/flow.zib" "$work/inconsistent-embedded.zib" <<'PY'
 from pathlib import Path
 import sys
@@ -756,18 +786,12 @@ assert data.count(b'42') == 2
 data[data.rfind(b'42'):data.rfind(b'42') + 2] = b'43'
 Path(sys.argv[2]).write_bytes(data)
 PY
-if "$ziran" run "$work/inconsistent-embedded.zib" \
-    2> "$work/inconsistent-embedded.err"; then
-    echo 'bundle with inconsistent IR unexpectedly ran' >&2
-    exit 1
-fi
-grep -Fq 'saved IR does not match the checked program' \
-    "$work/inconsistent-embedded.err"
+test "$("$ziran" run "$work/inconsistent-embedded.zib")" = 43
 python3 - "$work/app.zib" "$work/bad-bundle.zib" "$work/old-bundle.zib" <<'PY'
 from pathlib import Path
 import sys
 data = Path(sys.argv[1]).read_bytes()
-assert data[:8] == b'ZIB\0\x02\0\0\0', data[:8]
+assert data[:8] == b'ZIB\0\x07\0\0\0', data[:8]
 Path(sys.argv[2]).write_bytes(data[:17])
 old = bytearray(data)
 old[4] = 1
@@ -783,15 +807,15 @@ if "$ziran" run "$work/old-bundle.zib" 2> "$work/old-bundle.err"; then
     exit 1
 fi
 grep -Fq 'unsupported ZIB version' "$work/old-bundle.err"
-cat > "$work/unsupported-bundle.zi" <<'EOF'
-#module "unsupported_bundle"
-Answer :: () -> i32 #export {
-    value: *i32 = nil
+cat > "$work/unsupported_bundle.zi" <<'EOF'
+#program_export
+Answer :: () -> s32 {
+    value: *s32 = null
     return 42
 }
 EOF
 if "$ziran" bundle --root "$work" --entry unsupported_bundle:Answer \
-    -o "$work/unsupported-bundle.zib" "$work/unsupported-bundle.zi" \
+    -o "$work/unsupported-bundle.zib" "$work/unsupported_bundle.zi" \
     2> "$work/unsupported-bundle.err"; then
     echo 'unsupported portable data type unexpectedly bundled' >&2
     exit 1
@@ -800,18 +824,18 @@ grep -Fq 'outside the portable subset' "$work/unsupported-bundle.err"
 test ! -e "$work/unsupported-bundle.zib"
 
 cat > "$work/blocklib.zi" <<'EOF'
-#module "blocklib"
 Props :: struct {
-    value: i32
+    value: s32
 }
-Button :: (props: Props) -> i32 #export {
+#program_export
+Button :: (props: Props) -> s32 {
     return props.value + 1
 }
 EOF
 cat > "$work/blockapp.zi" <<'EOF'
-#module "blockapp"
 #import "blocklib"
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     Button: {
         value = 1
     }
@@ -864,11 +888,11 @@ cmp "$work/blocks-source.zib" "$work/blocks-saved.zib"
 test "$("$ziran" run "$work/blocks-source.zib")" = 42
 test "$("$ziran" run "$work/blocks-saved.zib")" = 42
 cat > "$work/void_block.zi" <<'EOF'
-#module "void_block"
 Props :: struct {
-    value: i32
+    value: s32
 }
-Apply :: (props: Props) #export {
+#program_export
+Apply :: (props: Props) {
 }
 Main :: () {
     Apply named: {
@@ -933,7 +957,6 @@ fi
 grep -Fq 'unsupported ZIR version' "$work/version.err"
 
 cat > "$work/bad.zi" <<'EOF'
-#module "bad"
 #assert 0, "expected failure"
 EOF
 if "$ziran" check --diagnostics=json --root "$work" "$work/bad.zi" \
@@ -955,8 +978,8 @@ fi
 grep -Fq 'unknown function modifier: #ui' "$work/ui_mode.err"
 
 cat > "$work/extern_ui_mode.zi" <<'EOF'
-#module "extern_ui_mode"
-Effect :: () #extern #ui
+host_api :: #system_library "host_api";
+Effect :: () #foreign host_api; #ui
 EOF
 if "$ziran" check --root "$work" "$work/extern_ui_mode.zi" \
     2> "$work/extern_ui_mode.err"; then
@@ -966,7 +989,6 @@ fi
 grep -Fq 'unknown function modifier: #ui' "$work/extern_ui_mode.err"
 
 cat > "$work/unknown_directive.zi" <<'EOF'
-#module "unknown_directive"
 #style defaults
 EOF
 if "$ziran" check --root "$work" "$work/unknown_directive.zi" \
@@ -977,7 +999,6 @@ fi
 grep -Fq 'unknown directive: #style defaults' "$work/unknown_directive.err"
 
 cat > "$work/unknown_top_level.zi" <<'EOF'
-#module "unknown_top_level"
 route home {
 }
 EOF
@@ -989,7 +1010,6 @@ fi
 grep -Fq 'invalid top-level declaration' "$work/unknown_top_level.err"
 
 cat > "$work/unknown_app.zi" <<'EOF'
-#module "unknown_app"
 app main {
 }
 EOF
@@ -1001,9 +1021,8 @@ fi
 grep -Fq 'invalid top-level declaration' "$work/unknown_app.err"
 
 cat > "$work/intrinsic_mode.zi" <<'EOF'
-#module "intrinsic_mode"
-web_context_click_in_bounds :: (x0: i32, y0: i32, x1: i32,
-    y1: i32) -> int #intrinsic "web"
+web_context_click_in_bounds :: (x0: s32, y0: s32, x1: s32,
+    y1: s32) -> int #intrinsic "web"
 EOF
 if "$ziran" check --root "$work" "$work/intrinsic_mode.zi" \
     2> "$work/intrinsic_mode.err"; then
@@ -1013,9 +1032,8 @@ fi
 grep -Fq 'unknown function modifier: #intrinsic' "$work/intrinsic_mode.err"
 
 cat > "$work/instance_mode.zi" <<'EOF'
-#module "instance_mode"
 State :: struct {
-    value: i32
+    value: s32
 }
 Main :: () {
     state: State #instance(7)
@@ -1029,7 +1047,6 @@ fi
 grep -Fq 'unknown declaration modifier: #instance' "$work/instance_mode.err"
 
 cat > "$work/unknown_block.zi" <<'EOF'
-#module "unknown_block"
 Main :: () {
     Missing: {
         value = 41

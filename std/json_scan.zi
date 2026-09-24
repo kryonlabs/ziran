@@ -1,0 +1,270 @@
+#import "text"
+
+# A small allocation-free JSON scanner. Positions are UTF-8 byte offsets.
+# String spans retain escapes; member lookup matches unescaped ASCII names.
+JsonSpan :: struct {
+    start: s32
+    end: s32
+    after: s32
+    valid: bool
+}
+
+JsonNumber :: struct {
+    value: float64
+    after: s32
+    valid: bool
+}
+
+#program_export
+Space :: (text: string, at: s32) -> s32 {
+    cursor: s32 = at
+    while cursor >= 0 && cursor < text.length {
+        ch: u8 = text[cursor]
+        if ch != cast(u8)32 && ch != cast(u8)9 && ch != cast(u8)10 && ch != cast(u8)13 {
+            break
+        }
+        cursor = cursor + 1
+    }
+    return cursor
+}
+
+#program_export
+Digit :: (ch: u8) -> bool {
+    return ch >= cast(u8)48 && ch <= cast(u8)57
+}
+
+#program_export
+Hex :: (ch: u8) -> bool {
+    return Digit(ch) || (ch >= cast(u8)65 && ch <= cast(u8)70) ||
+           (ch >= cast(u8)97 && ch <= cast(u8)102)
+}
+
+#program_export
+ReadString :: (text: string, at: s32) -> JsonSpan {
+    result: JsonSpan
+    if at < 0 || at >= text.length || text[at] != cast(u8)34 { return result }
+    result.start = at + 1
+    cursor: s32 = result.start
+    while cursor < text.length {
+        ch: u8 = text[cursor]
+        if ch == cast(u8)34 {
+            result.end = cursor
+            result.after = cursor + 1
+            result.valid = true
+            return result
+        }
+        if ch < cast(u8)32 { return result }
+        if ch == cast(u8)92 {
+            cursor = cursor + 1
+            if cursor >= text.length { return result }
+            escaped: u8 = text[cursor]
+            if escaped == cast(u8)117 {
+                index: s32 = 0
+                while index < 4 {
+                    cursor = cursor + 1
+                    if cursor >= text.length || !Hex(text[cursor]) { return result }
+                    index = index + 1
+                }
+            } else if escaped != cast(u8)34 && escaped != cast(u8)92 &&
+                      escaped != cast(u8)47 && escaped != cast(u8)98 &&
+                      escaped != cast(u8)102 && escaped != cast(u8)110 &&
+                      escaped != cast(u8)114 && escaped != cast(u8)116 {
+                return result
+            }
+        }
+        cursor = cursor + 1
+    }
+    return result
+}
+
+#program_export
+SpanEqualsASCII :: (text: string, span: JsonSpan, expected: string) -> bool {
+    if !span.valid || span.end - span.start != expected.length { return false }
+    index: s32 = 0
+    while index < expected.length {
+        if text[span.start + index] != expected[index] { return false }
+        index = index + 1
+    }
+    return true
+}
+
+#program_export
+SpanContainsFoldASCII :: (text: string, span: JsonSpan,
+                          needle: string) -> bool {
+    if !span.valid { return false }
+    if needle.length == 0 { return true }
+    if needle.length > span.end - span.start { return false }
+    start: s32 = span.start
+    while start <= span.end - needle.length {
+        index: s32 = 0
+        same: bool = true
+        while index < needle.length {
+            if LowerASCII(text[start + index]) != LowerASCII(needle[index]) {
+                same = false
+                break
+            }
+            index = index + 1
+        }
+        if same { return true }
+        start = start + 1
+    }
+    return false
+}
+
+#program_export
+ReadNumber :: (text: string, at: s32) -> JsonNumber {
+    result: JsonNumber
+    cursor: s32 = at
+    if cursor < 0 || cursor >= text.length { return result }
+    negative: bool = false
+    if text[cursor] == cast(u8)45 {
+        negative = true
+        cursor = cursor + 1
+        if cursor >= text.length { return result }
+    }
+    if text[cursor] == cast(u8)48 {
+        cursor = cursor + 1
+        if cursor < text.length && Digit(text[cursor]) { return result }
+    } else {
+        if text[cursor] < cast(u8)49 || text[cursor] > cast(u8)57 { return result }
+        while cursor < text.length && Digit(text[cursor]) {
+            result.value = result.value * 10.0 + cast(float64)(text[cursor] - cast(u8)48)
+            cursor = cursor + 1
+        }
+    }
+    if cursor < text.length && text[cursor] == cast(u8)46 {
+        cursor = cursor + 1
+        if cursor >= text.length || !Digit(text[cursor]) { return result }
+        scale: float64 = 0.1
+        while cursor < text.length && Digit(text[cursor]) {
+            result.value = result.value +
+                           cast(float64)(text[cursor] - cast(u8)48) * scale
+            scale = scale * 0.1
+            cursor = cursor + 1
+        }
+    }
+    if cursor < text.length && (text[cursor] == cast(u8)101 || text[cursor] == cast(u8)69) {
+        cursor = cursor + 1
+        exponent_negative: bool = false
+        if cursor < text.length && (text[cursor] == cast(u8)45 || text[cursor] == cast(u8)43) {
+            exponent_negative = text[cursor] == cast(u8)45
+            cursor = cursor + 1
+        }
+        if cursor >= text.length || !Digit(text[cursor]) { return result }
+        exponent: s32 = 0
+        while cursor < text.length && Digit(text[cursor]) {
+            if exponent > 30 { return result }
+            exponent = exponent * 10 + cast(s32)(text[cursor] - cast(u8)48)
+            if exponent > 308 { return result }
+            cursor = cursor + 1
+        }
+        while exponent > 0 {
+            if exponent_negative {
+                result.value = result.value / 10.0
+            } else {
+                result.value = result.value * 10.0
+            }
+            exponent = exponent - 1
+        }
+    }
+    if negative { result.value = -result.value }
+    result.after = cursor
+    result.valid = true
+    return result
+}
+
+#program_export
+MatchLiteral :: (text: string, at: s32, literal: string) -> bool {
+    if at < 0 || literal.length > text.length - at { return false }
+    index: s32 = 0
+    while index < literal.length {
+        if text[at + index] != literal[index] { return false }
+        index = index + 1
+    }
+    return true
+}
+
+#program_export
+ValueEnd :: (text: string, at: s32, depth: s32) -> s32 {
+    cursor: s32 = Space(text, at)
+    if depth > 64 || cursor < 0 || cursor >= text.length { return -1 }
+    ch: u8 = text[cursor]
+    if ch == cast(u8)34 {
+        span: JsonSpan = ReadString(text, cursor)
+        if span.valid { return span.after }
+        return -1
+    }
+    if ch == cast(u8)123 || ch == cast(u8)91 {
+        object: bool = ch == cast(u8)123
+        close: u8 = cast(u8)93
+        if object { close = cast(u8)125 }
+        cursor = Space(text, cursor + 1)
+        if cursor < text.length && text[cursor] == close { return cursor + 1 }
+        while cursor < text.length {
+            if object {
+                key: JsonSpan = ReadString(text, cursor)
+                if !key.valid { return -1 }
+                cursor = Space(text, key.after)
+                if cursor >= text.length || text[cursor] != cast(u8)58 { return -1 }
+                cursor = cursor + 1
+            }
+            cursor = ValueEnd(text, cursor, depth + 1)
+            if cursor < 0 { return -1 }
+            cursor = Space(text, cursor)
+            if cursor >= text.length { return -1 }
+            if text[cursor] == close { return cursor + 1 }
+            if text[cursor] != cast(u8)44 { return -1 }
+            cursor = Space(text, cursor + 1)
+        }
+        return -1
+    }
+    if MatchLiteral(text, cursor, "true") { return cursor + 4 }
+    if MatchLiteral(text, cursor, "false") { return cursor + 5 }
+    if MatchLiteral(text, cursor, "null") { return cursor + 4 }
+    number: JsonNumber = ReadNumber(text, cursor)
+    if number.valid { return number.after }
+    return -1
+}
+
+#program_export
+FieldAt :: (text: string, object_at: s32, name: string) -> s32 {
+    cursor: s32 = Space(text, object_at)
+    if cursor < 0 || cursor >= text.length || text[cursor] != cast(u8)123 {
+        return -1
+    }
+    cursor = Space(text, cursor + 1)
+    while cursor < text.length && text[cursor] != cast(u8)125 {
+        key: JsonSpan = ReadString(text, cursor)
+        if !key.valid { return -1 }
+        cursor = Space(text, key.after)
+        if cursor >= text.length || text[cursor] != cast(u8)58 { return -1 }
+        cursor = Space(text, cursor + 1)
+        if SpanEqualsASCII(text, key, name) { return cursor }
+        cursor = ValueEnd(text, cursor, 0)
+        if cursor < 0 { return -1 }
+        cursor = Space(text, cursor)
+        if cursor >= text.length || text[cursor] != cast(u8)44 { return -1 }
+        cursor = Space(text, cursor + 1)
+    }
+    return -1
+}
+
+#program_export
+ElementAt :: (text: string, array_at: s32, index: s32) -> s32 {
+    cursor: s32 = Space(text, array_at)
+    if cursor < 0 || cursor >= text.length || text[cursor] != cast(u8)91 || index < 0 {
+        return -1
+    }
+    cursor = Space(text, cursor + 1)
+    count: s32 = 0
+    while cursor < text.length && text[cursor] != cast(u8)93 {
+        if count == index { return cursor }
+        cursor = ValueEnd(text, cursor, 0)
+        if cursor < 0 { return -1 }
+        cursor = Space(text, cursor)
+        if cursor >= text.length || text[cursor] != cast(u8)44 { return -1 }
+        cursor = Space(text, cursor + 1)
+        count = count + 1
+    }
+    return -1
+}

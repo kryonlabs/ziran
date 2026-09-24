@@ -6,22 +6,22 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 mkdir -p "$work/app" "$work/lib"
 cat > "$work/lib/base.zi" <<'EOF'
-#module "base"
-Value :: () -> i32 #export {
+#program_export
+Value :: () -> s32 {
     return 40
 }
 EOF
 cat > "$work/lib/middle.zi" <<'EOF'
-#module "middle"
 #import "base"
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     return Value() + 2
 }
 EOF
 cat > "$work/app/main.zi" <<'EOF'
-#module "main"
 #import "middle"
-Result :: () -> i32 #export {
+#program_export
+Result :: () -> s32 {
     return Answer()
 }
 EOF
@@ -33,6 +33,17 @@ EOF
 for module in main middle base; do
     test -s "$work/ir/$module.zir"
 done
+
+cat > "$work/app/old_module.zi" <<'EOF'
+#module "old_module"
+Answer :: () -> s32 { return 42; }
+EOF
+if "$ziran" check --root "$work/app" "$work/app/old_module.zi" \
+    2> "$work/old_module.err"; then
+    echo 'non-Jai #module directive was accepted' >&2
+    exit 1
+fi
+grep -Fq 'unknown directive: #module' "$work/old_module.err"
 "$ziran" bundle --root "$work/app" --module-path "$work/lib" \
     --entry main:Result -o "$work/source.zib" "$work/app/main.zi"
 "$ziran" bundle --root "$work/ir" --module-path "$work/ir" \

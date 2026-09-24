@@ -20,15 +20,16 @@ Kryon's widget or runtime policy.
 
 ## Current state and remaining work
 
-The old Kryon `.kry` compiler and `.krb` runtime have been removed. Kryon UI
-source was moved to `src/ui/*.zi`, and its checked subset builds through Ziran
-as an ordinary library. The remaining modules still need language conversion,
-host contracts, and behavior tests. Downstream applications have not migrated.
+The old Kryon `.kry` compiler and `.krb` runtime have been removed. All
+maintained Kryon UI modules are now `.zi` sources and build into its library
+through Ziran. Platform host integration and application behavior gates remain
+incomplete. Inbe has moved its application sources to `.zi` and is migrating
+its native services, but its full source gate and app build do not pass yet.
 
 1. Finish generic Ziran imports, typed blocks and slots, laws, saved `.zir`,
    and the `.zib` capability contract without importing Kryon.
-2. Convert the remaining Kryon UI modules and connect native, browser, and
-   portable host effects through explicit interfaces.
+2. Complete Kryon's native, browser, and portable host effects through explicit
+   interfaces and verify widget behavior in applications.
 3. Port representative applications to Kryon imports and run their behavior
    and supported target gates.
 4. Migrate downstream source and dependency pointers to `.zi`, `.zir`, and

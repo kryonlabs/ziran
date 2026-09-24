@@ -8,47 +8,51 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/state.zi" <<'ZI'
-#module "state"
 
 Cell :: struct {
-    value: i32
+    value: s32
 }
 Store :: struct {
     cells: [64]Cell
-    count: i32
+    count: s32
 }
-current :: Store #global
-unused :: i32 = 7 #global
+current: Store;
+unused: s32 = 7;
 
-Install :: (next: Store) #export {
+#program_export
+Install :: (next: Store) {
     current = next
 }
-Put :: (index: i32, value: i32) #export {
+#program_export
+Put :: (index: s32, value: s32) {
     current.cells[index].value = value
     current.count += 1
 }
-Read :: (index: i32) -> i32 #export {
+#program_export
+Read :: (index: s32) -> s32 {
     return current.cells[index].value
 }
-Snapshot :: () -> Store #export {
+#program_export
+Snapshot :: () -> Store {
     return current
 }
-Count :: () -> i32 #export {
+#program_export
+Count :: () -> s32 {
     return current.count
 }
 ZI
 
 cat > "$work/app.zi" <<'ZI'
-#module "app"
 #import "state"
 
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     source: Store
     source.cells[0].value = 41
     Install(source)
     source.cells[0].value = 0
     if Read(0) != 41 { return 0 }
-    iteration: i32 = 0
+    iteration: s32 = 0
     while iteration < 80 {
         Put(1, iteration)
         iteration += 1
@@ -113,9 +117,9 @@ CPP
 done
 
 cat > "$work/invalid.zi" <<'ZI'
-#module "invalid"
-initial :: i32 = 7 #global
-Answer :: () -> i32 #export {
+initial: s32 = 7;
+#program_export
+Answer :: () -> s32 {
     return initial
 }
 ZI
@@ -127,9 +131,9 @@ grep -q 'portable globals need a value type and default initialization' \
     "$work/error"
 
 cat > "$work/session.zi" <<'ZI'
-#module "session"
-counter :: i32 #global
-Answer :: () -> i32 #export {
+counter: s32;
+#program_export
+Answer :: () -> s32 {
     counter += 1
     return counter
 }

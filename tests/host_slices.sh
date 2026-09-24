@@ -7,13 +7,14 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/host_buffer.zi" <<'ZI'
-#module "host_buffer"
+host_api :: #system_library "host_api";
 
-Fill :: (values: []u8) -> i32 #extern
-ReplaceWord :: (values: []string) -> i32 #extern
+Fill :: (values: []u8) -> s32 #foreign host_api;
+ReplaceWord :: (values: []string) -> s32 #foreign host_api;
 
-Answer :: () -> i32 #export {
-    values: [4]u8 = {9, 1, 2, 9}
+#program_export
+Answer :: () -> s32 {
+    values: [4]u8 = .[9, 1, 2, 9]
     empty: []u8 = values[:0]
     if Fill(empty) != 0 { return -1 }
     middle: []u8 = values[1:3]
@@ -21,10 +22,10 @@ Answer :: () -> i32 #export {
         values[1] != 40 || values[2] != 2 || values[3] != 9 {
         return -2
     }
-    words: [2]string = {"old", "second"}
+    words: [2]string = .["old", "second"]
     if ReplaceWord(words[:]) != 2 || words[0] != "new" ||
         words[1] != "second" { return -3 }
-    return (i32)values[1] + (i32)values[2]
+    return cast(s32)values[1] + cast(s32)values[2]
 }
 ZI
 
@@ -105,9 +106,10 @@ done
 cmp "$work/source.zib" "$work/saved.zib"
 
 cat > "$work/bad_return.zi" <<'ZI'
-#module "bad_return"
-Borrow :: () -> []u8 #extern
-Answer :: () -> i32 #export {
+host_api :: #system_library "host_api";
+Borrow :: () -> []u8 #foreign host_api;
+#program_export
+Answer :: () -> s32 {
     return Borrow().length
 }
 ZI
@@ -119,10 +121,11 @@ fi
 grep -Fq 'host calls cannot return borrowed slices' "$work/bad_return.err"
 
 cat > "$work/overlap.zi" <<'ZI'
-#module "overlap"
-Touch :: (left: []u8, right: []u8) -> i32 #extern
-Answer :: () -> i32 #export {
-    values: [3]u8 = {1, 2, 3}
+host_api :: #system_library "host_api";
+Touch :: (left: []u8, right: []u8) -> s32 #foreign host_api;
+#program_export
+Answer :: () -> s32 {
+    values: [3]u8 = .[1, 2, 3]
     return Touch(values[:], values[1:])
 }
 ZI

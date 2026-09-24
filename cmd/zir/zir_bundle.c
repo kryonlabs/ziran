@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { ZIB_VERSION = 2, ZIB_MAX_IR_BYTES = 256 * 1024 * 1024,
+enum { ZIB_VERSION = 7, ZIB_MAX_IR_BYTES = 256 * 1024 * 1024,
        ZIB_MAX_CAPABILITIES = 4096 };
 
 typedef struct CapabilityName {
@@ -211,6 +211,8 @@ uses_imported_constant(const ZirModule *module, const unsigned char *keep,
                        const ZirModule *dependency)
 {
     for(int d = 0; d < dependency->define_count; d++) {
+        if(!dependency->defines[d].is_public)
+            continue;
         const char *name = dependency->defines[d].name;
         for(int f = 0; f < module->function_count; f++)
             if(keep[f])

@@ -1,0 +1,21 @@
+#import "json_scan"
+
+#program_export
+SelfTest :: () -> s32 {
+    body: string = "{\"skip\":[true,{\"quoted\":\"a\\\"b\"}],\"value\":1.25e2}"
+    if ValueEnd(body, 0, 0) != body.length { return 1 }
+    value_at: s32 = FieldAt(body, 0, "value")
+    value: JsonNumber = ReadNumber(body, value_at)
+    if !value.valid || value.value != 125.0 { return 2 }
+    skip_at: s32 = FieldAt(body, 0, "skip")
+    item_at: s32 = ElementAt(body, skip_at, 1)
+    quote_at: s32 = FieldAt(body, item_at, "quoted")
+    quoted: JsonSpan = ReadString(body, quote_at)
+    if !quoted.valid || quoted.end - quoted.start != 4 { return 3 }
+    if ValueEnd("{\"a\":[1,]}", 0, 0) >= 0 { return 4 }
+    if ReadString("\"\\q\"", 0).valid { return 5 }
+    if ReadNumber("01", 0).valid { return 6 }
+    tiny: JsonNumber = ReadNumber("1.25e-1", 0)
+    if !tiny.valid || tiny.value != 0.125 { return 7 }
+    return 42
+}

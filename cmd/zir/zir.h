@@ -51,7 +51,9 @@ typedef enum ZirStmtKind {
     ZIR_STMT_DEFER,
     ZIR_STMT_UNUSED,
     ZIR_STMT_RAW,
-    ZIR_STMT_BLOCK_CALL
+    ZIR_STMT_BLOCK_CALL,
+    ZIR_STMT_UNREACHABLE,
+    ZIR_STMT_MATCH
 } ZirStmtKind;
 
 typedef enum ZirExprKind {
@@ -114,6 +116,9 @@ typedef struct ZirStmt {
     char callee[ZIR_NAME_MAX];
     char args[ZIR_TEXT_MAX];
     int declared_block_call; /* typed block invocation, resolved after imports */
+    int is_else;        /* checked branch role; source text is diagnostic only */
+    int is_guard;       /* source guard form, unsupported by typed emission */
+    int is_try;         /* source-only terminal `?`, lowered before saving IR */
     int expr_root;      /* index into enclosing function exprs, or -1 */
     int lhs_root;       /* structured assignment destination, or -1 */
     char name[ZIR_NAME_MAX]; /* declaration binding */
@@ -155,8 +160,10 @@ typedef struct ZirFunction {
     int capture_count;
     int is_public;  /* function emitted in generated interfaces */
     int checked;    /* shared checker resolved the function without errors */
+    int is_generated; /* compiler-created variant constructor or accessor */
+    int from_ir;    /* in-memory only: expression graph came from saved IR */
     int uses_host; /* direct or transitive host services or retained-state access */
-    char extern_target[ZIR_NAME_MAX];   /* '#extern "pkg.Fn"' quoted symbol */
+    char extern_target[ZIR_NAME_MAX];   /* resolved #foreign library/symbol */
     char extern_symbol[ZIR_NAME_MAX];   /* stripped C symbol for c.* externs */
     char guard[ZIR_TEXT_MAX];   /* enclosing '#if' condition (expanded) */
     ZirSourceSpan span;
@@ -172,7 +179,7 @@ typedef struct ZirGlobal {
     char name[ZIR_NAME_MAX];
     char type[ZIR_TEXT_MAX];
     char init[ZIR_TEXT_MAX];
-    int is_static;   /* 'static name: T = init' — internal linkage */
+    int is_static;   /* internal linkage in generated native code */
     char guard[ZIR_TEXT_MAX];   /* enclosing '#if' condition (expanded) */
     ZirSourceSpan span;
 } ZirGlobal;
@@ -181,6 +188,7 @@ typedef struct ZirGlobal {
 typedef struct ZirDefine {
     char name[ZIR_NAME_MAX];
     char value[ZIR_TEXT_MAX];
+    int is_public; /* visible to importing modules */
     char guard[ZIR_TEXT_MAX];   /* enclosing '#if' condition (expanded) */
     ZirSourceSpan span;
 } ZirDefine;
@@ -199,8 +207,18 @@ typedef struct ZirAssert {
 typedef struct ZirType {
     char name[ZIR_NAME_MAX];
     char body[ZIR_TEXT_MAX * 2];
+    char variant_cases[ZIR_TEXT_MAX * 2]; /* source cases; body is checked storage */
+    char template_params[ZIR_NAME_MAX]; /* generic variant parameters */
+    char template_name[ZIR_NAME_MAX]; /* unresolved explicit specialization */
+    char template_args[ZIR_TEXT_MAX];
     int is_slot;   /* named, synchronous child-content signature; body holds parameters */
+    int is_public; /* visible to importing modules */
     int is_enum;   /* 'Name :: enum' — emit typedef enum, not struct */
+    int is_variant; /* sealed tagged record with compiler-generated operations */
+    int is_variant_template;
+    int is_record_template;
+    int is_type_instance; /* unresolved until imports are linked */
+    int is_synthetic_application; /* private name made from a direct type call */
     int is_extern; /* host-owned C record; native Go emits the declared shape */
     char guard[ZIR_TEXT_MAX];   /* enclosing '#if' condition (expanded) */
     ZirSourceSpan span;
@@ -210,6 +228,15 @@ typedef struct ZirTypeField {
     char name[ZIR_NAME_MAX];
     char type[ZIR_NAME_MAX];
 } ZirTypeField;
+
+typedef struct ZirVariantCase {
+    char name[ZIR_NAME_MAX];
+    char type[ZIR_NAME_MAX]; /* empty for a payloadless case */
+} ZirVariantCase;
+
+int VariantNextCase(const ZirType *variant, size_t *offset,
+                    ZirVariantCase *item);
+int VariantLayoutValid(const ZirType *variant);
 
 /* Start offset at zero. Returns 1 for a field, 0 at end, -1 for malformed
  * record syntax. Names/types are trimmed without truncating source tokens. */

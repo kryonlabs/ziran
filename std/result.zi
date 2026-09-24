@@ -1,0 +1,4 @@
+Result :: variant($T: Type, $E: Type) {
+    Ok: T
+    Err: E
+}

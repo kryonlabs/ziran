@@ -53,8 +53,28 @@ ModuleUsesSlices(const ZirModule *module)
     return 0;
 }
 
-/* These names share a deterministic collision check between declarations and
- * bodies. Negative parameter denotes the hidden array result. */
+/* Generated names must be chosen from structured bindings and expressions.
+ * Saved statement text is diagnostic metadata and may differ from the graph. */
+static int
+function_mentions(const ZirFunction *fn, const char *name)
+{
+    if(strstr(fn->args, name) != NULL)
+        return 1;
+    for(int i = 0; i < fn->capture_count; i++)
+        if(strcmp(fn->captures[i].name, name) == 0)
+            return 1;
+    for(int i = 0; i < fn->stmt_count; i++)
+        if(strcmp(fn->stmts[i].name, name) == 0 ||
+           strcmp(fn->stmts[i].callee, name) == 0 ||
+           strstr(fn->stmts[i].args, name) != NULL)
+            return 1;
+    for(int i = 0; i < fn->expr_count; i++)
+        if(strcmp(fn->exprs[i].name, name) == 0)
+            return 1;
+    return 0;
+}
+
+/* Negative parameter denotes the hidden array result. */
 void
 ArrayAbiName(const ZirFunction *fn, int parameter, char *out, size_t size)
 {
@@ -63,13 +83,7 @@ ArrayAbiName(const ZirFunction *fn, int parameter, char *out, size_t size)
     do {
         format(out, size, "array_%s_%d_%d", parameter < 0 ? "result" : "input",
                parameter < 0 ? 0 : parameter, serial++);
-        collision = strstr(fn->args, out) != NULL;
-        for(int i = 0; i < fn->stmt_count; i++) {
-            collision |= strstr(fn->stmts[i].text, out) != NULL;
-            collision |= strstr(fn->stmts[i].args, out) != NULL;
-        }
-        for(int i = 0; i < fn->capture_count; i++)
-            collision |= strstr(fn->captures[i].name, out) != NULL;
+        collision = function_mentions(fn, out);
     } while(collision);
 }
 
@@ -289,9 +303,7 @@ supported_expression(const ZirModule *module, const ZirFunction *fn, int index)
     case ZIR_EXPR_MEMBER: case ZIR_EXPR_POINTER_MEMBER:
     case ZIR_EXPR_INDEX: case ZIR_EXPR_SLICE: break;
     case ZIR_EXPR_BINARY: case ZIR_EXPR_CONDITIONAL: break;
-    case ZIR_EXPR_UNARY:
-        if(!strcmp(e->op, "&") || !strcmp(e->op, "*")) return 0;
-        break;
+    case ZIR_EXPR_UNARY: break;
     case ZIR_EXPR_POSTFIX: break;
     case ZIR_EXPR_CAST:
         if(!TargetType(e->name, ZIR_C) && !enum_type(module, e->name)) return 0;
@@ -327,12 +339,15 @@ CanEmitBody(const ZirModule *module, const ZirFunction *fn)
             if(st->lhs_root < 0 || (fn->exprs[st->lhs_root].kind != ZIR_EXPR_IDENT &&
                 fn->exprs[st->lhs_root].kind != ZIR_EXPR_MEMBER &&
                 fn->exprs[st->lhs_root].kind != ZIR_EXPR_POINTER_MEMBER &&
-                fn->exprs[st->lhs_root].kind != ZIR_EXPR_INDEX)) return 0;
+                fn->exprs[st->lhs_root].kind != ZIR_EXPR_INDEX &&
+                !(fn->exprs[st->lhs_root].kind == ZIR_EXPR_UNARY &&
+                  !strcmp(fn->exprs[st->lhs_root].op, "*")))) return 0;
             break;
-        case ZIR_STMT_IF: if(!strncmp(st->text, "guard", 5)) return 0; break;
+        case ZIR_STMT_IF: if(st->is_guard) return 0; break;
         case ZIR_STMT_BLOCK_OPEN: case ZIR_STMT_BLOCK_CLOSE:
         case ZIR_STMT_WHILE: case ZIR_STMT_RETURN: case ZIR_STMT_BREAK:
-        case ZIR_STMT_CONTINUE: case ZIR_STMT_UNUSED: case ZIR_STMT_EXPR: break;
+        case ZIR_STMT_CONTINUE: case ZIR_STMT_UNUSED: case ZIR_STMT_EXPR:
+        case ZIR_STMT_UNREACHABLE: break;
         default: return 0;
         }
         if(!supported_expression(module, fn, st->expr_root) || !supported_expression(module, fn, st->lhs_root)) return 0;
@@ -396,6 +411,8 @@ EmitNumberSupport(FILE *out, ZirTarget target, const char *p)
             "    if(!(x >= (sign ? -bound : 0) && x < bound)) abort();\n"
             "    return sign ? (uint64_t)(int64_t)x : (uint64_t)x;\n}\n", p);
     } else if(target == ZIR_GO) {
+        fprintf(out,
+            "func %s_signed_bits(x int64) uint64 { return uint64(x) }\n", p);
         fprintf(out,
             "func %s_float(x float64, w uint, sign bool) uint64 {\n"
             "    bits := w; if sign { bits-- }; bound := float64(1); for i := uint(0); i < bits; i++ { bound *= 2 }; lower := float64(0); if sign { lower = -bound }\n"
@@ -505,10 +522,7 @@ fresh(Emitter *e, char *name)
     int collision;
     do {
         format(name, ZIR_NAME_MAX, "value_%d", e->serial++);
-        collision = strstr(e->fn->args, name) != NULL;
-        for(int i = 0; i < e->fn->capture_count; i++)
-            collision |= !strcmp(e->fn->captures[i].name, name);
-        for(int i = 0; i < e->fn->stmt_count; i++) collision |= strstr(e->fn->stmts[i].text, name) != NULL;
+        collision = function_mentions(e->fn, name);
         for(int i = 0; i < e->module->state_count; i++) collision |= !strcmp(e->module->state_fields[i].name, name);
         for(int i = 0; i < e->module->global_count; i++) collision |= !strcmp(e->module->globals[i].name, name);
         for(int i = 0; i < e->module->define_count; i++) collision |= !strcmp(e->module->defines[i].name, name);
@@ -632,11 +646,7 @@ capture_context_name(const ZirFunction *fn, char *out, size_t size)
     int serial = 0, collision;
     do {
         format(out, size, "capture_context_%d", serial++);
-        collision = strstr(fn->args, out) != NULL;
-        for(int i = 0; i < fn->stmt_count; i++)
-            collision |= strstr(fn->stmts[i].text, out) != NULL;
-        for(int i = 0; i < fn->capture_count; i++)
-            collision |= !strcmp(fn->captures[i].name, out);
+        collision = function_mentions(fn, out);
     } while(collision);
 }
 
@@ -673,8 +683,13 @@ operation(const char *op)
 }
 
 static void
-go_bits_operand(const char *value, char *out, size_t size)
+go_bits_operand(const char *value, int sign, const char *prefix,
+                char *out, size_t size)
 {
+    if(!strcmp(value, "^uint64(0)")) {
+        copy_text(out, size, value);
+        return;
+    }
     /* Go rejects uint64(-1) as a constant conversion. A negative integer
      * literal here represents its two's-complement bits, not an arithmetic
      * conversion of a Go constant. Runtime expressions already convert. */
@@ -689,7 +704,10 @@ go_bits_operand(const char *value, char *out, size_t size)
             return;
         }
     }
-    format(out, size, "uint64(%s)", value);
+    if(sign)
+        format(out, size, "%s_signed_bits(int64(%s))", prefix, value);
+    else
+        format(out, size, "uint64(%s)", value);
 }
 
 static void
@@ -699,8 +717,8 @@ number(Emitter *e, const char *type, const char *a, const char *b, int op, char 
     int w = width(type), sign = signed_type(type);
     if(e->target == ZIR_GO) {
         char left[ZIR_TEXT_MAX], right[ZIR_TEXT_MAX];
-        go_bits_operand(a, left, sizeof(left));
-        go_bits_operand(b, right, sizeof(right));
+        go_bits_operand(a, sign, e->numbers, left, sizeof(left));
+        go_bits_operand(b, sign, e->numbers, right, sizeof(right));
         format(bits,sizeof(bits),"%s_bits(%s,%s,%d,%s,%d)",e->numbers,left,right,w,sign?"true":"false",op);
         format(out,size,"%s(%s)",TargetType(type,e->target),bits);
     } else {
@@ -737,6 +755,13 @@ static void
 emit_destination(Emitter *e, int index, char *out, size_t size)
 {
     const ZirExpr *expr = &e->fn->exprs[index];
+    if(expr->kind == ZIR_EXPR_UNARY && !strcmp(expr->op, "*")) {
+        char pointer[ZIR_TEXT_MAX];
+        emit_expr(e, expr->right, e->fn->exprs[expr->right].type,
+                  pointer, sizeof(pointer));
+        format(out, size, "*(%s)", pointer);
+        return;
+    }
     if(expr->kind == ZIR_EXPR_IDENT) {
         resolve(e, expr->name, out, size);
         e->pure = 1;
@@ -1416,7 +1441,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             emit_function_value(e, index, result, sizeof(result));
             break;
         }
-        if(!strcmp(expr->name, "nil")) {
+        if(!strcmp(expr->name, "null")) {
             copy_text(result, sizeof(result), e->target == ZIR_GO ? "nil" :
                       e->target == ZIR_CPP ? "nullptr" : "((void *)0)");
             pure = 1;
@@ -1528,12 +1553,17 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             line(e,"%s = %s%s",a,result,e->target==ZIR_GO?"":";");
             copy_text(result,sizeof(result),a);pure=1;break;
         }
-        emit_expr(e,expr->right,type,a,sizeof(a));
+        if(!strcmp(expr->op, "&"))
+            emit_destination(e, expr->right, a, sizeof(a));
+        else
+            emit_expr(e,expr->right,e->fn->exprs[expr->right].type,a,sizeof(a));
         pure = e->pure;
         if(width(type) && !strcmp(expr->op,"-")) number(e,type,"0",a,2,result,sizeof(result));
         else if(width(type) && !strcmp(expr->op,"~")) {
             number(e,type,a,e->target==ZIR_GO?"^uint64(0)":"UINT64_MAX",10,result,sizeof(result));
-        } else format(result,sizeof(result),"%s%s",expr->op,a);
+        } else if(!strcmp(expr->op, "&") || !strcmp(expr->op, "*"))
+            format(result, sizeof(result), "%s(%s)", expr->op, a);
+        else format(result,sizeof(result),"%s%s",expr->op,a);
         break;
     case ZIR_EXPR_POSTFIX:
         emit_destination(e, expr->left, a, sizeof(a));fresh(e,temp);declare(e,temp,type,a);
@@ -1636,7 +1666,7 @@ emit_if(Emitter *e,int i,int end)
     emit_expr(e,e->fn->stmts[i].expr_root,"bool",cond,sizeof(cond));
     line(e,e->target==ZIR_GO?"if %s {":"if (%s) {",cond);e->indent++;
     emit_sequence(e,i+1,close);e->indent--;
-    if(close+1<end && e->fn->stmts[close+1].kind==ZIR_STMT_IF && !strncmp(e->fn->stmts[close+1].text,"else",4)) {
+    if(close+1<end && e->fn->stmts[close+1].kind==ZIR_STMT_IF && e->fn->stmts[close+1].is_else) {
         int next=close+1;
         line(e,"} else {");e->indent++;
         if(e->fn->stmts[next].expr_root>=0)close=emit_if(e,next,end);
@@ -1694,6 +1724,9 @@ emit_sequence(Emitter *e,int begin,int end)
                 }
             }
             else line(e,e->target==ZIR_GO?"return":"return;");
+            e->local_count=saved;e->depth--;return;
+        case ZIR_STMT_UNREACHABLE:
+            line(e,e->target==ZIR_GO?"panic(\"unreachable\")":"abort();");
             e->local_count=saved;e->depth--;return;
         case ZIR_STMT_IF:i=emit_if(e,i,end);break;
         case ZIR_STMT_WHILE: {

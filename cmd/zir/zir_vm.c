@@ -13,8 +13,7 @@
 
 enum { VM_MAX_PARAMS = 16, VM_MAX_LOCALS = 64, VM_MAX_GLOBALS = 4096,
        VM_MAX_DEPTH = 128,
-       VM_MAX_STEPS = 1000000, VM_MAX_FIELDS = 64,
-       VM_MAX_ENUM_MEMBERS = 64,
+       VM_MAX_STEPS = 1000000, VM_MAX_FIELDS = 1024,
        VM_MAX_RECORD_BYTES = 256 * 1024 * 1024,
        VM_MAX_ARRAY_BYTES = 256 * 1024 * 1024 };
 
@@ -263,13 +262,16 @@ enum_expression(const char *cursor, const char *end,
 static int
 enum_member_value(const ZirType *type, const char *wanted, int32_t *value)
 {
-    EnumEntry entries[VM_MAX_ENUM_MEMBERS];
+    if(!type->is_enum)
+        return 0;
+    size_t capacity = strlen(type->body) + 1;
+    EnumEntry *entries = calloc(capacity, sizeof(*entries));
+    if(entries == NULL)
+        return 0;
     int count = 0;
     int found = 0;
     int64_t next = 0;
     const char *cursor = type->body;
-    if(!type->is_enum)
-        return 0;
     while(*cursor) {
         while(*cursor == ',' || isspace((unsigned char)*cursor))
             cursor++;
@@ -280,27 +282,27 @@ enum_member_value(const ZirType *type, const char *wanted, int32_t *value)
             end++;
         const char *start = cursor;
         if(!isalpha((unsigned char)*cursor) && *cursor != '_')
-            return 0;
+            goto invalid;
         while(cursor < end &&
               (isalnum((unsigned char)*cursor) || *cursor == '_'))
             cursor++;
         size_t length = (size_t)(cursor - start);
         if(length == 0 || length >= ZIR_NAME_MAX ||
-           count >= VM_MAX_ENUM_MEMBERS)
-            return 0;
+           (size_t)count >= capacity)
+            goto invalid;
         for(int i = 0; i < count; i++)
             if(strlen(entries[i].name) == length &&
                strncmp(entries[i].name, start, length) == 0)
-                return 0;
+                goto invalid;
         skip_enum_space(&cursor, end);
         int64_t number = next;
         if(cursor < end) {
             if(*cursor++ != '=' ||
                !enum_expression(cursor, end, entries, count, &number))
-                return 0;
+                goto invalid;
         }
         if(number < INT32_MIN || number > INT32_MAX)
-            return 0;
+            goto invalid;
         memcpy(entries[count].name, start, length);
         entries[count].name[length] = 0;
         entries[count].value = (int32_t)number;
@@ -312,7 +314,11 @@ enum_member_value(const ZirType *type, const char *wanted, int32_t *value)
         next = number + 1;
         cursor = *end ? end + 1 : end;
     }
+    free(entries);
     return wanted == NULL ? count > 0 : found;
+invalid:
+    free(entries);
+    return 0;
 }
 
 static int
@@ -421,7 +427,8 @@ host_type_at(const ZirModule *module, const char *type, int depth,
         return 1;
     const ZirModule *owner = NULL;
     const ZirType *record = FindType(module, type, &owner);
-    if(record == NULL || record->is_extern || record->is_slot)
+    if(record == NULL || record->is_extern || record->is_slot ||
+       record->is_variant)
         return 0;
     if(record->is_enum)
         return enum_member_value(record, NULL, NULL);
@@ -1520,10 +1527,7 @@ find_entry(const ZirProgram *program, const char *module_name,
 static int
 is_else_branch(const ZirStmt *statement)
 {
-    return statement->kind == ZIR_STMT_IF &&
-           strncmp(statement->text, "else", 4) == 0 &&
-           (statement->text[4] == 0 || statement->text[4] == ' ' ||
-            statement->text[4] == '\t');
+    return statement->kind == ZIR_STMT_IF && statement->is_else;
 }
 
 static int
@@ -1673,6 +1677,8 @@ verify_sequence(const ZirModule *module, const ZirFunction *function,
             if(loop_depth == 0)
                 return 0;
             break;
+        case ZIR_STMT_UNREACHABLE:
+            break;
         default:
             return 0;
         }
@@ -1690,6 +1696,8 @@ sequence_guarantees_return(const ZirFunction *function, int begin, int end,
         const ZirStmt *statement = &function->stmts[i];
         int close;
         if(statement->kind == ZIR_STMT_RETURN)
+            return 1;
+        if(statement->kind == ZIR_STMT_UNREACHABLE)
             return 1;
         if(statement->kind == ZIR_STMT_IF &&
            !is_else_branch(statement)) {
@@ -2483,6 +2491,10 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
             *result = statement->expr_root >= 0 ?
                 eval(frame, statement->expr_root, 0) : int_value(0);
             return vm->failed ? FLOW_ERROR : FLOW_RETURN;
+        case ZIR_STMT_UNREACHABLE:
+            Diagnostic(statement->span, "vm.unreachable", "unreachable code executed");
+            vm->failed = 1;
+            return FLOW_ERROR;
         case ZIR_STMT_EXPR:
         case ZIR_STMT_UNUSED:
             (void)eval(frame, statement->expr_root, 0);
@@ -2613,6 +2625,8 @@ host_argument(const ZirModule *module, const char *type, Value value,
     }
     const ZirModule *owner = NULL;
     const ZirType *record = FindType(module, type, &owner);
+    if(record != NULL && record->is_variant)
+        return 0;
     if(record != NULL && !record->is_enum) {
         if(value.kind != VALUE_RECORD || value.record == NULL ||
            value.record->type != record ||
@@ -2663,6 +2677,10 @@ host_return(Vm *vm, const ZirModule *module, const char *type,
     }
     const ZirModule *owner = NULL;
     const ZirType *declared = FindType(module, type, &owner);
+    if(declared != NULL && declared->is_variant) {
+        vm->failed = 1;
+        return result;
+    }
     if(declared != NULL && !declared->is_enum) {
         if(input->kind != VM_HOST_RECORD ||
            (input->field_count > 0 && input->fields == NULL) ||

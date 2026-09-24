@@ -1,0 +1,55 @@
+host_api :: #system_library "host_api";
+# A line-oriented child-process capability. The host receives explicit
+# arguments, stdin, and one optional secret environment binding. Hosts must
+# honor isolate_desktop before starting any child. Handles are host-owned;
+# callers consume lines and then wait exactly once.
+ProcessRequest :: struct {
+    executable: string
+    cwd: string
+    stdin: string
+    credential_name: string
+    credential_value: string
+    isolate_desktop: bool
+    timeout_ms: s64
+}
+
+ProcessStart :: struct {
+    handle: s32
+    error: string
+}
+
+ProcessLine :: struct {
+    text: string
+    eof: bool
+    error: string
+}
+
+ProcessExit :: struct {
+    code: s32
+    stderr: string
+    error: string
+}
+
+StartHost :: (request: ProcessRequest, args: []string) -> ProcessStart #foreign host_api;
+NextLineHost :: (handle: s32) -> ProcessLine #foreign host_api;
+WaitHost :: (handle: s32) -> ProcessExit #foreign host_api;
+
+#program_export
+Start :: (request: ProcessRequest, args: []string) -> ProcessStart {
+    if args.length > 32 {
+        result: ProcessStart
+        result.error = "invalid argument count"
+        return result
+    }
+    return StartHost(request, args)
+}
+
+#program_export
+NextLine :: (handle: s32) -> ProcessLine {
+    return NextLineHost(handle)
+}
+
+#program_export
+Wait :: (handle: s32) -> ProcessExit {
+    return WaitHost(handle)
+}

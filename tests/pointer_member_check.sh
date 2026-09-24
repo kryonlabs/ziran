@@ -8,35 +8,37 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/types.zi" <<'ZI'
-#module "types"
 Child :: struct {
-    value: i32
+    value: s32
 }
 Node :: struct {
-    value: i32
+    value: s32
     child: Child
 }
 ZI
 
 cat > "$work/read.zi" <<'ZI'
-#module "read"
 #import "types"
-Read :: (node: const Node*) -> i32 #export {
-    return node->value + node->child.value
+#program_export
+Read :: (node: *Node) -> s32 {
+    return node.value + node.child.value
 }
-Write :: (node: Node*, value: i32) -> i32 #export {
-    if node == nil { return -1 }
-    node->value = value
-    node->child.value = value + 1
+#program_export
+Write :: (node: *Node, value: s32) -> s32 {
+    if node == null { return -1 }
+    node.value = value
+    node.child.value = value + 1
     return Read(node)
 }
-Forward :: (node: Node*) -> Node* #export {
+#program_export
+Forward :: (node: *Node) -> *Node {
     return node
 }
-WriteForward :: (node: Node*, value: i32) -> i32 #export {
-    if node == nil { return -1 }
-    Forward(node)->value = value
-    return node->value
+#program_export
+WriteForward :: (node: *Node, value: s32) -> s32 {
+    if node == null { return -1 }
+    Forward(node).value = value
+    return node.value
 }
 ZI
 "$compiler" --check-only --root "$work" "$work/read.zi"
@@ -106,37 +108,35 @@ if "$bin/zi2zib" bundle --root "$work" --entry read:Write \
     exit 1
 fi
 
-cat > "$work/const_bad.zi" <<'ZI'
-#module "const_bad"
+cat > "$work/wrong_arg.zi" <<'ZI'
 #import "types"
-Mutate :: (node: Node*) -> i32 {
-    node->value = 1
-    return node->value
+Mutate :: (node: *Node) -> s32 {
+    node.value = 1
+    return node.value
 }
-Bad :: (node: const Node*) -> i32 {
+Bad :: (node: Node) -> s32 {
     return Mutate(node)
 }
 ZI
-if "$compiler" --check-only --root "$work" "$work/const_bad.zi" \
+if "$compiler" --check-only --root "$work" "$work/wrong_arg.zi" \
     >"$work/out" 2>"$work/err"; then
-    echo "const record pointer passed to mutable parameter" >&2
+    echo "record value passed to pointer parameter" >&2
     exit 1
 fi
 grep -q 'argument type mismatch: Mutate' "$work/err"
 
 cat > "$work/nested_bad.zi" <<'ZI'
-#module "nested_bad"
 #import "types"
-ReadNested :: (node: const Node**) -> i32 {
+ReadNested :: (node: **Node) -> s32 {
     return 1
 }
-BadNested :: (node: Node**) -> i32 {
+BadNested :: (node: *Node) -> s32 {
     return ReadNested(node)
 }
 ZI
 if "$compiler" --check-only --root "$work" "$work/nested_bad.zi" \
     >"$work/out" 2>"$work/err"; then
-    echo "mutable double pointer passed to const double pointer" >&2
+    echo "single pointer passed to double-pointer parameter" >&2
     exit 1
 fi
 if ! grep -q 'argument type mismatch: ReadNested' "$work/err"; then
@@ -144,7 +144,7 @@ if ! grep -q 'argument type mismatch: ReadNested' "$work/err"; then
     exit 1
 fi
 
-sed 's/node->value/node->missing/' "$work/read.zi" > "$work/bad.zi"
+sed 's/node.value/node.missing/' "$work/read.zi" > "$work/bad.zi"
 if "$compiler" --check-only --root "$work" "$work/bad.zi" \
     >"$work/out" 2>"$work/err"; then
     echo "unknown pointer field unexpectedly passed checking" >&2
@@ -152,12 +152,29 @@ if "$compiler" --check-only --root "$work" "$work/bad.zi" \
 fi
 grep -q 'unknown record field: missing' "$work/err"
 
-sed 's/const Node\*/Node/' "$work/read.zi" > "$work/not_pointer.zi"
-if "$compiler" --check-only --root "$work" "$work/not_pointer.zi" \
+cat > "$work/not_record.zi" <<'ZI'
+Bad :: (value: s32) -> s32 {
+    return value.field
+}
+ZI
+if "$compiler" --check-only --root "$work" "$work/not_record.zi" \
     >"$work/out" 2>"$work/err"; then
-    echo "non-pointer field access unexpectedly passed checking" >&2
+    echo "scalar field access unexpectedly passed checking" >&2
     exit 1
 fi
-grep -q 'pointer member requires a record pointer: Node' "$work/err"
+grep -q 'unknown record field: field' "$work/err"
+
+cat > "$work/arrow.zi" <<'ZI'
+#import "types"
+Bad :: (node: *Node) -> s32 {
+    return node->value
+}
+ZI
+if "$compiler" --check-only --root "$work" "$work/arrow.zi" \
+    >"$work/out" 2>"$work/err"; then
+    echo "C-style pointer member access was accepted" >&2
+    exit 1
+fi
+grep -q 'C-style pointer member access is not valid Jai syntax' "$work/err"
 
 echo "pointer member checking and emission test passed"

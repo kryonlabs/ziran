@@ -15,17 +15,20 @@ TypeNextField(const ZirType *record, size_t *offset, ZirTypeField *field)
         return -1;
     while(*offset < length) {
         const char *start = record->body + *offset;
-        const char *newline = strchr(start, '\n');
-        const char *end = newline != NULL ? newline : record->body + length;
+        const char *end = start + strcspn(start, ";\n");
         const char *colon;
         const char *name_end;
         const char *type_start;
         size_t name_length;
         size_t type_length;
 
-        *offset = newline != NULL ? (size_t)(newline - record->body) + 1 : length;
+        *offset = *end != '\0' ? (size_t)(end - record->body) + 1 : length;
         while(start < end && isspace((unsigned char)*start))
             start++;
+        while(end > start && isspace((unsigned char)end[-1]))
+            end--;
+        if(end > start && end[-1] == ';')
+            end--;
         while(end > start && isspace((unsigned char)end[-1]))
             end--;
         if(start == end)
@@ -55,6 +58,81 @@ TypeNextField(const ZirType *record, size_t *offset, ZirTypeField *field)
         return 1;
     }
     return 0;
+}
+
+int
+VariantNextCase(const ZirType *variant, size_t *offset,
+                ZirVariantCase *item)
+{
+    size_t length = strlen(variant->variant_cases);
+    memset(item, 0, sizeof(*item));
+    if(!variant->is_variant && !variant->is_variant_template)
+        return -1;
+    while(*offset < length) {
+        const char *start = variant->variant_cases + *offset;
+        const char *newline = strchr(start, '\n');
+        const char *end = newline ? newline : variant->variant_cases + length;
+        *offset = newline ? (size_t)(newline - variant->variant_cases) + 1 : length;
+        while(start < end && isspace((unsigned char)*start)) start++;
+        while(end > start && isspace((unsigned char)end[-1])) end--;
+        if(end > start && (end[-1] == ',' || end[-1] == ';')) end--;
+        while(end > start && isspace((unsigned char)end[-1])) end--;
+        if(start == end) continue;
+        const char *colon = memchr(start, ':', (size_t)(end - start));
+        const char *name_end = colon ? colon : end;
+        while(name_end > start && isspace((unsigned char)name_end[-1])) name_end--;
+        size_t name_length = (size_t)(name_end - start);
+        if(name_length == 0 || name_length >= sizeof(item->name) ||
+           (!isalpha((unsigned char)*start) && *start != '_'))
+            return -1;
+        for(const char *cursor = start + 1; cursor < name_end; cursor++)
+            if(!isalnum((unsigned char)*cursor) && *cursor != '_')
+                return -1;
+        memcpy(item->name, start, name_length);
+        if(colon) {
+            const char *type = colon + 1;
+            while(type < end && isspace((unsigned char)*type)) type++;
+            size_t type_length = (size_t)(end - type);
+            if(type_length == 0 || type_length >= sizeof(item->type))
+                return -1;
+            memcpy(item->type, type, type_length);
+        }
+        return 1;
+    }
+    return 0;
+}
+
+int
+VariantLayoutValid(const ZirType *variant)
+{
+    char body[sizeof(variant->body)];
+    int written = snprintf(body, sizeof(body), "variant_tag: i32\n");
+    if(!variant->is_variant || written < 0 ||
+       (size_t)written >= sizeof(body))
+        return 0;
+    size_t used = (size_t)written, offset = 0;
+    ZirVariantCase item, earlier;
+    int count = 0, status;
+    while((status = VariantNextCase(variant, &offset, &item)) == 1) {
+        size_t previous = 0;
+        while(previous < offset) {
+            if(VariantNextCase(variant, &previous, &earlier) != 1)
+                return 0;
+            if(previous == offset) break;
+            if(!strcmp(earlier.name, item.name))
+                return 0;
+        }
+        if(item.type[0]) {
+            written = snprintf(body + used, sizeof(body) - used,
+                               "variant_payload_%s: %s\n", item.name,
+                               item.type);
+            if(written < 0 || (size_t)written >= sizeof(body) - used)
+                return 0;
+            used += (size_t)written;
+        }
+        count++;
+    }
+    return status == 0 && count > 0 && !strcmp(body, variant->body);
 }
 
 int
@@ -172,6 +250,8 @@ ResolveEnumMember(const ZirModule *module, const char *name,
                 continue;
             for(int j = 0; j < scope->type_count; j++) {
                 const ZirType *candidate = &scope->types[j];
+                if(pass != 0 && !candidate->is_public)
+                    continue;
                 if(!enum_has_member(candidate, name))
                     continue;
                 if(*type != NULL && *type != candidate) {
@@ -245,7 +325,7 @@ FindType(const ZirModule *module, const char *name, const ZirModule **owner)
             continue;
         for(int j = 0; j < target->type_count; j++) {
             const ZirType *candidate = &target->types[j];
-            if(strcmp(candidate->name, name) != 0)
+            if(!candidate->is_public || strcmp(candidate->name, name) != 0)
                 continue;
             if(found && found != candidate)
                 return NULL;
@@ -486,6 +566,7 @@ ModuleAddDefine(ZirModule *module, const char *name, const char *value,
     memset(d, 0, sizeof(*d));
     copy_text(d->name, sizeof(d->name), name);
     copy_text(d->value, sizeof(d->value), value);
+    d->is_public = 1;
     d->span = span;
     return d;
 }
@@ -527,6 +608,7 @@ ModuleAddType(ZirModule *module, const char *name, ZirSourceSpan span)
     memset(&module->types[module->type_count], 0, sizeof(ZirType));
     copy_text(module->types[module->type_count].name,
              sizeof(module->types[0].name), name);
+    module->types[module->type_count].is_public = 1;
     module->types[module->type_count].span = span;
     return &module->types[module->type_count++];
 }
@@ -667,6 +749,8 @@ StmtKindName(ZirStmtKind kind)
     case ZIR_STMT_UNUSED: return "unused";
     case ZIR_STMT_RAW: return "raw";
     case ZIR_STMT_BLOCK_CALL: return "block_call";
+    case ZIR_STMT_UNREACHABLE: return "unreachable";
+    case ZIR_STMT_MATCH: return "match";
     default: return "unknown";
     }
 }

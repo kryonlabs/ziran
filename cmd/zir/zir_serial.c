@@ -34,7 +34,7 @@ typedef struct Reader {
 #define SPAN_FIELD(type, name) \
     {offsetof(type, name), sizeof(((type *)0)->name), FIELD_SPAN}
 #define FIELD_COUNT(fields) (sizeof(fields) / sizeof((fields)[0]))
-#define ZIR_FORMAT_VERSION 4u
+#define ZIR_FORMAT_VERSION 10u
 
 static const Field state_fields[] = {
     STRING_FIELD(ZirStateField, name), STRING_FIELD(ZirStateField, type),
@@ -53,6 +53,8 @@ static const Field statement_fields[] = {
     INTEGER_FIELD(ZirStmt, kind), STRING_FIELD(ZirStmt, text),
     STRING_FIELD(ZirStmt, callee), STRING_FIELD(ZirStmt, args),
     INTEGER_FIELD(ZirStmt, declared_block_call),
+    INTEGER_FIELD(ZirStmt, is_else),
+    INTEGER_FIELD(ZirStmt, is_guard),
     INTEGER_FIELD(ZirStmt, expr_root),
     INTEGER_FIELD(ZirStmt, lhs_root), STRING_FIELD(ZirStmt, name),
     STRING_FIELD(ZirStmt, type), STRING_FIELD(ZirStmt, assignment_op),
@@ -77,6 +79,7 @@ static const Field function_fields[] = {
     INTEGER_FIELD(ZirFunction, is_extern), INTEGER_FIELD(ZirFunction, extern_kind),
     INTEGER_FIELD(ZirFunction, is_closure),
     INTEGER_FIELD(ZirFunction, is_public), INTEGER_FIELD(ZirFunction, checked),
+    INTEGER_FIELD(ZirFunction, is_generated),
     INTEGER_FIELD(ZirFunction, uses_host), STRING_FIELD(ZirFunction, extern_target),
     STRING_FIELD(ZirFunction, extern_symbol), STRING_FIELD(ZirFunction, guard),
     SPAN_FIELD(ZirFunction, span)
@@ -88,6 +91,7 @@ static const Field global_fields[] = {
 };
 static const Field define_fields[] = {
     STRING_FIELD(ZirDefine, name), STRING_FIELD(ZirDefine, value),
+    INTEGER_FIELD(ZirDefine, is_public),
     STRING_FIELD(ZirDefine, guard), SPAN_FIELD(ZirDefine, span)
 };
 static const Field assert_fields[] = {
@@ -97,7 +101,13 @@ static const Field assert_fields[] = {
 };
 static const Field type_fields[] = {
     STRING_FIELD(ZirType, name), STRING_FIELD(ZirType, body),
-    INTEGER_FIELD(ZirType, is_slot), INTEGER_FIELD(ZirType, is_enum),
+    STRING_FIELD(ZirType, variant_cases),
+    STRING_FIELD(ZirType, template_params),
+    INTEGER_FIELD(ZirType, is_slot), INTEGER_FIELD(ZirType, is_public),
+    INTEGER_FIELD(ZirType, is_enum),
+    INTEGER_FIELD(ZirType, is_variant),
+    INTEGER_FIELD(ZirType, is_variant_template),
+    INTEGER_FIELD(ZirType, is_record_template),
     INTEGER_FIELD(ZirType, is_extern), STRING_FIELD(ZirType, guard),
     SPAN_FIELD(ZirType, span)
 };
@@ -293,8 +303,14 @@ read_records(Reader *reader, int *count, size_t size,
 static int
 write_function(FILE *out, const ZirFunction *function)
 {
-    return write_fields(out, function, function_fields, FIELD_COUNT(function_fields)) &&
-           WRITE_ARRAY(out, function, captures, capture_count, capture_fields) &&
+    if(!write_fields(out, function, function_fields, FIELD_COUNT(function_fields)))
+        return 0;
+    /* A generated operation is a cache of the variant declaration, never
+     * authoritative code in a saved module. Keep its slot to preserve stable
+     * function order and regenerate its body when reading. */
+    if(function->is_generated)
+        return write_u32(out, 0) && write_u32(out, 0) && write_u32(out, 0);
+    return WRITE_ARRAY(out, function, captures, capture_count, capture_fields) &&
            WRITE_ARRAY(out, function, stmts, stmt_count, statement_fields) &&
            WRITE_ARRAY(out, function, exprs, expr_count, expression_fields);
 }
@@ -309,6 +325,7 @@ read_function(Reader *reader, ZirFunction *function)
     READ_ARRAY(reader, function, exprs, expr_count, expression_fields);
     function->stmt_cap = function->stmt_count;
     function->expr_cap = function->expr_count;
+    function->from_ir = 1;
     return 1;
 }
 
@@ -385,14 +402,50 @@ validate_program(const ZirProgram *program)
                module->imports[i].kind > ZIR_IMPORT_HOST ||
                module->imports[i].kind == 4) /* retired web intrinsic */
                 return 0;
+        for(int t = 0; t < module->type_count; t++) {
+            const ZirType *type = &module->types[t];
+            if((type->is_variant != 0 && type->is_variant != 1) ||
+               (type->is_variant_template != 0 &&
+                type->is_variant_template != 1) ||
+               (type->is_record_template != 0 &&
+                type->is_record_template != 1) ||
+               type->is_type_instance || type->template_name[0] ||
+               type->template_args[0] ||
+               (type->is_variant &&
+                (type->is_variant_template || type->is_record_template ||
+                 type->template_params[0] ||
+                 type->is_enum || type->is_slot || type->is_extern ||
+                 !type->variant_cases[0])) ||
+               (type->is_variant_template &&
+                (type->is_record_template || type->is_enum || type->is_slot ||
+                 type->is_extern ||
+                 !type->template_params[0] || !type->variant_cases[0] ||
+                 type->body[0])) ||
+               (type->is_record_template &&
+                (type->is_enum || type->is_slot || type->is_extern ||
+                 !type->template_params[0] || !type->body[0] ||
+                 type->variant_cases[0])) ||
+               (!type->is_variant && !type->is_variant_template &&
+                type->variant_cases[0]) ||
+               (!type->is_variant_template && !type->is_record_template &&
+                type->template_params[0]))
+                return 0;
+        }
         for(int f = 0; f < module->function_count; f++) {
             const ZirFunction *function = &module->functions[f];
-            if(!function->name[0])
+            if(!function->name[0] ||
+               (function->is_generated != 0 && function->is_generated != 1))
                 return 0;
             for(int s = 0; s < function->stmt_count; s++) {
                 const ZirStmt *statement = &function->stmts[s];
                 if(statement->kind <= ZIR_STMT_UNKNOWN ||
-                   statement->kind > ZIR_STMT_BLOCK_CALL ||
+                   statement->kind > ZIR_STMT_MATCH ||
+                   statement->kind == ZIR_STMT_MATCH ||
+                   (statement->is_else != 0 && statement->is_else != 1) ||
+                   (statement->is_guard != 0 && statement->is_guard != 1) ||
+                   (statement->is_else && statement->kind != ZIR_STMT_IF) ||
+                   (statement->is_guard && statement->kind != ZIR_STMT_IF) ||
+                   (statement->is_else && statement->is_guard) ||
                    !reference_valid(statement->expr_root, function->expr_count) ||
                    !reference_valid(statement->lhs_root, function->expr_count))
                     return 0;
@@ -405,8 +458,16 @@ validate_program(const ZirProgram *program)
                    !reference_valid(expression->right, function->expr_count) ||
                    !reference_valid(expression->first_child, function->expr_count) ||
                    !reference_valid(expression->next_sibling, function->expr_count) ||
-                   !reference_valid(expression->third, function->expr_count))
+                   !reference_valid(expression->third, function->expr_count) ||
+                   expression->left >= e || expression->right >= e ||
+                   expression->first_child >= e || expression->third >= e ||
+                   (expression->next_sibling >= 0 &&
+                    expression->next_sibling <= e))
                     return 0;
+                for(int child = expression->first_child; child >= 0;
+                    child = function->exprs[child].next_sibling)
+                    if(child >= e)
+                        return 0;
             }
         }
     }
@@ -477,6 +538,11 @@ ProgramRead(FILE *in, const char *path)
         reader.problem = "invalid checked IR structure";
         goto failed;
     }
+    for(int m = 0; m < program->module_count; m++)
+        if(!RegenerateVariantOperations(&program->modules[m])) {
+            reader.problem = "invalid generated variant operation";
+            goto failed;
+        }
     return program;
 failed:
     Diagnostic(Span(path, 1, 1), "zir.invalid", "%s",
@@ -535,6 +601,9 @@ CheckCanonicalPrograms(ZirProgram **programs, int count, int strict,
     }
     if(saved_count == 0)
         return CheckPrograms(programs, count, strict);
+    /* Saved IR is an executable typed artifact. Never let a native build's
+     * legacy source mode reinterpret its diagnostic statement text. */
+    strict = 1;
     before = tmpfile();
     after = tmpfile();
     if(before == NULL || after == NULL)

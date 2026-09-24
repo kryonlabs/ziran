@@ -48,10 +48,57 @@ subset auto-parallelizes or has a GPU backend. The implementation must be
 verified with deterministic reference behavior, parallel runs, and tests for
 data races and backend parity before being treated as supported.
 
+## Jai source syntax
+
+Ziran's source grammar targets Jai syntax. Polymorphic type declarations use
+`Box :: struct($T: Type) { value: T; }`, and named type values use
+`IntBox :: Box(s32)`. Bracketed declaration parameters and the `specialize`
+keyword are no longer accepted. The compiler is not yet a complete Jai parser:
+`variant`, payload `match`, postfix `?`, and several host directives are
+Ziran extensions. Direct type applications such as `Box(s32)` now work in
+record fields, function signatures, globals, and local declarations. These
+extensions are tracked as syntax gaps rather than described as Jai features.
+Type applications may nest, and whitespace around their arguments does not
+change the resulting type. Generic variant payloads may contain applied types.
+The expression parser accepts Jai `cast(Type) value` and `Type.{field = value}`.
+Array declarations accept `.[values]`. C-style casts and compound literals
+are rejected, including when strict checking is disabled.
+Source uses Jai primitive spellings `s8`, `s16`, `s32`, `s64`, `float32`, and
+`float64`; the compiler translates them to its existing IR types. The old
+`i8`/`i16`/`i32`/`i64`/`f32`/`f64`/`double` spellings are rejected in source.
+ASCII byte characters use `#char "A"`; single-quoted character literals are
+rejected.
+Raw pointer null values use Jai `null`; the old `nil` source spelling is
+rejected.
+Pointer expressions use Jai `*value` to take an address and `<<pointer` to
+read or write through a pointer. Unary C-style `&value` is rejected; binary
+`&` remains the bitwise operation.
+Member access through a record pointer uses `pointer.field`, with an implicit
+dereference. C-style `pointer->field` is rejected.
+Pointer type annotations use prefix `*Type`. C-style suffix `Type*` and
+`const` qualifiers are rejected in source and saved IR.
+Exported native symbols use Jai's standalone `#program_export` immediately
+before a function declaration. The old `#export` signature modifier is rejected.
+File-scope variables use `name: Type;` or `name: Type = value;`. The old
+`name :: Type #global` and C-style `static name: Type` forms are rejected.
+Visibility for following declarations uses Jai's `#scope_file`,
+`#scope_module`, and `#scope_export` directives. The old `#private` suffix is
+rejected. The current one-file-per-module model treats file and module scope
+the same for declarations in that file.
+Foreign procedures use `lib :: #system_library "lib";` and
+`Call :: (...) -> Ret #foreign lib;`. An alternate symbol may follow the
+library name in quotes. `#extern` is rejected in source. Ziran's `host_api`
+library name still denotes a host capability in its backends.
+Every source file derives its module name from its filename. The old
+`#module` directive is rejected. Enum branches use Jai's `if value == {
+case Type.Member; ... }` form; `#complete` requires every enum member and
+source `match` on enums is rejected.
+
 ## Evolution
 
 The language can grow without embedding one library's concepts in its core.
-Versioned `.zir`, `.zib`, library interfaces, and law results make changes
-explicit. Incompatible changes require clear diagnostics and a deliberate
-migration path. Reproducible compiler output and conformance suites let new
-backends and LLM-authored code be checked against the same semantics.
+While Ziran is experimental, source syntax, library APIs, `.zir`, and `.zib`
+have no backward-compatibility promise. Prefer a coherent language design over
+compatibility shims; version incompatible binary formats and reject old input
+with clear diagnostics. Reproducible compiler output and conformance suites let
+new backends and LLM-authored code be checked against the same semantics.

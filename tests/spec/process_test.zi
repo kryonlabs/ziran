@@ -1,0 +1,17 @@
+#import "process"
+
+#program_export
+SelfTest :: () -> s32 {
+    request: ProcessRequest
+    request.executable = "mock"
+    request.isolate_desktop = true
+    args: [1]string
+    args[0] = "arg"
+    started: ProcessStart = Start(request, args[:])
+    if started.error != "" || started.handle != 7 { return 1 }
+    line: ProcessLine = NextLine(started.handle)
+    if line.eof || line.text != "ready" { return 2 }
+    result: ProcessExit = Wait(started.handle)
+    if result.code != 0 { return 3 }
+    return 42
+}

@@ -61,13 +61,24 @@ $(BIN_DIR)/host-capability-test: tests/host_capability_test.c $(BUILD_DIR)/libzi
 $(BIN_DIR)/record-host-test: tests/record_host_test.c $(BUILD_DIR)/libziran.a | $(BIN_DIR)
 	$(CC) -D_GNU_SOURCE -std=c11 -Iinclude -o $@ tests/record_host_test.c $(BUILD_DIR)/libziran.a
 
+$(BIN_DIR)/process-host-test: tests/process_host_test.c $(BUILD_DIR)/libziran.a | $(BIN_DIR)
+	$(CC) -D_GNU_SOURCE -std=c11 -Iinclude -o $@ tests/process_host_test.c $(BUILD_DIR)/libziran.a
+
 $(BIN_DIR)/slice-host-test: tests/host_slice_test.c $(BUILD_DIR)/libziran.a | $(BIN_DIR)
 	$(CC) -D_GNU_SOURCE -std=c11 -Iinclude -o $@ tests/host_slice_test.c $(BUILD_DIR)/libziran.a
 
-check: all $(BIN_DIR)/bundle-link-test $(BIN_DIR)/host-capability-test $(BIN_DIR)/record-host-test $(BIN_DIR)/slice-host-test
+check: all $(BIN_DIR)/bundle-link-test $(BIN_DIR)/host-capability-test $(BIN_DIR)/record-host-test $(BIN_DIR)/slice-host-test $(BIN_DIR)/process-host-test
 	$(BIN_DIR)/bundle-link-test
 	sh tests/standalone.sh $(BIN_DIR)/ziran
 	sh tests/portable_strings.sh $(BIN_DIR)/ziran
+	sh tests/unreachable.sh $(BIN_DIR)/ziran
+	sh tests/match.sh $(BIN_DIR)/ziran
+	sh tests/variant.sh $(BIN_DIR)/ziran
+	sh tests/generic_variant.sh $(BIN_DIR)/ziran
+	sh tests/std_text.sh $(BIN_DIR)/ziran
+	sh tests/std_utf8.sh $(BIN_DIR)/ziran
+	sh tests/json_scan.sh $(BIN_DIR)/ziran
+	sh tests/process.sh $(BIN_DIR)/ziran $(BIN_DIR)/process-host-test
 	sh tests/portable_i64.sh $(BIN_DIR)/ziran
 	sh tests/portable_arrays.sh $(BIN_DIR)/ziran
 	sh tests/portable_slices.sh $(BIN_DIR)/ziran

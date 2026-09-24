@@ -6,7 +6,6 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/strings.zi" <<'EOF'
-#module "strings"
 
 Greeting :: "hello \"Ziran\""
 GreetingAlias :: Greeting
@@ -20,16 +19,17 @@ Same :: (left: string, right: string) -> bool {
     return left == right
 }
 
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     if Greeting != "hello \"Ziran\"" || GreetingAlias != Greeting { return 0 }
     if Greeting.length != 13 { return 0 }
     empty: string
     if empty.length != 0 || empty != "" { return 0 }
     text: string = "a\u00e9\x00z"
     if text.length != 5 { return 0 }
-    if text[0] != (u8)97 || text[1] != (u8)0xc3 ||
-       text[2] != (u8)0xa9 || text[3] != (u8)0 ||
-       text[4] != (u8)122 { return 0 }
+    if text[0] != cast(u8)97 || text[1] != cast(u8)0xc3 ||
+       text[2] != cast(u8)0xa9 || text[3] != cast(u8)0 ||
+       text[4] != cast(u8)122 { return 0 }
     pair: Pair
     pair.first = text
     pair.second = "a\u00e9\x00z"
@@ -91,10 +91,10 @@ CPP
 done
 
 cat > "$work/bad_index.zi" <<'EOF'
-#module "bad_index"
-Answer :: () -> i32 #export {
+#program_export
+Answer :: () -> s32 {
     text: string = "a"
-    return (i32)text[1]
+    return cast(s32)text[1]
 }
 EOF
 "$ziran" bundle --root "$work" --entry bad_index:Answer \

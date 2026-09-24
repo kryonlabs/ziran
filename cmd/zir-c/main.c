@@ -21,7 +21,7 @@ static void
 usage(void)
 {
     fprintf(stderr,
-            "usage: zir_c [--strict] [--no-main] [--plan9] [--include-dir DIR] "
+            "usage: zi2c [--strict] [--no-main] [--plan9] [--include-dir DIR] "
             "[--diagnostics=text|json] [--module-path DIR] --root DIR -o DIR file.zi|file.zir ...\n");
 }
 
