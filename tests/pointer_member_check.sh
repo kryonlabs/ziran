@@ -28,7 +28,7 @@ Write :: (node: Node*, value: i32) -> i32 #export {
     if node == nil { return -1 }
     node->value = value
     node->child.value = value + 1
-    return node->value + node->child.value
+    return Read(node)
 }
 Forward :: (node: Node*) -> Node* #export {
     return node
@@ -103,6 +103,44 @@ done
 if "$bin/zi2zib" bundle --root "$work" --entry read:Write \
     -o "$work/read.zib" "$work/read.zi" 2>"$work/bundle.err"; then
     echo "native pointer entered portable bundle" >&2
+    exit 1
+fi
+
+cat > "$work/const_bad.zi" <<'ZI'
+#module "const_bad"
+#import "types"
+Mutate :: (node: Node*) -> i32 {
+    node->value = 1
+    return node->value
+}
+Bad :: (node: const Node*) -> i32 {
+    return Mutate(node)
+}
+ZI
+if "$compiler" --check-only --root "$work" "$work/const_bad.zi" \
+    >"$work/out" 2>"$work/err"; then
+    echo "const record pointer passed to mutable parameter" >&2
+    exit 1
+fi
+grep -q 'argument type mismatch: Mutate' "$work/err"
+
+cat > "$work/nested_bad.zi" <<'ZI'
+#module "nested_bad"
+#import "types"
+ReadNested :: (node: const Node**) -> i32 {
+    return 1
+}
+BadNested :: (node: Node**) -> i32 {
+    return ReadNested(node)
+}
+ZI
+if "$compiler" --check-only --root "$work" "$work/nested_bad.zi" \
+    >"$work/out" 2>"$work/err"; then
+    echo "mutable double pointer passed to const double pointer" >&2
+    exit 1
+fi
+if ! grep -q 'argument type mismatch: ReadNested' "$work/err"; then
+    cat "$work/err" >&2
     exit 1
 fi
 

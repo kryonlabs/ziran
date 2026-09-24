@@ -181,6 +181,14 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   checker rejects untyped `nil` bindings and scalar assignments. Legacy
   `char*`/`const char*` still map to Go strings, so nullable text pointers are
   not supported across targets. Raw pointers remain outside `.zib`.
+- The shared checker resolves `record_pointer->field` against declared record
+  fields, including imported records, and reports unknown fields. Checked
+  pointer-member reads and writes now emit from source and saved `.zir` on
+  native C, C++, and Go, including nested fields and computed pointer bases.
+  A mutable `T*` may be passed to a `const T*` parameter at one pointer level;
+  the reverse direction and nested pointer conversion are rejected.
+  Raw pointers remain outside `.zib`; address and dereference operations and
+  broader host-bound native bodies still need checked lowering.
 - The inherited `#intrinsic "web"` modifier and its two name-based browser
   shims are gone. Browser behavior now requires an explicit host or target
   extern. C/C++ output no longer injects Kryon's inspection header for

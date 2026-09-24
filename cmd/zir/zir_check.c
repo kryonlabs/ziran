@@ -389,6 +389,16 @@ compatible(const char *to, const char *from)
     if(!strcmp(to, "null") && !strcmp(from, "null")) return 0;
     if(!strcmp(to, from)) return 1;
     if(!strcmp(from, "null")) return pointer_type(to);
+    /* A mutable pointer may be read through a const pointee. Keep this at
+     * one pointer level: T** to const T** would permit unsafe writes. */
+    if(!strncmp(to, "const ", 6)) {
+        const char *pointee = skip_ws(to + 6);
+        const char *star = strchr(pointee, '*');
+        if(star != NULL && star == strrchr(pointee, '*') &&
+           !*skip_ws(star + 1) && pointer_type(pointee) &&
+           !strcmp(pointee, from))
+            return 1;
+    }
     if(SliceElementType(to, NULL, 0) || SliceElementType(from, NULL, 0)) {
         char a[ZIR_NAME_MAX], b[ZIR_NAME_MAX];
         if(!SliceElementType(to, a, sizeof(a)) || !SliceElementType(from, b, sizeof(b)))
