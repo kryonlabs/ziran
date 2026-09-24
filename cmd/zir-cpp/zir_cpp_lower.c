@@ -420,8 +420,8 @@ rewrite_body2(const ZirModule *m, const ZirCppModuleSyms *restab,
                !(p > src + 1 && p[-1] == '>' && p[-2] == '-') &&
                ((*e == '-' && e[1] == '>') || *e == '.')) {
                 /* 'name->' / 'name.' — a variable access, not a function
-                 * reference ('habits->count' must never resolve against a
-                 * screen named 'habits'). Skip resolution; fall through. */
+                 * reference ('item->count' must never resolve against a
+                 * module named 'item'). Skip resolution; fall through. */
             } else if(!name_is_shadowed(shadow, p, (size_t)(e - p)) &&
                !(p > src && p[-1] == '.') &&
                !(p > src + 1 && p[-1] == '>' && p[-2] == '-') &&

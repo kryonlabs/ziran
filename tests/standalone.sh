@@ -98,6 +98,19 @@ TextFieldProps :: struct {
 TableViewProps :: struct {
     copy_text: string
 }
+Canvas :: struct {
+    value: i32
+}
+CanvasResult :: struct {
+    value: i32
+}
+tree_calls :: i32 #global
+BeginTree :: () #export {
+    tree_calls += 1
+}
+EndTree :: () #export {
+    tree_calls += 1
+}
 NumericFloat :: () -> i32 #export {
     return 20
 }
@@ -114,7 +127,14 @@ Answer :: () -> i32 #export {
     table.copy_text = "hello"
     if modal.text.length != 5 || field.text.length != field.text_size ||
         table.copy_text.length != 5 { return 0 }
-    return NumericFloat() + DragSingle()
+    tree_calls = 0
+    BeginTree()
+    EndTree()
+    canvas: Canvas
+    canvas.value = NumericFloat() + DragSingle() - 2
+    result: CanvasResult
+    result.value = canvas.value + tree_calls
+    return result.value
 }
 EOF
 "$ziran" ir --root "$work" -o "$work/ordinary-ir" \
@@ -143,6 +163,12 @@ for input in "$work/ordinary_names.zi" "$work/ordinary-ir/ordinary_names.zir"; d
             exit 1
         fi
     done
+done
+for input in "$work/ordinary_names.zi" "$work/ordinary-ir/ordinary_names.zir"; do
+    output="$work/ordinary-$(basename "$input").zib"
+    "$ziran" bundle --root "$work" --entry ordinary_names:Answer \
+        -o "$output" "$input"
+    test "$("$ziran" run "$output")" = 42
 done
 
 cat > "$work/pointer_record.zi" <<'EOF'
@@ -961,6 +987,18 @@ if "$ziran" check --root "$work" "$work/unknown_top_level.zi" \
     exit 1
 fi
 grep -Fq 'invalid top-level declaration' "$work/unknown_top_level.err"
+
+cat > "$work/unknown_app.zi" <<'EOF'
+#module "unknown_app"
+app main {
+}
+EOF
+if "$ziran" check --root "$work" "$work/unknown_app.zi" \
+    2> "$work/unknown_app.err"; then
+    echo 'old app block unexpectedly passed in Ziran' >&2
+    exit 1
+fi
+grep -Fq 'invalid top-level declaration' "$work/unknown_app.err"
 
 cat > "$work/intrinsic_mode.zi" <<'EOF'
 #module "intrinsic_mode"

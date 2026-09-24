@@ -188,12 +188,15 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 - UI tree and DOM property fields have been removed from the statement IR.
   App, route, style, and inspector metadata have been removed from the IR and
   backend entry paths. Generic calls named `Image` and record block calls
-  named `Button` are covered by standalone tests. The extracted implementation
-  still has other UI-era paths.
+  named `Button` are covered by standalone tests. The Go backend no longer
+  drops standalone `BeginTree` and `EndTree` calls or maps `Canvas` and
+  `CanvasResult` by name. The parser no longer recognizes old `app` and
+  `route` block words. Source, saved-IR, and portable bundle tests cover
+  these names as ordinary declarations and calls.
 
 ## Still required
 
-- Remove the remaining UI-specific parser, checker, IR, and backend paths.
+- Audit parser, checker, IR, and backend paths for remaining UI assumptions.
   Finish general typed block calls, callable child slots, and imports for
   ordinary libraries. Named result binding now works for the tested typed
   record call, and one synchronous captured child slot works in native targets

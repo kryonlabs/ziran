@@ -333,7 +333,7 @@ classify_stmt(const char *s)
                 return ZIR_STMT_DECL;
     }
     /* An '=' inside a call's compound literal is a designated initializer,
-     * not an assignment statement (TextField((Props){.text = value})). */
+     * not an assignment statement (Make((Props){.value = input})). */
     {
         int depth = 0;
         int quote = 0;
@@ -1607,7 +1607,7 @@ cond_top_step(char *line, ZirCondFrame *frames, int *count, char *guard,
     return 0;
 }
 
-/* A sub-mode (state/app/type/enum/function) consumed exactly one net '{'
+/* A sub-mode (state/type/enum/function) consumed exactly one net '{'
  * from the enclosing region — settle the frame count. */
 static void
 cond_frame_settle(ZirCondFrame *frames, int count)
@@ -1817,7 +1817,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                     w0[wl++] = *w;
                 w0[wl] = '\0';
                 /* Keyword headers must be followed by ' ', '(' or '{':
-                 * 'app->x = ...' / 'state.x' are member statements, not
+                 * 'item->x = ...' / 'state.x' are member statements, not
                  * block headers (their compound-literal braces are
                  * expression braces). */
                 {
@@ -1853,9 +1853,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                           strcmp(w0, "default") == 0 ||
                           strcmp(w0, "struct") == 0 ||
                           strcmp(w0, "enum") == 0 ||
-                          strcmp(w0, "state") == 0 ||
-                          strcmp(w0, "route") == 0 ||
-                          strcmp(w0, "app") == 0));
+                          strcmp(w0, "state") == 0));
                 }
                 /* K&R "} else {" / "} else if (...) {": the leading '}' closes
                  * the if-body and the trailing '{' re-opens the else-body, so

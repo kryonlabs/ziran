@@ -166,8 +166,6 @@ go_type(const char *type, char *dst, size_t dst_size)
         {"int64", "int64"}, {"float32", "float32"}, {"float64", "float64"},
         {"void*", "*byte"}, {"const void*", "*byte"},
         {"void", ""},
-        {"Canvas", "Canvas"},
-        {"CanvasResult", "CanvasResult"},
         {NULL, NULL}
     };
     char t[ZIR_GO_NAME_MAX];
@@ -400,16 +398,6 @@ go_build_global_functions(const ZirProgram *const *progs, int prog_count)
 /* ------------------------------------------------ module lowering context */
 
 static int split_top(const char *s, char parts[][ZIR_GO_TEXT_MAX], int max);
-
-static int
-go_is_go_elided_lifecycle(const char *text)
-{
-    const char *p = skip_ws(text);
-
-    return strncmp(p, "BeginTree", 9) == 0 && skip_ws(p + 9)[0] == '('
-        ? 1
-        : (strncmp(p, "EndTree", 7) == 0 && skip_ws(p + 7)[0] == '(');
-}
 
 /* One '#extern' declaration bridged to a Go host method. */
 typedef struct {
@@ -2013,11 +2001,7 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
         if(st->kind == ZIR_STMT_IF || st->kind == ZIR_STMT_WHILE ||
            st->kind == ZIR_STMT_FOR || st->kind == ZIR_STMT_SWITCH)
             strip_block_brace(raw);
-        if(st->kind == ZIR_STMT_EXPR && go_is_go_elided_lifecycle(raw)) {
-            rw[0] = '\0';
-        } else {
-            tx_expr(m, raw, rw, sizeof(rw));
-        }
+        tx_expr(m, raw, rw, sizeof(rw));
         switch(st->kind) {
         case ZIR_STMT_BLOCK_OPEN:
             emit_indent(f, indent++);
