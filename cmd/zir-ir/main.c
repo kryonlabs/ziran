@@ -14,7 +14,7 @@
 static void
 usage(void)
 {
-    fprintf(stderr, "usage: ziran ir [--diagnostics=text|json] [--module-path DIR] --root DIR -o DIR file.zi|file.zir ...\n");
+    fprintf(stderr, "usage: zi2zir [--diagnostics=text|json] [--module-path DIR] --root DIR -o DIR file.zi|file.zir ...\n");
 }
 
 static int

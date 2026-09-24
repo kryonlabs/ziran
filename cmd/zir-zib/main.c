@@ -16,8 +16,8 @@ static void
 usage(void)
 {
     fprintf(stderr,
-            "usage: ziran bundle [--module-path DIR] --root DIR --entry module:function -o FILE file.zi|file.zir ...\n"
-            "       ziran run file.zib\n");
+            "usage: zi2zib bundle [--module-path DIR] --root DIR --entry module:function -o FILE file.zi|file.zir ...\n"
+            "       zi2zib run file.zib\n");
 }
 
 static int

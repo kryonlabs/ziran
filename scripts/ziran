@@ -13,17 +13,17 @@ test "$#" -gt 0 || usage
 command=$1
 shift
 case "$command" in
-    check) exec "$bin_dir/ziran-ir" --check-only "$@" ;;
-    ir) exec "$bin_dir/ziran-ir" "$@" ;;
+    check) exec "$bin_dir/zi2zir" --check-only "$@" ;;
+    ir) exec "$bin_dir/zi2zir" "$@" ;;
     fmt) exec "$bin_dir/zi-fmt" "$@" ;;
-    bundle) exec "$bin_dir/ziran-zib" bundle "$@" ;;
-    run) exec "$bin_dir/ziran-zib" run "$@" ;;
+    bundle) exec "$bin_dir/zi2zib" bundle "$@" ;;
+    run) exec "$bin_dir/zi2zib" run "$@" ;;
     build)
         test "$#" -gt 0 || usage
         case "$1" in
-            --target=c) shift; exec "$bin_dir/ziran-c" --no-main "$@" ;;
-            --target=go) shift; exec "$bin_dir/ziran-go" --no-main "$@" ;;
-            --target=cpp) shift; exec "$bin_dir/ziran-cpp" --no-main "$@" ;;
+            --target=c) shift; exec "$bin_dir/zi2c" --no-main "$@" ;;
+            --target=go) shift; exec "$bin_dir/zi2go" --no-main "$@" ;;
+            --target=cpp) shift; exec "$bin_dir/zi2cpp" --no-main "$@" ;;
             *) usage ;;
         esac
         ;;

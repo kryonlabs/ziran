@@ -1,5 +1,5 @@
 /*
- * ziran-go - .zi -> native Go compiler. Uses the shared Ziran frontend.
+ * zi2go - .zi -> native Go compiler. Uses the shared Ziran frontend.
  */
 #include "zir.h"
 #include "zir_parse.h"
@@ -19,7 +19,7 @@ static void
 usage(void)
 {
     fprintf(stderr,
-            "usage: ziran-go [--strict] [--no-main] [--minify] [--pkg NAME] "
+            "usage: zi2go [--strict] [--no-main] [--minify] [--pkg NAME] "
             "[--diagnostics=text|json] [--module-path DIR] --root DIR -o DIR file.zi|file.zir ...\n");
 }
 

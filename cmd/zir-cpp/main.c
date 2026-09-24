@@ -1,5 +1,5 @@
 /*
- * ziran-cpp - .zi -> C++ compiler. Zir is the shared frontend: every .zi parses
+ * zi2cpp - .zi -> C++ compiler. Zir is the shared frontend: every .zi parses
  * into a ZirProgram and lowers to C++ source. All inputs are loaded before
  * cross-module symbol resolution.
  */
@@ -20,7 +20,7 @@ static void
 usage(void)
 {
     fprintf(stderr,
-            "usage: ziran-cpp [--strict] [--no-main] "
+            "usage: zi2cpp [--strict] [--no-main] "
             "[--diagnostics=text|json] [--module-path DIR] --root DIR -o DIR file.zi|file.zir ...\n");
 }
 
@@ -79,7 +79,7 @@ main(int argc, char **argv)
     progs = set.programs;
     syms = calloc((size_t)file_count, sizeof(*syms));
     if(syms == NULL) {
-        fprintf(stderr, "ziran-cpp: out of memory\n");
+        fprintf(stderr, "zi2cpp: out of memory\n");
         ProgramsFree(&set);
         return 1;
     }

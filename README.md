@@ -25,6 +25,9 @@ documents distinguish the current format from the intended contracts.
 Run `make` to build the current toolchain and `make check` for its language,
 backend, and portable bundle tests. `build/bin/ziran` exposes `check`, `ir`, `fmt`,
 `build --target=c|cpp|go`, `bundle`, and `run`.
+The direct compiler tools are `zi2zir`, `zi2c`, `zi2cpp`, `zi2go`, and
+`zi2zib`; `zi-fmt` formats source. The `ziran` command dispatches to these
+tools.
 
 For ordinary imports, pass the entry file and a library directory with
 `--module-path DIR` (repeat for multiple directories). `check`, `ir`,

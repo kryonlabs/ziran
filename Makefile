@@ -16,7 +16,7 @@ LIB_SOURCES := $(FRONTEND) $(PORTABLE) cmd/zir/zir_host.c
 LIB_OBJECTS := $(patsubst cmd/zir/%.c,$(BUILD_DIR)/obj/%.o,$(LIB_SOURCES))
 
 .PHONY: all check clean
-all: $(BIN_DIR)/ziran $(BIN_DIR)/zi-fmt $(BIN_DIR)/ziran-ir $(BIN_DIR)/ziran-c $(BIN_DIR)/ziran-go $(BIN_DIR)/ziran-cpp $(BIN_DIR)/ziran-zib $(BUILD_DIR)/libziran.a
+all: $(BIN_DIR)/ziran $(BIN_DIR)/zi-fmt $(BIN_DIR)/zi2zir $(BIN_DIR)/zi2c $(BIN_DIR)/zi2go $(BIN_DIR)/zi2cpp $(BIN_DIR)/zi2zib $(BUILD_DIR)/libziran.a
 
 $(BUILD_DIR)/obj/%.o: cmd/zir/%.c $(HEADERS)
 	mkdir -p $(dir $@)
@@ -36,20 +36,20 @@ $(BIN_DIR)/zi-fmt: scripts/zi-fmt.sh | $(BIN_DIR)
 	cp $< $@
 	chmod +x $@
 
-$(BIN_DIR)/ziran-ir: cmd/zir-ir/main.c $(FRONTEND) $(HEADERS) | $(BIN_DIR)
+$(BIN_DIR)/zi2zir: cmd/zir-ir/main.c $(FRONTEND) $(HEADERS) | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ cmd/zir-ir/main.c $(FRONTEND)
 
-$(BIN_DIR)/ziran-c: $(wildcard cmd/zir-c/*.c) $(FRONTEND) $(HEADERS) | $(BIN_DIR)
+$(BIN_DIR)/zi2c: $(wildcard cmd/zir-c/*.c) $(FRONTEND) $(HEADERS) | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ cmd/zir-c/main.c cmd/zir-c/zir_c_lower.c \
 	    cmd/zir-c/zir_c_plan9.c $(FRONTEND)
 
-$(BIN_DIR)/ziran-go: cmd/zir-go/main.c cmd/zir-go/zir_go_lower.c $(FRONTEND) $(HEADERS) | $(BIN_DIR)
+$(BIN_DIR)/zi2go: cmd/zir-go/main.c cmd/zir-go/zir_go_lower.c $(FRONTEND) $(HEADERS) | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ cmd/zir-go/main.c cmd/zir-go/zir_go_lower.c $(FRONTEND)
 
-$(BIN_DIR)/ziran-cpp: cmd/zir-cpp/main.c cmd/zir-cpp/zir_cpp_lower.c $(FRONTEND) $(HEADERS) | $(BIN_DIR)
+$(BIN_DIR)/zi2cpp: cmd/zir-cpp/main.c cmd/zir-cpp/zir_cpp_lower.c $(FRONTEND) $(HEADERS) | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ cmd/zir-cpp/main.c cmd/zir-cpp/zir_cpp_lower.c $(FRONTEND)
 
-$(BIN_DIR)/ziran-zib: cmd/zir-zib/main.c $(BUILD_DIR)/libziran.a $(HEADERS) | $(BIN_DIR)
+$(BIN_DIR)/zi2zib: cmd/zir-zib/main.c $(BUILD_DIR)/libziran.a $(HEADERS) | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ cmd/zir-zib/main.c $(BUILD_DIR)/libziran.a
 
 $(BIN_DIR)/bundle-link-test: tests/bundle_link_test.c $(FRONTEND) $(PORTABLE) $(HEADERS) | $(BIN_DIR)

@@ -1,5 +1,5 @@
 /*
- * ziran-c - .zi -> C compiler. Zir is the shared frontend: every .zi parses
+ * zi2c - .zi -> C compiler. Zir is the shared frontend: every .zi parses
  * into a ZirProgram (zir_parse.c) and lowers to C (zir_c_lower.c). All inputs
  * are parsed first so cross-module calls resolve through one symbol table.
  */
@@ -86,7 +86,7 @@ main(int argc, char **argv)
     progs = set.programs;
     syms = calloc((size_t)file_count, sizeof(*syms));
     if(syms == NULL) {
-        fprintf(stderr, "ziran-c: out of memory\n");
+        fprintf(stderr, "zi2c: out of memory\n");
         ProgramsFree(&set);
         return 1;
     }
@@ -114,7 +114,7 @@ main(int argc, char **argv)
          * native build compiles out; the in-guest compile is the final
          * arbiter, so warn rather than fail. */
         fprintf(stderr,
-                "ziran-c: --plan9 left %d __auto_type declarations unresolved "
+                "zi2c: --plan9 left %d __auto_type declarations unresolved "
                 "(guarded code compiles out; the rest must be resolvable)\n",
                 unresolved);
     }
