@@ -1317,6 +1317,9 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
         } else if(imp->kind == ZIR_IMPORT_MODULE)
             fprintf(h, "#include \"%s.h\"\n", imp->target);
     }
+    /* C modules can be embedded by C++ hosts; their exported symbols must
+     * retain C linkage when the generated header is included by C++. */
+    fputs("\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n", h);
     /* Kry constants first: headers reference them in
      * array bounds and extern declarations, and other modules use them
      * through the generated header -- a .c-only emission starves those. */
@@ -1524,7 +1527,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
                 cret[0] ? cret : "void", cname, cargs);
         emit_guard_close(h, fn->guard);
     }
-    fprintf(h, "\n#endif /* %s */\n", guard);
+    fprintf(h, "\n#ifdef __cplusplus\n}\n#endif\n\n#endif /* %s */\n", guard);
     fclose(h);
 
     /* --- source --- */
