@@ -105,6 +105,27 @@ GO
 done
 cmp "$work/source.zib" "$work/saved.zib"
 
+# A library can expose a foreign slice parameter without any Ziran function
+# body. Its generated native header must still declare Slice.
+cat > "$work/foreign_only.zi" <<'ZI'
+host_api :: #system_library "host_api";
+Fill :: (values: []u8) -> s32 #foreign host_api;
+ZI
+for target in c cpp; do
+    output=$work/foreign-only-$target
+    "$ziran" build --target="$target" --strict --root "$work" \
+        -o "$output" "$work/foreign_only.zi"
+    if test "$target" = c; then
+        "${CC:-cc}" -std=c11 -I"$output" \
+            -I"$(dirname "$ziran")/../../include" -c \
+            "$output/foreign_only.c" -o "$output/foreign_only.o"
+    else
+        "${CXX:-c++}" -std=c++17 -I"$output" \
+            -I"$(dirname "$ziran")/../../include" -c \
+            "$output/foreign_only.cpp" -o "$output/foreign_only.o"
+    fi
+done
+
 cat > "$work/bad_return.zi" <<'ZI'
 host_api :: #system_library "host_api";
 Borrow :: () -> []u8 #foreign host_api;

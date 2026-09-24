@@ -36,6 +36,14 @@ ArrayValueType(const char *type)
 int
 ModuleUsesSlices(const ZirModule *module)
 {
+    for(int i = 0; i < module->import_count; i++) {
+        const ZirImport *imp = &module->imports[i];
+        if((imp->kind == ZIR_IMPORT_EXTERN ||
+            imp->kind == ZIR_IMPORT_CAPABILITY) &&
+           (SliceElementType(imp->return_type, NULL, 0) ||
+            strstr(imp->args, "[]") != NULL))
+            return 1;
+    }
     for(int i = 0; i < module->function_count; i++) {
         const ZirFunction *fn = &module->functions[i];
         if(SliceElementType(fn->return_type, NULL, 0) || strstr(fn->args, "[]") != NULL)
