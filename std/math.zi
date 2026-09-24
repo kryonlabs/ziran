@@ -1,0 +1,39 @@
+# Portable float32 helpers for native and bundled Ziran programs.
+#program_export
+Finite32 :: (value: float32) -> bool {
+    limit: float32 = 3.402823e38
+    return value == value && value <= limit && value >= -limit
+}
+
+#program_export
+FloorInteger :: (value: float32) -> s32 {
+    whole: s32 = cast(s32)value
+    if cast(float32)whole > value { return whole - 1 }
+    return whole
+}
+
+#program_export
+CeilInteger :: (value: float32) -> s32 {
+    whole: s32 = cast(s32)value
+    if cast(float32)whole < value { return whole + 1 }
+    return whole
+}
+
+# Reduce to [-pi/2, pi/2] before the Taylor polynomial.
+#program_export
+SineDegrees :: (degrees: float32) -> float32 {
+    degrees -= cast(float32)(cast(s32)(degrees / 360.0)) * 360.0
+    if degrees > 180.0 { degrees -= 360.0 }
+    if degrees < -180.0 { degrees += 360.0 }
+    if degrees > 90.0 { degrees = 180.0 - degrees }
+    if degrees < -90.0 { degrees = -180.0 - degrees }
+    x: float32 = degrees * 0.01745329252
+    square: float32 = x * x
+    return x * (1.0 - square * (0.1666666667 - square *
+        (0.0083333333 - square * (0.0001984127 - square * 0.0000027557))))
+}
+
+#program_export
+CosineDegrees :: (degrees: float32) -> float32 {
+    return SineDegrees(degrees + 90.0)
+}

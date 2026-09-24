@@ -1,0 +1,23 @@
+#import "math"
+
+Near :: (actual: float32, expected: float32) -> bool {
+    delta: float32 = actual - expected
+    if delta < 0.0 { delta = -delta }
+    return delta < 0.0002
+}
+
+#program_export
+main :: () -> s32 {
+    if !Finite32(0.0) || !Finite32(3.0) { return 1 }
+    if FloorInteger(-1.25) != -2 || CeilInteger(-1.25) != -1 ||
+        FloorInteger(1.25) != 1 || CeilInteger(1.25) != 2 {
+        return 2
+    }
+    if !Near(SineDegrees(0.0), 0.0) ||
+        !Near(SineDegrees(90.0), 1.0) ||
+        !Near(SineDegrees(-90.0), -1.0) ||
+        !Near(CosineDegrees(180.0), -1.0) {
+        return 3
+    }
+    return 0
+}
