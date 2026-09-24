@@ -54,14 +54,14 @@ including Kryon's geometry, layout, and popup ownership tests. Synchronous
 callable slots with captured locals and imported named functions run from
 source and saved IR. Fixed arrays with numeric or resolved named capacities support defaults,
 positional literals, element reads and writes, and value copies, including
-arrays inside imported records. Indexing is bounds-checked. Version 2 is
+nested arrays and `char` arrays inside imported records. Indexing is bounds-checked. Version 2 is
 experimental and has no compatibility promise. Host calls with pointers,
 arrays, or slots remain unsupported. Default-initialized module globals of
 portable value types work within one `BundleRun`; each call starts with fresh
 global values. `BundleInstantiate` creates an instance whose globals persist
 across `BundleInstanceRun` calls. Explicit global initializers, complete
 graphical runtime integration, slice fields/globals/host returns and record slice parameters,
-unresolved or nested fixed arrays,
+unresolved fixed-array bounds,
 module state, `for`, and `switch` remain unsupported.
 
 Local slices may borrow fixed arrays or other slices, cross ordinary Ziran

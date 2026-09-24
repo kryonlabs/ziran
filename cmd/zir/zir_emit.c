@@ -123,6 +123,7 @@ TargetType(const char *type, ZirTarget target)
         {"u32", "uint32_t", "uint32"}, {"u64", "uint64_t", "uint64"},
         {"f32", "float", "float32"}, {"f64", "double", "float64"},
         {"bool", "bool", "bool"}, {"void", "void", ""},
+        {"char", "char", "byte"},
         {"string", "String", "string"},
         {"const char*", "const char*", "string"}, {NULL, NULL, NULL}
     };

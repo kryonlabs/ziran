@@ -163,7 +163,8 @@ value_kind(const char *type)
     if(strcmp(type, "i32") == 0 || strcmp(type, "int") == 0 ||
        strcmp(type, "integer") == 0 || strcmp(type, "bool") == 0 ||
        strcmp(type, "u32") == 0 || strcmp(type, "u8") == 0 ||
-       strcmp(type, "u64") == 0 || strcmp(type, "i64") == 0)
+       strcmp(type, "u64") == 0 || strcmp(type, "i64") == 0 ||
+       strcmp(type, "char") == 0)
         return VALUE_INT;
     if(strcmp(type, "float") == 0 || strcmp(type, "f32") == 0 ||
        strcmp(type, "double") == 0 || strcmp(type, "f64") == 0 ||
@@ -337,7 +338,7 @@ portable_type_at(const ZirModule *module, const char *type, int depth)
     }
     if(ArrayElementType(type, element, sizeof(element), &capacity)) {
         const ZirType *element_type = FindType(module, element, NULL);
-        return capacity > 0 && element[0] != '[' &&
+        return capacity > 0 &&
                (element_type == NULL || !element_type->is_slot) &&
                (size_t)capacity <= VM_MAX_ARRAY_BYTES / sizeof(Value) &&
                portable_type_at(module, element, depth + 1);
@@ -734,7 +735,7 @@ default_value(Vm *vm, const ZirModule *module, const char *type, int depth)
     if(SliceElementType(type, element, sizeof(element)))
         return (Value){.kind = VALUE_SLICE};
     if(ArrayElementType(type, element, sizeof(element), &capacity)) {
-        if(depth >= VM_MAX_DEPTH || capacity <= 0 || element[0] == '[') {
+        if(depth >= VM_MAX_DEPTH || capacity <= 0) {
             vm->failed = 1;
             return int_value(0);
         }
@@ -860,6 +861,7 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
     if(value.kind == VALUE_REAL) {
         int unsigned_type = strcmp(type, "u32") == 0 ||
                             strcmp(type, "u8") == 0 ||
+                            strcmp(type, "char") == 0 ||
                             strcmp(type, "u64") == 0;
         double lower = unsigned_type ? 0.0 :
                        strcmp(type, "i64") == 0 ? -9223372036854775808.0 :
@@ -870,7 +872,8 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
                        9223372036854775808.0 :
                        strcmp(type, "u32") == 0 ?
                        (double)UINT32_MAX + 1.0 :
-                       strcmp(type, "u8") == 0 ? 256.0 :
+                       (strcmp(type, "u8") == 0 ||
+                        strcmp(type, "char") == 0) ? 256.0 :
                        (double)INT32_MAX + 1.0;
         if(!isfinite(value.real) || value.real < lower ||
            value.real >= upper) {
@@ -883,7 +886,7 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
             return int_value((int64_t)value.real);
         if(strcmp(type, "u32") == 0)
             return int_value((uint32_t)value.real);
-        if(strcmp(type, "u8") == 0)
+        if(strcmp(type, "u8") == 0 || strcmp(type, "char") == 0)
             return int_value((uint8_t)value.real);
         return int_value((int32_t)value.real);
     }
@@ -894,7 +897,7 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
     uint32_t bits = (uint32_t)integer_bits(value);
     if(strcmp(type, "u32") == 0)
         return int_value(bits);
-    if(strcmp(type, "u8") == 0)
+    if(strcmp(type, "u8") == 0 || strcmp(type, "char") == 0)
         return int_value((uint8_t)bits);
     return int_value(bits <= INT32_MAX ? (int64_t)bits :
                      (int64_t)bits - 4294967296LL);

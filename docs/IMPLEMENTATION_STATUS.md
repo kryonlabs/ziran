@@ -45,7 +45,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   The test runs an imported two-module call and compares bundle bytes from
   source and saved IR. The current runner supports zero-argument entry
   functions with `i32`/`int`/`bool`/`void` results, and helper functions with
-  `i64`/`u8`/`u32`/`u64`/`float`/`double`/`string`, enum, or plain record results. It supports scalar, enum,
+  `i64`/`u8`/`u32`/`u64`/`char`/`float`/`double`/`string`, enum, or plain record results. It supports scalar, enum,
   string, record, and fixed-array parameters and locals, nested record fields,
   defaults and record and array literals, value copies, member and array reads
   and writes, scalar compound assignments,
@@ -58,17 +58,18 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `make check`. The bundle loader also reruns the language checker and laws
   before execution. The linker follows direct calls and drops unreachable
   functions and modules, while retaining reachable record and enum declarations.
-  Fixed arrays with numeric or resolved named bounds are tested through source and saved IR in
-  C, C++, Go, and `.zib`, including imported record element types, value-copy
-  isolation, and portable bounds failures. Linked bundles retain needed
+  Fixed arrays with numeric or resolved named bounds, including nested arrays
+  in records, are tested through source and saved IR in C, C++, Go, and `.zib`.
+  Tests cover ASCII values in nested `char` arrays, value-copy isolation, and
+  portable bounds failures. Linked bundles retain needed
   compile-time definitions for named bounds, including constants-only imports.
   Portable slices borrow fixed-array storage. Source and saved IR bundles and
   generated C, C++, and Go agree on range creation, nested views, function
   parameters and returns, `.length`, indexed reads and writes, and array
   replacement while a view is live. Bounds failures reject execution. The
   checker rejects slices in records and globals, host slice returns, and
-  returns that borrow a local array. Unresolved and nested fixed-array bounds
-  remain outside the portable subset.
+  returns that borrow a local array. Unresolved fixed-array bounds remain
+  outside the portable subset.
   Borrowed arrays retain record elements written by called functions after
   those functions return; the portable slice test covers replacing a nested
   record in a live view across calls.
@@ -209,7 +210,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   supported backend consume the same saved IR. Source, saved-IR, and mixed
   builds currently rerun the source checker across all modules.
 - Extend the `.zib` linker and verifier beyond the current subset: remaining
-  control flow, enum initializer expressions, unresolved and nested arrays,
+  control flow, enum initializer expressions, unresolved array bounds,
   slice storage in aggregates, host slice returns and record slice parameters,
   state, and all checked expressions. Extend host capabilities to portable handles, arrays, and
   equivalent behavior

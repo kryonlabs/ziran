@@ -281,13 +281,21 @@ normalize_array(const ZirModule *module, char *type, size_t size)
 {
     char element[ZIR_NAME_MAX];
     int capacity;
-    if(ArrayElementType(type, element, sizeof(element), NULL) &&
-       array_capacity(module, type, &capacity) == 1) {
-        char normalized[ZIR_NAME_MAX];
-        int length = snprintf(normalized, sizeof(normalized), "[%d]%s", capacity, element);
-        if(length >= 0 && (size_t)length < sizeof(normalized))
-            copy_text(type, size, normalized);
+    if(!ArrayElementType(type, element, sizeof(element), NULL))
+        return;
+    normalize_array(module, element, sizeof(element));
+    char normalized[ZIR_NAME_MAX];
+    int length;
+    if(array_capacity(module, type, &capacity) == 1)
+        length = snprintf(normalized, sizeof(normalized), "[%d]%s", capacity,
+                          element);
+    else {
+        const char *close = strchr(type, ']');
+        length = snprintf(normalized, sizeof(normalized), "%.*s%s",
+                          (int)(close - type + 1), type, element);
     }
+    if(length >= 0 && (size_t)length < sizeof(normalized))
+        copy_text(type, size, normalized);
 }
 
 static int
@@ -880,8 +888,6 @@ storage_type_error(const ZirModule *module, const char *source,
             if(status == 0 && !has_foreign_types(module))
                 return "array capacity requires a known integer constant";
         }
-        if(element[0] == '[')
-            return "nested fixed arrays are not supported";
         return storage_type_error(module, element, path, indirect, checked);
     }
     size_t length = strlen(type);
@@ -1028,10 +1034,10 @@ normalize_record_arrays(ZirModule *module)
         ZirTypeField field;
         int status, changed = 0;
         while((status = TypeNextField(record, &offset, &field)) == 1) {
-            int capacity;
-            if(ArrayElementType(field.type, NULL, 0, &capacity) &&
-               capacity < 0 &&
-               array_capacity(module, field.type, &capacity) == 1)
+            char normalized[sizeof(field.type)];
+            copy_text(normalized, sizeof(normalized), field.type);
+            normalize_array(module, normalized, sizeof(normalized));
+            if(strcmp(normalized, field.type) != 0)
                 changed = 1;
         }
         if(status < 0)

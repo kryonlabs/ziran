@@ -12,6 +12,8 @@ cat > "$work/arraylib.zi" <<'EOF'
 BASE :: 1
 CAPACITY :: BASE + 1
 THREE :: CAPACITY + 1
+ROWS :: 2
+COLS :: THREE + 1
 
 Point :: struct {
     x: i32
@@ -19,6 +21,34 @@ Point :: struct {
 
 Box :: struct {
     values: [CAPACITY]Point
+}
+
+Matrix :: struct {
+    values: [ROWS][THREE]i32
+    names: [ROWS][COLS]char
+}
+
+matrix_state :: Matrix #global
+
+MatrixGlobalAnswer :: () -> i32 #export {
+    matrix_state.values[1][2] = 42
+    matrix_state.names[1][2] = (char)65
+    if matrix_state.names[1][2] != (char)65 { return 0 }
+    return matrix_state.values[1][2]
+}
+
+MatrixAnswer :: () -> i32 #export {
+    matrix: Matrix
+    matrix.values[0][0] = 40
+    matrix.values[1][2] = 2
+    matrix.names[1][2] = (char)120
+    copy: Matrix = matrix
+    matrix.values[0][0] = 0
+    matrix.names[1][2] = (char)121
+    if copy.names[1][2] != (char)120 || copy.names[0][0] != 0 {
+        return 0
+    }
+    return copy.values[0][0] + copy.values[1][2]
 }
 
 LargeBox :: struct {
@@ -92,13 +122,21 @@ Answer :: () -> i32 #export {
     saved: Box = box
     point.x = 0
     box.values[0] = point
-    return SumBox(saved)
+    if SumBox(saved) != 42 { return 0 }
+    if MatrixGlobalAnswer() != 42 { return 0 }
+    return MatrixAnswer()
 }
 
 OutOfBounds :: () -> i32 #export {
     values: [1]i32
     index: i32 = 1
     return values[index]
+}
+
+NestedOutOfBounds :: () -> i32 #export {
+    matrix: Matrix
+    column: i32 = 3
+    return matrix.values[0][column]
 }
 EOF
 
@@ -179,3 +217,26 @@ if "$ziran" run "$work/out-of-bounds.zib" \
     exit 1
 fi
 grep -Fq 'portable execution failed' "$work/out-of-bounds.err"
+
+"$ziran" bundle --root "$work" --entry arrayapp:NestedOutOfBounds \
+    -o "$work/nested-out-of-bounds.zib" "$work/arrayapp.zi"
+if "$ziran" run "$work/nested-out-of-bounds.zib" \
+    2> "$work/nested-out-of-bounds.err"; then
+    echo 'portable nested array read escaped its bounds' >&2
+    exit 1
+fi
+grep -Fq 'portable execution failed' "$work/nested-out-of-bounds.err"
+
+cat > "$work/unresolved_inner.zi" <<'EOF'
+#module "unresolved_inner"
+Matrix :: struct {
+    values: [2][MISSING]i32
+}
+EOF
+if "$ziran" check --root "$work" "$work/unresolved_inner.zi" \
+    2> "$work/unresolved-inner.err"; then
+    echo 'unresolved inner array capacity unexpectedly passed' >&2
+    exit 1
+fi
+grep -Fq 'array capacity requires a known integer constant' \
+    "$work/unresolved-inner.err"
