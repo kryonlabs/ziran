@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f3eb">
+  <meta name="description" content="Ziran is an experimental general-purpose language with checked .zir modules, C, C++ and Go output, and a portable .zib runtime.">
+  <title>Ziran — A language for useful software</title>
+  <link rel="canonical" href="https://ziran.kryonlabs.com/">
+  <link rel="icon" href="assets/logo-growing-z.png" type="image/png">
+  <link rel="stylesheet" href="styles.css">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ziran.kryonlabs.com/">
+  <meta property="og:title" content="Ziran — A language for useful software">
+  <meta property="og:description" content="Write .zi modules, check them once, and build for native targets or the portable runtime. Ziran is experimental and open source.">
+  <meta name="twitter:card" content="summary">
+  <script defer src="site.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="site-header-inner">
+      <a class="brand" href="index.html" aria-label="Ziran home"><img class="brand-icon" src="assets/logo-growing-z.png" alt="" width="36" height="36"><span>Ziran</span></a>
+      <button class="menu-button" type="button" aria-expanded="false" aria-controls="primary-nav">Menu</button>
+      <nav class="header-nav" id="primary-nav" aria-label="Primary">
+        <a href="docs.html">Learn</a>
+        <a href="language.html">Language</a><a href="api.html">API</a><a href="status.html">Status</a>
+        <a href="https://kryonlabs.com/">Kryon ↗</a>
+        <a href="https://github.com/kryonlabs/ziran">Source ↗</a>
+        <button class="theme-toggle" type="button" aria-label="Switch color theme">◐</button>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">A general-purpose language · Experimental</p>
+        <h1>Start with the <em>language.</em><br>Build what matters.</h1>
+        <p class="hero-lead">Ziran turns checked <code>.zi</code> modules into native code or portable programs. Write a command-line tool, a library, a service, or an interface without making the language depend on a UI framework.</p>
+        <div class="actions">
+          <a class="btn btn-primary" href="docs.html">Write your first program <span aria-hidden="true">→</span></a>
+          <a class="btn" href="status.html">See what works today</a>
+        </div>
+        <p class="hero-note">Open source <span aria-hidden="true">·</span> Checked modules <span aria-hidden="true">·</span> Honest target coverage</p>
+      </div>
+      <div class="hero-code" aria-label="Ziran source example">
+        <div class="code-title"><span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>hello.zi</span><span class="code-tag">source</span></div>
+        <pre><code><span class="c-decl">Score</span> :: struct {
+    value: s32;
+    bonus: s32;
+}
+
+<span class="c-decl">Total</span> :: (score: Score) -&gt; s32 {
+    return score.value + score.bonus;
+}
+
+<span class="c-decl">Answer</span> :: () -&gt; s32 {
+    score: Score = Score.{
+        value = 40,
+        bonus = 2
+    };
+    return Total(score);
+}</code></pre>
+        <div class="code-foot"><span>one source</span><span aria-hidden="true">→</span><span>.zir</span><span aria-hidden="true">→</span><span>C · C++ · Go · .zib</span></div>
+      </div>
+    </section>
+
+    <section class="intro-band" aria-label="Ziran in brief">
+      <div><span>01 / WRITE</span><strong>Readable modules</strong><p>Records, enums, functions, imports, generics, fixed arrays, and borrowed slices in the tested subset.</p></div>
+      <div><span>02 / CHECK</span><strong>Shared semantics</strong><p>The checker validates source and saved IR before native generation or portable execution.</p></div>
+      <div><span>03 / RUN</span><strong>Choose a target</strong><p>Generate C, C++, or native Go. Bundle supported programs as <code>.zib</code>.</p></div>
+    </section>
+
+    <section class="split-section" id="pipeline">
+      <div>
+        <p class="eyebrow">The pipeline</p>
+        <h2>One language.<br><em>Explicit edges.</em></h2>
+        <p>Ziran keeps the language, its checked intermediate form, and its portable runtime in one repository. A target that cannot support a feature must report it instead of silently changing the program.</p>
+        <a class="text-link" href="https://github.com/kryonlabs/ziran/blob/master/docs/ARCHITECTURE.md">Read the architecture <span aria-hidden="true">↗</span></a>
+      </div>
+      <div class="pipeline" aria-label="Source to outputs">
+        <div><small>SOURCE</small><strong>.zi</strong><span>Modules and imports</span></div>
+        <span class="pipe-arrow" aria-hidden="true">↓</span>
+        <div><small>CHECKED FORM</small><strong>.zir</strong><span>Saved, versioned IR</span></div>
+        <span class="pipe-arrow" aria-hidden="true">↓</span>
+        <div class="pipeline-targets"><div><small>NATIVE OUTPUT</small><strong>C · C++ · Go</strong></div><div><small>PORTABLE BUNDLE</small><strong>.zib</strong></div></div>
+      </div>
+    </section>
+
+    <section class="split-section relationship">
+      <div>
+        <p class="eyebrow">Made to compose</p>
+        <h2>Ziran is the language.<br><em>Kryon is a library.</em></h2>
+      </div>
+      <div>
+        <p>Kryon’s UI modules are written in Ziran and imported like any other library. Widgets, layout, styling, and rendering belong to Kryon; they are not special language syntax. A Ziran program with no Kryon import needs no graphics runtime.</p>
+        <p>The two-repository migration is still underway. Kryon’s checked modules build, while platform integration and downstream application cutover need more work.</p>
+        <a class="text-link" href="https://kryonlabs.com/">Explore Kryon <span aria-hidden="true">↗</span></a>
+      </div>
+    </section>
+
+    <section class="status-callout">
+      <div><p class="eyebrow">Current state</p><h2>Useful now.<br><em>Still experimental.</em></h2></div>
+      <div><p>The compiler and portable runner support a tested subset; neither full Jai syntax nor complete backend parity is finished. Owned growable collections, general law proofs, automatic parallel execution, and GPU execution remain planned work.</p><a class="btn btn-primary" href="status.html">Read the implementation status <span aria-hidden="true">→</span></a></div>
+    </section>
+  </main>
+  <footer><div class="footer-top"><a class="brand" href="index.html"><img class="brand-icon" src="assets/logo-growing-z.png" alt="" width="36" height="36"><span>Ziran</span></a><nav aria-label="Footer"><a href="docs.html">Learn</a><a href="language.html">Language</a><a href="api.html">API</a><a href="status.html">Status</a><a href="https://github.com/kryonlabs/ziran">Source ↗</a><a href="https://kryonlabs.com/">Kryon ↗</a></nav></div><div class="footer-bottom"><p>A language for useful software.</p><p>© 2026 Kryon Labs · <a href="https://waozi.xyz/">Made by Waozi</a></p></div></footer>
+</body>
+</html>
