@@ -8,6 +8,9 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 cat > "$work/strings.zi" <<'EOF'
 #module "strings"
 
+Greeting :: "hello \"Ziran\""
+GreetingAlias :: Greeting
+
 Pair :: struct {
     first: string
     second: string
@@ -18,6 +21,8 @@ Same :: (left: string, right: string) -> bool {
 }
 
 Answer :: () -> i32 #export {
+    if Greeting != "hello \"Ziran\"" || GreetingAlias != Greeting { return 0 }
+    if Greeting.length != 13 { return 0 }
     empty: string
     if empty.length != 0 || empty != "" { return 0 }
     text: string = "a\u00e9\x00z"

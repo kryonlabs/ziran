@@ -269,6 +269,54 @@ bound_constant(const ZirModule *module, const char *name, int depth, int64_t *va
     return status;
 }
 
+/* Resolve a literal string definition into the expression graph. The source
+ * macro spelling must not become a backend dependency in saved .zir or .zib. */
+static int
+bound_string_constant(const ZirModule *module, const char *name, int depth,
+                      char *literal, size_t size)
+{
+    if(depth > 128)
+        return -1;
+    const ZirDefine *definition = NULL;
+    const ZirModule *owner = NULL;
+    for(int pass = 0; pass < 2; pass++) {
+        int count = pass == 0 ? 1 : module->import_count;
+        for(int i = 0; i < count; i++) {
+            const ZirModule *scope = pass == 0 ? module :
+                                     module->imports[i].resolved_module;
+            if(scope == NULL)
+                continue;
+            for(int j = 0; j < scope->define_count; j++) {
+                const ZirDefine *candidate = &scope->defines[j];
+                if(strcmp(candidate->name, name))
+                    continue;
+                if(definition != NULL && definition != candidate)
+                    return -1;
+                definition = candidate;
+                owner = scope;
+            }
+        }
+        if(definition != NULL)
+            break;
+    }
+    if(definition == NULL)
+        return 0;
+    ZirFunction expression = {0};
+    int index = ParseExpr(&expression, owner, definition->value, definition->span);
+    int status = 0;
+    if(index < 0)
+        status = -1;
+    else if(expression.exprs[index].kind == ZIR_EXPR_STRING) {
+        copy_text(literal, size, expression.exprs[index].text);
+        status = 1;
+    } else if(expression.exprs[index].kind == ZIR_EXPR_IDENT) {
+        status = bound_string_constant(owner, expression.exprs[index].name,
+                                       depth + 1, literal, size);
+    }
+    free(expression.exprs);
+    return status;
+}
+
 static int
 array_capacity(const ZirModule *module, const char *type, int *capacity)
 {
@@ -681,14 +729,22 @@ expression_type(Checker *c, int index)
         else if(!strcmp(e->name, "nil")) type = "null";
         else type = lookup(c, e->name);
         if(!*type) {
+            char literal[ZIR_TEXT_MAX];
+            int string_status = bound_string_constant(c->module, e->name, 0,
+                                                       literal, sizeof(literal));
             int64_t value = 0;
-            int status = bound_constant(c->module, e->name, 0, &value);
-            if(status == 1) {
+            int status = string_status == 0 ?
+                bound_constant(c->module, e->name, 0, &value) : string_status;
+            if(string_status == 1) {
+                copy_text(e->text, sizeof(e->text), literal);
+                e->kind = ZIR_EXPR_STRING;
+                type = "string";
+            } else if(status == 1) {
                 snprintf(e->text, sizeof(e->text), "%lld", (long long)value);
                 e->kind = ZIR_EXPR_INT;
                 type = "integer";
             } else if(status < 0) {
-                error(c, e->span, "invalid or ambiguous integer constant", e->name);
+                error(c, e->span, "invalid or ambiguous constant", e->name);
             } else {
                 error(c, e->span, "unresolved name", e->name);
             }
