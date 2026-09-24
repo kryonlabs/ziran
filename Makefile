@@ -76,6 +76,7 @@ check: all $(BIN_DIR)/bundle-link-test $(BIN_DIR)/host-capability-test $(BIN_DIR
 	sh tests/language_contract.sh $(BIN_DIR)/ziran
 	sh tests/slots.sh $(BIN_DIR)/ziran
 	sh tests/native_nil.sh $(BIN_DIR)/ziran
+	sh tests/pointer_member_check.sh $(BIN_DIR)/zi2zir
 	sh tests/host_capability.sh $(BIN_DIR)/ziran $(BIN_DIR)/host-capability-test
 	sh tests/portable_host_records.sh $(BIN_DIR)/ziran $(BIN_DIR)/record-host-test
 	sh tests/host_slices.sh $(BIN_DIR)/ziran $(BIN_DIR)/slice-host-test

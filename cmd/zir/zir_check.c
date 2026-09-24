@@ -656,10 +656,31 @@ expression_type(Checker *c, int index)
         type = e->name;
         break;
     }
-    case ZIR_EXPR_MEMBER: {
+    case ZIR_EXPR_MEMBER:
+    case ZIR_EXPR_POINTER_MEMBER: {
+        char record_name[ZIR_NAME_MAX] = "";
+        if(e->kind == ZIR_EXPR_POINTER_MEMBER) {
+            const char *base = skip_ws(left);
+            if(!strncmp(base, "const ", 6))
+                base = skip_ws(base + 6);
+            const char *star = strchr(base, '*');
+            if(star == NULL || *skip_ws(star + 1) ||
+               star == base || (size_t)(star - base) >= sizeof(record_name)) {
+                error(c, e->span, "pointer member requires a record pointer", left);
+                break;
+            }
+            size_t length = (size_t)(star - base);
+            while(length > 0 && isspace((unsigned char)base[length - 1]))
+                length--;
+            memcpy(record_name, base, length);
+            record_name[length] = '\0';
+        } else {
+            copy_text(record_name, sizeof(record_name), left);
+        }
         const ZirModule *record_owner = NULL;
-        const ZirType *record = FindType(c->module, left, &record_owner);
-        if(record == NULL && (!strcmp(left, "string") || SliceElementType(left, NULL, 0)) &&
+        const ZirType *record = FindType(c->module, record_name, &record_owner);
+        if(e->kind == ZIR_EXPR_MEMBER && record == NULL &&
+           (!strcmp(left, "string") || SliceElementType(left, NULL, 0)) &&
            !strcmp(e->name, "length")) {
             /* Byte length of a borrowed string value; read-only. */
             type = "i32";
