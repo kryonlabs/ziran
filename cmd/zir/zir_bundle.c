@@ -212,15 +212,11 @@ uses_imported_constant(const ZirModule *module, const unsigned char *keep,
 {
     for(int d = 0; d < dependency->define_count; d++) {
         const char *name = dependency->defines[d].name;
-        char bracketed[ZIR_NAME_MAX + 2];
-        int length = snprintf(bracketed, sizeof(bracketed), "[%s]", name);
-        if(length < 0 || (size_t)length >= sizeof(bracketed))
-            return 0;
         for(int f = 0; f < module->function_count; f++)
             if(keep[f])
                 for(int s = 0; s < module->functions[f].stmt_count; s++)
-                    if(strstr(module->functions[f].stmts[s].text,
-                              bracketed) != NULL)
+                    if(mentions_identifier(module->functions[f].stmts[s].text,
+                                           name))
                         return 1;
         for(int local = 0; local < module->define_count; local++)
             if(mentions_identifier(module->defines[local].value, name))
@@ -464,8 +460,8 @@ BundleLink(const ZirProgram *program, const char *entry_module,
         keep_modules[m] =
             memchr(keep[m], 1, (size_t)program->modules[m].function_count) != NULL ||
             memchr(keep_types[m], 1, (size_t)program->modules[m].type_count) != NULL;
-    /* Checked statement text may still use an imported constant in [NAME]T.
-     * Carry constants-only modules through the same import closure. */
+    /* Checked statement text may still use imported constants in array
+     * bounds. Carry constants-only modules through the same import closure. */
     for(int changed = 1; changed;) {
         changed = 0;
         for(int m = 0; m < program->module_count; m++) {

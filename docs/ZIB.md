@@ -28,7 +28,7 @@ function calls from the entry, keeps record and enum declarations used by
 those functions (including types from imported modules and nested record
 fields), and removes unreachable functions, modules, types, and imports before
 writing the payload. Compile-time definitions and imported modules needed by
-named array bounds remain available when the bundle rechecks saved IR. Enum
+array bound expressions remain available when the bundle rechecks saved IR. Enum
 member references keep their declaration even when
 the expression uses the member as an integer without an explicit enum cast.
 The reader rejects unsupported versions, truncated or trailing data, malformed
@@ -52,7 +52,8 @@ successful synchronous call. Overlapping mutable slice arguments are rejected.
 Source and saved-IR bundle bytes match in scalar, record, and enum tests,
 including Kryon's geometry, layout, and popup ownership tests. Synchronous
 callable slots with captured locals and imported named functions run from
-source and saved IR. Fixed arrays with numeric or resolved named capacities support defaults,
+source and saved IR. Fixed arrays with numeric or resolved integer
+constant-expression capacities support defaults,
 positional literals, element reads and writes, and value copies, including
 nested arrays and `char` arrays inside imported records. Indexing is bounds-checked. Version 2 is
 experimental and has no compatibility promise. Host calls with pointers,

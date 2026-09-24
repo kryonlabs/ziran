@@ -58,11 +58,13 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `make check`. The bundle loader also reruns the language checker and laws
   before execution. The linker follows direct calls and drops unreachable
   functions and modules, while retaining reachable record and enum declarations.
-  Fixed arrays with numeric or resolved named bounds, including nested arrays
-  in records, are tested through source and saved IR in C, C++, Go, and `.zib`.
+  Fixed arrays with numeric or resolved constant-expression bounds, including
+  imported constants and nested arrays in records, are tested through source
+  and saved IR in C, C++, Go, and `.zib`.
   Tests cover ASCII values in nested `char` arrays, value-copy isolation, and
   portable bounds failures. Linked bundles retain needed
-  compile-time definitions for named bounds, including constants-only imports.
+  compile-time definitions for bound expressions, including constants-only
+  imports.
   Portable slices borrow fixed-array storage. Source and saved IR bundles and
   generated C, C++, and Go agree on range creation, nested views, function
   parameters and returns, `.length`, indexed reads and writes, and array

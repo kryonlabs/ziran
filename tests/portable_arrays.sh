@@ -13,7 +13,6 @@ BASE :: 1
 CAPACITY :: BASE + 1
 THREE :: CAPACITY + 1
 ROWS :: 2
-COLS :: THREE + 1
 
 Point :: struct {
     x: i32
@@ -25,7 +24,7 @@ Box :: struct {
 
 Matrix :: struct {
     values: [ROWS][THREE]i32
-    names: [ROWS][COLS]char
+    names: [ROWS][THREE + 1]char
 }
 
 matrix_state :: Matrix #global
@@ -39,6 +38,9 @@ MatrixGlobalAnswer :: () -> i32 #export {
 
 MatrixAnswer :: () -> i32 #export {
     matrix: Matrix
+    expanded: [CAPACITY * 2]char
+    expanded[3] = (char)65
+    if expanded[3] != (char)65 { return 0 }
     matrix.values[0][0] = 40
     matrix.values[1][2] = 2
     matrix.names[1][2] = (char)120
@@ -92,6 +94,9 @@ ReadLoop :: () -> i32 {
 }
 
 Answer :: () -> i32 #export {
+    computed: [(CAPACITY + 1) * 2]i32
+    computed[5] = 42
+    if computed[5] != 42 { return 0 }
     if ReadLoop() != 42 { return 0 }
     large: LargeBox
     large.values[0].x = 41
@@ -197,8 +202,8 @@ cat > "$work/capacity_app.zi" <<'EOF'
 #module "capacity_app"
 #import "capacity"
 Answer :: () -> i32 #export {
-    values: [LENGTH]i32 = {40, 2}
-    return values[0] + values[1]
+    values: [LENGTH * 2]i32 = {40, 0, 0, 2}
+    return values[0] + values[3]
 }
 EOF
 "$ziran" ir --root "$work" -o "$work/capacity-ir" "$work/capacity_app.zi"
@@ -230,7 +235,7 @@ grep -Fq 'portable execution failed' "$work/nested-out-of-bounds.err"
 cat > "$work/unresolved_inner.zi" <<'EOF'
 #module "unresolved_inner"
 Matrix :: struct {
-    values: [2][MISSING]i32
+    values: [2][MISSING * 2]i32
 }
 EOF
 if "$ziran" check --root "$work" "$work/unresolved_inner.zi" \
@@ -240,3 +245,17 @@ if "$ziran" check --root "$work" "$work/unresolved_inner.zi" \
 fi
 grep -Fq 'array capacity requires a known integer constant' \
     "$work/unresolved-inner.err"
+
+cat > "$work/invalid_capacity.zi" <<'EOF'
+#module "invalid_capacity"
+Values :: struct {
+    items: [2 / 0]i32
+}
+EOF
+if "$ziran" check --root "$work" "$work/invalid_capacity.zi" \
+    2> "$work/invalid-capacity.err"; then
+    echo 'invalid arithmetic array capacity unexpectedly passed' >&2
+    exit 1
+fi
+grep -Fq 'array capacity is not a valid bounded integer constant' \
+    "$work/invalid-capacity.err"

@@ -262,12 +262,18 @@ array_capacity(const ZirModule *module, const char *type, int *capacity)
         return -1;
     if(*capacity >= 0)
         return 1;
-    char name[ZIR_NAME_MAX];
+    char expression_text[ZIR_NAME_MAX];
     size_t length = (size_t)(strchr(type, ']') - type - 1);
-    memcpy(name, type + 1, length);
-    name[length] = '\0';
+    if(length >= sizeof(expression_text))
+        return -1;
+    memcpy(expression_text, type + 1, length);
+    expression_text[length] = '\0';
+    ZirFunction expression = {0};
+    int root = ParseExpr(&expression, module, expression_text,
+                         (ZirSourceSpan){0});
     int64_t value = 0;
-    int status = bound_constant(module, name, 0, &value);
+    int status = bound_expression(module, &expression, root, 0, &value);
+    free(expression.exprs);
     if(status != 1)
         return status;
     if(value < 1 || value > 1048576)

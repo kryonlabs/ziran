@@ -92,27 +92,20 @@ ArrayElementType(const char *type, char *element, size_t element_size,
     if(type == NULL || type[0] != '[')
         return 0;
     cursor = type + 1;
-    if(*cursor >= '0' && *cursor <= '9') {
-        while(*cursor >= '0' && *cursor <= '9') {
-            count = count * 10 + (*cursor - '0');
+    while(*cursor && *cursor != ']')
+        cursor++;
+    if(*cursor != ']' || cursor == type + 1)
+        return 0;
+    for(const char *digit = type + 1; digit < cursor; digit++)
+        digits += *digit >= '0' && *digit <= '9';
+    if(type + 1 + digits == cursor) {
+        for(const char *digit = type + 1; digit < cursor; digit++) {
+            count = count * 10 + (*digit - '0');
             if(count > 1048576)
                 return 0;
-            cursor++;
-            digits++;
         }
-        if(digits == 0 || *cursor != ']')
-            return 0;
     } else {
-        /* Symbolic capacity: a named module constant. The bound value is
-         * resolved by the backend emitters; only the element type matters
-         * here. */
-        if(!isalpha((unsigned char)*cursor) && *cursor != '_')
-            return 0;
-        while(isalnum((unsigned char)*cursor) || *cursor == '_')
-            cursor++;
-        if(*cursor != ']')
-            return 0;
-        count = -1;
+        count = -1; /* A constant expression, resolved by the checker. */
     }
     close = cursor + 1;
     while(isspace((unsigned char)*close))
