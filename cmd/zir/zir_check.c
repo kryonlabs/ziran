@@ -1194,8 +1194,9 @@ static int
 integer_type(const char *type)
 {
     const char *scalar = ScalarType(type);
-    return !strcmp(type, "integer") || scalar[0] == 's' ||
-           scalar[0] == 'u';
+    return !strcmp(type, "integer") ||
+           (scalar[0] != '\0' && strcmp(scalar, "string") != 0 &&
+            (scalar[0] == 's' || scalar[0] == 'u'));
 }
 
 /* Bounds use a checked integer subset: every intermediate must fit s32.
@@ -1807,6 +1808,112 @@ lower_enum_reference(Checker *c, ZirExpr *expr, const ZirType *enumeration,
     return 1;
 }
 
+static int rewrite_type_applications(ZirModule *module, const char *source,
+                                     char *output, size_t capacity,
+                                     ZirSourceSpan span, int recursion);
+static int canonical_type_arguments(const char *source, char *output,
+                                    size_t capacity);
+
+/* VecPop and VecGet return Option(element). Find or register the concrete
+ * application under the same deterministic name the declaration rewriter
+ * produces, so source and saved IR agree without re-running the rewriter on
+ * loaded graphs. */
+static int
+vec_option_result_type(Checker *c, const char *element, ZirSourceSpan span,
+                       char *out, size_t size)
+{
+    char canonical[ZIR_TEXT_MAX];
+    char name[ZIR_NAME_MAX];
+    uint64_t hash = UINT64_C(14695981039346656037);
+    if(!canonical_type_arguments(element, canonical, sizeof(canonical))) {
+        error(c, span, "Vec result element type is too long", element);
+        return 0;
+    }
+    for(const unsigned char *p = (const unsigned char *)"Option"; *p; p++)
+        hash = (hash ^ *p) * UINT64_C(1099511628211);
+    hash = (hash ^ '(') * UINT64_C(1099511628211);
+    for(const unsigned char *p = (const unsigned char *)canonical; *p; p++)
+        hash = (hash ^ *p) * UINT64_C(1099511628211);
+    snprintf(name, sizeof(name), "__type_%016llx", (unsigned long long)hash);
+    /* Saved IR carries the instantiated record directly; the Option template
+     * and its module may have been pruned by linking. */
+    for(int t = 0; t < c->module->type_count; t++)
+        if(strcmp(c->module->types[t].name, name) == 0) {
+            copy_text(out, size, name);
+            return 1;
+        }
+    const ZirType *generic = FindType(c->module, "Option", NULL);
+    char parameter[ZIR_NAME_MAX] = "";
+    const char *cursor, *dollar;
+    size_t length = 0;
+    size_t offset = 0;
+    ZirTypeField field;
+    if(generic == NULL || !generic->is_record_template) {
+        error(c, span, "Vec result requires the Option record; import option",
+              element);
+        return 0;
+    }
+    cursor = skip_ws(generic->template_params);
+    dollar = *cursor == '$' ? cursor + 1 : cursor;
+    while((isalnum((unsigned char)dollar[length]) || dollar[length] == '_') &&
+          length + 1 < sizeof(parameter)) {
+        parameter[length] = dollar[length];
+        length++;
+    }
+    parameter[length] = '\0';
+    if(TypeNextField(generic, &offset, &field) != 1 ||
+       strcmp(field.name, "has_value") || strcmp(field.type, "bool") ||
+       TypeNextField(generic, &offset, &field) != 1 ||
+       strcmp(field.name, "value") || strcmp(field.type, parameter) ||
+       TypeNextField(generic, &offset, &field) != 0) {
+        error(c, span, "Vec result requires Option fields has_value and value",
+              generic->name);
+        return 0;
+    }
+    ZirType *instance = ModuleAddType(c->module, name, span);
+    if(instance == NULL) {
+        error(c, span, "cannot register Vec result record", name);
+        return 0;
+    }
+    instance->is_public = generic->is_public;
+    instance->is_file_private = generic->is_file_private;
+    instance->is_type_instance = 1;
+    instance->is_synthetic_application = 1;
+    copy_text(instance->template_name, sizeof(instance->template_name),
+              "Option");
+    copy_text(instance->template_args, sizeof(instance->template_args),
+              canonical);
+    generic = FindType(c->module, "Option", NULL);
+    instance = NULL;
+    for(int t = 0; t < c->module->type_count; t++)
+        if(strcmp(c->module->types[t].name, name) == 0) {
+            instance = &c->module->types[t];
+            break;
+        }
+    if(instance == NULL || generic == NULL ||
+       !InstantiateGenericRecord(instance, generic)) {
+        error(c, span, "cannot instantiate Vec result record", name);
+        return 0;
+    }
+    instance = NULL;
+    for(int t = 0; t < c->module->type_count; t++)
+        if(strcmp(c->module->types[t].name, name) == 0) {
+            instance = &c->module->types[t];
+            break;
+        }
+    if(instance != NULL && instance->body[0]) {
+        char expanded[sizeof(instance->body)];
+        if(!rewrite_type_applications(c->module, instance->body, expanded,
+                                      sizeof(expanded), span, 0)) {
+            error(c, span, "cannot expand Vec result record", name);
+            return 0;
+        }
+        copy_text(instance->body, sizeof(instance->body), expanded);
+    }
+    copy_text(out, size, name);
+    return 1;
+}
+
 static const char *
 expression_type(Checker *c, int index)
 {
@@ -2251,7 +2358,10 @@ expression_type(Checker *c, int index)
         char display_name[ZIR_NAME_MAX];
         copy_text(display_name, sizeof(display_name), e->name);
         if(!strcmp(e->name, "VecPush") || !strcmp(e->name, "VecClear") ||
-           !strcmp(e->name, "VecFree") || !strcmp(e->name, "VecSwap")) {
+           !strcmp(e->name, "VecFree") || !strcmp(e->name, "VecSwap") ||
+           !strcmp(e->name, "VecPop") || !strcmp(e->name, "VecGet") ||
+           !strcmp(e->name, "BuilderAppend") ||
+           !strcmp(e->name, "BuilderFinish")) {
             for(int child = e->first_child; child >= 0;
                 child = c->fn->exprs[child].next_sibling)
                 if(c->fn->exprs[child].argument_name[0])
@@ -2262,13 +2372,22 @@ expression_type(Checker *c, int index)
             int second = first >= 0 ? c->fn->exprs[first].next_sibling : -1;
             int push = !strcmp(e->name, "VecPush");
             int swap = !strcmp(e->name, "VecSwap");
+            int pop = !strcmp(e->name, "VecPop");
+            int get = !strcmp(e->name, "VecGet");
+            int text_append = !strcmp(e->name, "BuilderAppend");
+            int text_finish = !strcmp(e->name, "BuilderFinish");
+            int byte_builder = text_append || text_finish;
             char element[ZIR_NAME_MAX];
+            char option_type[ZIR_NAME_MAX];
             const char *vector_type = expression_type(c, first);
             if(first < 0 || !VecElementType(c->module, vector_type,
                                            element, sizeof(element)) ||
-               !assignable(c, first))
+               !(get || assignable(c, first)))
                 error(c, e->span, "Vec operation requires mutable Vec storage",
                       e->name);
+            if(byte_builder && strcmp(element, "u8"))
+                error(c, e->span,
+                      "string builder requires a Vec(u8) place", element);
             if(push) {
                 if(contains_vec(c->module, element, 0))
                     error(c, e->span, "nested Vec elements are not supported", element);
@@ -2291,9 +2410,45 @@ expression_type(Checker *c, int index)
                    !assignable(c, second) ||
                    strcmp(vector_type, expression_type(c, second)))
                     error(c, e->span, "VecSwap requires two matching Vec places", e->name);
+            } else if(pop || text_finish) {
+                if(second >= 0)
+                    error(c, e->span, "Vec operation takes one argument", e->name);
+            } else if(get) {
+                const char *index_type;
+                if(second < 0 || c->fn->exprs[second].next_sibling >= 0)
+                    error(c, e->span, "VecGet requires an index", e->name);
+                else {
+                    index_type = expression_type(c, second);
+                    if(!integer_type(index_type))
+                        error(c, e->span, "VecGet requires an integer index",
+                              index_type);
+                }
+            } else if(text_append) {
+                if(second < 0 || c->fn->exprs[second].next_sibling >= 0)
+                    error(c, e->span, "BuilderAppend requires text", e->name);
+                else if(strcmp(expression_type(c, second), "string"))
+                    error(c, e->span, "BuilderAppend requires string text",
+                          expression_type(c, second));
             } else if(second >= 0)
                 error(c, e->span, "Vec operation takes one argument", e->name);
-            type = push ? "bool" : "void";
+            if(pop) {
+                if(vec_option_result_type(c, element, e->span, option_type,
+                                           sizeof(option_type)))
+                    type = option_type;
+                else
+                    type = "";
+            } else if(get) {
+                if(vec_option_result_type(c, element, e->span, option_type,
+                                           sizeof(option_type)))
+                    type = option_type;
+                else
+                    type = "";
+            } else if(push || text_append)
+                type = "bool";
+            else if(text_finish)
+                type = "string";
+            else
+                type = "void";
             break;
         }
         const char *binding = e->is_this ? "" : lookup(c, e->name);

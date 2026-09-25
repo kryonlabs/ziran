@@ -200,10 +200,11 @@ runs, not only one-shot calls.
 
 ### 9. Owned storage and standard-library usability
 
-`Vec(T)` has checked push, indexing, clear, free, and swap, but cannot be
+`Vec(T)` has checked push, indexing, clear, free, swap, `VecPop`/`VecGet`
+through `Option(T)`, and a `Vec(u8)` string builder, but cannot be
 copied, passed, or returned. Implement the move/drop and live-borrow rules in
-[Owned values](OWNED_VALUES.md), then add pop, fallible lookup, and a string
-builder. Match C/C++/Go and VM behavior on failure and destruction; document
+[Owned values](OWNED_VALUES.md). Match C/C++/Go and VM behavior on failure and
+destruction; document
 where Go cannot recover from physical allocation failure. This is needed for
 ordinary non-UI programs to use Ziran without writing a new storage layer.
 

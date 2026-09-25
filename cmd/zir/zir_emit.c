@@ -67,7 +67,11 @@ ModuleUsesVecOperations(const ZirModule *module)
                (!strcmp(expr->name, "VecPush") ||
                 !strcmp(expr->name, "VecClear") ||
                 !strcmp(expr->name, "VecFree") ||
-                !strcmp(expr->name, "VecSwap")))
+                !strcmp(expr->name, "VecSwap") ||
+                !strcmp(expr->name, "VecPop") ||
+                !strcmp(expr->name, "VecGet") ||
+                !strcmp(expr->name, "BuilderAppend") ||
+                !strcmp(expr->name, "BuilderFinish")))
                 return 1;
             if(expr->kind == ZIR_EXPR_INDEX && expr->left >= 0 &&
                VecElementType(module,
@@ -1447,6 +1451,8 @@ member_path(const ZirFunction *fn, int index)
             expr->kind == ZIR_EXPR_POINTER_MEMBER) && member_path(fn, expr->left);
 }
 
+static void zero_record(Emitter *e, const char *type, char *out, size_t size);
+
 /* Keep collection lowering outside recursive expression lowering: its large
  * target buffers must not increase every nested expression stack frame. */
 static void
@@ -1508,6 +1514,131 @@ emit_vec_call(Emitter *e, const ZirExpr *expr, char *out, size_t size)
         }
         copy_text(out, size, result_name);
         e->pure = 1;
+        return;
+    }
+    if(!strcmp(expr->name, "VecPop") || !strcmp(expr->name, "VecGet")) {
+        int get = !strcmp(expr->name, "VecGet");
+        char index[ZIR_TEXT_MAX];
+        char initializer[ZIR_NAME_MAX * 2];
+        zero_record(e, expr->type, initializer, sizeof(initializer));
+        fresh(e, result_name);
+        declare(e, result_name, expr->type, initializer);
+        if(get) {
+            int second = e->fn->exprs[first].next_sibling;
+            if(second < 0) fatal(expr, "VecGet requires an index");
+            emit_expr(e, second, "s64", index, sizeof(index));
+        }
+        if(e->target == ZIR_GO) {
+            if(get)
+                line(e, "if %s >= 0 && %s < %s.Count {", index, index, vector);
+            else
+                line(e, "if %s.Count > 0 {", vector);
+            e->indent++;
+            if(get)
+                line(e, "%s.Value = %s.Data[%s]", result_name, vector, index);
+            else {
+                line(e, "%s.Count--", vector);
+                line(e, "%s.Value = %s.Data[%s.Count]", result_name, vector,
+                     vector);
+            }
+            line(e, "%s.HasValue = true", result_name);
+            e->indent--;
+            line(e, "}");
+        } else {
+            char field[ZIR_TEXT_MAX * 2];
+            if(get)
+                line(e, "if (%s >= 0 && %s < (%s).count) {", index, index,
+                     vector);
+            else
+                line(e, "if ((%s).count > 0) {", vector);
+            e->indent++;
+            if(get)
+                format(field, sizeof(field), "(%s).data[%s]", vector, index);
+            else {
+                line(e, "(%s).count--;", vector);
+                format(field, sizeof(field), "(%s).data[(%s).count]", vector,
+                       vector);
+            }
+            {
+                char destination[ZIR_NAME_MAX * 2];
+                format(destination, sizeof(destination), "%s.value",
+                       result_name);
+                assign_value(e, destination, element, field);
+            }
+            line(e, "%s.has_value = true;", result_name);
+            e->indent--;
+            line(e, "}");
+        }
+        copy_text(out, size, result_name);
+        e->pure = 1;
+        return;
+    }
+    if(!strcmp(expr->name, "BuilderAppend")) {
+        int second = e->fn->exprs[first].next_sibling;
+        char text[ZIR_TEXT_MAX];
+        if(second < 0) fatal(expr, "BuilderAppend requires text");
+        emit_expr(e, second, "string", text, sizeof(text));
+        fresh(e, result_name);
+        declare(e, result_name, "bool", "false");
+        if(e->target == ZIR_GO) {
+            line(e, "%s.Data = append(%s.Data, %s...)",
+                 vector, vector, text);
+            line(e, "%s.Count = int64(len(%s.Data))", vector, vector);
+            line(e, "%s.Capacity = int64(cap(%s.Data))", vector, vector);
+            line(e, "%s = true", result_name);
+        } else {
+            char grown[ZIR_NAME_MAX];
+            fresh(e, grown);
+            line(e, "if ((%s).length == 0) {", text);
+            e->indent++;
+            line(e, "%s = true;", result_name);
+            e->indent--;
+            line(e, "} else {");
+            e->indent++;
+            line(e, "void *%s = ZirVecReserve((void *)(%s).data, &(%s).capacity, (%s).count, (int64_t)(%s).length, sizeof(*(%s).data));",
+                 grown, vector, vector, vector, text, vector);
+            line(e, "if (%s != NULL) {", grown);
+            e->indent++;
+            line(e, "(%s).data = (uint8_t *)%s;", vector, grown);
+            line(e, "memcpy((%s).data + (%s).count, (%s).data, (size_t)(%s).length);",
+                 vector, vector, text, text);
+            line(e, "(%s).count += (int64_t)(%s).length;", vector, text);
+            line(e, "%s = true;", result_name);
+            e->indent--;
+            line(e, "}");
+            e->indent--;
+            line(e, "}");
+        }
+        copy_text(out, size, result_name);
+        e->pure = 1;
+        return;
+    }
+    if(!strcmp(expr->name, "BuilderFinish")) {
+        char finished[ZIR_NAME_MAX];
+        fresh(e, finished);
+        if(e->target == ZIR_GO) {
+            declare(e, finished, "string", "\"\"");
+            line(e, "%s = string(%s.Data[:%s.Count])",
+                 finished, vector, vector);
+            line(e, "%s.Data = nil", vector);
+        } else {
+            declare(e, finished, "string",
+                    e->target == ZIR_CPP ? "{}" : "{NULL, 0}");
+            line(e, "%s.data = (%s).count > 0 ? (const char *)(%s).data : \"\";",
+                 finished, vector, vector);
+            line(e, "%s.length = (size_t)(%s).count;", finished, vector);
+            /* The finished string borrows the builder's bytes; the builder
+             * detaches without freeing them. */
+            line(e, "(%s).data = NULL;", vector);
+        }
+        line(e, "%s.%s = 0%s", vector,
+             e->target == ZIR_GO ? "Capacity" : "capacity",
+             e->target == ZIR_GO ? "" : ";");
+        line(e, "%s.%s = 0%s", vector,
+             e->target == ZIR_GO ? "Count" : "count",
+             e->target == ZIR_GO ? "" : ";");
+        copy_text(out, size, finished);
+        e->pure = 0;
         return;
     }
     if(!strcmp(expr->name, "VecFree")) {
@@ -1780,7 +1911,11 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         if(!strcmp(expr->name, "VecPush") ||
            !strcmp(expr->name, "VecClear") ||
            !strcmp(expr->name, "VecFree") ||
-           !strcmp(expr->name, "VecSwap")) {
+           !strcmp(expr->name, "VecSwap") ||
+           !strcmp(expr->name, "VecPop") ||
+           !strcmp(expr->name, "VecGet") ||
+           !strcmp(expr->name, "BuilderAppend") ||
+           !strcmp(expr->name, "BuilderFinish")) {
             emit_vec_call(e, expr, out, size);
             return;
         }

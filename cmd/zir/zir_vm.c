@@ -496,7 +496,11 @@ clone_value(Vm *vm, Value value, int depth)
                       value.kind != VALUE_ARRAY))
         return value;
     if(value.kind == VALUE_ARRAY) {
-        if(value.array == NULL || depth >= VM_MAX_DEPTH) {
+        /* A default-initialized Vec or cleared slice owns no storage; its
+         * clone is equally empty. */
+        if(value.array == NULL)
+            return value;
+        if(depth >= VM_MAX_DEPTH) {
             vm->failed = 1;
             return int_value(0);
         }
@@ -1283,19 +1287,68 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         if(!strcmp(expression->name, "VecPush") ||
            !strcmp(expression->name, "VecClear") ||
            !strcmp(expression->name, "VecFree") ||
-           !strcmp(expression->name, "VecSwap")) {
+           !strcmp(expression->name, "VecSwap") ||
+           !strcmp(expression->name, "VecPop") ||
+           !strcmp(expression->name, "VecGet") ||
+           !strcmp(expression->name, "BuilderAppend") ||
+           !strcmp(expression->name, "BuilderFinish")) {
             int first = expression->first_child;
             int second = first >= 0 ?
                 function->exprs[first].next_sibling : -1;
             int push = !strcmp(expression->name, "VecPush");
             int swap = !strcmp(expression->name, "VecSwap");
+            int pop = !strcmp(expression->name, "VecPop");
+            int get = !strcmp(expression->name, "VecGet");
+            int text_append = !strcmp(expression->name, "BuilderAppend");
+            int text_finish = !strcmp(expression->name, "BuilderFinish");
             char element[ZIR_NAME_MAX];
             if(first < 0 || assignment_root(function, first) == NULL ||
                !VecElementType(module, function->exprs[first].type,
                                element, sizeof(element)) ||
                !verify_expression(module, function, bindings, binding_count,
-                                  first, depth + 1) ||
-               strcmp(expression->type, push ? "bool" : "void"))
+                                  first, depth + 1))
+                return 0;
+            if(pop || get) {
+                const ZirModule *owner = NULL;
+                const ZirType *record_type = FindType(module,
+                    expression->type, &owner);
+                size_t offset = 0;
+                ZirTypeField field;
+                if(record_type == NULL || record_type->is_enum ||
+                   record_type->is_record_template ||
+                   record_type->is_procedure_type)
+                    return 0;
+                if(get && (second < 0 ||
+                           function->exprs[second].next_sibling >= 0 ||
+                           !integer_type(function->exprs[second].type) ||
+                           !verify_expression(module, function, bindings,
+                                              binding_count, second,
+                                              depth + 1)))
+                    return 0;
+                if(!get && second >= 0)
+                    return 0;
+                return TypeNextField(record_type, &offset, &field) == 1 &&
+                       strcmp(field.name, "has_value") == 0 &&
+                       strcmp(field.type, "bool") == 0 &&
+                       TypeNextField(record_type, &offset, &field) == 1 &&
+                       strcmp(field.name, "value") == 0 &&
+                       strcmp(field.type, element) == 0 &&
+                       TypeNextField(record_type, &offset, &field) == 0;
+            }
+            if(text_append || text_finish) {
+                if(strcmp(element, "u8") != 0)
+                    return 0;
+                if(text_finish)
+                    return second < 0 &&
+                           strcmp(expression->type, "string") == 0;
+                return second >= 0 &&
+                       function->exprs[second].next_sibling < 0 &&
+                       strcmp(function->exprs[second].type, "string") == 0 &&
+                       strcmp(expression->type, "bool") == 0 &&
+                       verify_expression(module, function, bindings,
+                                         binding_count, second, depth + 1);
+            }
+            if(strcmp(expression->type, push ? "bool" : "void"))
                 return 0;
             if(swap)
                 return second >= 0 &&
@@ -2320,7 +2373,11 @@ eval(Frame *frame, int index, int depth)
         if(!strcmp(expression->name, "VecPush") ||
            !strcmp(expression->name, "VecClear") ||
            !strcmp(expression->name, "VecFree") ||
-           !strcmp(expression->name, "VecSwap")) {
+           !strcmp(expression->name, "VecSwap") ||
+           !strcmp(expression->name, "VecPop") ||
+           !strcmp(expression->name, "VecGet") ||
+           !strcmp(expression->name, "BuilderAppend") ||
+           !strcmp(expression->name, "BuilderFinish")) {
             int first = expression->first_child;
             int push = !strcmp(expression->name, "VecPush");
             Value *vec = assignment_slot(frame, first, depth + 1);
@@ -2344,6 +2401,170 @@ eval(Frame *frame, int index, int depth)
                 *vec = *other;
                 *other = saved;
                 value = (Value){.kind = VALUE_VOID};
+                break;
+            }
+            if(!strcmp(expression->name, "VecPop") ||
+               !strcmp(expression->name, "VecGet")) {
+                int get = !strcmp(expression->name, "VecGet");
+                const ZirModule *owner = NULL;
+                const ZirType *record_type = FindType(frame->module,
+                    expression->type, &owner);
+                Value *data = record_field(vec->record, "data");
+                Value *count = record_field(vec->record, "count");
+                Value result;
+                Value *has_value, *item;
+                int64_t at = -1;
+                if(record_type == NULL || data == NULL || count == NULL ||
+                   count->kind != VALUE_INT || count->integer < 0) {
+                    frame->vm->failed = 1;
+                    break;
+                }
+                if(get) {
+                    int second = frame->function->exprs[first].next_sibling;
+                    Value index = eval(frame, second, depth + 1);
+                    if(frame->vm->failed || index.kind != VALUE_INT ||
+                       (!index.unsigned64 && index.integer < 0)) {
+                        frame->vm->failed = 1;
+                        break;
+                    }
+                    at = (int64_t)integer_bits(index);
+                }
+                result = default_value(frame->vm, owner, expression->type, 0);
+                if(frame->vm->failed)
+                    break;
+                has_value = record_field(result.record, "has_value");
+                item = record_field(result.record, "value");
+                if(has_value == NULL || item == NULL) {
+                    frame->vm->failed = 1;
+                    break;
+                }
+                if(get ? (at >= 0 && at < count->integer)
+                       : (count->integer > 0)) {
+                    Value *source = data->kind == VALUE_ARRAY ?
+                        &data->array->elements[get ? at :
+                         count->integer - 1] : NULL;
+                    if(source == NULL) {
+                        frame->vm->failed = 1;
+                        break;
+                    }
+                    if(get)
+                        *item = coerce(frame->vm, frame->module, *source,
+                                       element);
+                    else {
+                        *item = *source;
+                        *source = (Value){0};
+                        count->integer--;
+                    }
+                    if(frame->vm->failed)
+                        break;
+                    *has_value = int_value(1);
+                }
+                value = result;
+                break;
+            }
+            if(!strcmp(expression->name, "BuilderAppend") ||
+               !strcmp(expression->name, "BuilderFinish")) {
+                int finish = !strcmp(expression->name, "BuilderFinish");
+                Value *data = record_field(vec->record, "data");
+                Value *count = record_field(vec->record, "count");
+                Value *capacity = record_field(vec->record, "capacity");
+                Value text;
+                if(data == NULL || count == NULL || capacity == NULL ||
+                   count->kind != VALUE_INT || capacity->kind != VALUE_INT ||
+                   count->integer < 0 || capacity->integer < count->integer ||
+                   capacity->integer > INT32_MAX) {
+                    frame->vm->failed = 1;
+                    break;
+                }
+                if(finish) {
+                    StringLiteral *built = NULL;
+                    if(count->integer > 0) {
+                        built = malloc(sizeof(*built) +
+                                       (size_t)count->integer);
+                        if(built != NULL) {
+                            for(int i = 0; i < count->integer; i++) {
+                                Value *byte = data->kind == VALUE_ARRAY ?
+                                    &data->array->elements[i] : NULL;
+                                if(byte == NULL || byte->kind != VALUE_INT) {
+                                    free(built);
+                                    built = NULL;
+                                    break;
+                                }
+                                built->data[i] =
+                                    (unsigned char)integer_bits(*byte);
+                            }
+                        }
+                        if(built == NULL) {
+                            frame->vm->failed = 1;
+                            break;
+                        }
+                        built->expression = NULL;
+                        built->length = (size_t)count->integer;
+                        built->next = frame->vm->strings;
+                        frame->vm->strings = built;
+                    }
+                    value = built != NULL ?
+                        string_value(built->data, built->length) :
+                        string_value((const unsigned char *)"", 0);
+                    if(data->kind == VALUE_ARRAY && count->integer > 0) {
+                        for(int i = 0; i < count->integer; i++)
+                            retire_value(data->array->elements[i], 0);
+                    }
+                    *data = (Value){.kind = VALUE_ARRAY};
+                    *count = int_value(0);
+                    *capacity = int_value(0);
+                    break;
+                }
+                {
+                    int second = frame->function->exprs[first].next_sibling;
+                    int64_t length, position;
+                    text = eval(frame, second, depth + 1);
+                    if(frame->vm->failed || text.kind != VALUE_STRING) {
+                        frame->vm->failed = 1;
+                        break;
+                    }
+                    length = (int64_t)text.length;
+                    if(count->integer > INT32_MAX - length) {
+                        value = int_value(0);
+                        break;
+                    }
+                    if(count->integer + length > capacity->integer) {
+                        int64_t next_capacity = capacity->integer == 0 ? 8 :
+                            capacity->integer;
+                        while(next_capacity < count->integer + length) {
+                            if(next_capacity > INT32_MAX / 2) {
+                                next_capacity = count->integer + length;
+                                break;
+                            }
+                            next_capacity *= 2;
+                        }
+                        if(next_capacity > INT32_MAX) {
+                            value = int_value(0);
+                            break;
+                        }
+                        Array *grown = allocate_array_try(frame->vm,
+                            frame->module, "u8", (int)next_capacity, 0);
+                        if(grown == NULL) {
+                            value = int_value(0);
+                            break;
+                        }
+                        if(data->array != NULL) {
+                            for(int i = 0; i < count->integer; i++) {
+                                grown->elements[i] = data->array->elements[i];
+                                data->array->elements[i] = (Value){0};
+                            }
+                            retire_value(*data, 0);
+                        }
+                        *data = (Value){.kind = VALUE_ARRAY, .array = grown};
+                        *capacity = int_value(next_capacity);
+                    }
+                    for(position = 0; position < length; position++) {
+                        data->array->elements[count->integer + position] =
+                            int_value(text.data[position]);
+                    }
+                    count->integer += length;
+                    value = int_value(1);
+                }
                 break;
             }
             Value *data = record_field(vec->record, "data");

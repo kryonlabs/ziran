@@ -501,10 +501,13 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   pointers. Remaining top-level type and exported procedure keyword
   names and cross-module name collisions
   still need package-wide native name mapping. `Vec(T)` now provides growable
-  storage for globals and record fields across C99, C++, Go, and `.zib`, with
-  checked indexing, push, clear, free, and swap. The checker rejects copies and
-  value passing. Move, automatic drop, pop, fallible lookup, and a string
-  builder remain to complete the owned-value model. Go cannot recover from
+  storage for locals, globals, and record fields across C99, C++, Go, and
+  `.zib`, with
+  checked indexing, push, clear, free, swap, `VecPop` and `VecGet` results as
+  `Option(T)` records, and a `Vec(u8)` string builder through `BuilderAppend`
+  and `BuilderFinish`. The checker rejects copies and
+  value passing. Move and automatic drop
+  remain to complete the owned-value model. Go cannot recover from
   physical allocation failure. The intended
   [owned-value contract](OWNED_VALUES.md) records those semantics.
 - Audit parser, checker, IR, and backend paths for remaining UI assumptions.
