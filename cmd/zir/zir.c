@@ -778,6 +778,7 @@ ExprKindName(ZirExprKind kind)
     case ZIR_EXPR_POINTER_MEMBER: return "pointer_member";
     case ZIR_EXPR_INDEX: return "index";
     case ZIR_EXPR_SLICE: return "slice";
+    case ZIR_EXPR_COMPILE_TIME: return "compile_time";
     case ZIR_EXPR_CAST: return "cast";
     case ZIR_EXPR_COMPOUND: return "compound";
     case ZIR_EXPR_FIELD_INIT: return "field_initializer";

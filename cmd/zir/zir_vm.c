@@ -1015,6 +1015,11 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         return strcmp(expression->type, "string") == 0 &&
                DecodeStringLiteral(expression->text, bytes, sizeof(bytes), &length);
     }
+    case ZIR_EXPR_COMPILE_TIME:
+        return strcmp(expression->type, "bool") == 0 &&
+               strcmp(expression->text, "#compile_time") == 0 &&
+               expression->left == -1 && expression->right == -1 &&
+               expression->third == -1 && expression->first_child == -1;
     case ZIR_EXPR_IDENT: {
         if(expression->is_function_value) {
             const ZirType *slot = FindType(module, expression->type, NULL);
@@ -2046,6 +2051,8 @@ eval(Frame *frame, int index, int depth)
     case ZIR_EXPR_STRING:
         value = literal_string(frame->vm, expression);
         break;
+    case ZIR_EXPR_COMPILE_TIME:
+        return int_value(0);
     case ZIR_EXPR_IDENT: {
         if(expression->is_function_value) {
             const ZirModule *owner = NULL;

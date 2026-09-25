@@ -1,6 +1,6 @@
 # Ziran intermediate representation (`.zir`)
 
-This is the target contract. An experimental binary version 30 now exists for
+This is the target contract. An experimental binary version 31 now exists for
 the tested C/C++/Go and portable scalar/record/enum subsets. It is not yet the complete contract below; see
 [Implementation status](IMPLEMENTATION_STATUS.md).
 
@@ -31,7 +31,7 @@ unrelated imported function with the same type shape.
 `.zir` is the compiler interchange and cache format. Portable distribution
 uses a linked `.zib`, not an unlinked `.zir`. See [Bundle format](ZIB.md).
 
-## Experimental version 30
+## Experimental version 31
 
 The current writer emits `ZIR` followed by a zero byte, a little-endian
 version number, and length-prefixed checked module records. Strings and
@@ -60,7 +60,7 @@ statement to reinterpret. Source `variant`, payload `match`, postfix `?`,
 `guard`, C-style `switch` and `goto` with labels, `state` blocks, C-style
 locals, and raw C statements are rejected. The validating reader rejects
 retired statement kinds. The postfix increment/decrement expression kind has
-been removed; version 30 rejects earlier files before graph validation.
+been removed; version 31 rejects earlier files before graph validation.
 Variant fields, generated variant function slots,
 retained-state fields, and unused statement callee/argument text are absent
 from the IR schema.
@@ -83,7 +83,7 @@ imported-name and loaded-file checking.
 Exported procedures retain an optional quoted linker symbol separately from
 their Ziran source name.
 Native function bodies use checked statement and expression graphs; statement
-text remains diagnostic metadata. Version 30 is experimental and has no
+text remains diagnostic metadata. Version 31 is experimental and has no
 compatibility promise.
 Expression records preserve whether `#this` selected the enclosing procedure,
 so checking saved IR keeps that binding even when a parameter has the same name.

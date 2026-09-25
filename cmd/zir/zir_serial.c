@@ -36,7 +36,7 @@ typedef struct Reader {
 #define SPAN_FIELD(type, name) \
     {offsetof(type, name), sizeof(((type *)0)->name), FIELD_SPAN}
 #define FIELD_COUNT(fields) (sizeof(fields) / sizeof((fields)[0]))
-#define ZIR_FORMAT_VERSION 30u
+#define ZIR_FORMAT_VERSION 31u
 
 static const Field import_fields[] = {
     INTEGER_FIELD(ZirImport, kind), INTEGER_FIELD(ZirImport, extern_kind),
@@ -581,7 +581,14 @@ validate_program(const ZirProgram *program)
             for(int e = 0; e < function->expr_count; e++) {
                 const ZirExpr *expression = &function->exprs[e];
                 if(expression->kind <= ZIR_EXPR_UNKNOWN ||
-                   expression->kind > ZIR_EXPR_SLICE ||
+                   expression->kind > ZIR_EXPR_COMPILE_TIME ||
+                   (expression->kind == ZIR_EXPR_COMPILE_TIME &&
+                    (strcmp(expression->text, "#compile_time") != 0 ||
+                     strcmp(expression->type, "bool") != 0 ||
+                     expression->name[0] || expression->op[0] ||
+                     expression->left != -1 || expression->right != -1 ||
+                     expression->third != -1 ||
+                     expression->first_child != -1)) ||
                    (expression->is_this != 0 && expression->is_this != 1) ||
                    (expression->is_this &&
                     expression->kind != ZIR_EXPR_IDENT &&

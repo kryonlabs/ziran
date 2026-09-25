@@ -412,6 +412,8 @@ prefix(ExprParser *p)
         result = node(p, ZIR_EXPR_IDENT, start, p->fn->name, "", -1, -1);
         if(result >= 0)
             p->fn->exprs[result].is_this = 1;
+    } else if(take(p, "#compile_time")) {
+        result = node(p, ZIR_EXPR_COMPILE_TIME, start, "", "", -1, -1);
     } else if(take(p, "#procedure_name")) {
         if(p->fn->name[0] == '\0') {
             Diagnostic(p->span, "parse.procedure_name",

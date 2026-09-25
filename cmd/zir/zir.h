@@ -66,7 +66,8 @@ typedef enum ZirExprKind {
     ZIR_EXPR_SIZE_OF,
     ZIR_EXPR_CONDITIONAL,
     ZIR_EXPR_FIELD_INIT,
-    ZIR_EXPR_SLICE
+    ZIR_EXPR_SLICE,
+    ZIR_EXPR_COMPILE_TIME
 } ZirExprKind;
 
 typedef struct ZirSourceSpan {

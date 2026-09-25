@@ -1,0 +1,106 @@
+#!/bin/sh
+set -eu
+
+ziran=$1
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+
+cat > "$work/phase.zi" <<'ZI'
+Flag :: () -> bool {
+    return #compile_time
+}
+AtCompileTime :: () -> s64 {
+    if #compile_time { return 42 }
+    return 0
+}
+VALUE :: #run AtCompileTime();
+DIRECT :: #run #compile_time;
+#assert VALUE == 42 && DIRECT && Flag()
+#program_export
+Answer :: () -> s32 {
+    if Flag() { return 0 }
+    if DIRECT == 0 { return 0 }
+    return VALUE
+}
+ZI
+
+"$ziran" check --root "$work" "$work/phase.zi"
+"$ziran" ir --root "$work" -o "$work/ir" "$work/phase.zi"
+"$ziran" check --root "$work/ir" "$work/ir/phase.zir"
+"$ziran" bundle --root "$work" --entry phase:Answer \
+    -o "$work/source.zib" "$work/phase.zi"
+"$ziran" bundle --root "$work/ir" --entry phase:Answer \
+    -o "$work/saved.zib" "$work/ir/phase.zir"
+cmp "$work/source.zib" "$work/saved.zib"
+test "$("$ziran" run "$work/source.zib")" = 42
+test "$("$ziran" run "$work/saved.zib")" = 42
+
+for input in source saved; do
+    if test "$input" = source; then
+        root=$work
+        file=$work/phase.zi
+    else
+        root=$work/ir
+        file=$work/ir/phase.zir
+    fi
+    for target in c cpp go; do
+        out="$work/$target-$input"
+        if test "$target" = go; then
+            "$ziran" build --target=go --pkg main --root "$root" \
+                -o "$out" "$file"
+            cat > "$out/main.go" <<'GO'
+package main
+func main() { if Phase_Answer() != 42 { panic("compile-time phase") } }
+GO
+            GO111MODULE=off go run "$out"/*.go
+        elif test "$target" = c; then
+            "$ziran" build --target=c --root "$root" -o "$out" "$file"
+            cat > "$out/main.c" <<'C'
+#include "phase.h"
+int main(void) { return Answer() == 42 ? 0 : 1; }
+C
+            "${CC:-cc}" -std=c11 -I"$repo/include" -I"$out" \
+                "$out"/*.c -o "$out/app"
+            "$out/app"
+        else
+            "$ziran" build --target=cpp --root "$root" -o "$out" "$file"
+            cat > "$out/main.cpp" <<'CPP'
+#include "phase.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+CPP
+            "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$out" \
+                "$out"/*.cpp -o "$out/app"
+            "$out/app"
+        fi
+    done
+done
+
+cat > "$work/not_constant.zi" <<'ZI'
+VALUE :: #compile_time;
+ZI
+if "$ziran" check --root "$work" "$work/not_constant.zi" \
+    2> "$work/not_constant.err"; then
+    echo '#compile_time was accepted as a constant' >&2
+    exit 1
+fi
+grep -Fq '#compile_time cannot be used as a constant' \
+    "$work/not_constant.err"
+
+cat > "$work/not_condition.zi" <<'ZI'
+#if #compile_time || true {
+VALUE :: 42;
+}
+ZI
+if "$ziran" check --root "$work" "$work/not_condition.zi" \
+    2> "$work/not_condition.err"; then
+    echo '#compile_time was accepted as a #if constant' >&2
+    exit 1
+fi
+grep -Fq '#if condition is not a compile-time constant' \
+    "$work/not_condition.err"
+
+cat > "$work/quoted.zi" <<'ZI'
+TEXT :: "#compile_time is literal text";
+ZI
+"$ziran" check --root "$work" "$work/quoted.zi"

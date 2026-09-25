@@ -2586,6 +2586,13 @@ eval_primary(ZirEval *ev)
     long value;
 
     eval_skip(ev);
+    if(starts_word(ev->p, "#compile_time")) {
+        ev->p += strlen("#compile_time");
+        if(ev->depth > 0)
+            return 1;
+        ev->known = 0;
+        return 0;
+    }
     if(*ev->p == '(') {
         ev->p++;
         value = eval_or(ev);
@@ -2963,12 +2970,27 @@ eval_or(ZirEval *ev)
 }
 
 static int
+contains_compile_time_directive(const char *source, const char *path)
+{
+    ZirLexer lexer;
+    LexerInit(&lexer, source, path);
+    for(;;) {
+        ZirToken token = LexerNext(&lexer);
+        if(token.kind == ZIR_TOKEN_EOF) return 0;
+        if(token.kind == ZIR_TOKEN_DIRECTIVE &&
+           strcmp(token.text, "#compile_time") == 0) return 1;
+    }
+}
+
+static int
 eval_const_condition(const char *src, long *value,
                      const ZirModule *module, const ZirConsts *consts,
                      const char *lookup_path, int depth)
 {
     ZirEval ev;
 
+    if(depth == 0 && contains_compile_time_directive(src, lookup_path))
+        return 0;
     ev.p = src;
     ev.known = 1;
     ev.module = module;
@@ -3122,6 +3144,10 @@ evaluate_typed_node(const ZirFunction *probe, int index,
         copy_text(result->literal, sizeof(result->literal),
                   expression->text);
         return 1;
+    case ZIR_EXPR_COMPILE_TIME:
+        result->kind = COMPILE_INTEGER;
+        result->integer = 1;
+        return compile_value_literal(result);
     case ZIR_EXPR_IDENT:
         if(!strcmp(expression->name, "true") ||
            !strcmp(expression->name, "false")) {
@@ -3327,9 +3353,14 @@ evaluate_typed_expression(const ZirModule *module, const ZirConsts *names,
         return compile_value_literal(result);
     }
     root = ParseExpr(&probe, module, expanded, Span(path, 1, 1));
-    ok = root >= 0 &&
-         evaluate_typed_node(&probe, root, module, path,
-                             depth + 1, fuel, result);
+    ok = root >= 0;
+    if(depth == 0)
+        for(int i = 0; i < probe.expr_count; i++)
+            if(probe.exprs[i].kind == ZIR_EXPR_COMPILE_TIME)
+                ok = 0;
+    if(ok)
+        ok = evaluate_typed_node(&probe, root, module, path,
+                                 depth + 1, fuel, result);
     free(probe.exprs);
     return ok;
 }
@@ -3691,7 +3722,7 @@ eval_typed_condition(const char *source, const ZirModule *module,
 
 int
 EvaluateCompileExpression(const ZirModule *module, const char *source,
-                          ZirSourceSpan span, long *value)
+                          ZirSourceSpan span, int executing, long *value)
 {
     ZirConsts constants = {0};
     char expanded[ZIR_TEXT_MAX];
@@ -3718,14 +3749,14 @@ EvaluateCompileExpression(const ZirModule *module, const char *source,
     if(strstr(expanded, "size_of") != NULL)
         lower_size_of_value(expanded, sizeof(expanded), module, span);
     int ok = eval_const_condition(expanded, value, module, &constants,
-                                  span.path, 0);
+                                  span.path, executing ? 1 : 0);
     free(constants.items);
     return ok;
 }
 
 int
 EvaluateCompileLiteral(const ZirModule *module, const char *source,
-                       ZirSourceSpan span, char *literal,
+                       ZirSourceSpan span, int executing, char *literal,
                        size_t literal_size)
 {
     ZirConsts constants = {0};
@@ -3749,7 +3780,8 @@ EvaluateCompileLiteral(const ZirModule *module, const char *source,
         constant->is_file_private = definition->is_file_private;
     }
     int ok = evaluate_typed_expression(module, &constants, source,
-                                       span.path, 0, &fuel, &value) &&
+                                       span.path, executing ? 1 : 0,
+                                       &fuel, &value) &&
              value.kind != COMPILE_INVALID &&
              strlen(value.literal) < literal_size;
     if(ok) copy_text(literal, literal_size, value.literal);
@@ -5837,7 +5869,7 @@ parse_source(const char *path, const char *root, const char *source,
                                             rel);
                         folded = strstr(expanded, "size_of") == NULL &&
                                  eval_const_condition(expanded, &value, module,
-                                                      &consts, rel, 0);
+                                                      &consts, rel, 1);
                         if(folded)
                             snprintf(run_value, sizeof(run_value),
                                      "%ld", value);
@@ -5851,7 +5883,7 @@ parse_source(const char *path, const char *root, const char *source,
                                 die_at(Span(rel, line_no, 1),
                                        "cannot resolve imports for #run expression");
                             if(evaluate_typed_expression(module, &consts,
-                                    expanded, rel, 0, &fuel, &typed) &&
+                                    expanded, rel, 1, &fuel, &typed) &&
                                typed.kind != COMPILE_INVALID) {
                                 copy_text(run_value, sizeof(run_value),
                                           typed.literal);

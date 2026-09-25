@@ -467,7 +467,8 @@ supported_expression(const ZirModule *module, const ZirFunction *fn, int index)
         if(!record_type(module, e->name) && !ArrayElementType(e->name, NULL, 0, NULL)) return 0;
         break;
     case ZIR_EXPR_FIELD_INIT: break;
-    case ZIR_EXPR_INT: case ZIR_EXPR_FLOAT: case ZIR_EXPR_IDENT: case ZIR_EXPR_STRING: break;
+    case ZIR_EXPR_INT: case ZIR_EXPR_FLOAT: case ZIR_EXPR_IDENT:
+    case ZIR_EXPR_STRING: case ZIR_EXPR_COMPILE_TIME: break;
     case ZIR_EXPR_MEMBER: case ZIR_EXPR_POINTER_MEMBER:
     case ZIR_EXPR_INDEX: case ZIR_EXPR_SLICE: break;
     case ZIR_EXPR_BINARY: case ZIR_EXPR_CONDITIONAL: break;
@@ -1674,6 +1675,10 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         }
         break;
     }
+    case ZIR_EXPR_COMPILE_TIME:
+        copy_text(result, sizeof(result), "false");
+        pure = 1;
+        break;
     case ZIR_EXPR_IDENT:
         if(expr->is_function_value) {
             emit_function_value(e, index, result, sizeof(result));

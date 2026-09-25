@@ -87,6 +87,10 @@ Field expressions that themselves require the specialized type still need
 specialization support.
 Pure named calls with supported scalar values also work in `#run` and other
 compile-time expressions.
+Inside a procedure, `#compile_time` is a boolean that is true while the
+procedure executes during compilation and false at run time. `#run` evaluates
+it in the compile-time phase; it cannot be declared as a constant or used
+directly as a `#if` condition.
 `#must` after a procedure result type requires its value to be used. The
 checker rejects discarded results from ordinary, imported, polymorphic, and
 foreign calls before native or portable output, including when checking saved

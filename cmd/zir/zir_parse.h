@@ -27,9 +27,9 @@ ZirProgram *parse_source_text(const char *path, const char *source);
 /* Evaluate the pure translation-time integer/boolean subset after imports
  * have been linked. The result is stored as a literal before IR emission. */
 int EvaluateCompileExpression(const ZirModule *module, const char *source,
-                              ZirSourceSpan span, long *value);
+                              ZirSourceSpan span, int executing, long *value);
 int EvaluateCompileLiteral(const ZirModule *module, const char *source,
-                           ZirSourceSpan span, char *literal,
+                           ZirSourceSpan span, int executing, char *literal,
                            size_t literal_size);
 
 /* Finish compile-time expressions whose conditions depend on linked imports.

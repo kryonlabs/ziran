@@ -1658,6 +1658,7 @@ expression_type(Checker *c, int index)
         break;
     }
     case ZIR_EXPR_FLOAT: type = "real"; break;
+    case ZIR_EXPR_COMPILE_TIME: type = "bool"; break;
     case ZIR_EXPR_STRING: type = "string"; break;
     case ZIR_EXPR_IDENT:
         if(e->is_this) {
@@ -4448,6 +4449,26 @@ CheckPrograms(ZirProgram **programs, int count)
     c.programs = programs; c.program_count = count;
     if(!LinkImports(programs, count))
         return 0;
+    for(int p = 0; p < count; p++)
+        for(int m = 0; m < programs[p]->module_count; m++) {
+            ZirModule *module = &programs[p]->modules[m];
+            for(int d = 0; d < module->define_count; d++) {
+                ZirDefine *definition = &module->defines[d];
+                if(starts_word(definition->value, "#run")) continue;
+                ZirLexer lexer;
+                LexerInit(&lexer, definition->value, definition->span.path);
+                for(;;) {
+                    ZirToken token = LexerNext(&lexer);
+                    if(token.kind == ZIR_TOKEN_EOF) break;
+                    if(token.kind == ZIR_TOKEN_DIRECTIVE &&
+                       strcmp(token.text, "#compile_time") == 0) {
+                        Diagnostic(definition->span, "check.compile_time",
+                                   "#compile_time cannot be used as a constant");
+                        return 0;
+                    }
+                }
+            }
+        }
     /* Select expressions that depend on imports and resolve #run constants
      * together: either may refer to a result from the other. */
     for(int pass = 0; pass < 128; pass++) {
@@ -4466,13 +4487,13 @@ CheckPrograms(ZirProgram **programs, int count)
                     long value = 0;
                     const char *expression = skip_ws(definition->value + 4);
                     if(EvaluateCompileExpression(module, expression,
-                                                 definition->span, &value)) {
+                                                 definition->span, 1, &value)) {
                         snprintf(definition->value,
                                  sizeof(definition->value), "%ld", value);
                     } else {
                         char literal[ZIR_TEXT_MAX];
                         if(!EvaluateCompileLiteral(module, expression,
-                                                   definition->span, literal,
+                                                   definition->span, 1, literal,
                                                    sizeof(literal))) continue;
                         copy_text(definition->value,
                                   sizeof(definition->value), literal);
@@ -4511,10 +4532,10 @@ CheckPrograms(ZirProgram **programs, int count)
                 ZirAssert *assertion = &module->asserts[a];
                 long value = 0;
                 if(!EvaluateCompileExpression(module,
-                        assertion->condition, assertion->span, &value)) {
+                        assertion->condition, assertion->span, 0, &value)) {
                     char literal[ZIR_TEXT_MAX];
                     if(!EvaluateCompileLiteral(module,
-                            assertion->condition, assertion->span,
+                            assertion->condition, assertion->span, 0,
                             literal, sizeof(literal)) ||
                        (strcmp(literal, "0") && strcmp(literal, "1"))) {
                         Diagnostic(assertion->span, "check.assert",
