@@ -1,0 +1,93 @@
+#import "zip"
+
+Put16 :: (buffer: []u8, at: s32, value: u32) {
+    buffer[at] = cast(u8)value
+    buffer[at + 1] = cast(u8)(value >> 8)
+}
+
+Put32 :: (buffer: []u8, at: s32, value: u32) {
+    Put16(buffer, at, value)
+    Put16(buffer, at + 2, value >> 16)
+}
+
+#program_export
+SelfTest :: () -> s32 {
+    // One stored entry: local header (30), name (1), payload (5),
+    // central directory (46 + 1), and end record (22).
+    bytes: [105]u8
+    Put32(bytes[:], 0, cast(u32)0x04034b50)
+    Put16(bytes[:], 4, 20)
+    Put32(bytes[:], 14, cast(u32)0x3610a686)
+    Put32(bytes[:], 18, 5)
+    Put32(bytes[:], 22, 5)
+    Put16(bytes[:], 26, 1)
+    bytes[30] = cast(u8)97
+    bytes[31] = cast(u8)104
+    bytes[32] = cast(u8)101
+    bytes[33] = cast(u8)108
+    bytes[34] = cast(u8)108
+    bytes[35] = cast(u8)111
+    Put32(bytes[:], 36, cast(u32)0x02014b50)
+    Put16(bytes[:], 40, 20)
+    Put16(bytes[:], 42, 20)
+    Put32(bytes[:], 52, cast(u32)0x3610a686)
+    Put32(bytes[:], 56, 5)
+    Put32(bytes[:], 60, 5)
+    Put16(bytes[:], 64, 1)
+    bytes[82] = cast(u8)97
+    Put32(bytes[:], 83, cast(u32)0x06054b50)
+    Put16(bytes[:], 91, 1)
+    Put16(bytes[:], 93, 1)
+    Put32(bytes[:], 95, 47)
+    Put32(bytes[:], 99, 36)
+    entry: ZipEntry = FindZipEntry(bytes[:], "a")
+    if !entry.found || entry.data_start != 31 || entry.size != 5 { return 1 }
+    output: [5]u8
+    if !CopyStoredZipEntry(bytes[:], entry, output[:]) ||
+       output[0] != cast(u8)104 || output[4] != cast(u8)111 { return 2 }
+    if FindZipEntry(bytes[:], "missing").found { return 3 }
+    bytes[35] = cast(u8)120
+    if CopyStoredZipEntry(bytes[:], entry, output[:]) { return 4 }
+    bytes[35] = cast(u8)111
+    bytes[99] = cast(u8)255
+    if FindZipEntry(bytes[:], "a").found { return 5 }
+    input: [4]u8
+    input[0] = cast(u8)97
+    input[1] = cast(u8)98
+    input[2] = cast(u8)65
+    input[3] = cast(u8)66
+    items: [2]ZipWriteItem
+    items[0].name_start = 0
+    items[0].name_size = 1
+    items[0].data_start = 2
+    items[0].data_size = 1
+    items[1].name_start = 1
+    items[1].name_size = 1
+    items[1].data_start = 3
+    items[1].data_size = 1
+    archive: [180]u8
+    if StoredZipSize(input[:], items[:]) != 180 ||
+       WriteStoredZip(archive[:], input[:], items[:]) != 180 { return 6 }
+    a: ZipEntry = FindZipEntry(archive[:], "a")
+    b: ZipEntry = FindZipEntry(archive[:], "b")
+    one: [1]u8
+    if !CopyStoredZipEntry(archive[:], a, one[:]) || one[0] != cast(u8)65 {
+        return 7
+    }
+    if !CopyStoredZipEntry(archive[:], b, one[:]) || one[0] != cast(u8)66 {
+        return 8
+    }
+    directory: ZipDirectory = OpenZipDirectory(archive[:])
+    if !directory.valid || directory.count != 2 { return 9 }
+    named: ZipNamedEntry = NextZipEntry(archive[:], directory)
+    if !named.valid || !named.entry.found || named.name_size != 1 { return 10 }
+    directory = named.directory
+    named = NextZipEntry(archive[:], directory)
+    if !named.valid || named.directory.cursor != named.directory.end {
+        return 11
+    }
+    items[1].name_start = 0
+    if WriteStoredZip(archive[:], input[:], items[:]) != 180 ||
+       FindZipEntry(archive[:], "a").found { return 12 }
+    return 0
+}

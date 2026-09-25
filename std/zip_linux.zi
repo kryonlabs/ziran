@@ -1,0 +1,59 @@
+#import "zip"
+
+// The platform zlib supplies raw DEFLATE for ZIP method 8. This native
+// adapter is separate from the portable ZIP directory and checksum rules.
+zlib :: #system_library "z";
+
+ZStream :: struct {
+    next_in: *u8
+    avail_in: u32
+    total_in: u64
+    next_out: *u8
+    avail_out: u32
+    total_out: u64
+    msg: *u8
+    state: *void
+    zalloc: *void
+    zfree: *void
+    opaque: *void
+    data_type: s32
+    adler: u64
+    reserved: u64
+}
+
+ZlibVersion :: () -> *u8 #foreign zlib "zlibVersion";
+ZlibInflateInit :: (stream: *ZStream, window_bits: s32, version: *u8,
+    stream_size: s32) -> s32 #foreign zlib "inflateInit2_";
+ZlibInflate :: (stream: *ZStream, flush: s32) -> s32 #foreign zlib "inflate";
+ZlibInflateEnd :: (stream: *ZStream) -> s32 #foreign zlib "inflateEnd";
+
+#program_export
+ExtractZipEntry :: (archive: []u8, entry: ZipEntry, output: []u8) -> bool {
+    if !entry.found || entry.size != cast(u64)output.count ||
+       entry.data_start > cast(u64)archive.count ||
+       entry.compressed_size > cast(u64)archive.count - entry.data_start {
+        return false
+    }
+    if entry.method == 0 {
+        return CopyStoredZipEntry(archive, entry, output)
+    }
+    if entry.method != 8 || entry.compressed_size == 0 ||
+       entry.compressed_size > cast(u64)0xffffffff ||
+       entry.size > cast(u64)0xffffffff { return false }
+    stream: ZStream
+    spare: u8 = 0
+    stream.next_in = *archive[entry.data_start]
+    stream.avail_in = cast(u32)entry.compressed_size
+    stream.next_out = *spare
+    if output.count > 0 { stream.next_out = *output[0] }
+    stream.avail_out = cast(u32)output.count
+    if output.count == 0 { stream.avail_out = 1 }
+    if ZlibInflateInit(*stream, -15, ZlibVersion(), cast(s32)size_of(ZStream)) != 0 {
+        return false
+    }
+    status: s32 = ZlibInflate(*stream, 4)
+    valid: bool = status == 1 && stream.total_in == entry.compressed_size &&
+                  stream.total_out == entry.size
+    if ZlibInflateEnd(*stream) != 0 { valid = false }
+    return valid && ZipCRC32(output) == entry.crc32
+}

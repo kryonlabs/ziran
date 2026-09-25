@@ -131,6 +131,15 @@ bytes. Callers keep the original input string and use byte offsets returned by
 the scanner. Its tests compare source and saved-IR portable bundles, and the
 same module is exercised through native C, C++, and Go by a downstream client.
 
+`std/zip.zi` reads classic ZIP directories from caller-owned bytes, verifies
+stored entries with CRC-32, and writes stored archives into caller-owned output.
+It rejects split, encrypted, and malformed archives, and duplicate requested
+entries. ZIP64 archives are unsupported.
+It runs in portable bundles. `std/zip_linux.zi` adds raw DEFLATE extraction
+through the system zlib library for 64-bit Linux native C builds; link those
+builds with `-lz`. The caller supplies file I/O, memory limits, and which entry names
+are meaningful to the application.
+
 `std/net_http.zi` defines an explicit request/response host capability. A
 platform adapter supplies transport and TLS; checked Ziran code owns request
 construction and response interpretation. A missing host binding is reported

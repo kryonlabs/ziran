@@ -1,0 +1,338 @@
+// Classic ZIP directory reader for byte buffers. The caller owns the archive
+// bytes and decides which named entries are allowed in its application.
+// ZIP64, encrypted entries, split archives, and ambiguous names are rejected.
+
+ZipEntry :: struct {
+    data_start: u64
+    compressed_size: u64
+    size: u64
+    crc32: u32
+    method: u32
+    found: bool
+}
+
+ZipDirectory :: struct {
+    start: u64
+    end: u64
+    cursor: u64
+    count: u64
+    index: u64
+    valid: bool
+}
+
+ZipNamedEntry :: struct {
+    directory: ZipDirectory
+    entry: ZipEntry
+    name_start: u64
+    name_size: u64
+    valid: bool
+}
+
+ZipWriteItem :: struct {
+    name_start: u64
+    name_size: u64
+    data_start: u64
+    data_size: u64
+}
+
+ZipU16 :: (bytes: []u8, at: u64) -> u32 {
+    if at > cast(u64)bytes.count || cast(u64)bytes.count - at < 2 { return 0 }
+    return cast(u32)bytes[at] | (cast(u32)bytes[at + 1] << 8)
+}
+
+ZipU32 :: (bytes: []u8, at: u64) -> u32 {
+    if at > cast(u64)bytes.count || cast(u64)bytes.count - at < 4 { return 0 }
+    return cast(u32)bytes[at] | (cast(u32)bytes[at + 1] << 8) |
+           (cast(u32)bytes[at + 2] << 16) | (cast(u32)bytes[at + 3] << 24)
+}
+
+ZipNameEqual :: (bytes: []u8, at: u64, size: u64, wanted: string) -> bool {
+    if size != cast(u64)wanted.count || at > cast(u64)bytes.count ||
+       size > cast(u64)bytes.count - at { return false }
+    index: u64 = 0
+    while index < size {
+        if bytes[at + index] != wanted[index] { return false }
+        index += 1
+    }
+    return true
+}
+
+#program_export
+OpenZipDirectory :: (bytes: []u8) -> ZipDirectory {
+    directory: ZipDirectory
+    length: u64 = cast(u64)bytes.count
+    if length < 22 { return directory }
+    // EOCD may have a comment of at most 65535 bytes.
+    lower: u64 = 0
+    if length > 65557 { lower = length - 65557 }
+    eocd: u64 = length - 22
+    located: bool = false
+    while true {
+        if ZipU32(bytes, eocd) == cast(u32)0x06054b50 &&
+           eocd + 22 + cast(u64)ZipU16(bytes, eocd + 20) == length {
+            located = true
+            break
+        }
+        if eocd == lower { break }
+        eocd -= 1
+    }
+    if !located { return directory }
+    if ZipU16(bytes, eocd + 4) != 0 || ZipU16(bytes, eocd + 6) != 0 ||
+       ZipU16(bytes, eocd + 8) != ZipU16(bytes, eocd + 10) { return directory }
+    directory_size: u64 = cast(u64)ZipU32(bytes, eocd + 12)
+    directory.start = cast(u64)ZipU32(bytes, eocd + 16)
+    if directory.start > eocd || directory_size > eocd - directory.start {
+        return ZipDirectory.{}
+    }
+    directory.end = directory.start + directory_size
+    directory.cursor = directory.start
+    directory.count = cast(u64)ZipU16(bytes, eocd + 10)
+    directory.valid = true
+    return directory
+}
+
+ZipNamesMatch :: (bytes: []u8, first: u64, second: u64, size: u64) -> bool {
+    index: u64 = 0
+    while index < size {
+        if bytes[first + index] != bytes[second + index] { return false }
+        index += 1
+    }
+    return true
+}
+
+// On malformed input, both the returned record and the cursor become invalid.
+#program_export
+NextZipEntry :: (bytes: []u8, directory: ZipDirectory) -> ZipNamedEntry {
+    result: ZipNamedEntry
+    result.directory = directory
+    if !directory.valid || directory.index >= directory.count {
+        return result
+    }
+    cursor: u64 = directory.cursor
+    if cursor > directory.end || directory.end - cursor < 46 ||
+       ZipU32(bytes, cursor) != cast(u32)0x02014b50 {
+        result.directory.valid = false
+        return result
+    }
+    name_size: u64 = cast(u64)ZipU16(bytes, cursor + 28)
+    extra_size: u64 = cast(u64)ZipU16(bytes, cursor + 30)
+    comment_size: u64 = cast(u64)ZipU16(bytes, cursor + 32)
+    record_size: u64 = 46 + name_size + extra_size + comment_size
+    flags: u32 = ZipU16(bytes, cursor + 8)
+    method: u32 = ZipU16(bytes, cursor + 10)
+    compressed: u64 = cast(u64)ZipU32(bytes, cursor + 20)
+    size: u64 = cast(u64)ZipU32(bytes, cursor + 24)
+    local: u64 = cast(u64)ZipU32(bytes, cursor + 42)
+    if record_size > directory.end - cursor ||
+       (flags & cast(u32)1) != 0 || (method != 0 && method != 8) ||
+       compressed == cast(u64)0xffffffff || size == cast(u64)0xffffffff ||
+       local == cast(u64)0xffffffff || local > directory.start ||
+       directory.start - local < 30 ||
+       ZipU32(bytes, local) != cast(u32)0x04034b50 ||
+       ZipU16(bytes, local + 8) != method {
+        result.directory.valid = false
+        return result
+    }
+    local_name_size: u64 = cast(u64)ZipU16(bytes, local + 26)
+    local_extra_size: u64 = cast(u64)ZipU16(bytes, local + 28)
+    data_start: u64 = local + 30 + local_name_size + local_extra_size
+    if local_name_size != name_size || data_start > directory.start ||
+       compressed > directory.start - data_start ||
+       !ZipNamesMatch(bytes, local + 30, cursor + 46, name_size) ||
+       (method == 0 && compressed != size) {
+        result.directory.valid = false
+        return result
+    }
+    result.entry.data_start = data_start
+    result.entry.compressed_size = compressed
+    result.entry.size = size
+    result.entry.crc32 = ZipU32(bytes, cursor + 16)
+    result.entry.method = method
+    result.entry.found = true
+    result.name_start = cursor + 46
+    result.name_size = name_size
+    result.valid = true
+    result.directory.cursor += record_size
+    result.directory.index += 1
+    return result
+}
+
+// A missing or invalid entry has found=false. Duplicate names are invalid.
+#program_export
+FindZipEntry :: (bytes: []u8, wanted: string) -> ZipEntry {
+    result: ZipEntry
+    if wanted.count == 0 { return result }
+    directory: ZipDirectory = OpenZipDirectory(bytes)
+    if !directory.valid { return result }
+    while directory.index < directory.count {
+        named: ZipNamedEntry = NextZipEntry(bytes, directory)
+        if !named.valid { return ZipEntry.{} }
+        directory = named.directory
+        if ZipNameEqual(bytes, named.name_start, named.name_size, wanted) {
+            if result.found { return ZipEntry.{} }
+            result = named.entry
+        }
+    }
+    if directory.cursor != directory.end { return ZipEntry.{} }
+    return result
+}
+
+#program_export
+ZipCRC32 :: (bytes: []u8) -> u32 {
+    crc: u32 = cast(u32)0xffffffff
+    index: u64 = 0
+    while index < cast(u64)bytes.count {
+        crc = crc ^ cast(u32)bytes[index]
+        bit: u32 = 0
+        while bit < 8 {
+            if (crc & cast(u32)1) != 0 {
+                crc = (crc >> 1) ^ cast(u32)0xedb88320
+            } else {
+                crc = crc >> 1
+            }
+            bit += 1
+        }
+        index += 1
+    }
+    return crc ^ cast(u32)0xffffffff
+}
+
+#program_export
+CopyStoredZipEntry :: (bytes: []u8, entry: ZipEntry, output: []u8) -> bool {
+    if !entry.found || entry.method != 0 || entry.size != cast(u64)output.count ||
+       entry.data_start > cast(u64)bytes.count ||
+       entry.size > cast(u64)bytes.count - entry.data_start { return false }
+    index: u64 = 0
+    while index < entry.size {
+        output[index] = bytes[entry.data_start + index]
+        index += 1
+    }
+    return ZipCRC32(output) == entry.crc32
+}
+
+ZipPut16 :: (output: []u8, at: u64, value: u32) {
+    output[at] = cast(u8)value
+    output[at + 1] = cast(u8)(value >> 8)
+}
+
+ZipPut32 :: (output: []u8, at: u64, value: u32) {
+    ZipPut16(output, at, value)
+    ZipPut16(output, at + 2, value >> 16)
+}
+
+// Returns the exact output size or zero when classic ZIP limits are exceeded.
+#program_export
+StoredZipSize :: (input: []u8, items: []ZipWriteItem) -> u64 {
+    if items.count == 0 || cast(u64)items.count > 65535 { return 0 }
+    total: u64 = 22
+    index: u64 = 0
+    while index < cast(u64)items.count {
+        item: ZipWriteItem = items[index]
+        if item.name_size == 0 || item.name_size > 65535 ||
+           item.data_size > cast(u64)0xffffffff ||
+           item.name_start > cast(u64)input.count ||
+           item.name_size > cast(u64)input.count - item.name_start ||
+           item.data_start > cast(u64)input.count ||
+           item.data_size > cast(u64)input.count - item.data_start { return 0 }
+        increase: u64 = 76 + 2 * item.name_size + item.data_size
+        if increase > cast(u64)0xffffffff - total { return 0 }
+        total += increase
+        index += 1
+    }
+    return total
+}
+
+ZipCopyBytes :: (output: []u8, at: u64, input: []u8,
+    input_at: u64, size: u64) {
+    index: u64 = 0
+    while index < size {
+        output[at + index] = input[input_at + index]
+        index += 1
+    }
+}
+
+ZipCRC32Range :: (bytes: []u8, at: u64, size: u64) -> u32 {
+    crc: u32 = cast(u32)0xffffffff
+    index: u64 = 0
+    while index < size {
+        crc = crc ^ cast(u32)bytes[at + index]
+        bit: u32 = 0
+        while bit < 8 {
+            if (crc & cast(u32)1) != 0 {
+                crc = (crc >> 1) ^ cast(u32)0xedb88320
+            } else {
+                crc = crc >> 1
+            }
+            bit += 1
+        }
+        index += 1
+    }
+    return crc ^ cast(u32)0xffffffff
+}
+
+// Writes uncompressed ZIP entries into caller-owned memory. An app can choose
+// compression separately; this keeps the archive format portable and usable
+// even where no native compression library is installed.
+#program_export
+WriteStoredZip :: (output: []u8, input: []u8, items: []ZipWriteItem) -> u64 {
+    required: u64 = StoredZipSize(input, items)
+    if required == 0 || required > cast(u64)output.count { return 0 }
+    local_cursor: u64 = 0
+    index: u64 = 0
+    while index < cast(u64)items.count {
+        item: ZipWriteItem = items[index]
+        size: u32 = cast(u32)item.data_size
+        crc: u32 = ZipCRC32Range(input, item.data_start, item.data_size)
+        ZipPut32(output, local_cursor, cast(u32)0x04034b50)
+        ZipPut16(output, local_cursor + 4, 20)
+        ZipPut16(output, local_cursor + 6, 0)
+        ZipPut16(output, local_cursor + 8, 0)
+        ZipPut32(output, local_cursor + 10, 0)
+        ZipPut32(output, local_cursor + 14, crc)
+        ZipPut32(output, local_cursor + 18, size)
+        ZipPut32(output, local_cursor + 22, size)
+        ZipPut16(output, local_cursor + 26, cast(u32)item.name_size)
+        ZipPut16(output, local_cursor + 28, 0)
+        ZipCopyBytes(output, local_cursor + 30, input, item.name_start, item.name_size)
+        ZipCopyBytes(output, local_cursor + 30 + item.name_size, input,
+            item.data_start, item.data_size)
+        local_cursor += 30 + item.name_size + item.data_size
+        index += 1
+    }
+    directory_start: u64 = local_cursor
+    index = 0
+    offset: u64 = 0
+    while index < cast(u64)items.count {
+        item: ZipWriteItem = items[index]
+        size: u32 = cast(u32)item.data_size
+        crc: u32 = ZipCRC32Range(input, item.data_start, item.data_size)
+        ZipPut32(output, local_cursor, cast(u32)0x02014b50)
+        ZipPut16(output, local_cursor + 4, 20)
+        ZipPut16(output, local_cursor + 6, 20)
+        ZipPut16(output, local_cursor + 8, 0)
+        ZipPut16(output, local_cursor + 10, 0)
+        ZipPut32(output, local_cursor + 12, 0)
+        ZipPut32(output, local_cursor + 16, crc)
+        ZipPut32(output, local_cursor + 20, size)
+        ZipPut32(output, local_cursor + 24, size)
+        ZipPut16(output, local_cursor + 28, cast(u32)item.name_size)
+        ZipPut16(output, local_cursor + 30, 0)
+        ZipPut16(output, local_cursor + 32, 0)
+        ZipPut16(output, local_cursor + 34, 0)
+        ZipPut16(output, local_cursor + 36, 0)
+        ZipPut32(output, local_cursor + 38, 0)
+        ZipPut32(output, local_cursor + 42, cast(u32)offset)
+        ZipCopyBytes(output, local_cursor + 46, input, item.name_start, item.name_size)
+        local_cursor += 46 + item.name_size
+        offset += 30 + item.name_size + item.data_size
+        index += 1
+    }
+    ZipPut32(output, local_cursor, cast(u32)0x06054b50)
+    ZipPut32(output, local_cursor + 4, 0)
+    ZipPut16(output, local_cursor + 8, cast(u32)items.count)
+    ZipPut16(output, local_cursor + 10, cast(u32)items.count)
+    ZipPut32(output, local_cursor + 12, cast(u32)(local_cursor - directory_start))
+    ZipPut32(output, local_cursor + 16, cast(u32)directory_start)
+    ZipPut16(output, local_cursor + 20, 0)
+    return required
+}
