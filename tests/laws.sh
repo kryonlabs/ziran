@@ -18,18 +18,26 @@ Extern :: () -> s32 #foreign host_api;
 #law EffectPure effect Pure;
 #law AbiPortable abi Pure;
 #law CustomTrue custom Pure(20, 22) == 42;
+#law EffectClassPure effect Pure == pure;
+#law BoundExact bounds [Count]s32 == 4;
+#law BoundAtLeast bounds [Count]s32 >= 4;
+#law SizeExact size Point == 8;
+#law SizeAtLeast size Point >= 8;
 
 #program_export
 Answer :: () -> s32 { return Pure(20, 22) }
 ZI
 
 "$ziran" check --root "$work" "$work/laws.zi" > "$work/laws.json"
-test "$(wc -l < "$work/laws.json")" = 5
+test "$(wc -l < "$work/laws.json")" = 10
 rg -q '"law":"LayoutComplete","kind":"type".*"status":"proved"' "$work/laws.json"
 rg -q '"law":"BoundResolved","kind":"bounds".*"status":"proved"' "$work/laws.json"
 rg -q '"law":"EffectPure","kind":"effect".*"status":"proved"' "$work/laws.json"
 rg -q '"law":"AbiPortable","kind":"abi".*"status":"proved"' "$work/laws.json"
 rg -q '"law":"CustomTrue","kind":"custom".*"status":"proved"' "$work/laws.json"
+rg -q '"law":"EffectClassPure".*"status":"proved".*Pure is pure' "$work/laws.json"
+rg -q '"law":"BoundExact".*"status":"proved".*bound 4 == 4' "$work/laws.json"
+rg -q '"law":"SizeExact".*"status":"proved".*8 bytes == 8' "$work/laws.json"
 
 "$ziran" ir --root "$work" -o "$work/ir" "$work/laws.zi"
 "$ziran" check --root "$work/ir" "$work/ir/laws.zir" > "$work/saved.json"
@@ -43,8 +51,12 @@ cmp "$work/laws-source.zib" "$work/laws-saved.zib"
 test "$("$ziran" run "$work/laws-source.zib")" = 42
 
 cat > "$work/disproved.zi" <<'ZI'
+Pair :: struct { a: s64; b: s64; }
 Pure :: (a: s32, b: s32) -> s32 { return a + b }
 #law CustomFalse custom Pure(1, 1) == 42;
+#law EffectWrong effect Pure == mutating;
+#law BoundWrong bounds [2]s32 >= 8;
+#law SizeWrong size Pair <= 8;
 #program_export
 Answer :: () -> s32 { return 1 }
 ZI
@@ -53,8 +65,14 @@ if "$ziran" check --root "$work" "$work/disproved.zi" \
     echo 'a disproved law passed the gate' >&2
     exit 1
 fi
-rg -q '"status":"disproved"' "$work/disproved.json"
+rg -q '"law":"CustomFalse".*"status":"disproved"' "$work/disproved.json"
+rg -q '"law":"EffectWrong".*"status":"disproved".*not mutating' "$work/disproved.json"
+rg -q '"law":"BoundWrong".*"status":"disproved".*bound 2 >= 8' "$work/disproved.json"
+rg -q '"law":"SizeWrong".*"status":"disproved".*16 bytes <= 8' "$work/disproved.json"
 rg -q 'law CustomFalse is disproved' "$work/disproved.err"
+rg -q 'law EffectWrong is disproved' "$work/disproved.err"
+rg -q 'law BoundWrong is disproved' "$work/disproved.err"
+rg -q 'law SizeWrong is disproved' "$work/disproved.err"
 
 cat > "$work/unknown.zi" <<'ZI'
 host_api :: #system_library "host_api";

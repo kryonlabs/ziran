@@ -634,6 +634,25 @@ prune_record_fields(ZirProgram *program, const char *entry_module,
             if(module->imports[i].kind == ZIR_IMPORT_EXTERN)
                 mark_signature_fields(module, module->imports[i].args,
                     module->imports[i].return_type, uses, use_count);
+        for(int l = 0; l < module->law_count; l++) {
+            const ZirLaw *law = &module->laws[l];
+            if(!strcmp(law->kind, "size") || !strcmp(law->kind, "type")) {
+                const char *ops[] = {"==", ">=", "<="};
+                const char *op = NULL;
+                char name[ZIR_NAME_MAX];
+                size_t length;
+                for(int o = 0; o < 3 && op == NULL; o++)
+                    op = strstr(law->payload, ops[o]);
+                length = op != NULL ? (size_t)(op - law->payload) :
+                                      strlen(law->payload);
+                if(length == 0 || length >= sizeof(name))
+                    continue;
+                memcpy(name, law->payload, length);
+                name[length] = '\0';
+                trim_in_place(name);
+                mark_all_fields(module, name, uses, use_count);
+            }
+        }
         for(int f = 0; f < module->function_count; f++) {
             ZirFunction *fn = &module->functions[f];
             if(strcmp(module->name, entry_module) == 0 &&
@@ -653,6 +672,9 @@ prune_record_fields(ZirProgram *program, const char *entry_module,
                         (!strcmp(expr->name, "VecPop") ||
                          !strcmp(expr->name, "VecGet")))
                     mark_all_fields(module, expr->type, uses, use_count);
+                else if(expr->kind == ZIR_EXPR_SIZE_OF &&
+                        expr->name[0])
+                    mark_all_fields(module, expr->name, uses, use_count);
             }
         }
     }
@@ -1223,10 +1245,39 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
                     for(int t = 0; t < module->type_count; t++)
                         if(strcmp(module->types[t].name, resolved) == 0)
                             keep_types[m][t] = 1;
+            } else if(!strcmp(law->kind, "size")) {
+                const char *ops[] = {"==", ">=", "<="};
+                for(int o = 0; o < 3; o++) {
+                    const char *op = strstr(law->payload, ops[o]);
+                    char name[ZIR_NAME_MAX];
+                    size_t length;
+                    if(op == NULL)
+                        continue;
+                    length = (size_t)(op - law->payload);
+                    if(length == 0 || length >= sizeof(name))
+                        continue;
+                    memcpy(name, law->payload, length);
+                    name[length] = '\0';
+                    trim_in_place(name);
+                    for(int t = 0; t < module->type_count; t++)
+                        if(strcmp(module->types[t].name, name) == 0)
+                            keep_types[m][t] = 1;
+                    break;
+                }
             } else if(!strcmp(law->kind, "effect") ||
                       !strcmp(law->kind, "abi")) {
+                char name[ZIR_NAME_MAX];
+                const char *comparison = strstr(law->payload, "==");
+                size_t length = comparison != NULL ?
+                    (size_t)(comparison - law->payload) :
+                    strlen(law->payload);
+                if(length >= sizeof(name))
+                    length = sizeof(name) - 1;
+                memcpy(name, law->payload, length);
+                name[length] = '\0';
+                trim_in_place(name);
                 for(int f = 0; f < module->function_count; f++)
-                    if(strcmp(module->functions[f].name, law->payload) == 0)
+                    if(strcmp(module->functions[f].name, name) == 0)
                         keep[m][f] = 1;
             }
         }

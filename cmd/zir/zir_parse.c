@@ -5674,12 +5674,13 @@ parse_source(const char *path, const char *root, const char *source,
                     strcmp(kind, "effect") != 0 &&
                     strcmp(kind, "bounds") != 0 &&
                     strcmp(kind, "abi") != 0 &&
-                    strcmp(kind, "custom") != 0) ||
+                    strcmp(kind, "custom") != 0 &&
+                    strcmp(kind, "size") != 0) ||
                    *skip_ws(body) == '\0' || *semi != ';' ||
                    semi == body)
                     die_at(Span(rel, line_no, 1),
                            "#law requires NAME kind payload; with kind "
-                           "type, effect, bounds, abi, or custom");
+                           "type, effect, bounds, abi, custom, or size");
                 {
                     const char *start = skip_ws(body);
                     size_t payload_length = (size_t)(semi - start);

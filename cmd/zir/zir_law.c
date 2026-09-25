@@ -69,6 +69,84 @@ static LawStatus
 evaluate_bounds_law(const ZirModule *module, const ZirLaw *law,
                     char *detail, size_t size)
 {
+    {
+        /* `Type == N` / `>= N` / `<= N` compare the resolved bound. */
+        const char *ops[] = {"==", ">=", "<="};
+        for(int o = 0; o < 3; o++) {
+            const char *op = strstr(law->payload, ops[o]);
+            if(op == NULL)
+                continue;
+            char type[ZIR_TEXT_MAX];
+            char wanted_text[ZIR_NAME_MAX];
+            long wanted = 0;
+            long bound = 0;
+            size_t length = (size_t)(op - law->payload);
+            if(length == 0 || length >= sizeof(type))
+                break;
+            memcpy(type, law->payload, length);
+            type[length] = '\0';
+            trim_in_place(type);
+            snprintf(wanted_text, sizeof(wanted_text), "%s",
+                     skip_ws(op + 2));
+            trim_in_place(wanted_text);
+            if(!EvaluateCompileExpression(module, wanted_text, law->span,
+                                          0, &wanted)) {
+                snprintf(detail, size,
+                         "comparison bound %s is not a compile-time value",
+                         wanted_text);
+                return LAW_UNKNOWN;
+            }
+            {
+                char resolved[ZIR_TEXT_MAX];
+                const char *cursor = type;
+                for(int depth = 0; depth < 8; depth++) {
+                    const ZirDefine *found = NULL;
+                    if(cursor[0] == '[')
+                        break;
+                    for(int d = 0; d < module->define_count; d++)
+                        if(strcmp(module->defines[d].name, cursor) == 0) {
+                            found = &module->defines[d];
+                            break;
+                        }
+                    if(found == NULL)
+                        break;
+                    cursor = skip_ws(found->value);
+                }
+                snprintf(resolved, sizeof(resolved), "%s", cursor);
+                trim_in_place(resolved);
+                {
+                    const char *close = strchr(resolved, ']');
+                    char bound_text[ZIR_NAME_MAX];
+                    if(close == NULL ||
+                       (size_t)(close - resolved - 1) >=
+                           sizeof(bound_text)) {
+                        snprintf(detail, size,
+                                 "%s does not name a fixed-array type", type);
+                        return LAW_DISPROVED;
+                    }
+                    memcpy(bound_text, resolved + 1,
+                           (size_t)(close - resolved - 1));
+                    bound_text[close - resolved - 1] = '\0';
+                    trim_in_place(bound_text);
+                    if(!EvaluateCompileExpression(module, bound_text,
+                                                  law->span, 0, &bound)) {
+                        snprintf(detail, size,
+                                 "%s has a bound the evaluator cannot fold",
+                                 type);
+                        return LAW_UNKNOWN;
+                    }
+                }
+            }
+            {
+                int holds = o == 0 ? bound == wanted :
+                             o == 1 ? bound >= wanted : bound <= wanted;
+                snprintf(detail, size, "%s bound %ld %s %ld", type, bound,
+                         ops[o], wanted);
+                return holds ? LAW_PROVED : LAW_DISPROVED;
+            }
+        }
+    }
+    {
     const char *payload = skip_ws(law->payload);
     const char *resolved = payload;
     char buffer[ZIR_TEXT_MAX];
@@ -129,6 +207,7 @@ evaluate_bounds_law(const ZirModule *module, const ZirLaw *law,
              "%s has a bound the compile-time evaluator cannot fold",
              law->payload);
     return LAW_UNKNOWN;
+    }
 }
 
 /* kind: effect ---------------------------------------------------------- */
@@ -182,6 +261,8 @@ find_extern_import(const ZirModule *module, const char *name)
     return NULL;
 }
 
+/* `Proc == class` compares the derived effect class; a bare name keeps the
+ * historical yes/no foreign check. */
 static LawStatus
 evaluate_effect_law(const ZirModule *module, const ZirLaw *law,
                     char *detail, size_t size)
@@ -189,6 +270,46 @@ evaluate_effect_law(const ZirModule *module, const ZirLaw *law,
     const ZirModule *owner = NULL;
     const ZirFunction *fn = NULL;
     const ZirImport *import = NULL;
+    char payload[ZIR_TEXT_MAX];
+    char *comparison = NULL;
+    copy_text(payload, sizeof(payload), law->payload);
+    trim_in_place(payload);
+    comparison = strstr(payload, "==");
+    if(comparison != NULL) {
+        char name[ZIR_NAME_MAX], expected[16];
+        const char *wanted;
+        size_t name_length = (size_t)(comparison - payload);
+        *comparison = '\0';
+        trim_in_place(payload);
+        wanted = skip_ws(comparison + 2);
+        snprintf(name, sizeof(name), "%.*s", (int)name_length, payload);
+        snprintf(expected, sizeof(expected), "%s", wanted);
+        trim_in_place(expected);
+        if(effect_rank(expected) > 3 || expected[0] == '\0' ||
+           name[0] == '\0') {
+            snprintf(detail, size,
+                     "expected class pure, observing, mutating, or external");
+            return LAW_DISPROVED;
+        }
+        if(ResolveFunction(module, name, &owner, &fn) <= 0 || fn == NULL) {
+            import = find_extern_import(module, name);
+            if(import != NULL) {
+                snprintf(detail, size, "%s is foreign; class is external",
+                         name);
+                return strcmp(expected, "external") == 0 ?
+                       LAW_PROVED : LAW_DISPROVED;
+            }
+            snprintf(detail, size, "no visible procedure named %s", name);
+            return LAW_DISPROVED;
+        }
+        if(strcmp(fn->effect_class, expected) == 0) {
+            snprintf(detail, size, "%s is %s", name, expected);
+            return LAW_PROVED;
+        }
+        snprintf(detail, size, "%s is %s, not %s", name,
+                 fn->effect_class, expected);
+        return LAW_DISPROVED;
+    }
     if(ResolveFunction(module, law->payload, &owner, &fn) <= 0 ||
         fn == NULL) {
         import = find_extern_import(module, law->payload);
@@ -313,6 +434,54 @@ evaluate_abi_law(const ZirModule *module, const ZirLaw *law,
     return LAW_PROVED;
 }
 
+/* kind: size ------------------------------------------------------------ */
+
+static LawStatus
+evaluate_size_law(const ZirModule *module, const ZirLaw *law,
+                  char *detail, size_t size)
+{
+    const char *ops[] = {"==", ">=", "<="};
+    for(int o = 0; o < 3; o++) {
+        const char *op = strstr(law->payload, ops[o]);
+        char type[ZIR_TEXT_MAX], wanted_text[ZIR_NAME_MAX];
+        size_t bytes = 0, alignment = 0;
+        long wanted = 0;
+        size_t length;
+        if(op == NULL)
+            continue;
+        length = (size_t)(op - law->payload);
+        if(length == 0 || length >= sizeof(type))
+            break;
+        memcpy(type, law->payload, length);
+        type[length] = '\0';
+        trim_in_place(type);
+        snprintf(wanted_text, sizeof(wanted_text), "%s", skip_ws(op + 2));
+        trim_in_place(wanted_text);
+        if(!EvaluateCompileExpression(module, wanted_text, law->span, 0,
+                                      &wanted)) {
+            snprintf(detail, size,
+                     "comparison size %s is not a compile-time value",
+                     wanted_text);
+            return LAW_UNKNOWN;
+        }
+        if(!TypeLayout(module, type, &bytes, &alignment)) {
+            snprintf(detail, size, "%s has no concrete layout", type);
+            return LAW_DISPROVED;
+        }
+        {
+            int holds = o == 0 ? bytes == (size_t)wanted :
+                         o == 1 ? bytes >= (size_t)wanted :
+                                  bytes <= (size_t)wanted;
+            snprintf(detail, size, "%s lays out as %zu bytes %s %ld", type,
+                     bytes, ops[o], wanted);
+            return holds ? LAW_PROVED : LAW_DISPROVED;
+        }
+    }
+    snprintf(detail, size,
+             "size laws need `Type == N`, `>= N`, or `<= N`");
+    return LAW_DISPROVED;
+}
+
 /* kind: custom ---------------------------------------------------------- */
 
 static LawStatus
@@ -345,6 +514,8 @@ EvaluateLaw(const ZirProgram *program, const ZirModule *module,
         status = evaluate_effect_law(module, law, detail, size);
     else if(!strcmp(law->kind, "abi"))
         status = evaluate_abi_law(module, law, detail, size);
+    else if(!strcmp(law->kind, "size"))
+        status = evaluate_size_law(module, law, detail, size);
     else if(!strcmp(law->kind, "custom"))
         status = evaluate_custom_law(module, law, detail, size);
     else {
@@ -465,7 +636,7 @@ vec_operation_name(const char *name)
            !strcmp(name, "BuilderAppend") || !strcmp(name, "BuilderFinish");
 }
 
-static int
+int
 effect_rank(const char *name)
 {
     return !strcmp(name, "external") ? 3 :

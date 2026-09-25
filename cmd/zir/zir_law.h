@@ -2,6 +2,7 @@
 #define ZIR_LAW_H
 #include "zir.h"
 #include <stdio.h>
+int effect_rank(const char *name);
 int EvaluateLaw(const ZirProgram *program, const ZirModule *module,
                 const ZirLaw *law, char *detail, size_t size);
 const char *LawStatusName(int status);
