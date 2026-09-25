@@ -277,6 +277,20 @@ is_identifier_text(const char *text)
 }
 
 static int
+is_member_path_text(const char *text)
+{
+    const unsigned char *cursor = (const unsigned char *)text;
+    if(cursor == NULL || (!isalpha(*cursor) && *cursor != '_'))
+        return 0;
+    for(;;) {
+        while(isalnum(*cursor) || *cursor == '_') cursor++;
+        if(*cursor == '\0') return 1;
+        if(*cursor++ != '.' || (!isalpha(*cursor) && *cursor != '_'))
+            return 0;
+    }
+}
+
+static int
 contains_source_directive(const char *source, const char *directive)
 {
     size_t length = strlen(directive);
@@ -6337,14 +6351,16 @@ parse_source(const char *path, const char *root, const char *source,
                         statement->is_using = 1;
                         if(kind == ZIR_STMT_EXPR) {
                             char name[ZIR_NAME_MAX];
+                            if(strlen(t) >= sizeof(name))
+                                die_at(span, "using field path is too long");
                             copy_text(name, sizeof(name), t);
                             size_t length = strlen(name);
                             if(length > 0 && name[length - 1] == ';')
                                 name[--length] = '\0';
                             trim_in_place(name);
-                            if(!is_identifier_text(name))
+                            if(!is_member_path_text(name))
                                 die_at(span,
-                                       "using needs a plain record binding");
+                                       "using needs a record binding or field path");
                             copy_text(statement->name,
                                       sizeof(statement->name), name);
                         }

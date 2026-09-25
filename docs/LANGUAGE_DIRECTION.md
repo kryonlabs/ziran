@@ -99,15 +99,16 @@ foreign calls before native or portable output, including when checking saved
 `.zir`.
 The `#slot` declaration, capturing body forms, and record block calls are
 rejected. Record values use `Type.{field = value}` in ordinary calls.
-`using record: Type` parameter or local, or `using record;` after a local or
-parameter declaration, makes that record's direct fields available by name
+`using record: Type` parameter or local, `using record;` after a local or
+parameter declaration, or `using entity.position;` for a nested record,
+makes that record's fields available by name
 within the lexical scope. These references become ordinary checked member
 accesses in saved IR. Explicit locals shadow promoted fields, and ambiguous
 promotions are errors. A struct field declared `using field: Record` exposes
 that record's fields while preserving the contained storage; nested and
 generic record applications keep the same behavior. Native targets also
-accept pointer-backed `using` fields. Nested imperative `using` paths, import
-re-exports, polymorphic `using` bodies, `#as`, and `using` modifiers remain
+accept pointer-backed `using` fields. Import re-exports, polymorphic
+`using` bodies, `#as`, and `using` modifiers remain
 language gaps.
 A procedure type can be named with `Child :: #type (s32) -> ();` or
 `Compute :: #type (s32) -> s32;` and passed a named

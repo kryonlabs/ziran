@@ -16,8 +16,10 @@
 typedef struct Binding {
     char name[ZIR_NAME_MAX];
     char type[ZIR_NAME_MAX];
+    char using_path[ZIR_NAME_MAX];
     int depth;
-    int using_depth; /* source-only activation scope, -1 when inactive */
+    int is_using_namespace;
+    int root_index;
 } Binding;
 
 typedef struct SpecializationRequest {
@@ -501,7 +503,8 @@ bind(Checker *c, const char *name, const char *type, ZirSourceSpan span)
         }
     }
     for(int i = c->count - 1; i >= 0 && c->bindings[i].depth == c->depth; i--)
-        if(!strcmp(c->bindings[i].name, name)) {
+        if(!c->bindings[i].is_using_namespace &&
+           !strcmp(c->bindings[i].name, name)) {
             error(c, span, "duplicate binding", name);
             return;
         }
@@ -513,29 +516,102 @@ bind(Checker *c, const char *name, const char *type, ZirSourceSpan span)
     }
     copy_text(c->bindings[c->count].name, ZIR_NAME_MAX, name);
     copy_text(c->bindings[c->count].type, ZIR_NAME_MAX, type);
+    c->bindings[c->count].using_path[0] = '\0';
     c->bindings[c->count].depth = c->depth;
-    c->bindings[c->count++].using_depth = -1;
+    c->bindings[c->count].is_using_namespace = 0;
+    c->bindings[c->count++].root_index = -1;
 }
 
 static void
-activate_using(Checker *c, const char *name, ZirSourceSpan span)
+activate_using(Checker *c, const char *path, ZirSourceSpan span)
 {
-    for(int i = c->count - 1; i >= 0; i--) {
-        Binding *binding = &c->bindings[i];
-        if(strcmp(binding->name, name)) continue;
-        const char *type = skip_ws(binding->type);
-        if(*type == '*') type = skip_ws(type + 1);
-        const ZirType *record = FindType(c->module, type, NULL);
-        if(record == NULL || record->is_enum || record->is_procedure_type ||
-           record->is_record_template) {
-            error(c, span, "using requires a concrete record binding", name);
-            return;
-        }
-        if(binding->using_depth < 0)
-            binding->using_depth = c->depth;
+    const char *dot = strchr(path, '.');
+    size_t root_length = dot == NULL ? strlen(path) : (size_t)(dot - path);
+    if(root_length == 0 || root_length >= ZIR_NAME_MAX) {
+        error(c, span, "using needs a record binding", path);
         return;
     }
-    error(c, span, "using requires a local or parameter binding", name);
+    char root[ZIR_NAME_MAX];
+    memcpy(root, path, root_length);
+    root[root_length] = '\0';
+    int root_index = -1;
+    const char *binding_type = NULL;
+    for(int i = c->count - 1; i >= 0; i--)
+        if(!c->bindings[i].is_using_namespace &&
+           strcmp(c->bindings[i].name, root) == 0) {
+            root_index = i;
+            binding_type = c->bindings[i].type;
+            break;
+        }
+    if(binding_type == NULL) {
+        const ZirGlobal *global = global_binding(c, root);
+        if(global != NULL) binding_type = global->type;
+    }
+    if(binding_type == NULL) {
+        error(c, span, "using requires a local, parameter, or global binding", root);
+        return;
+    }
+    char current_type[ZIR_NAME_MAX], using_path[ZIR_NAME_MAX] = "";
+    copy_text(current_type, sizeof(current_type), binding_type);
+    while(dot != NULL) {
+        const char *segment = dot + 1;
+        dot = strchr(segment, '.');
+        size_t length = dot == NULL ? strlen(segment) : (size_t)(dot - segment);
+        if(length == 0 || length >= ZIR_NAME_MAX) {
+            error(c, span, "invalid using field path", path);
+            return;
+        }
+        char field_name[ZIR_NAME_MAX], field_path[ZIR_NAME_MAX];
+        char field_type[ZIR_NAME_MAX];
+        memcpy(field_name, segment, length);
+        field_name[length] = '\0';
+        const char *base = skip_ws(current_type);
+        if(*base == '*') base = skip_ws(base + 1);
+        const ZirModule *owner = NULL;
+        const ZirType *record = FindType(c->module, base, &owner);
+        if(record == NULL || record->is_enum || record->is_procedure_type ||
+           record->is_record_template) {
+            error(c, span, "using field requires a concrete record", path);
+            return;
+        }
+        int found = ResolveRecordField(owner, record, field_name,
+                                       field_path, sizeof(field_path),
+                                       field_type, sizeof(field_type));
+        if(found <= 0) {
+            error(c, span, found < 0 ? "ambiguous using field path" :
+                  "unknown using field", field_name);
+            return;
+        }
+        size_t used = strlen(using_path), added = strlen(field_path);
+        if(used + (used != 0) + added >= sizeof(using_path)) {
+            error(c, span, "using field path is too long", path);
+            return;
+        }
+        if(used != 0) strcat(using_path, ".");
+        strcat(using_path, field_path);
+        copy_text(current_type, sizeof(current_type), field_type);
+    }
+    const char *base = skip_ws(current_type);
+    if(*base == '*') base = skip_ws(base + 1);
+    const ZirType *record = FindType(c->module, base, NULL);
+    if(record == NULL || record->is_enum || record->is_procedure_type ||
+       record->is_record_template) {
+        error(c, span, "using requires a concrete record binding", path);
+        return;
+    }
+    if(c->count == c->capacity) {
+        int size = c->capacity ? c->capacity * 2 : 32;
+        Binding *next = realloc(c->bindings, (size_t)size * sizeof(*next));
+        if(!next) { c->errors++; c->failed = 1; return; }
+        c->bindings = next; c->capacity = size;
+    }
+    Binding *namespace = &c->bindings[c->count++];
+    copy_text(namespace->name, sizeof(namespace->name), root);
+    copy_text(namespace->type, sizeof(namespace->type), current_type);
+    copy_text(namespace->using_path, sizeof(namespace->using_path), using_path);
+    namespace->depth = c->depth;
+    namespace->is_using_namespace = 1;
+    namespace->root_index = root_index;
 }
 
 static void
@@ -561,26 +637,40 @@ promote_using_member(Checker *c, int index)
     int selected = -1;
     for(int i = c->count - 1; i >= 0; i--) {
         const Binding *binding = &c->bindings[i];
-        if(binding->using_depth < 0) continue;
-        const char *type = skip_ws(binding->type);
-        if(*type == '*') type = skip_ws(type + 1);
-        const ZirType *record = FindType(c->module, type, NULL);
-        if(record == NULL) continue;
-        size_t offset = 0;
-        ZirTypeField field;
-        while(TypeNextField(record, &offset, &field) == 1)
-            if(strcmp(field.name, member->name) == 0) {
-                if(selected >= 0) {
-                    error(c, member->span, "ambiguous using field", member->name);
-                    return;
-                }
-                selected = i;
+        if(!binding->is_using_namespace) continue;
+        int visible_root = -1;
+        for(int j = c->count - 1; j >= 0; j--)
+            if(!c->bindings[j].is_using_namespace &&
+               strcmp(c->bindings[j].name, binding->name) == 0) {
+                visible_root = j;
                 break;
             }
+        if(visible_root != binding->root_index) continue;
+        const char *type = skip_ws(binding->type);
+        if(*type == '*') type = skip_ws(type + 1);
+        const ZirModule *owner = NULL;
+        const ZirType *record = FindType(c->module, type, &owner);
+        if(record == NULL) continue;
+        char field_path[ZIR_NAME_MAX], field_type[ZIR_NAME_MAX];
+        int found = ResolveRecordField(owner, record, member->name,
+                                       field_path, sizeof(field_path),
+                                       field_type, sizeof(field_type));
+        if(found > 0 && selected >= 0 &&
+           binding->root_index == c->bindings[selected].root_index &&
+           strcmp(binding->name, c->bindings[selected].name) == 0 &&
+           strcmp(binding->using_path,
+                  c->bindings[selected].using_path) == 0)
+            continue;
+        if(found < 0 || (found > 0 && selected >= 0)) {
+            error(c, member->span, "ambiguous using field", member->name);
+            return;
+        }
+        if(found > 0) selected = i;
     }
     if(selected < 0) return;
-    char base_name[ZIR_NAME_MAX];
+    char base_name[ZIR_NAME_MAX], using_path[ZIR_NAME_MAX];
     copy_text(base_name, sizeof(base_name), c->bindings[selected].name);
+    copy_text(using_path, sizeof(using_path), c->bindings[selected].using_path);
     ZirSourceSpan span = member->span;
     int base_index = c->fn->expr_count;
     ZirExpr *base = FunctionAddExpr(c->fn, ZIR_EXPR_IDENT, base_name, span);
@@ -589,6 +679,24 @@ promote_using_member(Checker *c, int index)
         return;
     }
     copy_text(base->name, sizeof(base->name), base_name);
+    for(const char *segment = using_path; *segment != '\0'; ) {
+        const char *dot = strchr(segment, '.');
+        size_t length = dot == NULL ? strlen(segment) :
+                        (size_t)(dot - segment);
+        char field_name[ZIR_NAME_MAX];
+        memcpy(field_name, segment, length);
+        field_name[length] = '\0';
+        int next_index = c->fn->expr_count;
+        ZirExpr *next = FunctionAddExpr(c->fn, ZIR_EXPR_MEMBER,
+                                        field_name, span);
+        if(next == NULL) { c->failed = 1; return; }
+        next->left = base_index;
+        copy_text(next->name, sizeof(next->name), field_name);
+        copy_text(next->op, sizeof(next->op), ".");
+        base_index = next_index;
+        if(dot == NULL) break;
+        segment = dot + 1;
+    }
     member = &c->fn->exprs[index];
     member->kind = ZIR_EXPR_MEMBER;
     member->left = base_index;
@@ -814,7 +922,8 @@ static const char *
 lookup_lexical(Checker *c, const char *name)
 {
     for(int i = c->count - 1; i >= 0; i--)
-        if(!strcmp(c->bindings[i].name, name))
+        if(!c->bindings[i].is_using_namespace &&
+           !strcmp(c->bindings[i].name, name))
             return c->bindings[i].type;
     return "";
 }
@@ -3288,9 +3397,6 @@ restart:
         c->current_stmt = st;
         const char *type;
         if(st->kind == ZIR_STMT_BLOCK_CLOSE) {
-            for(int b = 0; b < c->count; b++)
-                if(c->bindings[b].using_depth == c->depth)
-                    c->bindings[b].using_depth = -1;
             while(c->count && c->bindings[c->count - 1].depth == c->depth) c->count--;
             if(c->depth) c->depth--;
         }

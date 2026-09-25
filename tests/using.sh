@@ -8,6 +8,10 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/lib.zi" <<'ZI'
 Pair :: struct { left: s64; right: s64; }
+Position :: struct { x: s64; y: s64; }
+Status :: struct { code: s64; }
+Entity :: struct { position: Position; status: Status; }
+Container :: struct { entity: Entity; }
 Sum :: (using pair: Pair) -> s64 {
     return left + right
 }
@@ -15,6 +19,14 @@ Explicit :: (pair: Pair) -> s64 {
     using pair;
     left += 1
     return left + right
+}
+Nested :: (entity: Entity) -> s64 {
+    using entity.position;
+    return x + y
+}
+Deep :: (container: Container) -> s64 {
+    using container.entity.position;
+    return x + y
 }
 ZI
 cat > "$work/app.zi" <<'ZI'
@@ -31,6 +43,21 @@ Answer :: () -> s32 {
         if left != 9 { return 0 }
     }
     if left != 21 { return 0 }
+    entity := Entity.{.position = Position.{.x = 19, .y = 22},
+                      .status = Status.{.code = 1}}
+    using entity.position;
+    using entity.position;
+    using entity.status;
+    x += code
+    if x + y != 42 { return 0 }
+    {
+        using entity.position;
+        if x != 20 { return 0 }
+    }
+    if x + y != 42 { return 0 }
+    if Nested(entity) != 42 { return 0 }
+    container := Container.{.entity = entity}
+    if Deep(container) != 42 { return 0 }
     return 42
 }
 ZI
@@ -120,3 +147,91 @@ if "$ziran" check --root "$work" "$work/scope.zi" \
     exit 1
 fi
 grep -Fq 'unresolved name: value' "$work/scope.err"
+
+cat > "$work/nested_scope.zi" <<'ZI'
+Position :: struct { x: s64; }
+Entity :: struct { position: Position; }
+Bad :: () -> s64 {
+    entity := Entity.{.position = Position.{.x = 1}}
+    {
+        using entity.position;
+        if x != 1 { return 0 }
+    }
+    return x
+}
+ZI
+if "$ziran" check --root "$work" "$work/nested_scope.zi" \
+    2> "$work/nested_scope.err"; then
+    echo 'out-of-scope nested using field was accepted' >&2
+    exit 1
+fi
+grep -Fq 'unresolved name: x' "$work/nested_scope.err"
+
+cat > "$work/unknown_path.zi" <<'ZI'
+Entity :: struct { value: s64; }
+Bad :: (entity: Entity) -> s64 {
+    using entity.missing;
+    return 0
+}
+ZI
+if "$ziran" check --root "$work" "$work/unknown_path.zi" \
+    2> "$work/unknown_path.err"; then
+    echo 'unknown using field was accepted' >&2
+    exit 1
+fi
+grep -Fq 'unknown using field: missing' "$work/unknown_path.err"
+
+cat > "$work/invalid_path.zi" <<'ZI'
+Entity :: struct { value: s64; }
+Bad :: (entity: Entity) -> s64 {
+    using entity..value;
+    return 0
+}
+ZI
+if "$ziran" check --root "$work" "$work/invalid_path.zi" \
+    2> "$work/invalid_path.err"; then
+    echo 'invalid using field path was accepted' >&2
+    exit 1
+fi
+grep -Fq 'using needs a record binding or field path' "$work/invalid_path.err"
+
+cat > "$work/ambiguous_path.zi" <<'ZI'
+Position :: struct { x: s64; }
+Entity :: struct { left: Position; right: Position; }
+Bad :: (entity: Entity) -> s64 {
+    using entity.left;
+    using entity.right;
+    return x
+}
+ZI
+if "$ziran" check --root "$work" "$work/ambiguous_path.zi" \
+    2> "$work/ambiguous_path.err"; then
+    echo 'ambiguous nested using field was accepted' >&2
+    exit 1
+fi
+grep -Fq 'ambiguous using field: x' "$work/ambiguous_path.err"
+
+cat > "$work/global_path.zi" <<'ZI'
+Position :: struct { x: s64; }
+Entity :: struct { position: Position; }
+Global: Entity;
+Read :: () -> s64 {
+    using Global.position;
+    return x
+}
+ZI
+"$ziran" check --root "$work" "$work/global_path.zi"
+
+cat > "$work/scalar_path.zi" <<'ZI'
+Entity :: struct { value: s64; }
+Bad :: (entity: Entity) -> s64 {
+    using entity.value;
+    return 0
+}
+ZI
+if "$ziran" check --root "$work" "$work/scalar_path.zi" \
+    2> "$work/scalar_path.err"; then
+    echo 'scalar using field path was accepted' >&2
+    exit 1
+fi
+grep -Fq 'using requires a concrete record binding' "$work/scalar_path.err"
