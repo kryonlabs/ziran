@@ -77,6 +77,7 @@ static const Field function_fields[] = {
     STRING_FIELD(ZirFunction, default_args),
     U64_FIELD(ZirFunction, using_parameters),
     STRING_FIELD(ZirFunction, return_type), INTEGER_FIELD(ZirFunction, must_use),
+    INTEGER_FIELD(ZirFunction, is_conversion),
     INTEGER_FIELD(ZirFunction, exported),
     STRING_FIELD(ZirFunction, export_symbol),
     INTEGER_FIELD(ZirFunction, is_extern), INTEGER_FIELD(ZirFunction, extern_kind),

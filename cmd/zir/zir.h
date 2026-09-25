@@ -89,7 +89,7 @@ typedef struct ZirImport {
     char signature[ZIR_TEXT_MAX];
     char args[ZIR_TEXT_MAX];       /* parsed extern parameters */
     char return_type[ZIR_NAME_MAX];
-    int must_use; /* #must requires callers to keep the result */
+    int must_use;
     int required;
     int is_using; /* `using Alias :: #import` re-exports public names */
     ZirSourceSpan span;
@@ -138,6 +138,7 @@ typedef struct ZirFunction {
     uint64_t using_parameters; /* template parameter namespace flags */
     char return_type[ZIR_NAME_MAX];
     int must_use; /* #must requires callers to keep the result */
+    int is_conversion; /* `Name :: #as (source: Type) -> Result` */
     int exported;
     char export_symbol[ZIR_NAME_MAX]; /* optional #program_export linker name */
     int is_extern;

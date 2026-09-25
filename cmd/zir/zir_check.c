@@ -2058,6 +2058,9 @@ vec_option_result_type(Checker *c, const char *element, ZirSourceSpan span,
     return 1;
 }
 
+static const char *try_conversion(Checker *c, int index, const char *to,
+                                  ZirSourceSpan span);
+
 static const char *
 expression_type(Checker *c, int index)
 {
@@ -2829,9 +2832,16 @@ expression_type(Checker *c, int index)
             copy_text(c->expected_type, sizeof(c->expected_type), saved_expected);
             if(args && parameter >= 0 && parameter < expected) {
                 char *colon = strchr(parts[parameter], ':');
-                if(colon && !compatible_checked(c, skip_ws(colon + 1), arg_type))
-                    signature_error(c, c->fn->exprs[child].span,
-                                    "argument type mismatch", display_name);
+                if(colon && !compatible_checked(c, skip_ws(colon + 1), arg_type)) {
+                    const char *converted = try_conversion(c, child,
+                                                           skip_ws(colon + 1),
+                                                           c->fn->exprs[child].span);
+                    if(converted != NULL)
+                        arg_type = converted;
+                    else
+                        signature_error(c, c->fn->exprs[child].span,
+                                        "argument type mismatch", display_name);
+                }
                 if(colon && (!strcmp(arg_type, "integer") || !strcmp(arg_type, "real"))) {
                     const char *context = ScalarType(skip_ws(colon + 1));
                     if(*context) copy_text(c->fn->exprs[child].type, ZIR_NAME_MAX, context);
@@ -3973,6 +3983,113 @@ discarded_must_call(Checker *c, int index)
     return -1;
 }
 
+/* A conversion applies when its single parameter accepts `from` and its
+ * result is exactly `to`. */
+static int
+conversion_matches(Checker *c, const ZirFunction *conversion,
+                   const char *from, const char *to)
+{
+    char parameters[64][ZIR_TEXT_MAX];
+    int count;
+    char *colon;
+    if(conversion->is_template || conversion->is_extern ||
+       strcmp(conversion->return_type, to) != 0)
+        return 0;
+    count = *skip_ws(conversion->args) ?
+        split_top_level(conversion->args, parameters[0], 64,
+                        sizeof(parameters[0])) : 0;
+    if(count != 1)
+        return 0;
+    colon = strchr(parameters[0], ':');
+    if(colon == NULL)
+        return 0;
+    return compatible(skip_ws(colon + 1), from);
+}
+
+/* Rewrite an incompatible expression into a call on a visible `#as`
+ * conversion from its own type to `to`. The original expression moves into
+ * the call's first argument; parent references keep their index. Returns
+ * the conversion's result type, or NULL when no unique conversion applies. */
+static const char *
+try_conversion(Checker *c, int index, const char *to, ZirSourceSpan span)
+{
+    const char *from = c->fn->exprs[index].type;
+    const ZirFunction *conversion = NULL;
+    const ZirModule *owner = NULL;
+    if(!*from || !strcmp(from, to) || c->inference_only)
+        return NULL;
+    for(int pass = 0; pass < 2; pass++) {
+        const ZirModule *scope = pass == 0 ? c->module : NULL;
+        if(pass != 0) {
+            for(int i = 0; i < c->module->import_count; i++) {
+                const ZirImport *import = &c->module->imports[i];
+                if((import->kind != ZIR_IMPORT_OPEN &&
+                    !(import->kind == ZIR_IMPORT_MODULE &&
+                      import->is_using)) ||
+                   import->resolved_module == NULL)
+                    continue;
+                for(int f = 0; f < import->resolved_module->function_count;
+                    f++) {
+                    const ZirFunction *candidate =
+                        &import->resolved_module->functions[f];
+                    if(candidate->is_conversion && candidate->is_public &&
+                       conversion_matches(c, candidate, from, to)) {
+                        if(conversion != NULL && conversion != candidate) {
+                            error(c, span, "ambiguous #as conversion", to);
+                            return NULL;
+                        }
+                        conversion = candidate;
+                        owner = import->resolved_module;
+                    }
+                }
+            }
+            continue;
+        }
+        for(int f = 0; f < scope->function_count; f++) {
+            const ZirFunction *candidate = &scope->functions[f];
+            if(!candidate->is_conversion ||
+               !conversion_matches(c, candidate, from, to))
+                continue;
+            if(conversion != NULL && conversion != candidate) {
+                error(c, span, "ambiguous #as conversion", to);
+                return NULL;
+            }
+            conversion = candidate;
+            owner = scope;
+        }
+    }
+    if(conversion == NULL)
+        return NULL;
+    fprintf(stderr, "DBG convert [%s] from [%s] to [%s] via %s\n",
+            c->fn->exprs[index].text, from, to, conversion->name);
+    (void)owner;
+    {
+        ZirExpr *copy_slot = FunctionAddExpr(c->fn, c->fn->exprs[index].kind,
+                                             c->fn->exprs[index].name,
+                                             c->fn->exprs[index].span);
+        ZirExpr *call;
+        ZirExpr saved;
+        int copy_index;
+        if(copy_slot == NULL) {
+            c->failed = 1;
+            return NULL;
+        }
+        saved = c->fn->exprs[index];
+        *copy_slot = saved;
+        copy_slot->next_sibling = -1;
+        copy_index = (int)(copy_slot - c->fn->exprs);
+        call = &c->fn->exprs[index];
+        memset(call, 0, sizeof(*call));
+        call->kind = ZIR_EXPR_CALL;
+        copy_text(call->name, sizeof(call->name), conversion->name);
+        call->argument_index = -1;
+        call->first_child = copy_index;
+        call->span = saved.span;
+        copy_text(call->type, sizeof(call->type), conversion->return_type);
+        return call->type;
+    }
+}
+
 static int
 vec_primitive_name(const char *name)
 {
@@ -4212,7 +4329,14 @@ restart:
         if(st->kind == ZIR_STMT_DECL) {
             if(!*st->type) copy_text(st->type, sizeof(st->type),
                 !strcmp(type, "integer") ? "s64" : !strcmp(type, "real") ? "float64" : type);
-            else if(!compatible_checked(c, st->type, type)) error(c, st->span, "initializer type mismatch", st->name);
+            else if(!compatible_checked(c, st->type, type)) {
+                const char *converted = try_conversion(c, st->expr_root,
+                                                       st->type, st->span);
+                if(converted != NULL)
+                    type = converted;
+                else
+                    error(c, st->span, "initializer type mismatch", st->name);
+            }
             if(!strcmp(st->type, "null"))
                 error(c, st->span, "null requires an explicit pointer type", st->name);
             if(st->type[0] == '[') {
@@ -4316,9 +4440,24 @@ restart:
             if(!assignable(c, st->lhs_root)) error(c, st->span, "assignment requires an assignable destination", "");
             if(readonly_text_destination(c, st->lhs_root))
                 error(c, st->span, "collection count and borrowed string bytes are read-only", "");
-            if(!compatible_checked(c, lhs, type)) error(c, st->span, "assignment type mismatch", st->text);
+            if(!compatible_checked(c, lhs, type)) {
+                const char *converted = try_conversion(c, st->expr_root, lhs,
+                                                       st->span);
+                if(converted != NULL)
+                    type = converted;
+                else
+                    error(c, st->span, "assignment type mismatch", st->text);
+            }
         } else if(st->kind == ZIR_STMT_RETURN) {
-            if(!compatible_checked(c, c->fn->return_type, type)) error(c, st->span, "return type mismatch", c->fn->name);
+            if(!compatible_checked(c, c->fn->return_type, type)) {
+                const char *converted = try_conversion(c, st->expr_root,
+                                                       c->fn->return_type,
+                                                       st->span);
+                if(converted != NULL)
+                    type = converted;
+                else
+                    error(c, st->span, "return type mismatch", c->fn->name);
+            }
             if((st->expr_root < 0) != !strcmp(c->fn->return_type, "void"))
                 error(c, st->span, "return value does not match function signature", c->fn->name);
             if(contains_vec(c->module, c->fn->return_type, 0) &&

@@ -1960,7 +1960,7 @@ looks_like_function_header(const char *line)
 {
     char tmp[SOURCE_LINE_MAX];
     char *p;
-    char *body;
+    const char *body;
 
     if(starts_word(line, "#import") || strncmp(line, "#import,", 8) == 0)
         return 0;
@@ -1969,6 +1969,8 @@ looks_like_function_header(const char *line)
         return 0;
     snprintf(tmp, sizeof(tmp), "%s", p + 2);
     body = trim(tmp);
+    if(starts_word(body, "#as"))
+        body = skip_ws(body + 3);
     if(starts_word(body, "#import") || strncmp(body, "#import,", 8) == 0 ||
        starts_word(body, "#defined") ||
        starts_word(body, "#define") || starts_word(body, "struct") ||
@@ -5900,6 +5902,19 @@ parse_source(const char *path, const char *root, const char *source,
             char defaults[ZIR_TEXT_MAX] = "";
             char ret[ZIR_NAME_MAX];
             int has_body = strchr(t, '{') != NULL;
+            int conversion = 0;
+            {
+                const char *marker = strstr(t, "::");
+                if(marker != NULL) {
+                    marker = skip_ws(marker + 2);
+                    if(starts_word(marker, "#as")) {
+                        conversion = 1;
+                        if(*skip_ws(marker + 3) != '(')
+                            die_at(Span(rel, line_no, 1),
+                                   "#as requires (source: Type) -> Result");
+                    }
+                }
+            }
 
             parse_function_header(name, sizeof(name), args, sizeof(args),
                                   ret, sizeof(ret), t);
@@ -5919,6 +5934,17 @@ parse_source(const char *path, const char *root, const char *source,
                            "inconsistent using parameter defaults");
                 fn = ModuleAddFunction(module, name, args, ret, 0,
                                           Span(rel, line_no, 1));
+                if(conversion) {
+                    char parameters[64][ZIR_TEXT_MAX];
+                    int count = *skip_ws(args) ?
+                        split_top_level(args, parameters[0], 1,
+                                        sizeof(parameters[0])) : 0;
+                    if(count != 1 || strchr(args, '$') != NULL ||
+                       strcmp(ret, "void") == 0)
+                        die_at(fn->span,
+                               "#as requires one source parameter and a result");
+                    fn->is_conversion = 1;
+                }
                 fn->using_parameters = using_parameters;
                 fn->must_use = function_must_use(t, ret, fn->span);
                 copy_text(fn->default_args, sizeof(fn->default_args), defaults);
