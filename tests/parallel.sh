@@ -52,7 +52,7 @@ GO
 #include "par.h"
 int main(void) { return Answer() == 285 ? 0 : 1; }
 C
-            "${CC:-cc}" -std=c99 -pedantic-errors \
+            "${CC:-cc}" -std=c11 -pedantic-errors -pthread \
                 -I"$repo/include" -I"$output" "$output"/*.c \
                 -o "$output/app"
             "$output/app"
@@ -63,7 +63,7 @@ C
 #include "par.hpp"
 int main() { return Answer() == 285 ? 0 : 1; }
 CPP
-            "${CXX:-c++}" -std=c++17 \
+            "${CXX:-c++}" -std=c++17 -pedantic-errors -pthread \
                 -I"$repo/include" -I"$output" "$output"/*.cpp \
                 -o "$output/app"
             "$output/app"
@@ -71,6 +71,15 @@ CPP
     done
 done
 cmp "$work/source.zib" "$work/saved.zib"
+
+# Threaded native runs: same result under several worker counts.
+ZIRAN_PAR_THREADS=1 "$work/c-source/app"
+ZIRAN_PAR_THREADS=2 "$work/c-source/app"
+ZIRAN_PAR_THREADS=8 "$work/c-source/app"
+ZIRAN_PAR_THREADS=6 "$work/cpp-source/app"
+rg -q "ziran_parallel_run" "$work/c-source/par.c"
+rg -q "ziran_parallel_run" "$work/cpp-source/par.cpp"
+rg -q "#parallel region downgraded to serial" "$work/go-source/par.go"
 
 reject() {
     name=$1
@@ -143,3 +152,29 @@ Bad :: () -> s64 {
 }
 ZI
 reject bad_shape "#parallel requires a for region" "a parallel while"
+
+cat > "$work/bad_return.zi" <<'ZI'
+#program_export
+Bad :: () -> s64 {
+    #parallel for 0..4 {
+        return 1
+    }
+    return 0
+}
+ZI
+reject bad_return "cannot return from inside" "a region return"
+
+cat > "$work/inner_break.zi" <<'ZI'
+#program_export
+Ok :: () -> s64 {
+    #parallel for 0..4 {
+        j := 0
+        while j < 3 {
+            if j == 1 { break }
+            j += 1
+        }
+    }
+    return 9
+}
+ZI
+"$ziran" check --root "$work" "$work/inner_break.zi"

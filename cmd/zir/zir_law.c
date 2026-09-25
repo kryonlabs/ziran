@@ -863,6 +863,60 @@ check_parallel_region(const ZirProgram *program, const ZirModule *module,
         }
     }
     scan = block_open >= 0 ? block_open + 1 : 0;
+    {
+        /* The lowered tail is `if cursor == last { break; } advance;`; the
+         * region drives indices itself, so leave-controls there are fine.
+         * Everything else that exits the region breaks threaded execution. */
+        int region_loop = fn->stmts[while_index].loop_id;
+        int body_end = close - 1;
+        const char *cursor_name = NULL;
+        if(while_index >= 1)
+            cursor_name = fn->stmts[while_index - 1].kind ==
+                          ZIR_STMT_DECL ?
+                          fn->stmts[while_index - 1].name : NULL;
+        while(body_end > while_index + 3 && cursor_name != NULL) {
+            const ZirStmt *tail = &fn->stmts[body_end - 1];
+            if(tail->kind == ZIR_STMT_ASSIGN && tail->lhs_root >= 0 &&
+               fn->exprs[tail->lhs_root].kind == ZIR_EXPR_IDENT &&
+               !strcmp(fn->exprs[tail->lhs_root].name, cursor_name)) {
+                body_end--;
+                continue;
+            }
+            if(tail->kind == ZIR_STMT_BLOCK_CLOSE &&
+               body_end - 2 > while_index &&
+               fn->stmts[body_end - 2].kind == ZIR_STMT_BREAK &&
+               fn->stmts[body_end - 3].kind == ZIR_STMT_IF) {
+                body_end -= 3;
+                continue;
+            }
+            break;
+        }
+        {
+            int nested_loops = 0;
+            for(int s = while_index + 1; s < body_end; s++) {
+                const ZirStmt *st = &fn->stmts[s];
+                ZirStmtKind kind = st->kind;
+                if(kind == ZIR_STMT_WHILE || kind == ZIR_STMT_FOR)
+                    nested_loops++;
+                else if(kind == ZIR_STMT_BLOCK_CLOSE &&
+                        nested_loops > 0)
+                    nested_loops--;
+                if(kind == ZIR_STMT_RETURN) {
+                    Diagnostic(st->span, "parallel.leave",
+                               "#parallel region cannot return from inside");
+                    return 0;
+                }
+                if(kind == ZIR_STMT_BREAK || kind == ZIR_STMT_CONTINUE) {
+                    if(st->target_id == region_loop ||
+                       (st->target_id == 0 && nested_loops == 0)) {
+                        Diagnostic(st->span, "parallel.leave",
+                                   "#parallel region cannot break or continue out");
+                        return 0;
+                    }
+                }
+            }
+        }
+    }
     for(int s = scan; s <= close; s++) {
         const ZirStmt *st = &fn->stmts[s];
         int through_pointer = 0;

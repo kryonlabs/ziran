@@ -113,9 +113,10 @@ target error instead of silently changing the result.
 
 Parallel execution is a target requirement. Effect classes and the
 `#parallel for` acceptance rules above are implemented and checked on every
-target; the executed schedule is serial on all current backends, which the
-backend-duties clause permits as a reported downgrade. Threaded and GPU
-schedulers remain future work.
+target. Native C and C++ execute forward regions on pthreads with
+iteration-local workers and read-only captures; the portable VM and Go run
+regions serially with a reported downgrade, which the backend-duties clause
+permits. A GPU scheduler remains future work.
 
 ## Jai source syntax
 

@@ -1189,6 +1189,9 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
             continue;
         }
         fprintf(c, "\n");
+        EmitParallelWorkers(c, m, fn, ZIR_CPP,
+                           resolve_body_symbol, &(BodySymbols){
+                               m, restab, restab_count});
         BodySymbols symbols = {m, restab, restab_count};
         EmitSlotWrappers(c, m, fn, ZIR_CPP, resolve_body_symbol, &symbols);
         if(fn->is_public)

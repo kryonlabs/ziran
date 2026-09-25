@@ -24,6 +24,10 @@ void TargetDefineName(const ZirModule *module, ZirTarget target,
 void ArrayAbiName(const ZirFunction *fn, int parameter, char *out, size_t size);
 void ArrayAbiArgs(const ZirFunction *fn, char *out, size_t size);
 int CanEmitBody(const ZirModule *module, const ZirFunction *fn);
+int FunctionHasParallelRegions(const ZirFunction *fn);
+void EmitParallelWorkers(FILE *out, const ZirModule *module,
+                         const ZirFunction *fn, ZirTarget target,
+                         ZirResolveTarget resolve, void *context);
 void EmitNumbers(FILE *out, const ZirModule *module, ZirTarget target);
 void EmitNumberSupport(FILE *out, ZirTarget target, const char *prefix);
 void EmitStringType(FILE *out);

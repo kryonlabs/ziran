@@ -605,9 +605,16 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   and the region checker accepts a body only when every called procedure is
   `pure` or `observing`, writes target iteration-local bindings, Vec
   mutations stay on region storage, regions do not nest, and the shape is a
-  `for`; all targets execute regions serially with identical results and
-  byte-identical source/saved-IR bundles. There is no threaded or GPU
-  scheduler in this repository.
+  `for`; source and saved IR build byte-identical bundles everywhere.
+  Native C99 and C++ targets execute forward regions on pthreads through
+  `ziran_parallel.h`: each region becomes a file-scope worker over
+  contiguous index chunks with read-only captures passed by value, the
+  thread count comes from `ZIRAN_PAR_THREADS` (default 4, capped 64), and
+  files containing workers compile with `-pthread`. Reverse regions, the
+  portable VM, and Go run serially with an emitted downgrade marker, as the
+  backend-duties clause permits; region-leaving `return`/`break`/`continue`
+  are rejected so no schedule can skip iterations. A GPU scheduler remains
+  future work.
 - Complete Kryon's moved `.zi` widget modules with platform access through
   declared interfaces. The checked Kryon archive builds all 191 maintained UI
   modules; native host integration, full renderer behavior, and downstream
