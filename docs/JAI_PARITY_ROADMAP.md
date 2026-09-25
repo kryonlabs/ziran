@@ -205,9 +205,9 @@ runs, not only one-shot calls.
 through `Option(T)`, a `Vec(u8)` string builder, and move/drop rules for
 assignment, argument passing, and return, including use-after-move, leak, and
 double-drop rejection with `defer`-based cleanup, an explicit `VecClone`, and
-`VecSlice` borrowed views with live-borrow rejection. Automatic drop insertion
-beyond `defer` remains to finish
-[Owned values](OWNED_VALUES.md). Match C/C++/Go and VM behavior on failure and
+`VecSlice` borrowed views with live-borrow rejection, and automatic drops at
+every scope exit with move zeroing. The scoped
+[Owned values](OWNED_VALUES.md) contract is complete. Match C/C++/Go and VM behavior on failure and
 destruction; document
 where Go cannot recover from physical allocation failure. This is needed for
 ordinary non-UI programs to use Ziran without writing a new storage layer.

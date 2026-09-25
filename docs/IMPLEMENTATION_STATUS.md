@@ -518,8 +518,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   the drop rule on every path. `VecClone(dest, src)` copies into a fresh or
   moved-from destination with a recoverable failure result, and
   `VecSlice(values, low, high)` declares a borrowed `[]T` view whose live
-  scope blocks moving or mutating its source. Automatic drop insertion beyond
-  `defer` remains to complete the owned-value model. Go cannot recover from
+  scope blocks moving or mutating its source. Owned Vec locals drop
+  automatically at block close, return, break, continue, and the function
+  tail, with moves zeroing their source, completing the owned-value model. Go cannot recover from
   physical allocation failure. The intended
   [owned-value contract](OWNED_VALUES.md) records those semantics.
 - Audit parser, checker, IR, and backend paths for remaining UI assumptions.

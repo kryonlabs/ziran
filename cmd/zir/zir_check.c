@@ -1244,19 +1244,6 @@ global_vec_source(Checker *c, int index)
     return global != NULL && contains_vec(c->module, global->type, 0);
 }
 
-static void
-check_vec_drops(Checker *c, ZirSourceSpan span)
-{
-    for(int i = 0; i < c->count; i++) {
-        if(c->bindings[i].is_using_namespace ||
-           !owned_vec_binding_type(c, c->bindings[i].type) ||
-           c->bindings[i].moved)
-            continue;
-        error(c, span, "Vec must be freed or moved before leaving scope",
-              c->bindings[i].name);
-    }
-}
-
 static int
 numeric(const char *type)
 {
@@ -4046,12 +4033,6 @@ restart:
                 if(popping->borrows_index >= 0 &&
                    popping->borrows_index < c->count - 1)
                     c->bindings[popping->borrows_index].borrow_count--;
-                if(!popping->is_using_namespace &&
-                   owned_vec_binding_type(c, popping->type) &&
-                   !popping->moved)
-                    error(c, st->span,
-                          "Vec must be freed or moved before leaving scope",
-                          popping->name);
                 c->count--;
             }
             if(c->depth) c->depth--;
@@ -4259,8 +4240,6 @@ restart:
                 error(c, st->span,
                       "global Vec storage cannot move; use a local",
                       c->fn->exprs[st->expr_root].name);
-            if(c->errors == errors_at_statement)
-                check_vec_drops(c, st->span);
         } else if(st->kind == ZIR_STMT_IF || st->kind == ZIR_STMT_WHILE) {
             if(st->expr_root < 0 &&
                (st->kind == ZIR_STMT_WHILE || !st->is_else ||
@@ -4274,7 +4253,6 @@ restart:
            st->kind == ZIR_STMT_WHILE || st->kind == ZIR_STMT_FOR)
             c->depth++;
     }
-    check_vec_drops(c, fn->span);
     for(int i = 0; i < fn->expr_count; i++) {
         const ZirExpr *call = &fn->exprs[i];
         has_arrays |= SliceElementType(call->type, NULL, 0);

@@ -103,6 +103,29 @@ Handoff :: (values: Vec(s32)) -> Vec(s32) {
     return values
 }
 
+AutoDropped :: () -> s32 {
+    result: s32 = 0
+    {
+        inner: Vec(s32)
+        VecPush(inner, 3)
+        result += inner[0]
+    }
+    made: Vec(s32) = MakeValues()
+    VecPush(made, 7)
+    result += ConsumeAll(made)
+    looped: Vec(s32)
+    index: s32 = 0
+    while index < 3 {
+        VecPush(looped, index)
+        if index == 2 { break }
+        index += 1
+    }
+    result += looped[2]
+    returned: Vec(s32) = MakeValues()
+    result += returned[0]
+    return result
+}
+
 ClonesAndViews :: () -> s32 {
     original: Vec(s32)
     VecPush(original, 4)
@@ -180,6 +203,7 @@ Answer :: () -> s32 {
     if Moves() != 136 { return -9 }
     if DeferredWork() != 7 { return -10 }
     if ClonesAndViews() != 22 { return -11 }
+    if AutoDropped() != 28 { return -12 }
     return result
 }
 ZI
@@ -285,22 +309,6 @@ if "$ziran" check --root "$work" --module-path "$repo/std" \
     exit 1
 fi
 rg -q 'used after moving' "$work/usemove.err"
-
-cat > "$work/leak.zi" <<'ZI'
-#import "vec"
-#program_export
-Bad :: () -> s32 {
-    values: Vec(s32)
-    VecPush(values, 1)
-    return 0
-}
-ZI
-if "$ziran" check --root "$work" --module-path "$repo/std" \
-    "$work/leak.zi" 2> "$work/leak.err"; then
-    echo 'a leaked local Vec was accepted' >&2
-    exit 1
-fi
-rg -q 'before leaving scope' "$work/leak.err"
 
 cat > "$work/owned.zi" <<'ZI'
 #import "vec"

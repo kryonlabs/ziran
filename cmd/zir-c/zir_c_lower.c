@@ -794,14 +794,9 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
         fprintf(h, "#define %s %s\n", name, value);
         if(!d->is_public) fputs("#endif\n", h);
     }
-    for(i = 0; i < m->type_count; i++) {
-        const ZirType *slot = &m->types[i];
-        if(!slot->is_procedure_type || !slot->is_c_call)
-            continue;
-        EmitSlotType(h, slot, ZIR_C, NULL, NULL);
-    }
-    /* Stored procedure values may appear in record fields. Forward record
-     * names before defining the procedure descriptors they contain. */
+    /* Stored procedure values may appear in record fields and in #c_call
+     * descriptors. Forward record names before defining any procedure
+     * typedefs. */
     for(i = 0; i < m->type_count; i++) {
         const ZirType *ty = &m->types[i];
         if(!ty->is_extern && !ty->is_record_template &&
@@ -822,7 +817,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
     }
     for(i = 0; i < m->type_count; i++) {
         const ZirType *slot = &m->types[i];
-        if(!slot->is_procedure_type || slot->is_c_call)
+        if(!slot->is_procedure_type)
             continue;
         EmitSlotType(h, slot, ZIR_C, NULL, NULL);
     }
