@@ -1,0 +1,76 @@
+#import "c_string"
+
+// Positional file I/O for native Linux targets. A caller-owned byte slice
+// makes the buffer lifetime and exact archive encoding explicit.
+libc :: #system_library "libc";
+OpenRaw :: (path: *u8, flags: s32, mode: s32) -> s32 #foreign libc "open";
+CloseRaw :: (fd: s32) -> s32 #foreign libc "close";
+SeekRaw :: (fd: s32, offset: s64, origin: s32) -> s64 #foreign libc "lseek";
+ReadAtRaw :: (fd: s32, output: *u8, count: u64, offset: s64) -> s64 #foreign libc "pread";
+WriteAtRaw :: (fd: s32, input: *u8, count: u64, offset: s64) -> s64 #foreign libc "pwrite";
+MakeDirectoryRaw :: (path: *u8, mode: s32) -> s32 #foreign libc "mkdir";
+
+FileHandle :: struct {
+    fd: s32
+    valid: bool
+}
+
+OpenWithFlags :: (path: string, flags: s32) -> FileHandle {
+    result: FileHandle
+    name: [4096]u8
+    if !CopyCString(path, name[:]) { return result }
+    result.fd = OpenRaw(*name[0], flags, 420)
+    result.valid = result.fd >= 0
+    return result
+}
+
+#program_export
+OpenRead :: (path: string) -> FileHandle {
+    return OpenWithFlags(path, 0)
+}
+
+#program_export
+OpenUpdate :: (path: string) -> FileHandle {
+    return OpenWithFlags(path, 66)
+}
+
+#program_export
+OpenReplace :: (path: string) -> FileHandle {
+    return OpenWithFlags(path, 577)
+}
+
+#program_export
+CreateDirectory :: (path: string) -> bool {
+    name: [4096]u8
+    if !CopyCString(path, name[:]) { return false }
+    if MakeDirectoryRaw(*name[0], 493) == 0 { return true }
+    existing: FileHandle = OpenRead(path)
+    if !existing.valid { return false }
+    return CloseFile(existing)
+}
+
+#program_export
+FileSize :: (file: FileHandle) -> s64 {
+    if !file.valid { return -1 }
+    return SeekRaw(file.fd, 0, 2)
+}
+
+#program_export
+ReadAt :: (file: FileHandle, output: []u8, offset: s64) -> s64 {
+    if !file.valid || offset < 0 { return -1 }
+    if output.count == 0 { return 0 }
+    return ReadAtRaw(file.fd, *output[0], cast(u64)output.count, offset)
+}
+
+#program_export
+WriteAt :: (file: FileHandle, input: []u8, offset: s64) -> s64 {
+    if !file.valid || offset < 0 { return -1 }
+    if input.count == 0 { return 0 }
+    return WriteAtRaw(file.fd, *input[0], cast(u64)input.count, offset)
+}
+
+#program_export
+CloseFile :: (file: FileHandle) -> bool {
+    if !file.valid { return false }
+    return CloseRaw(file.fd) == 0
+}

@@ -1,0 +1,89 @@
+#import "c_string"
+
+// Capture a native child process's stdout into caller-owned storage. The
+// argument vector is passed directly to execvp; no shell parses it.
+libc :: #system_library "libc";
+CapturePipe :: (fds: *s32) -> s32 #foreign libc "pipe";
+CaptureFork :: () -> s32 #foreign libc "fork";
+CaptureDup :: (source: s32, destination: s32) -> s32 #foreign libc "dup2";
+CaptureClose :: (fd: s32) -> s32 #foreign libc "close";
+CaptureExec :: (path: *u8, arguments: *CapturePointer) -> s32 #foreign libc "execvp";
+CaptureExit :: (code: s32) -> void #foreign libc "_exit";
+CaptureWait :: (pid: s32, status: *s32, options: s32) -> s32 #foreign libc "waitpid";
+CaptureRead :: (fd: s32, output: *u8, count: u64) -> s64 #foreign libc "read";
+
+CapturePointer :: struct { value: *u8 }
+CaptureArgument :: struct { bytes: [4096]u8 }
+
+CaptureResult :: struct {
+    code: s32
+    length: s32
+    error: bool
+    truncated: bool
+}
+
+#program_export
+CaptureOutput :: (arguments: []string, output: []u8) -> CaptureResult {
+    result: CaptureResult
+    result.code = 127
+    if arguments.count == 0 || arguments.count > 16 || output.count == 0 ||
+        output.count > 2147483647 {
+        result.error = true
+        return result
+    }
+    bytes: [16]CaptureArgument
+    pointers: [17]CapturePointer
+    index: s32 = 0
+    while index < cast(s32)arguments.count {
+        if !CopyCString(arguments[index], bytes[index].bytes[:]) {
+            result.error = true
+            return result
+        }
+        pointers[index].value = *bytes[index].bytes[0]
+        index += 1
+    }
+    pointers[index].value = null
+    fds: [2]s32
+    if CapturePipe(*fds[0]) != 0 {
+        result.error = true
+        return result
+    }
+    pid: s32 = CaptureFork()
+    if pid < 0 {
+        CaptureClose(fds[0])
+        CaptureClose(fds[1])
+        result.error = true
+        return result
+    }
+    if pid == 0 {
+        CaptureClose(fds[0])
+        if CaptureDup(fds[1], 1) < 0 { CaptureExit(127) }
+        CaptureClose(fds[1])
+        CaptureExec(*bytes[0].bytes[0], *pointers[0])
+        CaptureExit(127)
+    }
+    CaptureClose(fds[1])
+    while result.length < cast(s32)output.count {
+        count: s64 = CaptureRead(fds[0], *output[result.length],
+            cast(u64)(cast(s32)output.count - result.length))
+        if count < 0 {
+            result.error = true
+            break
+        }
+        if count == 0 { break }
+        result.length += cast(s32)count
+    }
+    if result.length == cast(s32)output.count {
+        result.truncated = true
+    }
+    CaptureClose(fds[0])
+    status: s32 = 0
+    if CaptureWait(pid, *status, 0) != pid {
+        result.error = true
+    } else if (status & 127) != 0 {
+        result.code = 128 + (status & 127)
+    } else {
+        result.code = (status >> 8) & 255
+    }
+    return result
+}

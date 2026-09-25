@@ -1,0 +1,8 @@
+// Unix clock for native Linux programs.
+libc :: #system_library "libc";
+TimeRaw :: (result: *s64) -> s64 #foreign libc "time";
+
+#program_export
+UnixNow :: () -> s64 {
+    return TimeRaw(null)
+}

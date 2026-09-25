@@ -139,3 +139,12 @@ arguments, stdin, an optional credential binding, a timeout, and a desktop
 isolation request. The host starts the child, yields output lines, and returns
 its exit result. Its contract runs from source and saved `.zir` as a portable
 bundle and through native C, C++, and Go mocks.
+
+Native Linux C builds can import `std/file_linux.zi` for positional byte I/O,
+`std/binary_linux.zi` for little-endian numbers, `std/date_time_linux.zi` for
+Unix time, and `std/byte_text_linux.zi` for borrowed byte-to-text views.
+`std/process_capture_linux.zi` captures a child process without a shell;
+`std/net_http_linux.zi` uses it to send JSON over HTTPS through `curl`.
+These native adapters keep libc calls out of applications and require glibc
+Linux and a `curl` executable. Portable bundles should use the host capabilities
+above instead.

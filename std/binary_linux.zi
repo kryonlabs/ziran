@@ -1,0 +1,46 @@
+// Little-endian binary fields for native Linux programs. No file format or
+// application record layout is imposed by this module.
+libc :: #system_library "libc";
+FloatFromBits :: (source: *u64, destination: *float64,
+    count: u64) -> void #foreign libc "bcopy";
+FloatToBits :: (destination: *u64, source: *float64,
+    count: u64) -> *u64 #foreign libc "mempcpy";
+
+#program_export
+ReadU64LE :: (bytes: []u8, at: s32) -> u64 {
+    if at < 0 || at + 8 > cast(s32)bytes.count { return 0 }
+    value: u64 = 0
+    index: s32 = 0
+    while index < 8 {
+        value = value | (cast(u64)bytes[at + index] << cast(u64)(index * 8))
+        index += 1
+    }
+    return value
+}
+
+#program_export
+WriteU64LE :: (bytes: []u8, at: s32, value: u64) -> bool {
+    if at < 0 || at + 8 > cast(s32)bytes.count { return false }
+    index: s32 = 0
+    while index < 8 {
+        bytes[at + index] = cast(u8)(value & cast(u64)255)
+        value = value >> cast(u64)8
+        index += 1
+    }
+    return true
+}
+
+#program_export
+ReadF64LE :: (bytes: []u8, at: s32) -> float64 {
+    bits: u64 = ReadU64LE(bytes, at)
+    value: float64 = 0.0
+    FloatFromBits(*bits, *value, 8)
+    return value
+}
+
+#program_export
+WriteF64LE :: (bytes: []u8, at: s32, value: float64) -> bool {
+    bits: u64 = 0
+    FloatToBits(*bits, *value, 8)
+    return WriteU64LE(bytes, at, bits)
+}

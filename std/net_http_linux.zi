@@ -1,0 +1,12 @@
+#import "process_capture_linux"
+
+// Native HTTPS JSON transport. curl owns TLS and HTTP framing; Ziran owns the
+// request arguments and caller-provided response buffer.
+#program_export
+PostJson :: (url: string, body: string, output: []u8) -> CaptureResult {
+    arguments: [9]string = .{
+        "curl", "-fs", "--max-time", "10", "-H",
+        "Content-Type: application/json", "-d", body, url
+    }
+    return CaptureOutput(arguments[:], output)
+}

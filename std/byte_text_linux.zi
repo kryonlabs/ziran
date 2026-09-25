@@ -1,0 +1,20 @@
+// Borrow UTF-8 bytes as a Ziran string on glibc Linux C targets.
+// The caller must keep the byte storage alive while the string is in use.
+libc :: #system_library "libc";
+TextDescriptor :: struct {
+    data: *u8
+    length: u64
+}
+CopyTextDescriptor :: (destination: *string, source: *TextDescriptor,
+    count: u64) -> *string #foreign libc "__mempcpy";
+
+#program_export
+TextFromBytes :: (buffer: []u8) -> string {
+    if buffer.count == 0 { return "" }
+    descriptor: TextDescriptor
+    descriptor.data = *buffer[0]
+    descriptor.length = cast(u64)buffer.count
+    result: string = ""
+    CopyTextDescriptor(*result, *descriptor, size_of(TextDescriptor))
+    return result
+}
