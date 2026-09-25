@@ -428,7 +428,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   for address-of and `pointer.*` or prefix `<<pointer` for dereference,
   including writes through a pointer. `++`/`--` are rejected. The checker rejects
   addresses of temporaries and dereferences of non-pointers. Raw pointers
-  remain outside `.zib`.
+  can also be indexed on C, C++, and Go native targets when the caller knows
+  the allocation bounds. Source and saved `.zir` agree. Raw pointers remain
+  outside `.zib`.
 - The shared checker resolves `record_pointer.field` against declared record
   fields, including imported records, and reports unknown fields. Checked
   pointer-member reads and writes now emit from source and saved `.zir` on

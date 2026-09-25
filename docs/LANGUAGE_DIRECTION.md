@@ -232,6 +232,10 @@ Member access through a record pointer uses `pointer.field`, with an implicit
 dereference. C-style `pointer->field` is rejected.
 Pointer type annotations use prefix `*Type`. C-style suffix `Type*` and
 `const` qualifiers are rejected in source and saved IR.
+Raw pointers support `pointer[index]` on native targets. The caller must
+establish that the pointer is non-null and the index is within the allocation;
+unlike fixed arrays and slices, a raw pointer carries no length. Portable
+`.zib` bundles continue to reject reachable raw pointers.
 Runtime conditional expressions use Jai `ifx condition then a else b`.
 The optional `then` spelling is also accepted. C-style `?:` is rejected.
 Compile-time conditional expressions use `#ifx condition then a; else b`.

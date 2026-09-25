@@ -2160,17 +2160,21 @@ expression_type(Checker *c, int index)
     case ZIR_EXPR_INDEX: {
         char element[ZIR_NAME_MAX];
 
-        /* 'base[index]': a fixed-capacity array element, or a read-only
-         * byte of a borrowed string. Element types stay scalar so every
-         * backend lowers the same shape. */
+        /* Native pointer indexing follows the same element type as a
+         * borrowed array. Portable bundles reject reachable raw pointers. */
         if(!strcmp(left, "string")) {
             if(!integer_type(right))
                 error(c, e->span, "string index requires an integer operand", e->text);
             copy_text(element, sizeof(element), "u8");
+        } else if(*left == '*' && *skip_ws(left + 1) &&
+                  strcmp(skip_ws(left + 1), "void")) {
+            copy_text(element, sizeof(element), skip_ws(left + 1));
+            if(!integer_type(right))
+                error(c, e->span, "pointer index requires an integer operand", e->text);
         } else if(!ArrayElementType(left, element, sizeof(element), NULL) &&
                   !SliceElementType(left, element, sizeof(element)) &&
                   !VecElementType(c->module, left, element, sizeof(element))) {
-            error(c, e->span, "index requires a fixed array or string", e->text);
+            error(c, e->span, "index requires an array, slice, pointer, or string", e->text);
             copy_text(element, sizeof(element), "s32");
         } else if(!integer_type(right)) {
             error(c, e->span, "array index requires an integer operand", e->text);

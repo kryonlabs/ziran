@@ -952,6 +952,20 @@ slice_index(Emitter *e, const char *type, const char *base, const char *index,
     format(out, size, "((%s *)%s.data)[SliceIndex(%s, (int64_t)%s)]", mapped, base, base, index);
 }
 
+/* A Go slice needs the index for its temporary length and element access.
+ * Evaluate it once so an indexed call cannot run twice. */
+static void
+go_pointer_index(Emitter *e, const char *base, const char *index,
+                 char *out, size_t size)
+{
+    char temporary[ZIR_NAME_MAX];
+    fresh(e, temporary);
+    line(e, "%s := %s", temporary, index);
+    format(out, size, "unsafe.Slice(%s, int(%s)+1)[%s]",
+           base, temporary, temporary);
+    e->pure = 0;
+}
+
 static int member_path(const ZirFunction *fn, int index);
 
 static void
@@ -1002,6 +1016,9 @@ emit_destination(Emitter *e, int index, char *out, size_t size)
         }
         if(SliceElementType(e->fn->exprs[expr->left].type, NULL, 0))
             slice_index(e, e->fn->exprs[expr->left].type, base, index, out, size);
+        else if(e->target == ZIR_GO &&
+                e->fn->exprs[expr->left].type[0] == '*')
+            go_pointer_index(e, base, index, out, size);
         else if(vector && (e->target == ZIR_C || e->target == ZIR_CPP))
             format(out, size, "ZIRAN_VEC_INDEX((%s).data, (%s).count, %s)",
                    base, base, index);
@@ -1698,6 +1715,8 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             format(result, sizeof(result), "(%s).Data[%s]", a, b);
         } else if(SliceElementType(base_type, NULL, 0)) {
             slice_index(e, base_type, a, b, result, sizeof(result));
+        } else if(e->target == ZIR_GO && base_type[0] == '*') {
+            go_pointer_index(e, a, b, result, sizeof(result));
         } else if(!strcmp(base_type, "string")) {
             if(e->target == ZIR_GO)
                 format(result, sizeof(result), "%s[%s]", a, b);

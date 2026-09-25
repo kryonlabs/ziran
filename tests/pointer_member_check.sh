@@ -48,6 +48,25 @@ BorrowArray :: (node: *Node) -> s32 {
     values[1] = 42
     return node.values[1]
 }
+#program_export
+ReadIndexed :: (values: *s32, index: s32) -> s32 {
+    if values == null || index < 0 || index >= 4 { return -1 }
+    return values[index]
+}
+#program_export
+WriteIndexed :: (values: *s32, index: s32, value: s32) -> s32 {
+    if values == null || index < 0 || index >= 4 { return -1 }
+    values[index] = value
+    return values[index]
+}
+NextIndex :: (counter: *s32) -> s32 {
+    counter.* += 1
+    return 1
+}
+#program_export
+ReadNextIndex :: (values: *s32, counter: *s32) -> s32 {
+    return values[NextIndex(counter)]
+}
 ZI
 "$compiler" --check-only --root "$work" "$work/read.zi"
 "$compiler" --root "$work" -o "$work/ir" "$work/read.zi"
@@ -66,10 +85,16 @@ for input in source saved; do
 #include "read.h"
 int main(void) {
     Node node = {0};
+    int32_t reads = 0;
     return Write(&node, 20) == 41 && Read(&node) == 41 &&
            WriteForward(&node, 23) == 23 && node.value == 23 &&
            node.child.value == 21 && BorrowArray(&node) == 42 &&
-           node.values[1] == 42 ? 0 : 1;
+           node.values[1] == 42 &&
+           ReadIndexed(&node.values[0], 1) == 42 &&
+           WriteIndexed(&node.values[0], 2, 37) == 37 &&
+           node.values[2] == 37 &&
+           ReadNextIndex(&node.values[0], &reads) == 42 && reads == 1 &&
+           ReadIndexed(&node.values[0], 4) == -1 ? 0 : 1;
 }
 C
     "${CC:-cc}" -std=c11 -I"$repo/include" -I"$output/c" \
@@ -82,10 +107,16 @@ C
 #include "read.hpp"
 int main() {
     Node node = {};
+    int32_t reads = 0;
     return Write(&node, 20) == 41 && Read(&node) == 41 &&
            WriteForward(&node, 23) == 23 && node.value == 23 &&
            node.child.value == 21 && BorrowArray(&node) == 42 &&
-           node.values[1] == 42 ? 0 : 1;
+           node.values[1] == 42 &&
+           ReadIndexed(&node.values[0], 1) == 42 &&
+           WriteIndexed(&node.values[0], 2, 37) == 37 &&
+           node.values[2] == 37 &&
+           ReadNextIndex(&node.values[0], &reads) == 42 && reads == 1 &&
+           ReadIndexed(&node.values[0], 4) == -1 ? 0 : 1;
 }
 CPP
     "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$output/cpp" \
@@ -99,10 +130,16 @@ package ziran
 import "testing"
 func TestPointerMember(t *testing.T) {
     node := Node{}
+    reads := int32(0)
     if Read_Write(&node, 20) != 41 || Read_Read(&node) != 41 ||
        Read_WriteForward(&node, 23) != 23 || node.Value != 23 ||
        node.Child.Value != 21 || Read_BorrowArray(&node) != 42 ||
-       node.Values[1] != 42 {
+       node.Values[1] != 42 ||
+       Read_ReadIndexed(&node.Values[0], 1) != 42 ||
+       Read_WriteIndexed(&node.Values[0], 2, 37) != 37 ||
+       node.Values[2] != 37 ||
+       Read_ReadNextIndex(&node.Values[0], &reads) != 42 || reads != 1 ||
+       Read_ReadIndexed(&node.Values[0], 4) != -1 {
         t.Fatal("pointer member read/write changed")
     }
 }
