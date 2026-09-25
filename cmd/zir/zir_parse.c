@@ -1025,6 +1025,48 @@ parse_function_header(char *name, size_t name_size, char *args,
     }
 }
 
+static int
+function_must_use(const char *line, const char *return_type,
+                  ZirSourceSpan span)
+{
+    const char *parameters = strchr(line, '(');
+    const char *closing = closing_parenthesis(parameters);
+    const char *end;
+    int count = 0;
+
+    if(closing == NULL)
+        return 0;
+    end = strchr(closing + 1, '{');
+    if(end == NULL)
+        end = strchr(closing + 1, ';');
+    if(end == NULL)
+        end = line + strlen(line);
+    for(const char *cursor = closing + 1; cursor < end; cursor++) {
+        if(*cursor == '"') {
+            for(cursor++; cursor < end && *cursor != '"'; cursor++)
+                if(*cursor == '\\' && cursor + 1 < end)
+                    cursor++;
+            if(cursor == end)
+                break;
+        } else if((size_t)(end - cursor) >= 5 &&
+                  strncmp(cursor, "#must", 5) == 0 &&
+                  (cursor + 5 == end ||
+                   (!isalnum((unsigned char)cursor[5]) &&
+                    cursor[5] != '_'))) {
+            const char *after = skip_ws(cursor + 5);
+            if(after < end && *after != '#')
+                die_at(span, "#must does not take arguments");
+            count++;
+            cursor += 4;
+        }
+    }
+    if(count > 1)
+        die_at(span, "duplicate #must procedure modifier");
+    if(count && !strcmp(return_type, "void"))
+        die_at(span, "#must requires a return value");
+    return count;
+}
+
 static void
 separate_parameter_defaults(char *args, size_t capacity,
                             char *defaults, size_t defaults_capacity,
@@ -1654,6 +1696,8 @@ parse_foreign_line(ZirModule *module, const char *path, int line_no,
         parse_function_header(parsed_name, sizeof(parsed_name), imp->args,
                               sizeof(imp->args), imp->return_type,
                               sizeof(imp->return_type), line);
+        imp->must_use = function_must_use(line, imp->return_type,
+                                           imp->span);
         imp->extern_kind = extern_kind;
         snprintf(imp->extern_symbol, sizeof(imp->extern_symbol), "%s",
                  symbol);
@@ -5303,7 +5347,8 @@ parse_source(const char *path, const char *root, const char *source,
                 modifier != NULL &&
                 (body_open == NULL || modifier < body_open);
                 modifier = strchr(modifier + 1, '#'))
-                if(!starts_word(modifier, "#foreign"))
+                if(!starts_word(modifier, "#foreign") &&
+                   !starts_word(modifier, "#must"))
                     die_at(Span(rel, line_no, 1),
                            "unknown function modifier: %s", modifier);
         }
@@ -5595,6 +5640,7 @@ parse_source(const char *path, const char *root, const char *source,
                                             Span(rel, line_no, 1));
                 fn = ModuleAddFunction(module, name, args, ret, 0,
                                           Span(rel, line_no, 1));
+                fn->must_use = function_must_use(t, ret, fn->span);
                 copy_text(fn->default_args, sizeof(fn->default_args), defaults);
                 if(strchr(args, '$') != NULL) {
                     char parameters[64][ZIR_TEXT_MAX];

@@ -88,6 +88,7 @@ typedef struct ZirImport {
     char signature[ZIR_TEXT_MAX];
     char args[ZIR_TEXT_MAX];       /* parsed extern parameters */
     char return_type[ZIR_NAME_MAX];
+    int must_use; /* #must requires callers to keep the result */
     int required;
     ZirSourceSpan span;
     const struct ZirModule *resolved_module; /* borrowed from the checked program set */
@@ -132,6 +133,7 @@ typedef struct ZirFunction {
     char args[ZIR_TEXT_MAX];
     char default_args[ZIR_TEXT_MAX]; /* declaration parameters with defaults */
     char return_type[ZIR_NAME_MAX];
+    int must_use; /* #must requires callers to keep the result */
     int exported;
     int is_extern;
     ZirExternKind extern_kind;

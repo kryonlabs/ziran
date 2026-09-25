@@ -36,7 +36,7 @@ typedef struct Reader {
 #define SPAN_FIELD(type, name) \
     {offsetof(type, name), sizeof(((type *)0)->name), FIELD_SPAN}
 #define FIELD_COUNT(fields) (sizeof(fields) / sizeof((fields)[0]))
-#define ZIR_FORMAT_VERSION 28u
+#define ZIR_FORMAT_VERSION 29u
 
 static const Field import_fields[] = {
     INTEGER_FIELD(ZirImport, kind), INTEGER_FIELD(ZirImport, extern_kind),
@@ -44,7 +44,8 @@ static const Field import_fields[] = {
     INTEGER_FIELD(ZirImport, is_file_private), STRING_FIELD(ZirImport, name),
     STRING_FIELD(ZirImport, target), STRING_FIELD(ZirImport, extern_symbol),
     STRING_FIELD(ZirImport, signature), STRING_FIELD(ZirImport, args),
-    STRING_FIELD(ZirImport, return_type), INTEGER_FIELD(ZirImport, required),
+    STRING_FIELD(ZirImport, return_type), INTEGER_FIELD(ZirImport, must_use),
+    INTEGER_FIELD(ZirImport, required),
     SPAN_FIELD(ZirImport, span)
 };
 static const Field statement_fields[] = {
@@ -70,7 +71,8 @@ static const Field expression_fields[] = {
 static const Field function_fields[] = {
     STRING_FIELD(ZirFunction, name), STRING_FIELD(ZirFunction, args),
     STRING_FIELD(ZirFunction, default_args),
-    STRING_FIELD(ZirFunction, return_type), INTEGER_FIELD(ZirFunction, exported),
+    STRING_FIELD(ZirFunction, return_type), INTEGER_FIELD(ZirFunction, must_use),
+    INTEGER_FIELD(ZirFunction, exported),
     INTEGER_FIELD(ZirFunction, is_extern), INTEGER_FIELD(ZirFunction, extern_kind),
     INTEGER_FIELD(ZirFunction, is_public),
     INTEGER_FIELD(ZirFunction, is_file_private),
@@ -458,6 +460,11 @@ validate_program(const ZirProgram *program)
             if(module->imports[i].kind < ZIR_IMPORT_OPEN ||
                module->imports[i].kind > ZIR_IMPORT_EXTERN ||
                strncmp(module->imports[i].signature, "c-header:", 9) == 0 ||
+               (module->imports[i].must_use != 0 &&
+                module->imports[i].must_use != 1) ||
+               (module->imports[i].must_use &&
+                (module->imports[i].kind != ZIR_IMPORT_EXTERN ||
+                 !strcmp(module->imports[i].return_type, "void"))) ||
                (module->imports[i].is_file_private != 0 &&
                 module->imports[i].is_file_private != 1) ||
                (module->imports[i].is_file_private &&
@@ -517,6 +524,9 @@ validate_program(const ZirProgram *program)
             const ZirFunction *function = &module->functions[f];
             if(!function->name[0] ||
                !default_signature_valid(function) ||
+               (function->must_use != 0 && function->must_use != 1) ||
+               (function->must_use &&
+                !strcmp(function->return_type, "void")) ||
                (function->is_file_private != 0 &&
                 function->is_file_private != 1) ||
                (function->is_file_private && function->is_public) ||

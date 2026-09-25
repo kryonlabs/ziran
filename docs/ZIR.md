@@ -1,6 +1,6 @@
 # Ziran intermediate representation (`.zir`)
 
-This is the target contract. An experimental binary version 28 now exists for
+This is the target contract. An experimental binary version 29 now exists for
 the tested C/C++/Go and portable scalar/record/enum subsets. It is not yet the complete contract below; see
 [Implementation status](IMPLEMENTATION_STATUS.md).
 
@@ -31,7 +31,7 @@ unrelated imported function with the same type shape.
 `.zir` is the compiler interchange and cache format. Portable distribution
 uses a linked `.zib`, not an unlinked `.zir`. See [Bundle format](ZIB.md).
 
-## Experimental version 28
+## Experimental version 29
 
 The current writer emits `ZIR` followed by a zero byte, a little-endian
 version number, and length-prefixed checked module records. Strings and
@@ -60,7 +60,7 @@ statement to reinterpret. Source `variant`, payload `match`, postfix `?`,
 `guard`, C-style `switch` and `goto` with labels, `state` blocks, C-style
 locals, and raw C statements are rejected. The validating reader rejects
 retired statement kinds. The postfix increment/decrement expression kind has
-been removed; version 28 rejects earlier files before graph validation.
+been removed; version 29 rejects earlier files before graph validation.
 Variant fields, generated variant function slots,
 retained-state fields, and unused statement callee/argument text are absent
 from the IR schema.
@@ -71,6 +71,8 @@ native declarations; Go and the portable linker currently reject union storage.
 Polymorphic procedures retain their `$T` signature and structured body.
 Concrete call specializations carry their type and generated identity; imported
 saved modules can instantiate them when a source caller uses a new type.
+Procedure and foreign declarations retain `#must`, and the checker rejects
+discarded results when reading source or saved IR.
 Specialized `Vec(T)` records carry an owned-storage bit. The reader validates
 their storage shape before allowing vector operations.
 Compile-time `#if` selection is complete in the frontend. Saved declarations

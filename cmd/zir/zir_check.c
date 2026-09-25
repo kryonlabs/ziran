@@ -2969,6 +2969,62 @@ validate_loop_targets(Checker *c, const ZirFunction *fn)
 }
 
 static int
+call_must_use(Checker *c, const ZirExpr *call)
+{
+    const ZirModule *owner = NULL;
+    const ZirFunction *callee = NULL;
+    const char *name = strrchr(call->name, '.');
+
+    if(call->slot_type[0])
+        return 0;
+    if(ResolveFunctionAt(c->module, call->name, call->span.path,
+                         &owner, &callee) == 1 && callee != NULL)
+        return callee->must_use;
+    name = name != NULL ? name + 1 : call->name;
+    for(int i = 0; i < c->specialization_count; i++) {
+        const SpecializationRequest *request = &c->specializations[i];
+        if(strcmp(request->name, name) == 0)
+            return request->template_owner->functions[
+                request->template_index].must_use;
+    }
+    for(int i = 0; i < c->module->import_count; i++) {
+        const ZirImport *import = &c->module->imports[i];
+        if(import->kind == ZIR_IMPORT_EXTERN &&
+           in_lookup_file(c->module, import->is_file_private,
+                          import->span) &&
+           strcmp(import->name, call->name) == 0)
+            return import->must_use;
+    }
+    return 0;
+}
+
+static int
+discarded_must_call(Checker *c, int index)
+{
+    if(index < 0)
+        return -1;
+    const ZirExpr *expression = &c->fn->exprs[index];
+    if(expression->kind == ZIR_EXPR_CALL)
+        return call_must_use(c, expression) ? index : -1;
+    int found = discarded_must_call(c, expression->left);
+    if(found >= 0)
+        return found;
+    found = discarded_must_call(c, expression->right);
+    if(found >= 0)
+        return found;
+    found = discarded_must_call(c, expression->third);
+    if(found >= 0)
+        return found;
+    for(int child = expression->first_child; child >= 0;
+        child = c->fn->exprs[child].next_sibling) {
+        found = discarded_must_call(c, child);
+        if(found >= 0)
+            return found;
+    }
+    return -1;
+}
+
+static int
 check_function(Checker *c, ZirFunction *fn)
 {
     int errors_before = c->errors;
@@ -3041,6 +3097,14 @@ restart:
                       expression_type(c, st->lhs_root));
         type = expression_type(c, st->expr_root);
         c->expected_type[0] = '\0';
+        if(st->kind == ZIR_STMT_EXPR || st->kind == ZIR_STMT_UNUSED) {
+            int discarded = discarded_must_call(c, st->expr_root);
+            if(discarded >= 0) {
+                const ZirExpr *call = &fn->exprs[discarded];
+                error(c, call->span, "#must return value is ignored",
+                      call->name);
+            }
+        }
         if(st->kind == ZIR_STMT_IF_CASE) {
             const ZirType *enumeration = FindType(c->module, type, NULL);
             int complete_case = starts_word(skip_ws(st->text + 2), "#complete");

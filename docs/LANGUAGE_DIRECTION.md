@@ -87,6 +87,10 @@ Field expressions that themselves require the specialized type still need
 specialization support.
 Pure named calls with supported scalar values also work in `#run` and other
 compile-time expressions.
+`#must` after a procedure result type requires its value to be used. The
+checker rejects discarded results from ordinary, imported, polymorphic, and
+foreign calls before native or portable output, including when checking saved
+`.zir`.
 The `#slot` declaration, capturing body forms, and record block calls are
 rejected. Record values use `Type.{field = value}` in ordinary calls. A
 procedure type can be named with `Child :: #type (s32) -> ();` or
