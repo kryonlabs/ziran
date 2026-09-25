@@ -1006,6 +1006,8 @@ parse_function_header(char *name, size_t name_size, char *args,
             n = args_size - 1;
         memcpy(args, p + 1, n);
         args[n] = '\0';
+        while(n > 0 && isspace((unsigned char)args[n - 1]))
+            args[--n] = '\0';
         /* Return type: after the closing ')', an optional '-> T' before any
          * trailing directive such as #foreign. */
         q++;
@@ -1018,7 +1020,7 @@ parse_function_header(char *name, size_t name_size, char *args,
             n = 0;
             while(*q != '\0' && *q != '#' && *q != '{' && n + 1 < ret_size)
                 ret[n++] = *q++;
-            while(n > 0 && (ret[n - 1] == ' ' || ret[n - 1] == '\t'))
+            while(n > 0 && isspace((unsigned char)ret[n - 1]))
                 n--;
             ret[n] = '\0';
         }

@@ -119,12 +119,12 @@ go_type(const char *type, char *dst, size_t dst_size)
 
     snprintf(t, sizeof(t), "%s", type);
     n = strlen(t);
-    while(n > 0 && (t[n - 1] == ' ' || t[n - 1] == '\t'))
+    while(n > 0 && isspace((unsigned char)t[n - 1]))
         t[--n] = '\0';
     {
         const char *p = t;
 
-        while(*p == ' ' || *p == '\t')
+        while(*p != '\0' && isspace((unsigned char)*p))
             p++;
         if(p != t)
             memmove(t, p, strlen(p) + 1);
