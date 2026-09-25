@@ -1,11 +1,20 @@
 # Owned values and recoverable failures
 
-This is the contract for owned `Vec[T]` and a string builder. Generic
-`Option` and `Result` variant templates can now be applied as named concrete
-types with `Name :: Option(T)` or `Name :: Result(T, E)`, and those types have
-exhaustive `match`.
-They currently copy their payloads. Fixed arrays and borrowed slices remain
-value and view types, respectively.
+This is the target contract for owned `Vec[T]` and a string builder. A scoped
+`Vec(T)` subset now supports default initialization, checked indexing, fallible
+`VecPush`, `VecClear`, `VecFree`, and `VecSwap` in C99, C++, Go, and the portable
+VM. A vector can live in a global or record field. The checker rejects value
+copies, parameters, returns, and nested vectors until move and drop rules are
+implemented. Go can report capacity overflow but its runtime may terminate on
+physical allocation failure; this is not yet the full recoverable failure
+contract below. Code that creates a local vector must call `VecFree` before
+leaving its scope. The string builder and `pop`/fallible lookup remain planned.
+
+Generic
+`Option` and `Result` are currently ordinary records with explicit status
+fields, applied as `Name :: Option(T)` or `Name :: Result(T, E)`. They copy
+their fields. Fixed arrays and borrowed slices remain value and view types,
+respectively.
 
 ## Values and ownership
 
@@ -16,21 +25,13 @@ move while a live view borrows the value. An explicit `clone` may allocate and
 therefore returns a recoverable result. Every path drops each owned value once;
 native output and the portable VM must agree on this rule.
 
-## Variants and errors
+## Recoverable errors
 
-A variant has one active case and exposes no writable tag or inactive payload.
-Construction chooses a case; `match` checks every case at compile time. Today,
-payload binding copies a value. Future owned variants will move or borrow their
-payload according to the binding. `Option` and `Result` are ordinary
-generic variant declarations in the standard library. A terminal `?` on an
-initialized declaration or simple binding assignment extracts `Ok(T)` or returns `Err(E)`
-from a function whose result has the same error payload type. No implicit error
-conversion occurs. A standalone `Result` call followed by `?` checks the error
-and discards its success payload. Adjacent postfix `?` works in eager
-expressions and plain `if` and `while` conditions. Top-level boolean `&&` and
-`||` expressions in simple statements preserve short-circuit evaluation;
-typed conditional arms also preserve their selected evaluation path. Lazy
-expressions embedded in outer calls still need control-flow lowering.
+`Result(T, E)` stores `is_ok`, `value`, and `error`; a caller checks `is_ok`
+and handles the error explicitly. `Option(T)` stores `has_value` and `value`.
+Neither record has a hidden active case, and the language does not provide
+postfix error propagation. An owned error type will need defined move and drop
+behavior across all backends before it can be used in a portable `Result`.
 
 ## Growable storage
 

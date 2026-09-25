@@ -5,5 +5,7 @@
 /* Parse with token precedence; unsupported syntax is an explicit unknown node. */
 int ParseExpr(ZirFunction *fn, const ZirModule *module, const char *text,
                  ZirSourceSpan span);
+int ParseExprNoDefaults(ZirFunction *fn, const ZirModule *module,
+                        const char *text, ZirSourceSpan span);
 void StructureFunction(ZirFunction *fn, const ZirModule *module);
 #endif

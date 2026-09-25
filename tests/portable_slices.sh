@@ -76,12 +76,12 @@ Answer :: () -> s32 {
     global_result: s32 = ReplaceGlobalWhileBorrowed()
     if global_result != 42 { return global_result }
     empty: []s32
-    if empty.length != 0 { return -3 }
+    if empty.count != 0 { return -3 }
     values: [4]s32 = .[1, 2, 3, 4]
     part: []s32 = values[1:3]
     part[0] = 40
     tail: []s32 = Tail(part)
-    if part.length != 2 || tail.length != 1 ||
+    if part.count != 2 || tail.count != 1 ||
         tail[0] != 3 || values[1] != 40 { return -4 }
     points: [2]Point
     view: []Point = points[:]
@@ -109,7 +109,7 @@ WriteOutside :: () -> s32 {
 RangeOutside :: () -> s32 {
     values: [2]s32 = .[1, 2]
     view: []s32 = values[0:3]
-    return view.length
+    return cast(s32)view.count
 }
 
 #program_export
@@ -118,7 +118,7 @@ RangeReverse :: () -> s32 {
     low: s32 = 2
     high: s32 = 1
     view: []s32 = values[low:high]
-    return view.length
+    return cast(s32)view.count
 }
 ZI
 
@@ -136,7 +136,7 @@ for input in source saved; do
     test "$("$ziran" run "$work/$input.zib")" = 42
     for target in c cpp go; do
         output="$work/$target-$input"
-        "$ziran" build --target="$target" --strict --root "$root" \
+        "$ziran" build --target="$target" --root "$root" \
             -o "$output" "$source"
         if test "$target" = go; then
             cat > "$output/main_test.go" <<'GO'

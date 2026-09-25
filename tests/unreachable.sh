@@ -42,7 +42,7 @@ for input in source saved; do
     for target in c cpp go; do
         output="$work/$target-$input"
         if test "$target" = go; then
-            "$ziran" build --target=go --strict --pkg main --root "$root" \
+            "$ziran" build --target=go --pkg main --root "$root" \
                 -o "$output" "$module"
             cat > "$output/main.go" <<'GO'
 package main
@@ -50,7 +50,7 @@ func main() { if Flow_Answer() != 42 { panic("wrong result") } }
 GO
             GO111MODULE=off go run "$output"/*.go
         elif test "$target" = c; then
-            "$ziran" build --target=c --strict --root "$root" \
+            "$ziran" build --target=c --root "$root" \
                 -o "$output" "$module"
             cat > "$output/main.c" <<'C'
 #include "flow.h"
@@ -60,7 +60,7 @@ C
                 "$output"/*.c -o "$output/app"
             "$output/app"
         else
-            "$ziran" build --target=cpp --strict --root "$root" \
+            "$ziran" build --target=cpp --root "$root" \
                 -o "$output" "$module"
             cat > "$output/main.cpp" <<'CPP'
 #include "flow.hpp"

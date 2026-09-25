@@ -21,7 +21,9 @@ capability_at(const Bundle *bundle, size_t index, const ZirModule **owner)
     for(int m = 0; m < bundle->program->module_count; m++) {
         const ZirModule *module = &bundle->program->modules[m];
         for(int i = 0; i < module->import_count; i++) {
-            if(module->imports[i].kind != ZIR_IMPORT_EXTERN)
+            if(module->imports[i].kind != ZIR_IMPORT_EXTERN ||
+               (module->imports[i].extern_kind == ZIR_EXTERN_HOST &&
+                strncmp(module->imports[i].target, "ziran:", 6) == 0))
                 continue;
             if(index-- == 0) {
                 if(owner != NULL)
@@ -80,7 +82,11 @@ BundleCapabilityCount(const Bundle *bundle)
         for(int m = 0; m < bundle->program->module_count; m++)
             for(int i = 0; i < bundle->program->modules[m].import_count; i++)
                 count += bundle->program->modules[m].imports[i].kind ==
-                         ZIR_IMPORT_EXTERN;
+                         ZIR_IMPORT_EXTERN &&
+                         (bundle->program->modules[m].imports[i].extern_kind !=
+                          ZIR_EXTERN_HOST ||
+                          strncmp(bundle->program->modules[m].imports[i].target,
+                                  "ziran:", 6) != 0);
     return count;
 }
 

@@ -2,9 +2,14 @@
 #define ZIR_CHECK_H
 #include "zir.h"
 
-/* Resolve scalar expression types and lexical bindings. Strict mode rejects
- * unresolved expressions instead of delegating them to target-language text. */
-int CheckPrograms(ZirProgram **programs, int count, int strict);
+/* Resolve scalar expression types and lexical bindings. */
+int CheckPrograms(ZirProgram **programs, int count);
 int LinkImports(ZirProgram **programs, int count);
 const char *ScalarType(const char *type);
+int JaiTypeSpelling(ZirSourceSpan span, const char *type);
+int TypeOfOperand(const char *source, char *operand, size_t capacity);
+int InferExpressionType(const ZirModule *module, const char *expression,
+                        ZirSourceSpan span, char *type, size_t capacity);
+int TypeLayout(const ZirModule *module, const char *type,
+               size_t *size, size_t *alignment);
 #endif

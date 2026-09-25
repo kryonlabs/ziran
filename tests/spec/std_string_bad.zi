@@ -1,0 +1,6 @@
+#program_export
+main :: () -> s32 {
+    source: string = "abc"
+    if source[1:4] == "bc" { return 0 }
+    return 1
+}

@@ -23,10 +23,25 @@ lists the remaining work. The [IR](docs/ZIR.md) and [bundle](docs/ZIB.md)
 documents distinguish the current format from the intended contracts.
 
 Run `make` to build the current toolchain and `make check` for its language,
-backend, and portable bundle tests. The compiler commands are `zi2zir`
-(including `--check-only`), `zi2c`, `zi2cpp`, `zi2go`, and `zi2zib`.
-`zi-fmt` formats source. `ziran check|ir|build|bundle|run|fmt` remains a
+backend, and portable bundle tests. `make check` runs independent test scripts
+with four workers by default; set `CHECK_JOBS=1` to run them serially or choose
+another positive worker count. The compiler commands are `zi2zir` (including
+`--check-only`), `zi2c`, `zi2cpp`, `zi2go`, and `zi2zib`.
+`zi-fmt` formats source. `ziran check|ir|inspect|build|bundle|run|fmt` remains a
 convenience dispatcher for the same tools.
+Use `ziran build --target=c` for C99 output.
+Pass `--entry module:function` to a C99 build to retain functions, types,
+globals, and constants reachable from that entry. A native host implementation
+of a called foreign function is retained when it is among the input modules.
+Type-only linked modules emit headers without empty C files. Without `--entry`,
+all checked declarations and module C files are emitted as before. Runtime
+branches in reachable functions remain; this pass does not specialize them.
+`ziran ir --entry module:function` saves that reachable checked graph as
+per-module `.zir` files before native code generation.
+Saved `.zir` files are binary. `ziran inspect path/to/module.zir` shows their
+declarations, statements, and checked expression links as readable text;
+`ziran inspect --hex path/to/module.zir` shows bytes and offsets. Both views
+read the saved file and leave it unchanged.
 
 For ordinary imports, pass the entry file and a library directory with
 `--module-path DIR` (repeat for multiple directories). `check`, `ir`,
@@ -37,7 +52,25 @@ transitively from `.zi` or saved `.zir`. For example:
 build/bin/zi2zir --check-only --root app --module-path ../kryon/src/ui app/main.zi
 ```
 
-Imports with a dotted target, such as `#import "stdio.h"`, remain host headers.
+`#import, file "../lib/helper.zi";` loads an explicit source file relative to
+the importing file. Saved `.zir` builds resolve its module by name from the
+saved IR directory or a module path.
+`Helper :: #import "helper";` and
+`Helper :: #import, file "../lib/helper.zi";` expose public declarations as
+`Helper.Name` without adding them to the unqualified scope.
+`Helper :: #import, dir "../lib/helper";` loads that directory's `module.zi`.
+An ordinary `#import "helper"` also discovers `helper/module.zi` on a module
+search path.
+`#load "relative/file.zi";` adds another file to the current module. Loads
+can nest, and imports inside loaded files resolve relative to those files.
+`#import, string "Value :: () -> s32 { return 42 }";` compiles source text
+as a module. It also accepts a raw `#string` body, and
+`Generated :: #import, string "...";` exposes its declarations as
+`Generated.Name`.
+
+Ordinary `#import` accepts a module identifier. C headers are no longer
+imported as source modules; foreign procedures use `#system_library` and
+`#foreign` declarations.
 For a native symbol with an unmangled name, put `#program_export` on its own
 line immediately before the function declaration.
 Foreign procedures use a Jai-style library declaration and `#foreign`:
@@ -48,9 +81,20 @@ Abs :: (value: s32) -> s32 #foreign libc "abs";
 ```
 
 Ziran also resolves `host_api :: #system_library "host_api";` to its host
-capability bridge.
+capability bridge. `ziran bundle --bind caller:capability=provider:function`
+can satisfy a portable host capability with an exported Ziran function in the
+bundle; the provider must have the same signature.
 Use `#scope_file`, `#scope_module`, and `#scope_export` to change the
 visibility of following declarations.
+
+Raw multiline text uses Jai's `#string` delimiter form. The body keeps its
+whitespace and the newline before the closing delimiter:
+
+```jai
+Greeting :: #string END
+Hello, "world"!
+END;
+```
 
 ## Standard library
 
@@ -58,18 +102,19 @@ visibility of following declarations.
 matching over immutable UTF-8 strings. Non-ASCII bytes compare unchanged. These
 functions use only portable Ziran operations, so the same source builds for C,
 C++, Go, and `.zib`. Add `--module-path std` when importing it from an app.
+`std/string_range.zi` provides `Substring(source, start, length)` over borrowed
+bytes, using Ziran's checked `source[low:high]` string range syntax. Choose
+UTF-8 codepoint boundaries when the result must remain valid text.
 
 `std/utf8.zi` advances through UTF-8 scalar boundaries and counts codepoints.
 Invalid bytes advance one byte, which keeps a scanner moving while preserving
 valid multibyte sequences.
 
-`std/option.zi` and `std/result.zi` define generic payload variants. Import a
-template and create a concrete type with, for example,
-`Number :: Option(s32)` or
-`Outcome :: Result(s32, string)`. The concrete type has exhaustive
-`match`, case constructors, and terminal `?` error propagation in declarations,
-assignments, and standalone calls. See [Variants](docs/VARIANTS.md) for the
-current syntax.
+`std/option.zi` and `std/result.zi` define generic records. Import a
+template and create a concrete type with `Number :: Option(s32)` or
+`Outcome :: Result(s32, string)`. An `Option` has `has_value` and `value`
+fields; a `Result` has `is_ok`, `value`, and `error` fields. Check the status
+field explicitly before reading the associated value.
 
 `std/pair.zi` defines a generic record. Import it and write
 `PairNumberText :: Pair(s32, string)` to create a concrete record

@@ -24,7 +24,7 @@ cmp "$work/source.zib" "$work/saved.zib"
 for target in c cpp go; do
     output="$work/$target"
     if test "$target" = go; then
-        "$ziran" build --target=go --strict --pkg main \
+        "$ziran" build --target=go --pkg main \
             --root "$root/tests/spec" --module-path "$root/std" \
             -o "$output" "$root/tests/spec/process_test.zi"
         cat > "$output/main.go" <<'GO'
@@ -56,7 +56,7 @@ GO
         GO111MODULE=off go run "$output/process.go" \
             "$output/process_check.go" "$output/main.go"
     elif test "$target" = c; then
-        "$ziran" build --target=c --strict --root "$root/tests/spec" \
+        "$ziran" build --target=c --root "$root/tests/spec" \
             --module-path "$root/std" -o "$output" \
             "$root/tests/spec/process_test.zi"
         cat > "$output/main.c" <<'C'
@@ -83,7 +83,7 @@ C
             "$output"/*.c -o "$output/app"
         "$output/app"
     else
-        "$ziran" build --target=cpp --strict --root "$root/tests/spec" \
+        "$ziran" build --target=cpp --root "$root/tests/spec" \
             --module-path "$root/std" -o "$output" \
             "$root/tests/spec/process_test.zi"
         cat > "$output/main.cpp" <<'CPP'

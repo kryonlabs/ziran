@@ -8,8 +8,8 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/shapes.zi" <<'EOF'
 Tone :: enum {
-    ToneNormal = 0
-    ToneAccent = 1
+    ToneNormal :: 0;
+    ToneAccent :: 1;
 }
 Point :: struct {
     x: s32
@@ -59,7 +59,7 @@ for input in source saved; do
     fi
     for target in c cpp go; do
         output=$work/$target-$input
-        "$ziran" build --target="$target" --strict --root "$root" \
+        "$ziran" build --target="$target" --root "$root" \
             -o "$output" "$module"
         if test "$target" = c; then
             cat > "$output/main.c" <<'C'
@@ -67,7 +67,7 @@ for input in source saved; do
 Packet TransformHost(Packet packet) {
     packet.point.x += 1;
     packet.label = StringView("ok", 2);
-    packet.tone = ToneAccent;
+    packet.tone = (Tone)1;
     return packet;
 }
 int main(void) { return Answer() == 42 ? 0 : 1; }
@@ -81,7 +81,7 @@ C
 extern "C" Packet TransformHost(Packet packet) {
     packet.point.x += 1;
     packet.label = StringView("ok", 2);
-    packet.tone = ToneAccent;
+    packet.tone = (Tone)1;
     return packet;
 }
 int main() { return Answer() == 42 ? 0 : 1; }

@@ -1,8 +1,8 @@
 host_api :: #system_library "host_api";
-# Network transport is an explicit host capability. The host adds a Bearer
-# Authorization header when token is nonempty. It must not log that token.
-# The request and response records have the same meaning in native targets
-# and portable bundles.
+// Network transport is an explicit host capability. The host adds a Bearer
+// Authorization header when token is nonempty. It must not log that token.
+// The request and response records have the same meaning in native targets
+// and portable bundles.
 HttpRequest :: struct {
     method: string
     url: string

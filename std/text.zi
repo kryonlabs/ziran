@@ -1,5 +1,5 @@
-# ASCII-only case folding keeps the result identical across native targets
-# and the portable runner. UTF-8 bytes outside ASCII compare unchanged.
+// ASCII-only case folding keeps the result identical across native targets
+// and the portable runner. UTF-8 bytes outside ASCII compare unchanged.
 #program_export
 LowerASCII :: (value: u8) -> u8 {
     if value >= cast(u8)65 && value <= cast(u8)90 {
@@ -10,9 +10,9 @@ LowerASCII :: (value: u8) -> u8 {
 
 #program_export
 StartsWithFoldASCII :: (value: string, prefix: string) -> bool {
-    if prefix.length > value.length { return false }
+    if (cast(s32)prefix.count) > (cast(s32)value.count) { return false }
     index: s32 = 0
-    while index < prefix.length {
+    while index < (cast(s32)prefix.count) {
         if LowerASCII(value[index]) != LowerASCII(prefix[index]) {
             return false
         }
@@ -23,13 +23,13 @@ StartsWithFoldASCII :: (value: string, prefix: string) -> bool {
 
 #program_export
 ContainsFoldASCII :: (value: string, needle: string) -> bool {
-    if needle.length == 0 { return true }
-    if needle.length > value.length { return false }
+    if (cast(s32)needle.count) == 0 { return true }
+    if (cast(s32)needle.count) > (cast(s32)value.count) { return false }
     start: s32 = 0
-    while start <= value.length - needle.length {
+    while start <= (cast(s32)value.count) - (cast(s32)needle.count) {
         index: s32 = 0
         same: bool = true
-        while index < needle.length {
+        while index < (cast(s32)needle.count) {
             if LowerASCII(value[start + index]) != LowerASCII(needle[index]) {
                 same = false
                 break

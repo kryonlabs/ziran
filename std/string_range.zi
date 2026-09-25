@@ -1,0 +1,6 @@
+// A byte range of an immutable borrowed string. Bounds are checked by Ziran.
+// Callers working with UTF-8 text should choose codepoint boundaries.
+#program_export
+Substring :: (source: string, start: s32, length: s32) -> string {
+    return source[start:start + length]
+}

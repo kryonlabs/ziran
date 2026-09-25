@@ -54,7 +54,6 @@ typedef struct Value {
     const ZirType *slot_type;
     const ZirModule *slot_module;
     const ZirFunction *slot_function;
-    Frame *slot_frame;
 } Value;
 
 typedef struct RecordField {
@@ -104,6 +103,7 @@ typedef struct GlobalSlot {
 } GlobalSlot;
 
 typedef struct Vm {
+    const ZirProgram *program;
     int depth;
     int steps;
     int failed;
@@ -130,10 +130,10 @@ struct Frame {
     Vm *vm;
     const ZirModule *module;
     const ZirFunction *function;
-    Frame *parent;
     Frame *caller;
     Local locals[VM_MAX_LOCALS];
     int local_count;
+    int control_target;
 };
 
 static const ZirImport *
@@ -144,6 +144,43 @@ host_import(const ZirModule *module, const char *name)
            strcmp(module->imports[i].name, name) == 0)
             return &module->imports[i];
     return NULL;
+}
+
+static const ZirFunction *
+bound_provider(const ZirProgram *program, const ZirImport *import,
+               const ZirModule **owner)
+{
+    const ZirFunction *found = NULL;
+    *owner = NULL;
+    if(program == NULL || import == NULL || import->extern_kind != ZIR_EXTERN_HOST ||
+       strncmp(import->target, "ziran:", 6) != 0 ||
+       import->target[6] == '\0' || import->extern_symbol[0] == '\0')
+        return NULL;
+    for(int m = 0; m < program->module_count; m++) {
+        const ZirModule *candidate = &program->modules[m];
+        if(strcmp(candidate->name, import->target + 6) != 0)
+            continue;
+        for(int f = 0; f < candidate->function_count; f++) {
+            const ZirFunction *function = &candidate->functions[f];
+            if(strcmp(function->name, import->extern_symbol) != 0 ||
+               !function->exported || function->is_extern)
+                continue;
+            if(found != NULL)
+                return NULL;
+            found = function;
+            *owner = candidate;
+        }
+    }
+    return found;
+}
+
+static int
+same_bound_type(const ZirModule *caller, const ZirModule *provider,
+                const char *type)
+{
+    const ZirType *left = FindType(caller, type, NULL);
+    const ZirType *right = FindType(provider, type, NULL);
+    return left == right;
 }
 
 typedef enum Flow {
@@ -159,14 +196,13 @@ value_kind(const char *type)
 {
     if(strcmp(type, "void") == 0)
         return VALUE_VOID;
-    if(strcmp(type, "i32") == 0 || strcmp(type, "int") == 0 ||
-       strcmp(type, "integer") == 0 || strcmp(type, "bool") == 0 ||
-       strcmp(type, "u32") == 0 || strcmp(type, "u8") == 0 ||
-       strcmp(type, "u64") == 0 || strcmp(type, "i64") == 0 ||
-       strcmp(type, "char") == 0)
+    if(strcmp(type, "s8") == 0 || strcmp(type, "s16") == 0 ||
+       strcmp(type, "s32") == 0 || strcmp(type, "s64") == 0 ||
+       strcmp(type, "u8") == 0 || strcmp(type, "u16") == 0 ||
+       strcmp(type, "u32") == 0 || strcmp(type, "u64") == 0 ||
+       strcmp(type, "integer") == 0 || strcmp(type, "bool") == 0)
         return VALUE_INT;
-    if(strcmp(type, "float") == 0 || strcmp(type, "f32") == 0 ||
-       strcmp(type, "double") == 0 || strcmp(type, "f64") == 0 ||
+    if(strcmp(type, "float32") == 0 || strcmp(type, "float64") == 0 ||
        strcmp(type, "real") == 0)
         return VALUE_REAL;
     if(strcmp(type, "string") == 0)
@@ -180,146 +216,6 @@ scalar_type(const char *type)
     return value_kind(type) != VALUE_INVALID;
 }
 
-typedef struct EnumEntry {
-    char name[ZIR_NAME_MAX];
-    int32_t value;
-} EnumEntry;
-
-static void
-skip_enum_space(const char **cursor, const char *end)
-{
-    while(*cursor < end && isspace((unsigned char)**cursor))
-        (*cursor)++;
-}
-
-static int
-enum_term(const char **cursor, const char *end,
-          const EnumEntry *entries, int count, int64_t *value)
-{
-    const char *start;
-    int sign = 1;
-    skip_enum_space(cursor, end);
-    if(*cursor < end && (**cursor == '+' || **cursor == '-')) {
-        if(**cursor == '-')
-            sign = -1;
-        (*cursor)++;
-    }
-    skip_enum_space(cursor, end);
-    start = *cursor;
-    if(start >= end)
-        return 0;
-    if(isdigit((unsigned char)*start)) {
-        char *after;
-        errno = 0;
-        *value = strtoll(start, &after, 0);
-        if(errno || after == start || after > end)
-            return 0;
-        *cursor = after;
-    } else if(isalpha((unsigned char)*start) || *start == '_') {
-        while(*cursor < end &&
-              (isalnum((unsigned char)**cursor) || **cursor == '_'))
-            (*cursor)++;
-        *value = 0;
-        int found = 0;
-        for(int i = 0; i < count; i++) {
-            if(strlen(entries[i].name) == (size_t)(*cursor - start) &&
-               strncmp(entries[i].name, start, (size_t)(*cursor - start)) == 0) {
-                *value = entries[i].value;
-                found = 1;
-                break;
-            }
-        }
-        if(!found)
-            return 0;
-    } else {
-        return 0;
-    }
-    *value *= sign;
-    return *value >= INT32_MIN && *value <= INT32_MAX;
-}
-
-static int
-enum_expression(const char *cursor, const char *end,
-                const EnumEntry *entries, int count, int64_t *value)
-{
-    if(!enum_term(&cursor, end, entries, count, value))
-        return 0;
-    for(;;) {
-        int64_t term;
-        skip_enum_space(&cursor, end);
-        if(cursor == end)
-            return 1;
-        char op = *cursor++;
-        if((op != '+' && op != '-') ||
-           !enum_term(&cursor, end, entries, count, &term))
-            return 0;
-        *value += op == '+' ? term : -term;
-        if(*value < INT32_MIN || *value > INT32_MAX)
-            return 0;
-    }
-}
-
-static int
-enum_member_value(const ZirType *type, const char *wanted, int32_t *value)
-{
-    if(!type->is_enum)
-        return 0;
-    size_t capacity = strlen(type->body) + 1;
-    EnumEntry *entries = calloc(capacity, sizeof(*entries));
-    if(entries == NULL)
-        return 0;
-    int count = 0;
-    int found = 0;
-    int64_t next = 0;
-    const char *cursor = type->body;
-    while(*cursor) {
-        while(*cursor == ',' || isspace((unsigned char)*cursor))
-            cursor++;
-        if(*cursor == 0)
-            break;
-        const char *end = cursor;
-        while(*end && *end != ',' && *end != '\n')
-            end++;
-        const char *start = cursor;
-        if(!isalpha((unsigned char)*cursor) && *cursor != '_')
-            goto invalid;
-        while(cursor < end &&
-              (isalnum((unsigned char)*cursor) || *cursor == '_'))
-            cursor++;
-        size_t length = (size_t)(cursor - start);
-        if(length == 0 || length >= ZIR_NAME_MAX ||
-           (size_t)count >= capacity)
-            goto invalid;
-        for(int i = 0; i < count; i++)
-            if(strlen(entries[i].name) == length &&
-               strncmp(entries[i].name, start, length) == 0)
-                goto invalid;
-        skip_enum_space(&cursor, end);
-        int64_t number = next;
-        if(cursor < end) {
-            if(*cursor++ != '=' ||
-               !enum_expression(cursor, end, entries, count, &number))
-                goto invalid;
-        }
-        if(number < INT32_MIN || number > INT32_MAX)
-            goto invalid;
-        memcpy(entries[count].name, start, length);
-        entries[count].name[length] = 0;
-        entries[count].value = (int32_t)number;
-        if(wanted != NULL && strcmp(wanted, entries[count].name) == 0) {
-            *value = (int32_t)number;
-            found = 1;
-        }
-        count++;
-        next = number + 1;
-        cursor = *end ? end + 1 : end;
-    }
-    free(entries);
-    return wanted == NULL ? count > 0 : found;
-invalid:
-    free(entries);
-    return 0;
-}
 
 static int
 portable_type_at(const ZirModule *module, const char *type, int depth)
@@ -339,20 +235,23 @@ portable_type_at(const ZirModule *module, const char *type, int depth)
     if(SliceElementType(type, element, sizeof(element))) {
         const ZirType *element_type = FindType(module, element, NULL);
         return element[0] != '[' &&
-               (element_type == NULL || !element_type->is_slot) &&
+               (element_type == NULL || !element_type->is_procedure_type) &&
                portable_type_at(module, element, depth + 1);
     }
     if(ArrayElementType(type, element, sizeof(element), &capacity)) {
-        const ZirType *element_type = FindType(module, element, NULL);
         return capacity > 0 &&
-               (element_type == NULL || !element_type->is_slot) &&
                (size_t)capacity <= VM_MAX_ARRAY_BYTES / sizeof(Value) &&
                portable_type_at(module, element, depth + 1);
     }
     record = FindType(module, type, &owner);
     if(record == NULL || record->is_extern)
         return 0;
-    if(record->is_slot) {
+    if(VecElementType(module, type, element, sizeof(element)))
+        return portable_type_at(module, element, depth + 1) &&
+               !VecElementType(module, element, NULL, 0);
+    if(record->is_procedure_type) {
+        if(record->is_c_call)
+            return 0;
         const char *cursor = record->body;
         int parameters = 0;
         while(*cursor) {
@@ -389,14 +288,12 @@ portable_type_at(const ZirModule *module, const char *type, int depth)
             if(*cursor++ != ',' || *cursor == 0)
                 return 0;
         }
-        return 1;
+        return portable_type_at(owner, record->procedure_return_type, depth + 1);
     }
     if(record->is_enum)
-        return enum_member_value(record, NULL, NULL);
+        return EnumMemberValue(record, NULL, NULL);
     while((status = TypeNextField(record, &offset, &field)) == 1) {
-        const ZirType *field_type = FindType(owner, field.type, NULL);
         if(++count > VM_MAX_FIELDS || strcmp(field.type, "void") == 0 ||
-           (field_type != NULL && field_type->is_slot) ||
            !portable_type_at(owner, field.type, depth + 1))
             return 0;
     }
@@ -427,11 +324,10 @@ host_type_at(const ZirModule *module, const char *type, int depth,
         return 1;
     const ZirModule *owner = NULL;
     const ZirType *record = FindType(module, type, &owner);
-    if(record == NULL || record->is_extern || record->is_slot ||
-       record->is_variant)
+    if(record == NULL || record->is_extern || record->is_procedure_type)
         return 0;
     if(record->is_enum)
-        return enum_member_value(record, NULL, NULL);
+        return EnumMemberValue(record, NULL, NULL);
     size_t offset = 0;
     ZirTypeField field;
     int count = 0, status;
@@ -471,109 +367,6 @@ string_value(const unsigned char *data, size_t length)
     return value;
 }
 
-/* Decode one checked source literal into immutable UTF-8 bytes. The same
- * escapes and Unicode validity rules apply to native and portable strings. */
-static int
-decode_string(const char *source, unsigned char *out, size_t capacity,
-              size_t *length)
-{
-    size_t size = strlen(source);
-    size_t used = 0;
-    int remaining = 0;
-    unsigned int scalar = 0, minimum = 0;
-    if(size < 2 || source[0] != '"' || source[size - 1] != '"')
-        return 0;
-    for(size_t i = 1; i + 1 < size; i++) {
-        unsigned int value = (unsigned char)source[i];
-        int unicode_escape = 0;
-        if(value == '\\') {
-            if(++i + 1 >= size)
-                return 0;
-            value = (unsigned char)source[i];
-            const char *escapes = "0abfnrtv\\\"";
-            const unsigned char values[] = {0, 7, 8, 12, 10, 13, 9, 11, '\\', '"'};
-            const char *found = strchr(escapes, (int)value);
-            if(found != NULL) {
-                value = values[found - escapes];
-            } else if(value == 'x' || value == 'u' || value == 'U') {
-                unicode_escape = value != 'x';
-                int digits = value == 'x' ? 2 : value == 'u' ? 4 : 8;
-                value = 0;
-                for(int d = 0; d < digits; d++) {
-                    if(++i + 1 >= size)
-                        return 0;
-                    int digit = (unsigned char)source[i];
-                    if(digit >= '0' && digit <= '9') digit -= '0';
-                    else if(digit >= 'a' && digit <= 'f') digit -= 'a' - 10;
-                    else if(digit >= 'A' && digit <= 'F') digit -= 'A' - 10;
-                    else return 0;
-                    value = value * 16 + (unsigned int)digit;
-                }
-                if(value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff))
-                    return 0;
-            } else {
-                return 0;
-            }
-        } else if(value == '"') {
-            return 0;
-        }
-        unsigned char bytes[4] = {(unsigned char)value, 0, 0, 0};
-        int count = 1;
-        if(unicode_escape && value >= 128) {
-            if(value < 0x800) {
-                bytes[0] = 0xc0 | (value >> 6);
-                bytes[1] = 0x80 | (value & 63);
-                count = 2;
-            } else if(value < 0x10000) {
-                bytes[0] = 0xe0 | (value >> 12);
-                bytes[1] = 0x80 | ((value >> 6) & 63);
-                bytes[2] = 0x80 | (value & 63);
-                count = 3;
-            } else {
-                bytes[0] = 0xf0 | (value >> 18);
-                bytes[1] = 0x80 | ((value >> 12) & 63);
-                bytes[2] = 0x80 | ((value >> 6) & 63);
-                bytes[3] = 0x80 | (value & 63);
-                count = 4;
-            }
-        }
-        for(int d = 0; d < count; d++) {
-            unsigned char byte = bytes[d];
-            if(remaining) {
-                if((byte & 0xc0) != 0x80)
-                    return 0;
-                scalar = (scalar << 6) | (byte & 63);
-                remaining--;
-                if(!remaining && (scalar < minimum || scalar > 0x10ffff ||
-                    (scalar >= 0xd800 && scalar <= 0xdfff)))
-                    return 0;
-            } else if(byte >= 128) {
-                if(byte >= 0xc2 && byte <= 0xdf) {
-                    remaining = 1;
-                    scalar = byte & 31;
-                    minimum = 0x80;
-                } else if(byte >= 0xe0 && byte <= 0xef) {
-                    remaining = 2;
-                    scalar = byte & 15;
-                    minimum = 0x800;
-                } else if(byte >= 0xf0 && byte <= 0xf4) {
-                    remaining = 3;
-                    scalar = byte & 7;
-                    minimum = 0x10000;
-                } else {
-                    return 0;
-                }
-            }
-            if(used >= capacity)
-                return 0;
-            out[used++] = byte;
-        }
-    }
-    if(remaining)
-        return 0;
-    *length = used;
-    return 1;
-}
 
 static Value
 literal_string(Vm *vm, const ZirExpr *expression)
@@ -583,7 +376,7 @@ literal_string(Vm *vm, const ZirExpr *expression)
             return string_value(item->data, item->length);
     size_t capacity = strlen(expression->text);
     StringLiteral *item = malloc(sizeof(*item) + capacity + 1);
-    if(item == NULL || !decode_string(expression->text, item->data,
+    if(item == NULL || !DecodeStringLiteral(expression->text, item->data,
                                       capacity + 1, &item->length)) {
         free(item);
         vm->failed = 1;
@@ -596,7 +389,7 @@ literal_string(Vm *vm, const ZirExpr *expression)
 }
 
 static Value
-enum_value(const ZirType *type, int32_t integer)
+enum_value(const ZirType *type, int64_t integer)
 {
     Value value = {.kind = VALUE_ENUM, .integer = integer,
                    .bits = (uint64_t)(int64_t)integer,
@@ -658,22 +451,22 @@ allocate_record(Vm *vm, const ZirModule *owner,
 }
 
 static Array *
-allocate_array(Vm *vm, const ZirModule *owner, const char *element,
-               int length)
+allocate_array_try(Vm *vm, const ZirModule *owner, const char *element,
+                   int length, int fail_hard)
 {
     if(length <= 0 || (size_t)length >
        (VM_MAX_ARRAY_BYTES - sizeof(Array)) / sizeof(Value)) {
-        vm->failed = 1;
+        if(fail_hard) vm->failed = 1;
         return NULL;
     }
     size_t bytes = sizeof(Array) + (size_t)length * sizeof(Value);
     if(bytes > VM_MAX_ARRAY_BYTES - vm->array_bytes) {
-        vm->failed = 1;
+        if(fail_hard) vm->failed = 1;
         return NULL;
     }
     Array *array = calloc(1, bytes);
     if(array == NULL) {
-        vm->failed = 1;
+        if(fail_hard) vm->failed = 1;
         return NULL;
     }
     array->next = vm->arrays;
@@ -684,6 +477,13 @@ allocate_array(Vm *vm, const ZirModule *owner, const char *element,
     vm->arrays = array;
     vm->array_bytes += bytes;
     return array;
+}
+
+static Array *
+allocate_array(Vm *vm, const ZirModule *owner, const char *element,
+               int length)
+{
+    return allocate_array_try(vm, owner, element, length, 1);
 }
 
 static Value default_value(Vm *vm, const ZirModule *module,
@@ -758,8 +558,10 @@ default_value(Vm *vm, const ZirModule *module, const char *type, int depth)
     const ZirType *record_type = FindType(module, type, &owner);
     if(record_type != NULL && record_type->is_enum)
         return enum_value(record_type, 0);
+    if(record_type != NULL && record_type->is_procedure_type)
+        return (Value){.kind = VALUE_SLOT, .slot_type = record_type};
     if(kind != VALUE_INVALID || record_type == NULL ||
-       record_type->is_slot ||
+       record_type->is_procedure_type ||
        record_type->is_extern || depth >= VM_MAX_DEPTH) {
         vm->failed = 1;
         return int_value(0);
@@ -783,8 +585,11 @@ default_value(Vm *vm, const ZirModule *module, const char *type, int depth)
             vm->failed = 1;
             break;
         }
-        record->fields[i].value = default_value(vm, owner,
-            record->fields[i].field.type, depth + 1);
+        if(i == 0 && VecElementType(module, type, NULL, 0))
+            record->fields[i].value = (Value){.kind = VALUE_ARRAY};
+        else
+            record->fields[i].value = default_value(vm, owner,
+                record->fields[i].field.type, depth + 1);
     }
     return (Value){.kind = VALUE_RECORD, .record = record};
 }
@@ -829,16 +634,16 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
             return (Value){.kind = VALUE_ARRAY, .array = copy};
         }
         const ZirType *record = FindType(module, type, NULL);
-        if(record != NULL && record->is_slot &&
+        if(record != NULL && record->is_procedure_type &&
            value.kind == VALUE_SLOT && value.slot_type == record)
             return value;
         if(record != NULL && record->is_enum &&
            value.kind != VALUE_RECORD && value.kind != VALUE_VOID &&
            value.kind != VALUE_INVALID) {
-            value = coerce(vm, module, value, "i32");
-            return enum_value(record, (int32_t)value.integer);
+            value = coerce(vm, module, value, record->enum_backing);
+            return enum_value(record, value.integer);
         }
-        if(record != NULL && !record->is_enum && !record->is_slot &&
+        if(record != NULL && !record->is_enum && !record->is_procedure_type &&
            !record->is_extern && value.kind == VALUE_RECORD &&
            value.record != NULL && value.record->type == record)
             return clone_value(vm, value, 0);
@@ -859,7 +664,7 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         return value;
     if(target == VALUE_REAL) {
         double number = as_real(value);
-        if(strcmp(type, "float") == 0 || strcmp(type, "f32") == 0)
+        if(strcmp(type, "float32") == 0)
             number = (float)number;
         if(!isfinite(number))
             vm->failed = 1;
@@ -868,19 +673,17 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
     if(value.kind == VALUE_REAL) {
         int unsigned_type = strcmp(type, "u32") == 0 ||
                             strcmp(type, "u8") == 0 ||
-                            strcmp(type, "char") == 0 ||
                             strcmp(type, "u64") == 0;
         double lower = unsigned_type ? 0.0 :
-                       strcmp(type, "i64") == 0 ? -9223372036854775808.0 :
+                       strcmp(type, "s64") == 0 ? -9223372036854775808.0 :
                        INT32_MIN;
         double upper = strcmp(type, "u64") == 0 ?
                        18446744073709551616.0 :
-                       strcmp(type, "i64") == 0 ?
+                       strcmp(type, "s64") == 0 ?
                        9223372036854775808.0 :
                        strcmp(type, "u32") == 0 ?
                        (double)UINT32_MAX + 1.0 :
-                       (strcmp(type, "u8") == 0 ||
-                        strcmp(type, "char") == 0) ? 256.0 :
+                       strcmp(type, "u8") == 0 ? 256.0 :
                        (double)INT32_MAX + 1.0;
         if(!isfinite(value.real) || value.real < lower ||
            value.real >= upper) {
@@ -889,22 +692,22 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         }
         if(strcmp(type, "u64") == 0)
             return uint_value((uint64_t)value.real);
-        if(strcmp(type, "i64") == 0)
+        if(strcmp(type, "s64") == 0)
             return int_value((int64_t)value.real);
         if(strcmp(type, "u32") == 0)
             return int_value((uint32_t)value.real);
-        if(strcmp(type, "u8") == 0 || strcmp(type, "char") == 0)
+        if(strcmp(type, "u8") == 0)
             return int_value((uint8_t)value.real);
         return int_value((int32_t)value.real);
     }
     if(strcmp(type, "u64") == 0)
         return uint_value(integer_bits(value));
-    if(strcmp(type, "i64") == 0)
+    if(strcmp(type, "s64") == 0)
         return int_value(signed64(integer_bits(value)));
     uint32_t bits = (uint32_t)integer_bits(value);
     if(strcmp(type, "u32") == 0)
         return int_value(bits);
-    if(strcmp(type, "u8") == 0 || strcmp(type, "char") == 0)
+    if(strcmp(type, "u8") == 0)
         return int_value((uint8_t)bits);
     return int_value(bits <= INT32_MAX ? (int64_t)bits :
                      (int64_t)bits - 4294967296LL);
@@ -920,7 +723,7 @@ coerce_expression(Vm *vm, const ZirModule *module,
 {
     if(value.kind == VALUE_RECORD && value.record != NULL) {
         const ZirType *record = FindType(module, type, NULL);
-        if(record != NULL && !record->is_enum && !record->is_slot &&
+        if(record != NULL && !record->is_enum && !record->is_procedure_type &&
            !record->is_extern && value.record->type == record)
             return value;
     }
@@ -1210,7 +1013,7 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         unsigned char bytes[ZIR_TEXT_MAX];
         size_t length;
         return strcmp(expression->type, "string") == 0 &&
-               decode_string(expression->text, bytes, sizeof(bytes), &length);
+               DecodeStringLiteral(expression->text, bytes, sizeof(bytes), &length);
     }
     case ZIR_EXPR_IDENT: {
         if(expression->is_function_value) {
@@ -1218,12 +1021,12 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
             ZirFunction signature = {0};
             Parameter actual[VM_MAX_PARAMS], expected[VM_MAX_PARAMS];
             int actual_count, expected_count;
-            if(slot == NULL || !slot->is_slot ||
+            if(slot == NULL || !slot->is_procedure_type ||
                ResolveFunction(module, expression->name,
                                &owner, &callee) != 1 ||
                callee == NULL || callee->is_extern ||
                strlen(slot->body) >= sizeof(signature.args) ||
-               strcmp(callee->return_type, "void") != 0)
+               strcmp(callee->return_type, slot->procedure_return_type) != 0)
                 return 0;
             copy_text(signature.args, sizeof(signature.args), slot->body);
             actual_count = parse_parameters(owner, callee, actual);
@@ -1247,10 +1050,10 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
            find_global_declaration(module, expression->name) != NULL)
             return 1;
         const ZirType *enumeration = NULL;
-        int32_t number;
+        int64_t number;
         return ResolveEnumMember(module, expression->name,
                                  &owner, &enumeration) == 1 &&
-               enum_member_value(enumeration, expression->name, &number);
+               EnumMemberValue(enumeration, expression->name, &number);
     }
     case ZIR_EXPR_UNARY:
         return (strcmp(expression->op, "+") == 0 ||
@@ -1282,6 +1085,24 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
                     strcmp(expression->op, "!=") == 0);
         const ZirType *left_enum = FindType(module, left_type, NULL);
         const ZirType *right_enum = FindType(module, right_type, NULL);
+        if((left_enum != NULL && left_enum->is_enum_flags) ||
+           (right_enum != NULL && right_enum->is_enum_flags)) {
+            const ZirType *flags = left_enum != NULL && left_enum->is_enum_flags ?
+                left_enum : right_enum;
+            if((left_enum != NULL && left_enum->is_enum_flags &&
+                right_enum != NULL && right_enum->is_enum_flags &&
+                left_enum != right_enum) ||
+               (left_enum != flags && !integer_type(left_type)) ||
+               (right_enum != flags && !integer_type(right_type)))
+                return 0;
+            return strcmp(expression->op, "==") == 0 ||
+                   strcmp(expression->op, "!=") == 0 ||
+                   strcmp(expression->op, "&") == 0 ||
+                   strcmp(expression->op, "|") == 0 ||
+                   strcmp(expression->op, "^") == 0 ||
+                   strcmp(expression->op, "+") == 0 ||
+                   strcmp(expression->op, "-") == 0;
+        }
         if(left_enum != NULL && left_enum->is_enum)
             return left_enum == right_enum &&
                    (strcmp(expression->op, "==") == 0 ||
@@ -1332,7 +1153,7 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         const ZirType *record = FindType(module, expression->name, NULL);
         unsigned char seen[VM_MAX_FIELDS] = {0};
         int children = 0;
-        if(record == NULL || record->is_enum || record->is_slot ||
+        if(record == NULL || record->is_enum || record->is_procedure_type ||
            strcmp(expression->type, expression->name) != 0)
             return 0;
         for(int child = expression->first_child; child >= 0;
@@ -1370,20 +1191,18 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         if(expression->left < 0 || expression->left >= function->expr_count)
             return 0;
         const ZirExpr *base = &function->exprs[expression->left];
-        if(strcmp(base->type, "string") == 0)
-            return strcmp(expression->name, "length") == 0 &&
-                   strcmp(expression->type, "i32") == 0 &&
+        if(strcmp(base->type, "string") == 0 ||
+           SliceElementType(base->type, NULL, 0) ||
+           ArrayElementType(base->type, NULL, 0, NULL)) {
+            return strcmp(expression->name, "count") == 0 &&
+                   strcmp(expression->type, "s64") == 0 &&
                    verify_expression(module, function, bindings, binding_count,
                                      expression->left, depth + 1);
-        if(SliceElementType(base->type, NULL, 0))
-            return strcmp(expression->name, "length") == 0 &&
-                   strcmp(expression->type, "i32") == 0 &&
-                   verify_expression(module, function, bindings, binding_count,
-                                     expression->left, depth + 1);
+        }
         const ZirType *record = FindType(module, base->type, NULL);
         size_t offset = 0;
         ZirTypeField field;
-        if(record == NULL || record->is_enum || record->is_slot ||
+        if(record == NULL || record->is_enum || record->is_procedure_type ||
            !verify_expression(module, function, bindings, binding_count,
                               expression->left, depth + 1))
             return 0;
@@ -1403,6 +1222,9 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
                               expression->left, depth + 1))
             return 0;
         const char *base = function->exprs[expression->left].type;
+        if(strcmp(base, "string") == 0) {
+            if(strcmp(expression->type, "string") != 0) return 0;
+        } else {
         if(!ArrayElementType(base, element, sizeof(element), &capacity) &&
            !SliceElementType(base, element, sizeof(element)))
             return 0;
@@ -1410,6 +1232,7 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         if(written < 0 || (size_t)written >= sizeof(expected) ||
            strcmp(expression->type, expected) != 0)
             return 0;
+        }
         if(expression->right >= 0 &&
            (!integer_type(function->exprs[expression->right].type) ||
             !verify_expression(module, function, bindings, binding_count,
@@ -1438,7 +1261,9 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         int capacity;
         int array = ArrayElementType(base, element, sizeof(element), &capacity);
         int slice = !array && SliceElementType(base, element, sizeof(element));
-        return (slice || (array && capacity > 0)) &&
+        int vec = !array && !slice &&
+                  VecElementType(module, base, element, sizeof(element));
+        return (slice || vec || (array && capacity > 0)) &&
                (strcmp(expression->type, element) == 0 ||
                 (ScalarType(element)[0] != 0 &&
                  strcmp(expression->type, ScalarType(element)) == 0));
@@ -1454,30 +1279,69 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
     case ZIR_EXPR_CALL:
         if(expression->name[0] == 0)
             return 0;
+        if(!strcmp(expression->name, "VecPush") ||
+           !strcmp(expression->name, "VecClear") ||
+           !strcmp(expression->name, "VecFree") ||
+           !strcmp(expression->name, "VecSwap")) {
+            int first = expression->first_child;
+            int second = first >= 0 ?
+                function->exprs[first].next_sibling : -1;
+            int push = !strcmp(expression->name, "VecPush");
+            int swap = !strcmp(expression->name, "VecSwap");
+            char element[ZIR_NAME_MAX];
+            if(first < 0 || assignment_root(function, first) == NULL ||
+               !VecElementType(module, function->exprs[first].type,
+                               element, sizeof(element)) ||
+               !verify_expression(module, function, bindings, binding_count,
+                                  first, depth + 1) ||
+               strcmp(expression->type, push ? "bool" : "void"))
+                return 0;
+            if(swap)
+                return second >= 0 &&
+                       function->exprs[second].next_sibling < 0 &&
+                       assignment_root(function, second) != NULL &&
+                       !strcmp(function->exprs[first].type,
+                               function->exprs[second].type) &&
+                       verify_expression(module, function, bindings,
+                                         binding_count, second, depth + 1);
+            if(!push) return second < 0;
+            return second >= 0 &&
+                   function->exprs[second].next_sibling < 0 &&
+                   verify_expression(module, function, bindings, binding_count,
+                                     second, depth + 1) &&
+                   (strcmp(function->exprs[second].type, element) == 0 ||
+                    strcmp(ScalarType(element),
+                           function->exprs[second].type) == 0);
+        }
         if(expression->slot_type[0]) {
             int index = binding_index(bindings, binding_count,
                                       expression->name);
             const ZirType *slot = FindType(module, expression->slot_type,
                                            NULL);
             ZirFunction signature = {0};
-            if(index < 0 || slot == NULL || !slot->is_slot ||
+            if(index < 0 || slot == NULL || !slot->is_procedure_type ||
                strcmp(bindings[index].type, expression->slot_type) != 0 ||
                strlen(slot->body) >= sizeof(signature.args) ||
-               strcmp(expression->type, "void") != 0)
+               strcmp(expression->type, slot->procedure_return_type) != 0)
                 return 0;
             copy_text(signature.args, sizeof(signature.args), slot->body);
             int expected = parse_parameters(module, &signature, parameters);
             if(expected < 0)
                 return 0;
+            unsigned used = 0;
             for(int child = expression->first_child; child >= 0;
                 child = function->exprs[child].next_sibling) {
-                if(children >= expected ||
+                int position = function->exprs[child].argument_index;
+                if(position < 0 || position >= expected ||
+                   (used & (1u << position)) ||
                    !verify_expression(module, function, bindings,
                                       binding_count, child, depth + 1))
                     return 0;
+                used |= 1u << position;
                 children++;
             }
-            return children == expected;
+            return children == expected &&
+                   used == ((1u << expected) - 1u);
         }
         int resolved = ResolveFunction(module, expression->name,
                                        &owner, &callee);
@@ -1486,16 +1350,22 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         if((resolved != 1 || callee == NULL) &&
            (external == NULL || external->extern_kind != ZIR_EXTERN_HOST))
             return 0;
+        unsigned used = 0;
         for(int child = expression->first_child; child >= 0;
             child = function->exprs[child].next_sibling) {
-            if(++children > VM_MAX_PARAMS ||
+            int position = function->exprs[child].argument_index;
+            if(position < 0 || position >= VM_MAX_PARAMS ||
+               (used & (1u << position)) || ++children > VM_MAX_PARAMS ||
                !verify_expression(module, function, bindings, binding_count,
                                   child, depth + 1))
                 return 0;
+            used |= 1u << position;
         }
-        return external != NULL ?
-            parse_import_parameters(module, external, parameters) == children :
-            parse_parameters(owner, callee, parameters) == children;
+        int expected = external != NULL ?
+            parse_import_parameters(module, external, parameters) :
+            parse_parameters(owner, callee, parameters);
+        return expected >= 0 && expected == children &&
+               used == ((1u << expected) - 1u);
     default:
         return 0;
     }
@@ -1559,9 +1429,6 @@ verify_sequence(const ZirModule *module, const ZirFunction *function,
         case ZIR_STMT_DECL:
             if(!portable_type(module, statement->type) ||
                strcmp(statement->type, "void") == 0 ||
-               (FindType(module, statement->type, NULL) != NULL &&
-                FindType(module, statement->type, NULL)->is_slot &&
-                statement->expr_root < 0) ||
                statement->name[0] == 0 || binding_count >= VM_MAX_LOCALS ||
                (statement->expr_root >= 0 &&
                 !verify_expression(module, function, bindings, binding_count,
@@ -1593,7 +1460,15 @@ verify_sequence(const ZirModule *module, const ZirFunction *function,
                     function->exprs[statement->lhs_root].type;
                 const char *source =
                     function->exprs[statement->expr_root].type;
-                if(operation == NULL || !scalar_type(destination) ||
+                const ZirType *flags = FindType(module, destination, NULL);
+                int flag_assignment = flags != NULL && flags->is_enum_flags &&
+                    (strcmp(source, destination) == 0 || integer_type(source)) &&
+                    (strcmp(operation ? operation : "", "&") == 0 ||
+                     strcmp(operation ? operation : "", "|") == 0 ||
+                     strcmp(operation ? operation : "", "^") == 0 ||
+                     strcmp(operation ? operation : "", "+") == 0 ||
+                     strcmp(operation ? operation : "", "-") == 0);
+                if(!flag_assignment && (operation == NULL || !scalar_type(destination) ||
                    !scalar_type(source) ||
                    strcmp(destination, "string") == 0 ||
                    strcmp(source, "string") == 0 ||
@@ -1604,7 +1479,7 @@ verify_sequence(const ZirModule *module, const ZirFunction *function,
                    ((strcmp(operation, "%") == 0 ||
                      bitwise_operator(operation)) &&
                     (!integer_type(destination) ||
-                     !integer_type(source))))
+                     !integer_type(source)))))
                     return 0;
             }
             break;
@@ -1747,10 +1622,10 @@ VmVerify(const ZirProgram *program, const char *entry_module,
     if(program == NULL || entry_module == NULL || entry_function == NULL)
         return 0;
     entry = find_entry(program, entry_module, entry_function, &entry_owner);
-    if(entry == NULL || entry->is_extern || entry->is_closure ||
+    if(entry == NULL || entry->is_extern ||
        parse_parameters(entry_owner, entry, bindings) != 0 ||
-       (strcmp(entry->return_type, "i32") != 0 &&
-        strcmp(entry->return_type, "int") != 0 &&
+       (strcmp(entry->return_type, "s32") != 0 &&
+        strcmp(entry->return_type, "s64") != 0 &&
         strcmp(entry->return_type, "bool") != 0 &&
         strcmp(entry->return_type, "void") != 0)) {
         Diagnostic(Span("<bundle>", 1, 1), "zib.entry",
@@ -1765,9 +1640,45 @@ VmVerify(const ZirProgram *program, const char *entry_module,
                               "duplicate module identity: %s", module->name);
                 return 0;
             }
+        for(int t = 0; t < module->type_count; t++)
+            if(module->types[t].is_union) {
+                Diagnostic(module->types[t].span, "zib.union",
+                           "portable union storage is not supported");
+                return 0;
+            }
         for(int i = 0; i < module->import_count; i++) {
             if(module->imports[i].kind == ZIR_IMPORT_EXTERN &&
                module->imports[i].extern_kind == ZIR_EXTERN_HOST) {
+                const ZirImport *import = &module->imports[i];
+                if(strncmp(import->target, "ziran:", 6) == 0) {
+                    const ZirModule *provider_module = NULL;
+                    const ZirFunction *provider = bound_provider(program,
+                        import, &provider_module);
+                    Parameter expected[VM_MAX_PARAMS], actual[VM_MAX_PARAMS];
+                    int expected_count = parse_import_parameters(module,
+                        import, expected);
+                    int actual_count = provider != NULL ?
+                        parse_parameters(provider_module, provider, actual) : -1;
+                    int valid = provider != NULL &&
+                        strcmp(import->return_type, provider->return_type) == 0 &&
+                        expected_count >= 0 && expected_count == actual_count &&
+                        host_type_at(module, import->return_type, 0, 0) &&
+                        same_bound_type(module, provider_module,
+                                        import->return_type);
+                    for(int p = 0; valid && p < expected_count; p++)
+                        valid = strcmp(expected[p].type, actual[p].type) == 0 &&
+                            host_type_at(module, expected[p].type, 0, 1) &&
+                            strcmp(expected[p].type, "void") != 0 &&
+                            same_bound_type(module, provider_module,
+                                            expected[p].type);
+                    if(!valid) {
+                        Diagnostic(import->span, "zib.bind",
+                                   "bound Ziran host provider has a missing or mismatched signature: %s:%s",
+                                   module->name, import->name);
+                        return 0;
+                    }
+                    continue;
+                }
                 Parameter parameters[VM_MAX_PARAMS];
                 int count = parse_import_parameters(module,
                     &module->imports[i], parameters);
@@ -1780,17 +1691,13 @@ VmVerify(const ZirProgram *program, const char *entry_module,
                 if(host_signature)
                     continue;
             }
-            if(module->imports[i].kind != ZIR_IMPORT_HEADER ||
+            if((module->imports[i].kind != ZIR_IMPORT_OPEN &&
+                module->imports[i].kind != ZIR_IMPORT_MODULE) ||
                module->imports[i].resolved_module == NULL) {
                 Diagnostic(module->imports[i].span, "zib.capability",
                               "portable execution requires an included Ziran module or supported host capability");
                 return 0;
             }
-        }
-        if(module->state_count) {
-            Diagnostic(module->span, "zib.module",
-                          "state is outside the portable subset");
-            return 0;
         }
         for(int g = 0; g < module->global_count; g++) {
             const ZirGlobal *global = &module->globals[g];
@@ -1810,22 +1717,6 @@ VmVerify(const ZirProgram *program, const char *entry_module,
                               "function is outside the portable subset: %s",
                               function->name);
                 return 0;
-            }
-            for(int c = 0; c < function->capture_count; c++) {
-                if(binding_count >= VM_MAX_LOCALS ||
-                   !portable_type(module, function->captures[c].type)) {
-                    Diagnostic(function->span, "zib.capture",
-                               "capture is outside the portable subset: %s",
-                               function->name);
-                    return 0;
-                }
-                copy_text(bindings[binding_count].name,
-                          sizeof(bindings[binding_count].name),
-                          function->captures[c].name);
-                copy_text(bindings[binding_count].type,
-                          sizeof(bindings[binding_count].type),
-                          function->captures[c].type);
-                binding_count++;
             }
             if(!verify_sequence(module, function, 0, function->stmt_count,
                                 bindings, binding_count, 0, 0)) {
@@ -1849,16 +1740,15 @@ VmVerify(const ZirProgram *program, const char *entry_module,
 
 static Value run_function(Vm *vm, const ZirModule *module,
                           const ZirFunction *function, const Value *args,
-                          int arg_count, Frame *parent);
+                          int arg_count);
 static Value eval(Frame *frame, int index, int depth);
 
 static Local *
 find_local(Frame *frame, const char *name)
 {
-    for(Frame *scope = frame; scope != NULL; scope = scope->parent)
-        for(int i = scope->local_count - 1; i >= 0; i--)
-            if(strcmp(scope->locals[i].name, name) == 0)
-                return &scope->locals[i];
+    for(int i = frame->local_count - 1; i >= 0; i--)
+        if(strcmp(frame->locals[i].name, name) == 0)
+            return &frame->locals[i];
     return NULL;
 }
 
@@ -1888,6 +1778,19 @@ record_field(Record *record, const char *name)
 static Value *
 indexed_element(Value base, uint64_t index)
 {
+    if(base.kind == VALUE_RECORD && base.record != NULL &&
+       VecElementType(base.record->owner, base.record->type->name,
+                      NULL, 0)) {
+        Value *data = record_field(base.record, "data");
+        Value *count = record_field(base.record, "count");
+        if(data != NULL && count != NULL &&
+           count->kind == VALUE_INT && count->integer >= 0 &&
+           index < (uint64_t)count->integer &&
+           data->kind == VALUE_ARRAY && data->array != NULL &&
+           index < (uint64_t)data->array->length)
+            return &data->array->elements[index];
+        return NULL;
+    }
     if(base.kind == VALUE_ARRAY && base.array != NULL &&
        index < (uint64_t)base.array->length)
         return &base.array->elements[index];
@@ -1941,8 +1844,8 @@ binary_value(Vm *vm, const char *op, Value left, Value right,
     int unsigned64 = strcmp(left_type, "u64") == 0 ||
                      (!shift && strcmp(right_type, "u64") == 0);
     int signed_wide = !unsigned64 &&
-        (strcmp(left_type, "i64") == 0 ||
-         (!shift && strcmp(right_type, "i64") == 0));
+        (strcmp(left_type, "s64") == 0 ||
+         (!shift && strcmp(right_type, "s64") == 0));
     uint64_t left_bits = integer_bits(left);
     uint64_t right_bits = integer_bits(right);
     double a = as_real(left), b = as_real(right);
@@ -1959,6 +1862,23 @@ binary_value(Vm *vm, const char *op, Value left, Value right,
         if(strcmp(op, "!=") == 0)
             return int_value(!equal);
         goto failed;
+    }
+    if((left.kind == VALUE_ENUM && left.enumeration->is_enum_flags) ||
+       (right.kind == VALUE_ENUM && right.enumeration->is_enum_flags)) {
+        const ZirType *flags = left.kind == VALUE_ENUM ? left.enumeration :
+                               right.enumeration;
+        if((left.kind == VALUE_ENUM && left.enumeration != flags) ||
+           (right.kind == VALUE_ENUM && right.enumeration != flags) ||
+           (left.kind != VALUE_ENUM && left.kind != VALUE_INT) ||
+           (right.kind != VALUE_ENUM && right.kind != VALUE_INT))
+            goto failed;
+        Value result = binary_value(vm, op, int_value(left.integer),
+                                    int_value(right.integer),
+                                    flags->enum_backing, flags->enum_backing);
+        if(vm->failed || strcmp(op, "==") == 0 || strcmp(op, "!=") == 0)
+            return result;
+        result = coerce(vm, NULL, result, flags->enum_backing);
+        return enum_value(flags, result.integer);
     }
     if(left.kind == VALUE_ENUM || right.kind == VALUE_ENUM) {
         if(left.kind != VALUE_ENUM || right.kind != VALUE_ENUM ||
@@ -2106,6 +2026,13 @@ eval(Frame *frame, int index, int depth)
         }
         if(errno || end == expression->text || *end)
             frame->vm->failed = 1;
+        else {
+            const ZirType *enumeration = FindType(frame->module,
+                                                  expression->type, NULL);
+            if(enumeration != NULL && enumeration->is_enum)
+                value = coerce(frame->vm, frame->module, value,
+                               expression->type);
+        }
         break;
     }
     case ZIR_EXPR_FLOAT: {
@@ -2125,7 +2052,7 @@ eval(Frame *frame, int index, int depth)
             const ZirFunction *function = NULL;
             const ZirType *slot = FindType(frame->module,
                                            expression->type, NULL);
-            if(slot == NULL || !slot->is_slot ||
+            if(slot == NULL || !slot->is_procedure_type ||
                ResolveFunction(frame->module, expression->name,
                                &owner, &function) != 1 || function == NULL) {
                 frame->vm->failed = 1;
@@ -2135,7 +2062,6 @@ eval(Frame *frame, int index, int depth)
             value.slot_type = slot;
             value.slot_module = owner;
             value.slot_function = function;
-            value.slot_frame = function->is_closure ? frame : NULL;
             break;
         }
         if(strcmp(expression->name, "true") == 0)
@@ -2152,10 +2078,10 @@ eval(Frame *frame, int index, int depth)
                                      *global, expression->type);
         const ZirModule *owner = NULL;
         const ZirType *enumeration = NULL;
-        int32_t number;
+        int64_t number;
         if(ResolveEnumMember(frame->module, expression->name,
                              &owner, &enumeration) == 1 &&
-           enum_member_value(enumeration, expression->name, &number))
+           EnumMemberValue(enumeration, expression->name, &number))
             return coerce(frame->vm, frame->module,
                           int_value(number), expression->type);
         frame->vm->failed = 1;
@@ -2263,13 +2189,18 @@ eval(Frame *frame, int index, int depth)
     case ZIR_EXPR_MEMBER: {
         left = eval(frame, expression->left, depth + 1);
         if(left.kind == VALUE_STRING &&
-           strcmp(expression->name, "length") == 0) {
+           strcmp(expression->name, "count") == 0) {
             value = int_value((int64_t)left.length);
             break;
         }
         if(left.kind == VALUE_SLICE &&
-           strcmp(expression->name, "length") == 0) {
+           strcmp(expression->name, "count") == 0) {
             value = int_value((int64_t)left.length);
+            break;
+        }
+        if(left.kind == VALUE_ARRAY && left.array != NULL &&
+           strcmp(expression->name, "count") == 0) {
+            value = int_value((int64_t)left.array->length);
             break;
         }
         Value *field = left.kind == VALUE_RECORD ?
@@ -2284,6 +2215,26 @@ eval(Frame *frame, int index, int depth)
         Value *stored = assignment_slot(frame, expression->left, depth + 1);
         left = stored != NULL ? *stored :
                eval(frame, expression->left, depth + 1);
+        if(left.kind == VALUE_STRING) {
+            Value low = expression->right >= 0 ?
+                eval(frame, expression->right, depth + 1) : int_value(0);
+            Value high = expression->third >= 0 ?
+                eval(frame, expression->third, depth + 1) :
+                int_value((int64_t)left.length);
+            if(frame->vm->failed || low.kind != VALUE_INT ||
+               high.kind != VALUE_INT ||
+               (!low.unsigned64 && low.integer < 0) ||
+               (!high.unsigned64 && high.integer < 0) ||
+               integer_bits(low) > integer_bits(high) ||
+               integer_bits(high) > left.length) {
+                frame->vm->failed = 1;
+                break;
+            }
+            size_t start = (size_t)integer_bits(low);
+            value = string_value(left.data != NULL ? left.data + start : NULL,
+                                 (size_t)(integer_bits(high) - integer_bits(low)));
+            break;
+        }
         Array *backing = NULL;
         size_t offset = 0;
         size_t length = 0;
@@ -2326,7 +2277,11 @@ eval(Frame *frame, int index, int depth)
          * entire array for each read would exhaust the VM allocation budget
          * in an ordinary loop. The result is coerced below as a value. */
         Value *stored = assignment_slot(frame, expression->left, depth + 1);
-        left = stored != NULL && stored->kind == VALUE_ARRAY ?
+        left = stored != NULL &&
+               (stored->kind == VALUE_ARRAY ||
+                VecElementType(frame->module,
+                    frame->function->exprs[expression->left].type,
+                    NULL, 0)) ?
                *stored : eval(frame, expression->left, depth + 1);
         right = eval(frame, expression->right, depth + 1);
         if(right.kind != VALUE_INT ||
@@ -2352,12 +2307,98 @@ eval(Frame *frame, int index, int depth)
                           expression->third, depth + 1);
         break;
     case ZIR_EXPR_CALL: {
-        Value args[VM_MAX_PARAMS];
+        if(!strcmp(expression->name, "VecPush") ||
+           !strcmp(expression->name, "VecClear") ||
+           !strcmp(expression->name, "VecFree") ||
+           !strcmp(expression->name, "VecSwap")) {
+            int first = expression->first_child;
+            int push = !strcmp(expression->name, "VecPush");
+            Value *vec = assignment_slot(frame, first, depth + 1);
+            char element[ZIR_NAME_MAX];
+            if(vec == NULL || vec->kind != VALUE_RECORD ||
+               !VecElementType(frame->module,
+                   frame->function->exprs[first].type,
+                   element, sizeof(element))) {
+                frame->vm->failed = 1;
+                break;
+            }
+            if(!strcmp(expression->name, "VecSwap")) {
+                int second = frame->function->exprs[first].next_sibling;
+                Value *other = assignment_slot(frame, second, depth + 1);
+                if(other == NULL || other->kind != VALUE_RECORD ||
+                   other->record->type != vec->record->type) {
+                    frame->vm->failed = 1;
+                    break;
+                }
+                Value saved = *vec;
+                *vec = *other;
+                *other = saved;
+                value = (Value){.kind = VALUE_VOID};
+                break;
+            }
+            Value *data = record_field(vec->record, "data");
+            Value *count = record_field(vec->record, "count");
+            Value *capacity = record_field(vec->record, "capacity");
+            if(data == NULL || count == NULL || capacity == NULL ||
+               count->kind != VALUE_INT || capacity->kind != VALUE_INT ||
+               count->integer < 0 || capacity->integer < count->integer ||
+               capacity->integer > INT32_MAX) {
+                frame->vm->failed = 1;
+                break;
+            }
+            if(push) {
+                int second = frame->function->exprs[first].next_sibling;
+                Value item = eval(frame, second, depth + 1);
+                if(frame->vm->failed) break;
+                if(count->integer == capacity->integer) {
+                    int next_capacity = capacity->integer == 0 ? 8 :
+                        capacity->integer > INT32_MAX / 2 ? 0 :
+                        (int)(capacity->integer * 2);
+                    Array *grown = next_capacity > 0 ?
+                        allocate_array_try(frame->vm, frame->module,
+                                           element, next_capacity, 0) : NULL;
+                    if(grown == NULL) {
+                        value = int_value(0);
+                        break;
+                    }
+                    if(data->array != NULL) {
+                        for(int i = 0; i < count->integer; i++) {
+                            grown->elements[i] = data->array->elements[i];
+                            data->array->elements[i] = (Value){0};
+                        }
+                        retire_value(*data, 0);
+                    }
+                    *data = (Value){.kind = VALUE_ARRAY, .array = grown};
+                    *capacity = int_value(next_capacity);
+                }
+                Value stored = coerce(frame->vm, frame->module, item, element);
+                if(frame->vm->failed) break;
+                data->array->elements[count->integer] = stored;
+                count->integer++;
+                value = int_value(1);
+            } else {
+                if(data->array != NULL) {
+                    for(int i = 0; i < count->integer; i++) {
+                        retire_value(data->array->elements[i], 0);
+                        data->array->elements[i] = (Value){0};
+                    }
+                }
+                *count = int_value(0);
+                if(!strcmp(expression->name, "VecFree")) {
+                    retire_value(*data, 0);
+                    *data = (Value){.kind = VALUE_ARRAY};
+                    *capacity = int_value(0);
+                }
+                value = (Value){.kind = VALUE_VOID};
+            }
+            break;
+        }
+        Value args[VM_MAX_PARAMS] = {0};
         int count = 0;
+        unsigned used = 0;
         const ZirModule *owner = NULL;
         const ZirFunction *callee = NULL;
         const ZirImport *external = NULL;
-        Frame *parent = NULL;
         if(expression->slot_type[0]) {
             Local *binding = find_local(frame, expression->name);
             if(binding == NULL || binding->value.kind != VALUE_SLOT) {
@@ -2366,7 +2407,6 @@ eval(Frame *frame, int index, int depth)
             }
             owner = binding->value.slot_module;
             callee = binding->value.slot_function;
-            parent = binding->value.slot_frame;
         } else {
             int resolved = ResolveFunction(frame->module, expression->name,
                                            &owner, &callee);
@@ -2379,11 +2419,15 @@ eval(Frame *frame, int index, int depth)
         }
         for(int child = expression->first_child; child >= 0;
             child = frame->function->exprs[child].next_sibling) {
-            if(count >= VM_MAX_PARAMS) {
+            int position = frame->function->exprs[child].argument_index;
+            if(count >= VM_MAX_PARAMS || position < 0 ||
+               position >= VM_MAX_PARAMS || (used & (1u << position))) {
                 frame->vm->failed = 1;
                 break;
             }
-            args[count++] = eval(frame, child, depth + 1);
+            args[position] = eval(frame, child, depth + 1);
+            used |= 1u << position;
+            count++;
         }
         if(!frame->vm->failed) {
             if(external != NULL) {
@@ -2398,10 +2442,9 @@ eval(Frame *frame, int index, int depth)
                 signature.is_extern = 1;
                 signature.span = external->span;
                 value = run_function(frame->vm, frame->module,
-                                     &signature, args, count, NULL);
+                                     &signature, args, count);
             } else {
-                value = run_function(frame->vm, owner, callee, args, count,
-                                     parent);
+                value = run_function(frame->vm, owner, callee, args, count);
             }
         }
         break;
@@ -2546,8 +2589,16 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
                 frame->local_count = saved_locals;
                 if(flow == FLOW_RETURN || flow == FLOW_ERROR)
                     return flow;
-                if(flow == FLOW_BREAK)
+                if((flow == FLOW_BREAK || flow == FLOW_CONTINUE) &&
+                   frame->control_target != 0 &&
+                   frame->control_target != statement->loop_id)
+                    return flow;
+                if(flow == FLOW_BREAK) {
+                    frame->control_target = 0;
                     break;
+                }
+                if(flow == FLOW_CONTINUE)
+                    frame->control_target = 0;
             }
             s = close;
             break;
@@ -2563,8 +2614,10 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
             s = close;
             break;
         case ZIR_STMT_BREAK:
+            frame->control_target = statement->target_id;
             return FLOW_BREAK;
         case ZIR_STMT_CONTINUE:
+            frame->control_target = statement->target_id;
             return FLOW_CONTINUE;
         default:
             return FLOW_ERROR;
@@ -2625,8 +2678,6 @@ host_argument(const ZirModule *module, const char *type, Value value,
     }
     const ZirModule *owner = NULL;
     const ZirType *record = FindType(module, type, &owner);
-    if(record != NULL && record->is_variant)
-        return 0;
     if(record != NULL && !record->is_enum) {
         if(value.kind != VALUE_RECORD || value.record == NULL ||
            value.record->type != record ||
@@ -2677,10 +2728,6 @@ host_return(Vm *vm, const ZirModule *module, const char *type,
     }
     const ZirModule *owner = NULL;
     const ZirType *declared = FindType(module, type, &owner);
-    if(declared != NULL && declared->is_variant) {
-        vm->failed = 1;
-        return result;
-    }
     if(declared != NULL && !declared->is_enum) {
         if(input->kind != VM_HOST_RECORD ||
            (input->field_count > 0 && input->fields == NULL) ||
@@ -2798,15 +2845,9 @@ assignment_root_name(const ZirFunction *function, int index)
 static int
 function_uses_slots(const ZirFunction *function)
 {
-    if(function->is_closure)
-        return 1;
     for(int i = 0; i < function->expr_count; i++) {
         if(function->exprs[i].is_function_value ||
            function->exprs[i].slot_type[0])
-            return 1;
-    }
-    for(int i = 0; i < function->stmt_count; i++) {
-        if(function->stmts[i].kind == ZIR_STMT_BLOCK_CALL)
             return 1;
     }
     return 0;
@@ -2917,7 +2958,7 @@ release_call_arrays(Vm *vm, uint64_t entry, uint64_t before_result)
 
 static Value
 run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
-             const Value *args, int arg_count, Frame *parent)
+             const Value *args, int arg_count)
 {
     Frame frame = {0};
     Parameter parameters[VM_MAX_PARAMS];
@@ -2929,6 +2970,17 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
         return result;
     }
     if(function->is_extern) {
+        const ZirImport *import = host_import(module, function->name);
+        if(import != NULL && strncmp(import->target, "ziran:", 6) == 0) {
+            const ZirModule *provider_module = NULL;
+            const ZirFunction *provider = bound_provider(vm->program, import,
+                &provider_module);
+            if(provider == NULL) {
+                vm->failed = 1;
+                return result;
+            }
+            return run_function(vm, provider_module, provider, args, arg_count);
+        }
         VmHostValue host_args[VM_MAX_PARAMS] = {0};
         VmHostValue host_result = {0};
         if(vm->host == NULL) {
@@ -2985,7 +3037,6 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
     frame.vm = vm;
     frame.module = module;
     frame.function = function;
-    frame.parent = parent;
     frame.caller = vm->active_frame;
     vm->active_frame = &frame;
     for(int i = 0; i < count; i++) {
@@ -3007,7 +3058,10 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
     vm->depth--;
     uint64_t allocation_before_result = vm->allocation;
     Value returned = coerce(vm, module, result, function->return_type);
-    if(!vm->failed && parent == NULL && !function_uses_slots(function)) {
+    /* Named Ziran procedure values carry no borrowed frame context. The
+     * returned value has already been copied, so slot-using calls can drop
+     * temporaries by the same reachability rule as direct calls. */
+    if(!vm->failed) {
         pin_globals(vm);
         pin_active_frames(vm);
         release_call_records(vm, allocation_entry, allocation_before_result);
@@ -3085,6 +3139,7 @@ VmInstanceOpen(const ZirProgram *program, const char *entry_module,
     VmInstance *instance = calloc(1, sizeof(*instance));
     if(instance == NULL)
         return NULL;
+    instance->vm.program = program;
     instance->vm.host = host;
     instance->vm.host_context = context;
     instance->entry = find_entry(program, entry_module, entry_function,
@@ -3106,7 +3161,7 @@ VmInstanceRun(VmInstance *instance, long long *result, int *has_result)
     Vm *vm = &instance->vm;
     vm->steps = 0;
     Value value = run_function(vm, instance->module, instance->entry,
-                               NULL, 0, NULL);
+                               NULL, 0);
     *result = value.integer;
     *has_result = strcmp(instance->entry->return_type, "void") != 0;
     if(vm->failed) {

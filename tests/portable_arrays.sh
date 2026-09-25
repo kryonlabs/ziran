@@ -24,7 +24,7 @@ Box :: struct {
 
 Matrix :: struct {
     values: [ROWS][THREE]s32
-    names: [ROWS][THREE + 1]char
+    names: [ROWS][THREE + 1]u8
 }
 
 matrix_state: Matrix;
@@ -32,24 +32,24 @@ matrix_state: Matrix;
 #program_export
 MatrixGlobalAnswer :: () -> s32 {
     matrix_state.values[1][2] = 42
-    matrix_state.names[1][2] = cast(char)65
-    if matrix_state.names[1][2] != cast(char)65 { return 0 }
+    matrix_state.names[1][2] = cast(u8)65
+    if matrix_state.names[1][2] != cast(u8)65 { return 0 }
     return matrix_state.values[1][2]
 }
 
 #program_export
 MatrixAnswer :: () -> s32 {
     matrix: Matrix
-    expanded: [CAPACITY * 2]char
-    expanded[3] = cast(char)65
-    if expanded[3] != cast(char)65 { return 0 }
+    expanded: [CAPACITY * 2]u8
+    expanded[3] = cast(u8)65
+    if expanded[3] != cast(u8)65 { return 0 }
     matrix.values[0][0] = 40
     matrix.values[1][2] = 2
-    matrix.names[1][2] = cast(char)120
+    matrix.names[1][2] = cast(u8)120
     copy: Matrix = matrix
     matrix.values[0][0] = 0
-    matrix.names[1][2] = cast(char)121
-    if copy.names[1][2] != cast(char)120 || copy.names[0][0] != 0 {
+    matrix.names[1][2] = cast(u8)121
+    if copy.names[1][2] != cast(u8)120 || copy.names[0][0] != 0 {
         return 0
     }
     return copy.values[0][0] + copy.values[1][2]
@@ -155,6 +155,11 @@ NestedOutOfBounds :: () -> s32 {
 EOF
 
 "$ziran" ir --root "$work" -o "$work/ir" "$work/arrayapp.zi"
+if ! rg -aFq '.[41, 1, 0]' "$work/ir/arrayapp.zir" ||
+   rg -aFq '([THREE]s32){41, 1, 0}' "$work/ir/arrayapp.zir"; then
+    echo 'saved array expression did not retain Jai initializer syntax' >&2
+    exit 1
+fi
 for input in source saved; do
     if test "$input" = source; then
         module=$work/arrayapp.zi
@@ -170,7 +175,7 @@ for input in source saved; do
     for target in c cpp go; do
         output="$work/$target-$input"
         if test "$target" = go; then
-            "$ziran" build --target=go --strict --pkg main \
+            "$ziran" build --target=go --pkg main \
                 --root "$module_dir" -o "$output" "$module"
             cat > "$output/main.go" <<'GO'
 package main
@@ -178,7 +183,7 @@ func main() { if Arrayapp_Answer() != 42 { panic("array result") } }
 GO
             GO111MODULE=off go run "$output"/*.go
         elif test "$target" = c; then
-            "$ziran" build --target=c --strict --root "$module_dir" \
+            "$ziran" build --target=c --root "$module_dir" \
                 -o "$output" "$module"
             cat > "$output/main.c" <<'C'
 #include "arrayapp.h"
@@ -188,7 +193,7 @@ C
                 "$output"/*.c -o "$output/app"
             "$output/app"
         else
-            "$ziran" build --target=cpp --strict --root "$module_dir" \
+            "$ziran" build --target=cpp --root "$module_dir" \
                 -o "$output" "$module"
             cat > "$output/main.cpp" <<'CPP'
 #include "arrayapp.hpp"
@@ -202,6 +207,20 @@ CPP
 done
 
 cmp "$work/source.zib" "$work/saved.zib"
+
+cat > "$work/c_style_array.zi" <<'EOF'
+Answer :: () -> s32 {
+    values: [2]s32 = ([2]s32){40, 2}
+    return values[0] + values[1]
+}
+EOF
+if "$ziran" check --root "$work" "$work/c_style_array.zi" \
+    2> "$work/c_style_array.err"; then
+    echo 'C-style array initializer unexpectedly passed checking' >&2
+    exit 1
+fi
+grep -Fq 'C-style cast or literal is not valid Jai syntax' \
+    "$work/c_style_array.err"
 
 cat > "$work/capacity.zi" <<'EOF'
 LENGTH :: 1 + 1

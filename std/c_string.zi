@@ -1,6 +1,6 @@
-# Copies a borrowed Ziran string into caller-owned, NUL-terminated storage.
-# Reject embedded NUL bytes and insufficient capacity before exposing the
-# buffer to a native C API.
+// Copies a borrowed Ziran string into caller-owned, NUL-terminated storage.
+// Reject embedded NUL bytes and insufficient capacity before exposing the
+// buffer to a native C API.
 #program_export
 CopyCString :: (value: string, output: []u8) -> bool {
     length: s32 = cast(s32)value.count

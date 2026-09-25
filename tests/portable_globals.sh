@@ -86,7 +86,7 @@ for input in source saved; do
     for target in c cpp go; do
         output=$work/$target-$input
         if test "$target" = go; then
-            "$ziran" build --target=go --strict --pkg main --root "$work" \
+            "$ziran" build --target=go --pkg main --root "$work" \
                 -o "$output" "$module"
             cat > "$output/main.go" <<'GO'
 package main
@@ -94,7 +94,7 @@ func main() { if App_Answer() != 42 { panic("global value") } }
 GO
             GO111MODULE=off go run "$output"/*.go
         else
-            "$ziran" build --target="$target" --strict --root "$work" \
+            "$ziran" build --target="$target" --root "$work" \
                 -o "$output" "$module"
             if test "$target" = c; then
                 cat > "$output/main.c" <<'C'

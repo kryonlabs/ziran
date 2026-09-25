@@ -12,6 +12,15 @@ int ScalarLiteral(const char *type, const char *text, ZirTarget target,
 /* C/C++ private ABI names and source-shaped arguments for array values. */
 int ArrayValueType(const char *type);
 int ModuleUsesSlices(const ZirModule *module);
+int ModuleUsesVecOperations(const ZirModule *module);
+void TargetBindingName(const ZirFunction *fn, ZirTarget target,
+                       const char *name, char *out, size_t size);
+void TargetFieldName(const ZirType *record, ZirTarget target,
+                     const char *name, char *out, size_t size);
+void TargetGlobalName(const ZirModule *module, ZirTarget target,
+                      const char *name, char *out, size_t size);
+void TargetDefineName(const ZirModule *module, ZirTarget target,
+                      const char *name, char *out, size_t size);
 void ArrayAbiName(const ZirFunction *fn, int parameter, char *out, size_t size);
 void ArrayAbiArgs(const ZirFunction *fn, char *out, size_t size);
 int CanEmitBody(const ZirModule *module, const ZirFunction *fn);

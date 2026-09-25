@@ -1,5 +1,7 @@
 #include "zir_load.h"
+#include "zir_check.h"
 #include "zir_diagnostic.h"
+#include "zir_parse.h"
 #include "zir_serial.h"
 
 #include <ctype.h>
@@ -10,6 +12,20 @@
 #include <sys/stat.h>
 
 enum { MAX_MODULES = 1024 };
+
+typedef struct LoadContext {
+    ProgramSet *set;
+    const char *root;
+    const char *const *module_paths;
+    int module_path_count;
+    const char *active[32];
+    int active_count;
+} LoadContext;
+
+static int early_resolve_imports(void *context, ZirProgram *program,
+                                 ZirModule *module, const char *source_path,
+                                 const char *root,
+                                 const char *condition);
 
 void
 ProgramsFree(ProgramSet *set)
@@ -58,9 +74,12 @@ module_loaded(const ProgramSet *set, const char *target)
 }
 
 static int
-add_program(ProgramSet *set, const char *path, const char *root)
+add_program_named(LoadContext *context, const char *path, const char *root,
+                  const char *identity)
 {
+    ProgramSet *set = context->set;
     char *canonical = realpath(path, NULL);
+    char *lexical = NULL;
     ZirProgram *program;
     if(canonical == NULL) {
         Diagnostic(Span(path, 1, 1), "module.input",
@@ -72,16 +91,69 @@ add_program(ProgramSet *set, const char *path, const char *root)
             free(canonical);
             return 1;
         }
+    for(int i = 0; i < context->active_count; i++)
+        if(strcmp(context->active[i], canonical) == 0) {
+            Diagnostic(Span(path, 1, 1), "module.compile_cycle",
+                       "cyclic compile-time import: %s", path);
+            free(canonical);
+            return 0;
+        }
+    if(context->active_count == 32) {
+        Diagnostic(Span(path, 1, 1), "module.compile_depth",
+                   "compile-time import chain is too deep");
+        free(canonical);
+        return 0;
+    }
     if(set->count >= MAX_MODULES) {
         Diagnostic(Span(path, 1, 1), "module.limit",
                    "module graph exceeds %d files", MAX_MODULES);
         free(canonical);
         return 0;
     }
-    program = ProgramLoad(canonical, root);
+    /* Canonicalize the parent directory, but preserve a symlink at the final
+     * component. This gives relative and absolute inputs the same module
+     * identity while allowing a project to link a shared .zi file by name. */
+    const char *slash = strrchr(path, '/');
+    size_t parent_length = slash == NULL ? 0 : (size_t)(slash - path);
+    char *parent_path = parent_length == 0 ? strdup(slash == path ? "/" : ".") :
+                        strndup(path, parent_length);
+    char *parent = parent_path == NULL ? NULL : realpath(parent_path, NULL);
+    free(parent_path);
+    if(parent != NULL) {
+        const char *leaf = slash == NULL ? path : slash + 1;
+        size_t length = strlen(parent) + strlen(leaf) + 2;
+        lexical = malloc(length);
+        if(lexical != NULL)
+            snprintf(lexical, length, "%s/%s", parent, leaf);
+        free(parent);
+    }
+    context->active[context->active_count++] = canonical;
+    size_t lexical_length = lexical == NULL ? 0 : strlen(lexical);
+    program = lexical == NULL ? NULL :
+        lexical_length > 3 &&
+        strcmp(lexical + lexical_length - 3, ".zi") == 0 ?
+        parse_file_with_imports(lexical, root, early_resolve_imports,
+                                context) : ProgramLoad(lexical, root);
+    context->active_count--;
+    free(lexical);
     if(program == NULL) {
         free(canonical);
         return 0;
+    }
+    if(identity != NULL) {
+        if(program->module_count != 1 ||
+           snprintf(program->modules[0].source_path,
+                    sizeof(program->modules[0].source_path), "%s.zi",
+                    identity) >=
+               (int)sizeof(program->modules[0].source_path)) {
+            Diagnostic(Span(path, 1, 1), "module.identity",
+                       "directory module has an invalid identity: %s", identity);
+            ProgramFree(program);
+            free(canonical);
+            return 0;
+        }
+        snprintf(program->modules[0].name,
+                 sizeof(program->modules[0].name), "%s", identity);
     }
     for(int m = 0; m < program->module_count; m++)
         if(module_named(set, program->modules[m].name)) {
@@ -130,19 +202,24 @@ add_program(ProgramSet *set, const char *path, const char *root)
 }
 
 static int
+add_program(LoadContext *context, const char *path, const char *root)
+{
+    return add_program_named(context, path, root, NULL);
+}
+
+static int
 module_target(const char *target)
 {
-    if(target[0] == '\0' || strchr(target, '.') != NULL ||
-       target[0] == '/' || strchr(target, '\\') != NULL)
+    if(!isalpha((unsigned char)target[0]) && target[0] != '_')
         return 0;
     for(const unsigned char *p = (const unsigned char *)target; *p; p++)
-        if(!isalnum(*p) && *p != '_' && *p != '/' && *p != '-')
+        if(!isalnum(*p) && *p != '_')
             return 0;
     return 1;
 }
 
 static int
-try_module(ProgramSet *set, const char *directory, const char *load_root,
+try_module(LoadContext *context, const char *directory, const char *load_root,
            const char *target, int prefer_ir)
 {
     char candidate[ZIR_PATH_MAX * 2];
@@ -155,50 +232,283 @@ try_module(ProgramSet *set, const char *directory, const char *load_root,
         struct stat info;
         if(stat(candidate, &info) != 0 || !S_ISREG(info.st_mode))
             continue;
-        return add_program(set, candidate, load_root) ? 1 : -1;
+        return add_program(context, candidate, load_root) ? 1 : -1;
+    }
+    if(snprintf(candidate, sizeof(candidate), "%s/%s/module.zi",
+                directory, target) < (int)sizeof(candidate)) {
+        struct stat info;
+        if(stat(candidate, &info) == 0 && S_ISREG(info.st_mode)) {
+            char module_root[ZIR_PATH_MAX * 2];
+            if(snprintf(module_root, sizeof(module_root), "%s/%s",
+                        directory, target) >= (int)sizeof(module_root))
+                return -1;
+            return add_program_named(context, candidate, module_root,
+                                     target) ? 1 : -1;
+        }
     }
     return 0;
 }
 
 static int
-load_import(ProgramSet *set, int owner, const ZirImport *import,
-            const char *root, const char *const *module_paths,
-            int module_path_count)
+load_import(LoadContext *context, const char *owner_source,
+            const char *owner_root, const ZirImport *import)
 {
+    ProgramSet *set = context->set;
     const char *target = import->target;
     char directory[ZIR_PATH_MAX * 2];
-    const char *slash = strrchr(set->paths[owner], '/');
-    int prefer_ir = PathIsIR(set->paths[owner]);
+    char owner_file[ZIR_PATH_MAX * 3];
+    struct stat owner_info;
+    const char *owner_path = owner_source;
+    int prefer_ir = PathIsIR(owner_source);
+    if(!prefer_ir && import->span.path[0] != '\0') {
+        if(import->span.path[0] == '/')
+            owner_path = import->span.path;
+        else if(stat(import->span.path, &owner_info) == 0 &&
+                S_ISREG(owner_info.st_mode))
+            owner_path = import->span.path;
+        else if(snprintf(owner_file, sizeof(owner_file), "%s/%s",
+                         owner_root, import->span.path) <
+                (int)sizeof(owner_file))
+            owner_path = owner_file;
+    }
+    const char *slash = strrchr(owner_path, '/');
+    if(!prefer_ir && strncmp(import->signature, "dir:", 4) == 0) {
+        char module_root[ZIR_PATH_MAX * 3];
+        char candidate[ZIR_PATH_MAX * 3];
+        struct stat info;
+        size_t directory_length = slash == NULL ? 0 :
+                                  (size_t)(slash - owner_path);
+        if(slash == NULL ||
+           snprintf(module_root, sizeof(module_root), "%.*s/%s",
+                    (int)directory_length, owner_path,
+                    import->signature + 4) >= (int)sizeof(module_root) ||
+           snprintf(candidate, sizeof(candidate), "%s/module.zi",
+                    module_root) >= (int)sizeof(candidate) ||
+           stat(candidate, &info) != 0 || !S_ISREG(info.st_mode)) {
+            Diagnostic(import->span, "module.not_found",
+                       "cannot find imported directory module: %s",
+                       import->signature + 4);
+            return 0;
+        }
+        return add_program_named(context, candidate, module_root,
+                                 target);
+    }
+    if(!prefer_ir && strncmp(import->signature, "file:", 5) == 0) {
+        char candidate[ZIR_PATH_MAX * 3];
+        struct stat info;
+        size_t directory_length = slash == NULL ? 0 :
+                                  (size_t)(slash - owner_path);
+        if(slash == NULL ||
+           snprintf(candidate, sizeof(candidate), "%.*s/%s",
+                    (int)directory_length, owner_path,
+                    import->signature + 5) >= (int)sizeof(candidate) ||
+           stat(candidate, &info) != 0 || !S_ISREG(info.st_mode)) {
+            Diagnostic(import->span, "module.not_found",
+                       "cannot find imported file: %s", import->signature + 5);
+            return 0;
+        }
+        char *canonical = realpath(candidate, NULL);
+        if(canonical == NULL) {
+            Diagnostic(import->span, "module.not_found",
+                       "cannot find imported file: %s", import->signature + 5);
+            return 0;
+        }
+        char *parent = strrchr(canonical, '/');
+        if(parent == NULL) {
+            free(canonical);
+            return 0;
+        }
+        *parent = '\0';
+        int loaded = add_program(context, candidate, canonical);
+        free(canonical);
+        return loaded;
+    }
     if(module_loaded(set, target))
         return 1;
     if(slash != NULL) {
-        size_t length = (size_t)(slash - set->paths[owner]);
+        size_t length = (size_t)(slash - owner_path);
         if(length < sizeof(directory)) {
-            memcpy(directory, set->paths[owner], length);
+            memcpy(directory, owner_path, length);
             directory[length] = '\0';
-            int result = try_module(set, directory, set->roots[owner],
+            int result = try_module(context, directory, owner_root,
                                     target, prefer_ir);
             if(result != 0)
                 return result > 0;
         }
     }
-    int result = try_module(set, set->roots[owner], set->roots[owner],
+    int result = try_module(context, owner_root, owner_root,
                             target, prefer_ir);
     if(result != 0)
         return result > 0;
-    if(strcmp(root, set->roots[owner]) != 0) {
-        result = try_module(set, root, root, target, prefer_ir);
+    if(strcmp(context->root, owner_root) != 0) {
+        result = try_module(context, context->root, context->root,
+                            target, prefer_ir);
         if(result != 0)
             return result > 0;
     }
-    for(int i = 0; i < module_path_count; i++) {
-        result = try_module(set, module_paths[i], module_paths[i],
+    for(int i = 0; i < context->module_path_count; i++) {
+        result = try_module(context, context->module_paths[i],
+                            context->module_paths[i],
                             target, prefer_ir);
         if(result != 0)
             return result > 0;
     }
     Diagnostic(import->span, "module.not_found",
                "cannot find imported module: %s", target);
+    return 0;
+}
+
+static ZirModule *
+early_target(LoadContext *context, ZirProgram *current,
+             const ZirImport *import)
+{
+    ZirModule *found = NULL;
+    for(int p = -1; p < context->set->count; p++) {
+        ZirProgram *program = p < 0 ? current : context->set->programs[p];
+        for(int m = 0; m < program->module_count; m++) {
+            ZirModule *candidate = &program->modules[m];
+            char stem[ZIR_PATH_MAX];
+            size_t length;
+            snprintf(stem, sizeof(stem), "%s", candidate->source_path);
+            length = strlen(stem);
+            if(length > 3 && strcmp(stem + length - 3, ".zi") == 0)
+                stem[length - 3] = '\0';
+            if(strcmp(import->target, candidate->name) != 0 &&
+               strcmp(import->target, stem) != 0)
+                continue;
+            if(found != NULL && found != candidate) {
+                Diagnostic(import->span, "module.ambiguous",
+                           "ambiguous Ziran import: %s", import->target);
+                return NULL;
+            }
+            found = candidate;
+        }
+    }
+    return found;
+}
+
+static int
+condition_needs_open_layout(const ZirModule *module, const char *condition)
+{
+    for(const char *cursor = condition;
+        (cursor = strstr(cursor, "size_of(")) != NULL; cursor += 8) {
+        const char *start = cursor + 8;
+        const char *end = start;
+        int depth = 1;
+        while(*end && depth > 0) {
+            if(*end == '(') depth++;
+            else if(*end == ')') depth--;
+            if(depth > 0) end++;
+        }
+        if(depth != 0 || (size_t)(end - start) >= ZIR_TEXT_MAX)
+            continue;
+        char type[ZIR_TEXT_MAX];
+        memcpy(type, start, (size_t)(end - start));
+        type[end - start] = '\0';
+        size_t size, alignment;
+        if(!TypeLayout(module, type, &size, &alignment)) return 1;
+    }
+    return 0;
+}
+
+static int
+condition_needs_import(const char *condition, const ZirImport *import,
+                       int need_open_layout)
+{
+    if(import->kind == ZIR_IMPORT_OPEN &&
+       need_open_layout) return 1;
+    for(const char *p = condition; *p;) {
+        if(*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while(*p && *p != quote) {
+                if(*p == '\\' && p[1]) p++;
+                p++;
+            }
+            if(*p) p++;
+            continue;
+        }
+        if(!isalpha((unsigned char)*p) && *p != '_') {
+            p++;
+            continue;
+        }
+        const char *start = p;
+        while(isalnum((unsigned char)*p) || *p == '_') p++;
+        const char *next = p;
+        while(isspace((unsigned char)*next)) next++;
+        size_t length = (size_t)(p - start);
+        if(import->kind == ZIR_IMPORT_MODULE && *next == '.' &&
+           strlen(import->name) == length &&
+           strncmp(start, import->name, length) == 0)
+            return 1;
+        if(import->kind == ZIR_IMPORT_OPEN && *next == '(' &&
+           (start == condition || start[-1] != '.') &&
+           !(length == 7 && strncmp(start, "defined", 7) == 0) &&
+           !(length == 7 && strncmp(start, "size_of", 7) == 0) &&
+           !(length == 7 && strncmp(start, "type_of", 7) == 0))
+            return 1;
+    }
+    return 0;
+}
+
+static int
+early_resolve_imports(void *opaque, ZirProgram *program,
+                      ZirModule *module, const char *source_path,
+                      const char *root, const char *condition)
+{
+    LoadContext *context = opaque;
+    int load_all = condition == NULL;
+    int need_open_layout = !load_all &&
+                           condition_needs_open_layout(module, condition);
+    for(int i = 0; i < module->import_count; i++) {
+        ZirImport *import = &module->imports[i];
+        if(import->kind != ZIR_IMPORT_OPEN &&
+           import->kind != ZIR_IMPORT_MODULE) continue;
+        if(!load_all && !condition_needs_import(condition, import,
+                                                need_open_layout)) continue;
+        ZirModule *target = early_target(context, program, import);
+        if(target == NULL) {
+            if(!load_import(context, source_path, root, import))
+                return 0;
+            target = early_target(context, program, import);
+        }
+        if(target == NULL) {
+            Diagnostic(import->span, "module.not_found",
+                       "cannot link compile-time import: %s",
+                       import->target);
+            return 0;
+        }
+        import->resolved_module = target;
+    }
+    return 1;
+}
+
+static int
+promote_input(ProgramSet *set, const char *path, int position)
+{
+    char *canonical = realpath(path, NULL);
+    if(canonical == NULL) return 0;
+    for(int i = 0; i < set->count; i++) {
+        if(strcmp(set->paths[i], canonical) != 0) continue;
+        if(i < position) {
+            free(canonical);
+            return 1;
+        }
+        ZirProgram *program = set->programs[i];
+        char *saved_path = set->paths[i];
+        char *saved_root = set->roots[i];
+        memmove(set->programs + position + 1, set->programs + position,
+                (size_t)(i - position) * sizeof(*set->programs));
+        memmove(set->paths + position + 1, set->paths + position,
+                (size_t)(i - position) * sizeof(*set->paths));
+        memmove(set->roots + position + 1, set->roots + position,
+                (size_t)(i - position) * sizeof(*set->roots));
+        set->programs[position] = program;
+        set->paths[position] = saved_path;
+        set->roots[position] = saved_root;
+        free(canonical);
+        return 1;
+    }
+    free(canonical);
     return 0;
 }
 
@@ -209,6 +519,7 @@ ProgramsLoad(ProgramSet *set, const char *root,
 {
     char *canonical_root = realpath(root, NULL);
     char **canonical_paths = NULL;
+    LoadContext context = {.set = set};
     int ok = 0;
     *set = (ProgramSet){0};
     if(canonical_root == NULL || input_count <= 0 || module_path_count < 0) {
@@ -227,20 +538,24 @@ ProgramsLoad(ProgramSet *set, const char *root,
             goto done;
         }
     }
+    context.root = canonical_root;
+    context.module_paths = (const char *const *)canonical_paths;
+    context.module_path_count = module_path_count;
     for(int i = 0; i < input_count; i++)
-        if(!add_program(set, inputs[i], canonical_root))
+        if(!add_program(&context, inputs[i], canonical_root) ||
+           !promote_input(set, inputs[i], i))
             goto done;
     for(int p = 0; p < set->count; p++)
         for(int m = 0; m < set->programs[p]->module_count; m++) {
             const ZirModule *module = &set->programs[p]->modules[m];
             for(int i = 0; i < module->import_count; i++) {
                 const ZirImport *import = &module->imports[i];
-                if(import->kind != ZIR_IMPORT_HEADER ||
+                if((import->kind != ZIR_IMPORT_OPEN &&
+                    import->kind != ZIR_IMPORT_MODULE) ||
                    !module_target(import->target))
                     continue;
-                if(!load_import(set, p, import, canonical_root,
-                                (const char *const *)canonical_paths,
-                                module_path_count))
+                if(!load_import(&context, set->paths[p], set->roots[p],
+                                import))
                     goto done;
             }
         }

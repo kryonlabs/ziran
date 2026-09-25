@@ -7,18 +7,22 @@
 #include "zir_text.h"
 #include "zir_cleanup.h"
 #include "zir_expr.h"
+#include "zir_check.h"
 #include "zir_diagnostic.h"
+#include "zir_token.h"
 
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 enum {
-    K2ZIR_PATH_MAX = 1024,
-    K2ZIR_LINE_MAX = 4096
+    SOURCE_PATH_MAX = 1024,
+    SOURCE_LINE_MAX = 4096
 };
 
 static void
@@ -43,6 +47,193 @@ die_at(ZirSourceSpan span, const char *fmt, ...)
     exit(1);
 }
 
+typedef struct SourceBuffer {
+    char *text;
+    size_t length;
+    size_t capacity;
+} SourceBuffer;
+
+static void
+source_append(SourceBuffer *buffer, char byte)
+{
+    if(buffer->length + 2 > buffer->capacity) {
+        size_t capacity = buffer->capacity ? buffer->capacity * 2 : 8192;
+        if(capacity < buffer->capacity || capacity < buffer->length + 2)
+            die("source exceeds available memory");
+        char *next = realloc(buffer->text, capacity);
+        if(next == NULL) die("out of memory reading source");
+        buffer->text = next;
+        buffer->capacity = capacity;
+    }
+    buffer->text[buffer->length++] = byte;
+    buffer->text[buffer->length] = '\0';
+}
+
+static void
+source_append_scanned(SourceBuffer *buffer, char byte, int *line_gaps)
+{
+    source_append(buffer, byte);
+    if(byte == '\n') {
+        while(*line_gaps > 0) {
+            source_append(buffer, '\n');
+            (*line_gaps)--;
+        }
+    }
+}
+
+static int
+source_identifier_byte(unsigned char byte)
+{
+    return isalnum(byte) || byte == '_';
+}
+
+/* Rewrite Jai's raw multiline token as a checked ordinary string literal.
+ * Keep the original number of line breaks so later source spans stay put. */
+static char *
+lower_jai_multiline_strings(const char *source, const char *path)
+{
+    SourceBuffer output = {0};
+    size_t length = strlen(source);
+    size_t pos = 0;
+    int line = 1, column = 1, quote = 0, line_comment = 0;
+    int block_comment = 0;
+    int line_gaps = 0;
+    while(pos < length) {
+        unsigned char byte = (unsigned char)source[pos];
+        if(line_comment) {
+            source_append_scanned(&output, (char)byte, &line_gaps);
+            pos++;
+            if(byte == '\n') { line_comment = 0; line++; column = 1; }
+            else column++;
+            continue;
+        }
+        if(block_comment) {
+            if(byte == '/' && pos + 1 < length && source[pos + 1] == '*') {
+                block_comment++;
+                source_append(&output, '/'); source_append(&output, '*');
+                pos += 2; column += 2;
+                continue;
+            }
+            if(byte == '*' && pos + 1 < length && source[pos + 1] == '/') {
+                block_comment--;
+                source_append(&output, '*'); source_append(&output, '/');
+                pos += 2; column += 2;
+                continue;
+            }
+            source_append_scanned(&output, (char)byte, &line_gaps);
+            pos++;
+            if(byte == '\n') { line++; column = 1; }
+            else column++;
+            continue;
+        }
+        if(quote) {
+            source_append_scanned(&output, (char)byte, &line_gaps);
+            pos++;
+            if(byte == '\\' && pos < length) {
+                source_append_scanned(&output, source[pos++], &line_gaps);
+                column += 2;
+            } else if(byte == quote) {
+                quote = 0;
+                column++;
+            } else if(byte == '\n') { line++; column = 1; }
+            else column++;
+            continue;
+        }
+        if(byte == '/' && pos + 1 < length && source[pos + 1] == '/') {
+            line_comment = 1;
+            source_append(&output, '/'); source_append(&output, '/');
+            pos += 2; column += 2;
+            continue;
+        }
+        if(byte == '/' && pos + 1 < length && source[pos + 1] == '*') {
+            block_comment = 1;
+            source_append(&output, '/'); source_append(&output, '*');
+            pos += 2; column += 2;
+            continue;
+        }
+        if(byte == '"' || byte == '\'') {
+            quote = byte;
+            source_append(&output, (char)byte);
+            pos++; column++;
+            continue;
+        }
+        if(byte == '#' && pos + 7 <= length &&
+           strncmp(source + pos, "#string", 7) == 0 &&
+           (pos == 0 || !source_identifier_byte((unsigned char)source[pos - 1])) &&
+           (pos + 7 == length || isspace((unsigned char)source[pos + 7]))) {
+            ZirSourceSpan span = Span(path, line, column);
+            size_t cursor = pos + 7, start, marker_length;
+            while(cursor < length &&
+                  (source[cursor] == ' ' || source[cursor] == '\t')) cursor++;
+            start = cursor;
+            while(cursor < length &&
+                  source_identifier_byte((unsigned char)source[cursor])) cursor++;
+            marker_length = cursor - start;
+            if(marker_length == 0 || marker_length >= ZIR_NAME_MAX ||
+               (!isalpha((unsigned char)source[start]) &&
+                source[start] != '_'))
+                die_at(span, "#string requires an identifier delimiter");
+            while(cursor < length &&
+                  (source[cursor] == ' ' || source[cursor] == '\t')) cursor++;
+            if(cursor < length && source[cursor] == '\r') cursor++;
+            if(cursor >= length || source[cursor] != '\n')
+                die_at(span, "#string delimiter must end its line");
+            size_t body_start = cursor + 1, close = body_start;
+            while(close < length) {
+                if(close + marker_length <= length &&
+                   strncmp(source + close, source + start,
+                           marker_length) == 0 &&
+                   (close + marker_length == length ||
+                    !source_identifier_byte(
+                        (unsigned char)source[close + marker_length])))
+                    break;
+                const char *newline = memchr(source + close, '\n',
+                                             length - close);
+                if(newline == NULL) { close = length; break; }
+                close = (size_t)(newline - source) + 1;
+            }
+            if(close >= length)
+                die_at(span, "unterminated #string delimiter: %.*s",
+                       (int)marker_length, source + start);
+            source_append(&output, '"');
+            for(size_t i = body_start; i < close; i++) {
+                unsigned char raw = (unsigned char)source[i];
+                const char *escape = raw == '"' ? "\\\"" :
+                                     raw == '\\' ? "\\\\" :
+                                     raw == '\n' ? "\\n" :
+                                     raw == '\r' ? "\\r" :
+                                     raw == '\t' ? "\\t" : NULL;
+                if(escape != NULL)
+                    for(const char *part = escape; *part; part++)
+                        source_append(&output, *part);
+                else if(raw < 32 || raw == 127) {
+                    static const char digits[] = "0123456789abcdef";
+                    source_append(&output, '\\');
+                    source_append(&output, 'x');
+                    source_append(&output, digits[raw >> 4]);
+                    source_append(&output, digits[raw & 15]);
+                } else source_append(&output, (char)raw);
+            }
+            source_append(&output, '"');
+            for(size_t i = pos; i < close; i++)
+                if(source[i] == '\n') { line++; line_gaps++; }
+            column = (int)marker_length + 1;
+            pos = close + marker_length;
+            continue;
+        }
+        source_append_scanned(&output, (char)byte, &line_gaps);
+        pos++;
+        if(byte == '\n') { line++; column = 1; }
+        else column++;
+    }
+    if(output.text == NULL) {
+        output.text = malloc(1);
+        if(output.text == NULL) die("out of memory reading source");
+        output.text[0] = '\0';
+    }
+    return output.text;
+}
+
 static int
 starts_word(const char *s, const char *word)
 {
@@ -50,8 +241,26 @@ starts_word(const char *s, const char *word)
 
     return strncmp(s, word, n) == 0 &&
            (s[n] == '\0' || s[n] == ' ' || s[n] == '\t' ||
-            s[n] == '(' || s[n] == '"' || s[n] == '{' ||
-            s[n] == ':');   /* 'default:' — label-style case keyword */
+            s[n] == '(' || s[n] == '"' || s[n] == '{');
+}
+
+static int
+looks_like_non_jai_control(const char *text, const char *word)
+{
+    const char *rest;
+
+    if(!starts_word(text, word))
+        return 0;
+    rest = skip_ws(text + strlen(word));
+    if(*rest == '(')
+        return strchr(rest, '{') != NULL;
+    if(*rest == ':' || *rest == '=' || *rest == '.' || *rest == '[' ||
+       *rest == '+' || *rest == '-' || *rest == '*' || *rest == '/' ||
+       *rest == '%' || *rest == '&' || *rest == '|' || *rest == '^' ||
+       *rest == '<' || *rest == '>' || *rest == '!')
+        return 0;
+    return *rest == '\0' || *rest == ';' || *rest == '{' ||
+           isalnum((unsigned char)*rest) || *rest == '_';
 }
 
 static int
@@ -185,6 +394,45 @@ parse_type_parameters(const char *after, const char *keyword,
     return 1;
 }
 
+/* Resolve Jai's scope-relative type constant before field types enter IR. */
+static int
+expand_type_this(ZirType *type)
+{
+    char replacement[ZIR_NAME_MAX];
+    char body[sizeof(type->body)];
+    size_t used = 0;
+    int quote = 0;
+    int length = snprintf(replacement, sizeof(replacement), "%s%s%s%s",
+        type->name, type->template_params[0] ? "(" : "",
+        type->template_params, type->template_params[0] ? ")" : "");
+    if(length < 0 || (size_t)length >= sizeof(replacement)) return 0;
+    for(const char *cursor = type->body; *cursor; ) {
+        if(!quote && strncmp(cursor, "#this", 5) == 0 &&
+           !isalnum((unsigned char)cursor[5]) && cursor[5] != '_') {
+            if(used + (size_t)length >= sizeof(body)) return 0;
+            memcpy(body + used, replacement, (size_t)length);
+            used += (size_t)length;
+            cursor += 5;
+            continue;
+        }
+        if(used + 1 >= sizeof(body)) return 0;
+        if(quote && *cursor == '\\' && cursor[1]) {
+            if(used + 2 >= sizeof(body)) return 0;
+            body[used++] = *cursor++;
+            body[used++] = *cursor++;
+            continue;
+        }
+        if(*cursor == '"' || *cursor == '\'') {
+            if(!quote) quote = *cursor;
+            else if(quote == *cursor) quote = 0;
+        }
+        body[used++] = *cursor++;
+    }
+    body[used] = '\0';
+    copy_text(type->body, sizeof(type->body), body);
+    return 1;
+}
+
 static const char *
 relative_path(const char *root, const char *path)
 {
@@ -215,22 +463,6 @@ parse_quoted(const char *s, char *out, size_t out_size)
         out[n++] = *q++;
     out[n] = '\0';
     return *q == '"';
-}
-
-static int
-parse_angled(const char *s, char *out, size_t out_size)
-{
-    const char *q;
-    size_t n = 0;
-
-    q = strchr(s, '<');
-    if(q == NULL)
-        return 0;
-    q++;
-    while(*q != '\0' && *q != '>' && n + 1 < out_size)
-        out[n++] = *q++;
-    out[n] = '\0';
-    return *q == '>';
 }
 
 static int
@@ -311,6 +543,18 @@ net_block_braces(const char *s)
     return delta;
 }
 
+static int
+looks_like_label(const char *s)
+{
+    size_t n = 0;
+    while(isalnum((unsigned char)s[n]) || s[n] == '_')
+        n++;
+    if(n == 0 || s[n] != ':')
+        return 0;
+    const char *rest = skip_ws(s + n + 1);
+    return *rest == '\0' || strcmp(rest, ";") == 0;
+}
+
 static ZirStmtKind
 classify_stmt(const char *s)
 {
@@ -320,46 +564,20 @@ classify_stmt(const char *s)
         return ZIR_STMT_BLOCK_OPEN;
     if(starts_word(s, "if") || starts_word(s, "else"))
         return ZIR_STMT_IF;
-    if(starts_word(s, "guard"))
-        return ZIR_STMT_IF;   /* 'guard cond' lowers to if(cond) return */
     if(starts_word(s, "while"))
         return ZIR_STMT_WHILE;
     if(starts_word(s, "for"))
         return ZIR_STMT_FOR;
-    if(starts_word(s, "switch"))
-        return ZIR_STMT_SWITCH;
-    if(starts_word(s, "match"))
-        return ZIR_STMT_MATCH;
-    if(starts_word(s, "case") || starts_word(s, "default"))
-        return ZIR_STMT_CASE;
-    if(strcmp(s, "default:") == 0)
+    if(starts_word(s, "case") || strcmp(s, "case;") == 0)
         return ZIR_STMT_CASE;
     if(starts_word(s, "return"))
         return ZIR_STMT_RETURN;
     if(strcmp(s, "unreachable") == 0 || strcmp(s, "unreachable;") == 0)
         return ZIR_STMT_UNREACHABLE;
-    if(strcmp(s, "break") == 0 || strcmp(s, "break;") == 0)
+    if(starts_word(s, "break"))
         return ZIR_STMT_BREAK;
-    if(strcmp(s, "continue") == 0 || strcmp(s, "continue;") == 0)
+    if(starts_word(s, "continue"))
         return ZIR_STMT_CONTINUE;
-    if(starts_word(s, "goto"))
-        return ZIR_STMT_GOTO;
-    /* goto label: a bare 'name:' / 'name: ;' — a following type marks a
-     * declaration ('scalar: int = 5'), not a label */
-    {
-        size_t n = 0;
-
-        while(isalnum((unsigned char)s[n]) || s[n] == '_')
-            n++;
-        if(n > 0 && s[n] == ':') {
-            const char *rest = s + n + 1;
-
-            while(*rest == ' ' || *rest == '\t')
-                rest++;
-            if(*rest == '\0' || strcmp(rest, ";") == 0)
-                return ZIR_STMT_LABEL;
-        }
-    }
     if(starts_word(s, "defer"))
         return ZIR_STMT_DEFER;
     if(starts_word(s, "unused"))
@@ -367,25 +585,6 @@ classify_stmt(const char *s)
     if(strstr(s, ":=") != NULL)
         return ZIR_STMT_DECL;   /* ':=' wins over the raw 'c' prefix (a
                                    variable may be named 'c') */
-    if(starts_word(s, "c") && s[1] != ':') {
-        /* 'c <raw C line>' glue — but 'c = ...' / 'c += ...' is an
-         * assignment to a local named c, which needs the normal statement
-         * path (raw lines emit without a trailing semicolon). 'c:' is a
-         * typed decl of a variable named c. */
-        const char *rest = s + 1;
-
-        while(*rest == ' ' || *rest == '\t')
-            rest++;
-        if(*rest != '=' && strncmp(rest, "+=", 2) != 0 &&
-           strncmp(rest, "-=", 2) != 0 && strncmp(rest, "*=", 2) != 0 &&
-           strncmp(rest, "/=", 2) != 0 && strncmp(rest, "%=", 2) != 0 &&
-           strncmp(rest, "&=", 2) != 0 && strncmp(rest, "|=", 2) != 0 &&
-           strncmp(rest, "^=", 2) != 0 && strncmp(rest, "<<=", 3) != 0 &&
-           strncmp(rest, ">>=", 3) != 0)
-            return ZIR_STMT_RAW;
-    }
-    if(strstr(s, "::") != NULL)
-        return ZIR_STMT_RAW;   /* nested '::' definitions stay raw */
     if(strstr(s, ": ") != NULL || strstr(s, ": [") != NULL) {
         /* typed decl only when an identifier precedes the colon */
         const char *c2 = strstr(s, ": ");
@@ -403,13 +602,13 @@ classify_stmt(const char *s)
                 return ZIR_STMT_DECL;  /* 'x: T' / 'x: [N] T' */
         }
     }
-    /* C-style locals remain accepted at the language boundary. Lowerers
-     * already treat declaration statements without ':' as an opaque typed
-     * declaration and add the target terminator. */
+    /* Classify C-style locals so the source grammar can reject them before
+     * any native backend sees an unchecked declaration. */
     {
         static const char *const types[] = {
-            "int ", "unsigned ", "long ", "float ", "double ",
-            "char ", "bool ", "const ", "struct ", NULL
+            "s8 ", "s16 ", "s32 ", "s64 ",
+            "float32 ", "float64 ", "bool ",
+            "unsigned ", "long ", "const ", "struct ", NULL
         };
         int i;
 
@@ -553,26 +752,6 @@ parse_direct_call_statement(const char *text, char *name, size_t name_size,
     return 1;
 }
 
-typedef struct BlockCall {
-    char callee[ZIR_NAME_MAX];
-    char name[ZIR_NAME_MAX];
-    ZirSourceSpan span;
-    char props[ZIR_TEXT_MAX];
-    int close_depth;
-    int statement_index;
-    int opened;
-} BlockCall;
-
-typedef struct SlotParseFrame {
-    int function_index;
-    int depth;
-    int root_anonymous_count;
-    int block_count;
-    BlockCall *blocks;
-    int body_count;
-    int body_depth[8];
-} SlotParseFrame;
-
 static int
 parse_block_call_header(const char *text, char *callee, size_t callee_size,
                       char *name, size_t name_size)
@@ -591,8 +770,7 @@ parse_block_call_header(const char *text, char *callee, size_t callee_size,
         return 0;
     memcpy(callee, start, n);
     callee[n] = '\0';
-    /* Switch labels share the colon-and-brace shape of a block call. */
-    if(strcmp(callee, "case") == 0 || strcmp(callee, "default") == 0)
+    if(strcmp(callee, "case") == 0)
         return 0;
     while(*p == ' ' || *p == '\t')
         p++;
@@ -620,99 +798,67 @@ parse_block_call_header(const char *text, char *callee, size_t callee_size,
     return 1;
 }
 
-static int
-parse_block_field_line(char *text, char *field, size_t field_size,
-                   char *value, size_t value_size)
+/* A semicolon separates logical statements only outside nested expressions
+ * and block bodies. #ifx also uses a semicolon before its else arm. */
+static char *
+statement_separator(char *line)
 {
-    char *eq;
-    char *name;
-    char *expr;
-    size_t n;
+    int parens = 0, brackets = 0, braces = 0, quote = 0;
 
-    eq = strchr(text, '=');
-    /* Only the property separator must be assignment. Comparisons in its
-     * value are valid expressions (for example, when = count >= limit). */
-    if(eq == NULL || eq[1] == '=')
-        return 0;
-    *eq = '\0';
-    name = trim(text);
-    expr = trim(eq + 1);
-    if(name[0] == '\0' || expr[0] == '\0')
-        return 0;
-    for(const char *p = name; *p != '\0'; p++)
-        if(!isalnum((unsigned char)*p) && *p != '_')
-            return 0;
-    n = strlen(expr);
-    if(n > 0 && expr[n - 1] == ';') {
-        expr[n - 1] = '\0';
-        expr = trim(expr);
+    for(char *p = line; *p; p++) {
+        if(quote) {
+            if(*p == '\\' && p[1]) p++;
+            else if(*p == quote) quote = 0;
+        } else if(*p == '"' || *p == '\'') {
+            quote = *p;
+        } else if(*p == '(') parens++;
+        else if(*p == ')') parens--;
+        else if(*p == '[') brackets++;
+        else if(*p == ']') brackets--;
+        else if(*p == '{') braces++;
+        else if(*p == '}') braces--;
+        else if(*p == ';' && parens == 0 && brackets == 0 && braces == 0 &&
+                *skip_ws(p + 1)) {
+            if(starts_word(line, "for") &&
+               (strchr(line, '{') == NULL || p < strchr(line, '{')))
+                continue; /* Let the checker reject C-style for headers. */
+            const char *ifx = strstr(line, "#ifx");
+            if(ifx != NULL && ifx < p &&
+               starts_word(skip_ws(p + 1), "else"))
+                continue;
+            return p;
+        }
     }
-    snprintf(field, field_size, "%s", name);
-    snprintf(value, value_size, "%s", expr);
-    return 1;
+    return NULL;
 }
 
 static void
-block_call_append_field(BlockCall *block, const char *field, const char *value,
-                     ZirSourceSpan span)
+prepend_logical_line(char queue[16][SOURCE_LINE_MAX * 2], int *count,
+                     const char *line, ZirSourceSpan span)
 {
-    size_t used = strlen(block->props);
-    int length = snprintf(block->props + used, sizeof(block->props) - used,
-                          ".%s = %s, ", field, value);
-    if(length < 0 || (size_t)length >= sizeof(block->props) - used)
-        die_at(span, "block-call fields exceed the declaration size limit: %s", block->callee);
-}
-
-static void
-block_call_open(ZirFunction *fn, BlockCall *block, ZirSourceSpan span, int closing)
-{
-    ZirSourceSpan source_span;
-    ZirStmt *statement;
-
-    if(block == NULL || block->opened)
-        return;
-    if(!closing)
-        die_at(span, "block content requires a declared slot parameter");
-    source_span = block->span.path[0] != '\0' ? block->span : span;
-    statement = FunctionAddBlockCall(fn, block->callee, block->props,
-                                     block->name,
-                                     source_span);
-    if(statement == NULL)
-        die("out of memory parsing block call");
-    statement->declared_block_call = 1;
-    block->statement_index = (int)(statement - fn->stmts);
-    block->opened = 1;
-}
-
-static ZirSourceSpan
-block_call_close_span(const BlockCall *block, const char *path, int line_no,
-                    const char *line)
-{
-    ZirSourceSpan start = block != NULL && block->span.path[0] != '\0'
-                            ? block->span
-                            : Span(path, line_no, 1);
-    int end_column = (int)strlen(line) + 1;
-
-    return SpanEnd(start.path, start.line, start.column, line_no,
-                      end_column > 0 ? end_column : 1);
+    if(*count >= 16 || strlen(line) >= sizeof(queue[0]))
+        die_at(span, "too many statements on one source line");
+    memmove(queue[1], queue[0], (size_t)*count * sizeof(queue[0]));
+    copy_text(queue[0], sizeof(queue[0]), line);
+    (*count)++;
 }
 
 static int
 split_oneline_block(const char *t, char *head, size_t hsz,
-                    char *body, size_t bsz)
+                    char *body, size_t bsz, char *tail, size_t tsz)
 {
-    static const char *kws[] = { "if", "else", "while", "for", "switch",
-                                 "case", "default", "guard", "do" };
+    static const char *kws[] = { "if", "else", "while", "for", "defer", "switch",
+                                 "case", "guard", "do" };
     size_t n = strlen(t);
-    size_t brace_pos = 0;
-    int depth = 0;
+    size_t brace_pos = 0, close_pos = 0;
+    int depth = 0, expression_braces = 0;
     int in_str = 0;
     int in_chr = 0;
     char w0[16];
     size_t wl = 0;
     size_t i;
 
-    if(n < 8 || t[n - 1] != '}')
+    if(n < 4)
         return 0;
     for(i = 0; t[i] != '\0' && (isalnum((unsigned char)t[i]) || t[i] == '_') &&
         wl + 1 < sizeof(w0); i++)
@@ -749,21 +895,28 @@ split_oneline_block(const char *t, char *head, size_t hsz,
         } else if(ch == ')' || ch == ']') {
             depth--;
         } else if(ch == '{' && depth == 0) {
-            /* first top-level '{' preceded by a space opens the block */
-            if(i > 0 && t[i - 1] == ' ' && i + 2 < n && t[i + 1] == ' ' &&
-                t[i + 2] != '}') {
+            /* A record literal in the condition may appear before the body. */
+            const char *before = t + i;
+            while(before > t && isspace((unsigned char)before[-1])) before--;
+            if(expression_braces ||
+               (before > t && before[-1] == '.' &&
+                (before - t < 2 || before[-2] != '.'))) {
+                expression_braces++;
+            } else {
                 brace_pos = i;
                 break;
             }
-            return 0;   /* '{' used as expression on a control line */
+        } else if(ch == '}' && depth == 0 && expression_braces > 0) {
+            expression_braces--;
         }
     }
-    if(brace_pos == 0)
+    if(brace_pos == 0 || expression_braces != 0)
         return 0;
-    /* no other top-level brace may appear before the trailing closer */
-    depth = 0;
+    /* Match the first control block; a following else starts a new logical
+     * line and can itself contain another one-line block. */
+    depth = 1;
     in_str = in_chr = 0;
-    for(i = brace_pos + 1; i + 1 < n; i++) {
+    for(i = brace_pos + 1; i < n; i++) {
         char ch = t[i];
 
         if(in_str) {
@@ -780,42 +933,29 @@ split_oneline_block(const char *t, char *head, size_t hsz,
             in_str = 1;
         } else if(ch == '\'') {
             in_chr = 1;
-        } else if(ch == '(' || ch == '[') {
+        } else if(ch == '{') {
             depth++;
-        } else if(ch == ')' || ch == ']') {
-            depth--;
-        } else if((ch == '{' || ch == '}') && depth == 0) {
-            return 0;
+        } else if(ch == '}' && --depth == 0) {
+            close_pos = i;
+            break;
         }
     }
-    snprintf(head, hsz, "%.*s", (int)(brace_pos + 1), t);
-    snprintf(body, bsz, "%.*s", (int)(n - brace_pos - 3), t + brace_pos + 2);
+    if(close_pos == 0)
+        return 0;
+    const char *after = skip_ws(t + close_pos + 1);
+    if(*after &&
+       ((strcmp(w0, "if") != 0 && strcmp(w0, "else") != 0) ||
+        !starts_word(after, "else")))
+        return 0;
+    size_t hlen = brace_pos + 1;
+    size_t blen = close_pos - brace_pos - 1;
+    if(hlen >= hsz || blen >= bsz || strlen(after) >= tsz)
+        return 0;
+    memcpy(head, t, hlen); head[hlen] = '\0';
+    memcpy(body, t + brace_pos + 1, blen); body[blen] = '\0';
+    trim_in_place(body);
+    copy_text(tail, tsz, after);
     return 1;
-}
-
-static void
-parse_state_field(ZirModule *module, const char *path, int line_no, char *line)
-{
-    char *colon;
-    char *eq;
-    char *name;
-    char *type;
-    char *init;
-
-    colon = strchr(line, ':');
-    if(colon == NULL)
-        return;
-    *colon = '\0';
-    name = trim(line);
-    type = trim(colon + 1);
-    init = "";
-    eq = strchr(type, '=');
-    if(eq != NULL) {
-        *eq = '\0';
-        init = trim(eq + 1);
-    }
-    ModuleAddStateField(module, name, trim(type), init,
-                           Span(path, line_no, 1));
 }
 
 static void
@@ -859,7 +999,7 @@ parse_function_header(char *name, size_t name_size, char *args,
         memcpy(args, p + 1, n);
         args[n] = '\0';
         /* Return type: after the closing ')', an optional '-> T' before any
-         * trailing directive (#foreign / #slot / ...). */
+         * trailing directive such as #foreign. */
         q++;
         while(*q == ' ' || *q == '\t')
             q++;
@@ -877,13 +1017,206 @@ parse_function_header(char *name, size_t name_size, char *args,
     }
 }
 
+static void
+separate_parameter_defaults(char *args, size_t capacity,
+                            char *defaults, size_t defaults_capacity,
+                            ZirSourceSpan span)
+{
+    char (*parts)[ZIR_TEXT_MAX] = calloc(65, sizeof(*parts));
+    char cleaned[ZIR_TEXT_MAX] = "";
+    size_t used = 0;
+    int has_default = 0;
+    if(parts == NULL)
+        die("out of memory reading procedure parameters");
+    int count = *skip_ws(args) ?
+        split_top_level(args, parts[0], 65, sizeof(parts[0])) : 0;
+    if(count > 64)
+        die_at(span, "too many procedure parameters");
+    for(int i = 0; i < count; i++) {
+        char *assignment = top_level_assignment(parts[i]);
+        if(assignment != NULL) {
+            if(!*skip_ws(assignment + 1))
+                die_at(span, "default parameter needs a value");
+            *assignment = '\0';
+            trim_in_place(parts[i]);
+            has_default = 1;
+        }
+        int written = snprintf(cleaned + used, sizeof(cleaned) - used,
+                               "%s%s", i ? ", " : "", parts[i]);
+        if(written < 0 || (size_t)written >= sizeof(cleaned) - used)
+            die_at(span, "procedure parameters exceed size limit");
+        used += (size_t)written;
+    }
+    if(has_default) {
+        copy_text(defaults, defaults_capacity, args);
+        copy_text(args, capacity, cleaned);
+    }
+    free(parts);
+}
+
+static int
+default_is_scope_independent(const char *expression, const char *path)
+{
+    ZirLexer lexer;
+    LexerInit(&lexer, expression, path);
+    for(;;) {
+        ZirToken token = LexerNext(&lexer);
+        if(token.kind == ZIR_TOKEN_EOF) return 1;
+        if(token.kind == ZIR_TOKEN_IDENT &&
+           strcmp(token.text, "true") && strcmp(token.text, "false") &&
+           strcmp(token.text, "null")) return 0;
+    }
+}
+
+static void
+add_default_helpers(ZirProgram *program, ZirModule *module,
+                    const char *source_path, const char *root,
+                    ZirCompileImportResolver resolver, void *resolver_context)
+{
+    int declarations = module->function_count;
+    int imports_resolved = 0;
+    for(int fi = 0; fi < declarations; fi++) {
+        const ZirFunction *function = &module->functions[fi];
+        if(!function->default_args[0] || function->default_helpers_created)
+            continue;
+        char (*parameters)[ZIR_TEXT_MAX] = calloc(64, sizeof(*parameters));
+        char (*defaults)[ZIR_TEXT_MAX] = calloc(64, sizeof(*defaults));
+        if(parameters == NULL || defaults == NULL)
+            die("out of memory creating default argument helpers");
+        int count = split_top_level(function->args, parameters[0], 64,
+                                    sizeof(parameters[0]));
+        if(split_top_level(function->default_args, defaults[0], 64,
+                           sizeof(defaults[0])) != count)
+            die_at(function->span, "invalid default parameter signature");
+        int inferred = 0;
+        for(int i = 0; i < count; i++) {
+            char *assignment = top_level_assignment(defaults[i]);
+            if(assignment == NULL || assignment == defaults[i] ||
+               assignment[-1] != ':') continue;
+            char *colon = strchr(parameters[i], ':');
+            if(colon == NULL || *skip_ws(colon + 1) != '\0')
+                die_at(function->span, "inferred default parameter needs a name");
+            *colon = '\0';
+            char name[ZIR_NAME_MAX], value[ZIR_TEXT_MAX], type[ZIR_NAME_MAX];
+            copy_text(name, sizeof(name), trim(parameters[i]));
+            copy_text(value, sizeof(value), trim(assignment + 1));
+            for(int imported = 0; imported < module->import_count; imported++) {
+                ZirImport *import = &module->imports[imported];
+                if(import->resolved_module != NULL ||
+                   (import->kind != ZIR_IMPORT_OPEN &&
+                    import->kind != ZIR_IMPORT_MODULE)) continue;
+                for(int m = 0; m < program->module_count; m++)
+                    if(&program->modules[m] != module &&
+                       !strcmp(import->target, program->modules[m].name)) {
+                        import->resolved_module = &program->modules[m];
+                        break;
+                    }
+            }
+            if(resolver != NULL && !imports_resolved) {
+                if(!resolver(resolver_context, program, module, source_path,
+                             root, NULL))
+                    die_at(function->span,
+                           "cannot resolve imports for default parameter: %s",
+                           name);
+                imports_resolved = 1;
+            }
+            if(!is_identifier_text(name) ||
+               !InferExpressionType(module, value, function->span,
+                                    type, sizeof(type)) ||
+               !strcmp(type, "void") || !strcmp(type, "null"))
+                die_at(function->span,
+                       "cannot infer default parameter type: %s", name);
+            int written = snprintf(parameters[i], sizeof(parameters[i]),
+                                   "%s: %s", name, type);
+            if(written < 0 || (size_t)written >= sizeof(parameters[i]))
+                die_at(function->span, "procedure parameters exceed size limit");
+            written = snprintf(defaults[i], sizeof(defaults[i]),
+                               "%s = %s", parameters[i], value);
+            if(written < 0 || (size_t)written >= sizeof(defaults[i]))
+                die_at(function->span, "default parameters exceed size limit");
+            inferred = 1;
+        }
+        if(inferred) {
+            char args[ZIR_TEXT_MAX] = "", full[ZIR_TEXT_MAX] = "";
+            size_t args_used = 0, full_used = 0;
+            for(int i = 0; i < count; i++) {
+                int written = snprintf(args + args_used,
+                                       sizeof(args) - args_used, "%s%s",
+                                       i ? ", " : "", parameters[i]);
+                if(written < 0 || (size_t)written >= sizeof(args) - args_used)
+                    die_at(function->span,
+                           "procedure parameters exceed size limit");
+                args_used += (size_t)written;
+                written = snprintf(full + full_used,
+                                   sizeof(full) - full_used, "%s%s",
+                                   i ? ", " : "", defaults[i]);
+                if(written < 0 || (size_t)written >= sizeof(full) - full_used)
+                    die_at(function->span,
+                           "default parameters exceed size limit");
+                full_used += (size_t)written;
+            }
+            copy_text(module->functions[fi].args,
+                      sizeof(module->functions[fi].args), args);
+            copy_text(module->functions[fi].default_args,
+                      sizeof(module->functions[fi].default_args), full);
+        }
+        for(int i = 0; i < count; i++) {
+            function = &module->functions[fi];
+            char *assignment = top_level_assignment(defaults[i]);
+            if(assignment == NULL) continue;
+            const char *value = trim(assignment + 1);
+            if(function->is_template &&
+               default_is_scope_independent(value, function->span.path))
+                continue;
+            char *colon = strchr(parameters[i], ':');
+            if(colon == NULL)
+                die_at(function->span, "default parameter needs a type");
+            char helper_name[ZIR_NAME_MAX];
+            char result_type[ZIR_NAME_MAX];
+            char body[ZIR_TEXT_MAX];
+            ZirSourceSpan span = function->span;
+            int is_public = function->is_public;
+            int is_file_private = function->is_file_private;
+            copy_text(result_type, sizeof(result_type), trim(colon + 1));
+            if(function->is_template &&
+               (!InferExpressionType(module, value, span, result_type,
+                                     sizeof(result_type)) ||
+                !strcmp(result_type, "void") ||
+                !strcmp(result_type, "null")))
+                die_at(span,
+                       "cannot resolve polymorphic default in declaration scope: %s",
+                       function->name);
+            FunctionDefaultHelperName(function, i, helper_name,
+                                      sizeof(helper_name));
+            for(int f = 0; f < module->function_count; f++)
+                if(!strcmp(module->functions[f].name, helper_name))
+                    die_at(span, "default helper name conflicts with a procedure");
+            int written = snprintf(body, sizeof(body), "return %s", value);
+            if(written < 0 || (size_t)written >= sizeof(body))
+                die_at(span, "default parameter expression is too long");
+            ZirFunction *helper = ModuleAddFunction(module, helper_name,
+                                                    "", result_type, 0, span);
+            if(helper == NULL)
+                die("out of memory creating default argument helper");
+            helper->is_public = is_public;
+            helper->is_file_private = is_file_private;
+            if(FunctionAddStmt(helper, ZIR_STMT_RETURN, body, span) == NULL)
+                die("out of memory creating default argument body");
+        }
+        module->functions[fi].default_helpers_created = 1;
+        free(parameters);
+        free(defaults);
+    }
+}
+
 static int
 parse_import_line(ZirModule *module, const char *path, int line_no,
                   const char *line, int scope_public)
 {
     const char *directive;
-    char target[K2ZIR_PATH_MAX];
+    char target[SOURCE_PATH_MAX];
     char name[ZIR_NAME_MAX];
+    char signature[ZIR_TEXT_MAX];
     ZirImportKind kind;
     int quoted;
 
@@ -892,25 +1225,112 @@ parse_import_line(ZirModule *module, const char *path, int line_no,
         return 0;
     target[0] = '\0';
     name[0] = '\0';
+    signature[0] = '\0';
     quoted = parse_quoted(directive, target, sizeof(target));
-    if(!quoted && !parse_angled(directive, target, sizeof(target)))
-        return 0;
+    if(!quoted)
+        die_at(Span(path, line_no, 1),
+               "Jai #import requires a quoted module or file name");
     /* Import targets are emitted verbatim inside #include "..." lines;
      * quotes and control bytes would let a crafted path escape the literal. */
     for(const char *p = target; *p != '\0'; p++)
         if(*p == '"' || *p == '>' || (unsigned char)*p < 0x20)
             die_at(Span(path, line_no, 1), "#import target contains a character that cannot "
                 "appear in an include path");
-    if(parse_symbol_before_colons(line, name, sizeof(name)))
+    const char *mode = skip_ws(directive + strlen("#import"));
+    if(*mode == ',') {
+        mode = skip_ws(mode + 1);
+        if(strncmp(mode, "dir", 3) == 0 &&
+           isspace((unsigned char)mode[3])) {
+            const char *path_arg = skip_ws(mode + 3);
+            const char *end = *path_arg == '"' ? strchr(path_arg + 1, '"') : NULL;
+            if(end == NULL || strcmp(skip_ws(end + 1), ";") != 0)
+                die_at(Span(path, line_no, 1),
+                       "#import, dir requires a quoted path and ';'");
+            int named = parse_symbol_before_colons(line, name, sizeof(name));
+            if(target[0] == '/' || target[0] == '\0' ||
+               strchr(target, '\\') != NULL ||
+               target[strlen(target) - 1] == '/')
+                die_at(Span(path, line_no, 1),
+                       "#import, dir requires a relative directory path");
+            const char *basename = strrchr(target, '/');
+            basename = basename == NULL ? target : basename + 1;
+            size_t length = strlen(basename);
+            if(length == 0 || length >= sizeof(name) ||
+               (!isalpha((unsigned char)basename[0]) && basename[0] != '_'))
+                die_at(Span(path, line_no, 1),
+                       "#import, dir path needs an identifier directory name");
+            for(size_t i = 1; i < length; i++)
+                if(!source_identifier_byte((unsigned char)basename[i]))
+                    die_at(Span(path, line_no, 1),
+                           "#import, dir path needs an identifier directory name");
+            if(!named) {
+                memcpy(name, basename, length);
+                name[length] = '\0';
+            }
+            snprintf(signature, sizeof(signature), "dir:%s", target);
+            memmove(target, basename, length);
+            target[length] = '\0';
+            kind = named ? ZIR_IMPORT_MODULE : ZIR_IMPORT_OPEN;
+        } else {
+            if(strncmp(mode, "file", 4) != 0 ||
+               !isspace((unsigned char)mode[4]))
+                die_at(Span(path, line_no, 1),
+                       "unsupported #import mode: %s", mode);
+            const char *file_arg = skip_ws(mode + 4);
+            const char *end = *file_arg == '"' ? strchr(file_arg + 1, '"') : NULL;
+            if(end == NULL || strcmp(skip_ws(end + 1), ";") != 0)
+                die_at(Span(path, line_no, 1),
+                       "#import, file requires a quoted path and ';'");
+            int named = parse_symbol_before_colons(line, name, sizeof(name));
+            if(target[0] == '/' || target[0] == '\0' ||
+               strlen(target) < 4 ||
+               strcmp(target + strlen(target) - 3, ".zi") != 0)
+                die_at(Span(path, line_no, 1),
+                       "#import, file requires a relative .zi path");
+            const char *basename = strrchr(target, '/');
+            basename = basename == NULL ? target : basename + 1;
+            size_t stem_length = strlen(basename) - 3;
+            if(stem_length == 0 || stem_length >= sizeof(name) ||
+               (!isalpha((unsigned char)basename[0]) && basename[0] != '_'))
+                die_at(Span(path, line_no, 1),
+                       "#import, file path needs an identifier filename");
+            for(size_t i = 1; i < stem_length; i++)
+                if(!source_identifier_byte((unsigned char)basename[i]))
+                    die_at(Span(path, line_no, 1),
+                           "#import, file path needs an identifier filename");
+            if(!named) {
+                memcpy(name, basename, stem_length);
+                name[stem_length] = '\0';
+            }
+            snprintf(signature, sizeof(signature), "file:%s", target);
+            if(named) {
+                memmove(target, basename, stem_length);
+                target[stem_length] = '\0';
+            } else
+                copy_text(target, sizeof(target), name);
+            kind = named ? ZIR_IMPORT_MODULE : ZIR_IMPORT_OPEN;
+        }
+    } else if(parse_symbol_before_colons(line, name, sizeof(name)))
         kind = ZIR_IMPORT_MODULE;
     else {
         copy_text(name, sizeof(name), target);
-        kind = ZIR_IMPORT_HEADER;
+        kind = ZIR_IMPORT_OPEN;
     }
-    /* Signature records the bracket style so backends can keep angled
-     * includes angled ("<") instead of quoted. A private-scope include
-     * belongs in the implementation, not the generated header. */
-    ModuleAddImport(module, kind, name, target, quoted ? "" : "<",
+    if(kind == ZIR_IMPORT_MODULE &&
+       !isalpha((unsigned char)name[0]) && name[0] != '_')
+        die_at(Span(path, line_no, 1),
+               "import alias must start with a letter or underscore");
+    if(target[0] == '\0' ||
+       (!isalpha((unsigned char)target[0]) && target[0] != '_'))
+        die_at(Span(path, line_no, 1),
+               "Jai #import requires a module identifier; use #import, file for paths");
+    for(const unsigned char *p = (const unsigned char *)target; *p; p++)
+        if(!source_identifier_byte(*p))
+            die_at(Span(path, line_no, 1),
+                   "Jai #import requires a module identifier; use #import, file for paths");
+    /* A private-scope include belongs in the implementation, not the
+     * generated header. File imports retain their source path in signature. */
+    ModuleAddImport(module, kind, name, target, signature,
                        scope_public,
                        Span(path, line_no, 1));
     return 1;
@@ -964,7 +1384,9 @@ static int
 parse_foreign_line(ZirModule *module, const char *path, int line_no,
                    const char *line, int scope_public,
                    char names[][ZIR_NAME_MAX],
-                   char targets[][ZIR_PATH_MAX], int count)
+                   char targets[][ZIR_PATH_MAX],
+                   char paths[][SOURCE_PATH_MAX],
+                   const int *file_private, int count)
 {
     char name[ZIR_NAME_MAX];
     char target[ZIR_PATH_MAX];
@@ -1012,7 +1434,8 @@ parse_foreign_line(ZirModule *module, const char *path, int line_no,
                "#foreign declaration must end with ';'");
     const char *library_target = NULL;
     for(int i = 0; i < count; i++)
-        if(strcmp(names[i], library) == 0) {
+        if(strcmp(names[i], library) == 0 &&
+           (!file_private[i] || strcmp(paths[i], path) == 0)) {
             library_target = targets[i];
             break;
         }
@@ -1094,18 +1517,21 @@ paren_params_are_typed(const char *body)
 static int
 looks_like_function_header(const char *line)
 {
-    char tmp[K2ZIR_LINE_MAX];
+    char tmp[SOURCE_LINE_MAX];
     char *p;
     char *body;
 
+    if(starts_word(line, "#import") || strncmp(line, "#import,", 8) == 0)
+        return 0;
     p = strstr(line, "::");
     if(p == NULL)
         return 0;
     snprintf(tmp, sizeof(tmp), "%s", p + 2);
     body = trim(tmp);
-    if(starts_word(body, "#import") || starts_word(body, "#defined") ||
+    if(starts_word(body, "#import") || strncmp(body, "#import,", 8) == 0 ||
+       starts_word(body, "#defined") ||
        starts_word(body, "#define") || starts_word(body, "struct") ||
-       starts_word(body, "enum"))
+       starts_word(body, "enum") || starts_word(body, "union"))
         return 0;
     if(strstr(body, "#type") != NULL)
         return 0;
@@ -1117,45 +1543,140 @@ looks_like_function_header(const char *line)
     return paren_params_are_typed(body);
 }
 
-
-/* Inline bodies retain ordinary function parameter syntax, with an explicit
- * #slot marker separating them from record and array initializers. */
 static int
-parse_slot_header(const char *text, char *binding, size_t binding_size,
-                   char *arguments, size_t arguments_size)
+split_oneline_function(const char *line, char *head, size_t head_size,
+                       char *body, size_t body_size)
 {
-    const char *equals = strchr(text, '=');
-    const char *annotation = strstr(text, "#slot");
-    if(equals == NULL || annotation == NULL || equals >= annotation ||
-       strcmp(skip_ws(annotation + 5), "{") != 0 ||
-       *skip_ws(equals + 1) != '(')
+    const char *open = strchr(line, '{');
+    size_t length = strlen(line);
+    int depth = 0, in_string = 0, in_char = 0;
+
+    if(open == NULL || length == 0 || line[length - 1] != '}' ||
+       !looks_like_function_header(line))
         return 0;
-    size_t length = (size_t)(equals - text);
-    if(length >= binding_size)
+    for(const char *p = open; *p; p++) {
+        if(in_string || in_char) {
+            if(*p == '\\' && p[1] != '\0') {
+                p++;
+            } else if(*p == (in_string ? '"' : '\'')) {
+                in_string = in_char = 0;
+            }
+        } else if(*p == '"') {
+            in_string = 1;
+        } else if(*p == '\'') {
+            in_char = 1;
+        } else if(*p == '{') {
+            depth++;
+        } else if(*p == '}') {
+            depth--;
+            if(depth == 0 && p != line + length - 1)
+                return 0;
+        }
+        if(depth < 0)
+            return 0;
+    }
+    if(depth != 0 ||
+       snprintf(head, head_size, "%.*s", (int)(open - line + 1), line) < 0 ||
+       snprintf(body, body_size, "%.*s", (int)(line + length - open - 2),
+                open + 1) < 0)
         return 0;
-    memcpy(binding, text, length);
-    binding[length] = '\0';
-    trim_in_place(binding);
-    char header[ZIR_TEXT_MAX], name[ZIR_NAME_MAX], result[ZIR_NAME_MAX];
-    int written = snprintf(header, sizeof(header), "slot_body :: %s", equals + 1);
-    if(written < 0 || (size_t)written >= sizeof(header))
-        return 0;
-    parse_function_header(name, sizeof(name), arguments, arguments_size,
-                          result, sizeof(result), header);
-    return name[0] && !strcmp(result, "void");
+    trim_in_place(body);
+    return 1;
 }
 
+/* Locate Jai's optional `then` on an if header. A `then` inside a string,
+ * grouped expression, or an unparenthesized ifx condition is not the header
+ * separator. The latter remains an expression parse error until that form
+ * can be split without guessing where its conditional arms end. */
+static char *
+if_header_then(char *line)
+{
+    const char *condition = NULL;
+    int parens = 0, brackets = 0, braces = 0, quote = 0;
+    if(starts_word(line, "if"))
+        condition = skip_ws(line + 2);
+    else if(starts_word(line, "else") &&
+            starts_word(skip_ws(line + 4), "if"))
+        condition = skip_ws(skip_ws(line + 4) + 2);
+    if(condition == NULL)
+        return NULL;
+    for(char *p = (char *)condition; *p; p++) {
+        if(quote) {
+            if(*p == '\\' && p[1]) p++;
+            else if(*p == quote) quote = 0;
+            continue;
+        }
+        if(*p == '"' || *p == '\'') { quote = *p; continue; }
+        if(*p == '(') { parens++; continue; }
+        if(*p == ')') { parens--; continue; }
+        if(*p == '[') { brackets++; continue; }
+        if(*p == ']') { brackets--; continue; }
+        if(*p == '{') { braces++; continue; }
+        if(*p == '}') { braces--; continue; }
+        if(parens || brackets || braces) continue;
+        if((p == condition || !source_identifier_byte((unsigned char)p[-1])) &&
+           strncmp(p, "ifx", 3) == 0 &&
+           !source_identifier_byte((unsigned char)p[3]))
+            return NULL;
+        if((p == condition || !source_identifier_byte((unsigned char)p[-1])) &&
+           strncmp(p, "then", 4) == 0 &&
+           !source_identifier_byte((unsigned char)p[4]))
+            return p;
+    }
+    return NULL;
+}
+
+static void
+split_jai_control_line(char *line, size_t capacity,
+                       char queue[16][SOURCE_LINE_MAX * 2], int *count,
+                       ZirSourceSpan span)
+{
+    char *then = if_header_then(line);
+    if(then != NULL) {
+        const char *condition = starts_word(line, "if") ?
+            skip_ws(line + 2) : skip_ws(skip_ws(line + 4) + 2);
+        if(then == condition)
+            die_at(span, "if then requires a condition");
+        const char *after = skip_ws(then + 4);
+        char body[SOURCE_LINE_MAX * 2];
+        if(strlen(after) >= sizeof(body))
+            die_at(span, "if body exceeds source limit");
+        copy_text(body, sizeof(body), after);
+        char *end = then;
+        while(end > line && isspace((unsigned char)end[-1]))
+            end--;
+        *end = '\0';
+        if(body[0] == '{') {
+            size_t used = strlen(line);
+            if(snprintf(line + used, capacity - used, " %s", body) >=
+               (int)(capacity - used))
+                die_at(span, "if header exceeds source limit");
+        } else if(body[0] != '\0') {
+            prepend_logical_line(queue, count, body, span);
+        }
+    }
+    if(starts_word(line, "else")) {
+        const char *body = skip_ws(line + 4);
+        if(*body && *body != '{' &&
+           !starts_word(body, "if") &&
+           !starts_word(body, "#if")) {
+            prepend_logical_line(queue, count, body, span);
+            line[4] = '\0';
+        }
+    }
+}
+
+
 /* ---- compile-time conditionals ------------------------------------------
- * '#if COND { ... } #else { ... }' regions use one model: top-level
- * captures inside a region are stamped with the expanded C preprocessor
- * condition and the emitter wraps each item in '#if cond / #endif'; the
- * condition's 'Name' constants ('WEB :: #defined(PLATFORM_WEB)') expand to
- * their expressions. Body-level regions lower to raw #if/#elif/#else/#endif
- * statements whose braces are consumed here. */
+ * '#if COND { ... } else { ... }' selects a branch while parsing. Its braces
+ * are consumed here and do not create a source-level scope. */
 
 typedef struct {
     char name[ZIR_NAME_MAX];
     char expr[ZIR_TEXT_MAX];
+    char type[ZIR_NAME_MAX]; /* active evaluator local; empty for file constants */
+    char path[SOURCE_PATH_MAX];
+    int is_file_private;
 } ZirConst;
 
 typedef struct {
@@ -1165,20 +1686,21 @@ typedef struct {
 } ZirConsts;
 
 typedef struct {
-    char cond[ZIR_TEXT_MAX];      /* active branch condition (C form) */
-    char excluded[ZIR_TEXT_MAX];  /* conditions handled by earlier branches */
     int braces;                   /* net '{' until the region's closing '}' */
+    int selected;
+    int active;
+    int parent_active;
 } ZirCondFrame;
 
 static int
-line_is_hash_else(const char *line)
+line_is_compile_else(const char *line)
 {
-    return strcmp(line, "} #else {") == 0 || strcmp(line, "#else {") == 0;
+    return strcmp(line, "} else {") == 0 || strcmp(line, "else {") == 0;
 }
 
-/* '#if COND {' / '#else_if COND {' (with optional leading '}'): strips the
+/* '#if COND {' / '} else #if COND {': strips the
  * trailing '{' — region braces are consumed, never emitted. Returns 1 for
- * '#if', 2 for '#else_if', 0 otherwise; *condition points into line. */
+ * '#if', 2 for 'else #if', 0 otherwise; *condition points into line. */
 static int
 parse_cond_start(char *line, char **condition)
 {
@@ -1190,11 +1712,11 @@ parse_cond_start(char *line, char **condition)
        (line[3] == '\0' || isspace((unsigned char)line[3]))) {
         q = line + 3;
         kind = 1;
-    } else if(strncmp(line, "#else_if", 8) == 0 &&
+    } else if(strncmp(line, "else #if", 8) == 0 &&
               (line[8] == '\0' || isspace((unsigned char)line[8]))) {
         q = line + 8;
         kind = 2;
-    } else if(strncmp(line, "} #else_if", 10) == 0 &&
+    } else if(strncmp(line, "} else #if", 10) == 0 &&
               (line[10] == '\0' || isspace((unsigned char)line[10]))) {
         q = line + 10;
         kind = 2;
@@ -1215,7 +1737,7 @@ parse_cond_start(char *line, char **condition)
 
 static void
 expand_compile_expr_depth(char *dst, size_t dst_size, const ZirConsts *consts,
-                          const char *src, int depth)
+                          const char *src, const char *lookup_path, int depth)
 {
     size_t n = 0;
     int in_string = 0;
@@ -1270,12 +1792,15 @@ expand_compile_expr_depth(char *dst, size_t dst_size, const ZirConsts *consts,
             }
             ident[il] = '\0';
             for(i = 0; i < consts->count; i++) {
-                if(strcmp(consts->items[i].name, ident) == 0) {
+                if(strcmp(consts->items[i].name, ident) == 0 &&
+                   (!consts->items[i].is_file_private ||
+                    strcmp(consts->items[i].path, lookup_path) == 0)) {
                     char expanded[ZIR_TEXT_MAX];
                     int written;
 
                     expand_compile_expr_depth(expanded, sizeof(expanded),
                                               consts, consts->items[i].expr,
+                                              consts->items[i].path,
                                               depth + 1);
                     written = snprintf(dst + n, dst_size - n, "(%s)", expanded);
                     if(written < 0)
@@ -1303,9 +1828,9 @@ expand_compile_expr_depth(char *dst, size_t dst_size, const ZirConsts *consts,
 
 static void
 expand_compile_expr(char *dst, size_t dst_size, const ZirConsts *consts,
-                    const char *src)
+                    const char *src, const char *lookup_path)
 {
-    expand_compile_expr_depth(dst, dst_size, consts, src, 0);
+    expand_compile_expr_depth(dst, dst_size, consts, src, lookup_path, 0);
 }
 
 static char *
@@ -1346,6 +1871,10 @@ typedef struct ZirEval {
     const char *p;
     int known;
     long value;
+    const ZirModule *module;
+    const ZirConsts *consts;
+    const char *lookup_path;
+    int depth;
 } ZirEval;
 
 static void
@@ -1356,6 +1885,440 @@ eval_skip(ZirEval *ev)
 }
 
 static long eval_or(ZirEval *ev);
+static void lower_size_of_value(char *value, size_t capacity,
+                                const ZirModule *module, ZirSourceSpan span);
+static int eval_const_condition(const char *src, long *value,
+                                const ZirModule *module,
+                                const ZirConsts *consts,
+                                const char *lookup_path, int depth);
+
+typedef struct {
+    ZirEval *call;
+    const ZirModule *module;
+    const ZirFunction *fn;
+    ZirConsts names;
+    int local_count;
+    int capacity;
+    int fuel;
+} EvalBody;
+
+static int compile_size_of_ready(const ZirModule *module, char *condition);
+
+static int
+eval_integer_type(const char *type, long value)
+{
+    if(!strcmp(type, "s8"))
+        return value >= INT8_MIN && value <= INT8_MAX;
+    if(!strcmp(type, "s16"))
+        return value >= INT16_MIN && value <= INT16_MAX;
+    if(!strcmp(type, "s32"))
+        return value >= INT32_MIN && value <= INT32_MAX;
+    if(!strcmp(type, "u8")) return value >= 0 && value <= UINT8_MAX;
+    if(!strcmp(type, "u16")) return value >= 0 && value <= UINT16_MAX;
+    if(!strcmp(type, "u32")) return value >= 0 && value <= UINT32_MAX;
+    if(!strcmp(type, "s64")) return 1;
+    if(!strcmp(type, "bool")) return value == 0 || value == 1;
+    return 0;
+}
+
+static int
+eval_body_expression(EvalBody *body, const char *source, long *value)
+{
+    char input[ZIR_TEXT_MAX];
+    char expanded[ZIR_TEXT_MAX];
+    copy_text(input, sizeof(input), source);
+    trim_in_place(input);
+    size_t length = strlen(input);
+    if(length && input[length - 1] == ';') {
+        input[length - 1] = '\0';
+        trim_in_place(input);
+    }
+    expand_compile_expr(expanded, sizeof(expanded), &body->names,
+                        input, body->fn->span.path);
+    if(strstr(expanded, "#ifx") != NULL ||
+       !compile_size_of_ready(body->module, expanded)) return 0;
+    if(strstr(expanded, "size_of") != NULL)
+        lower_size_of_value(expanded, sizeof(expanded), body->module,
+                            body->fn->span);
+    return eval_const_condition(expanded, value, body->module,
+                                &body->names, body->fn->span.path,
+                                body->call->depth + 1);
+}
+
+static int
+eval_local(EvalBody *body, const char *name)
+{
+    for(int i = 0; i < body->local_count; i++)
+        if(!strcmp(body->names.items[i].name, name)) return i;
+    return -1;
+}
+
+static int
+eval_add_local(EvalBody *body, const char *name, const char *type,
+               long value, int initialized)
+{
+    if(!is_identifier_text(name) ||
+       !eval_integer_type(type, value) ||
+       body->names.count >= body->capacity)
+        return 0;
+    memmove(body->names.items + 1, body->names.items,
+            (size_t)body->names.count * sizeof(*body->names.items));
+    ZirConst *local = &body->names.items[0];
+    memset(local, 0, sizeof(*local));
+    copy_text(local->name, sizeof(local->name), name);
+    copy_text(local->type, sizeof(local->type), type);
+    copy_text(local->path, sizeof(local->path), body->fn->span.path);
+    if(initialized)
+        snprintf(local->expr, sizeof(local->expr), "%ld", value);
+    body->local_count++;
+    body->names.count++;
+    return 1;
+}
+
+static void
+eval_leave_scope(EvalBody *body, int local_count)
+{
+    int removed = body->local_count - local_count;
+    if(removed <= 0) return;
+    memmove(body->names.items, body->names.items + removed,
+            (size_t)(body->names.count - removed) *
+                sizeof(*body->names.items));
+    body->names.count -= removed;
+    body->local_count = local_count;
+}
+
+static int
+eval_close(const ZirFunction *fn, int opening, int stop)
+{
+    int depth = 1;
+    for(int i = opening + 1; i < stop; i++) {
+        ZirStmtKind kind = fn->stmts[i].kind;
+        if(kind == ZIR_STMT_BLOCK_OPEN || kind == ZIR_STMT_IF ||
+           kind == ZIR_STMT_WHILE || kind == ZIR_STMT_FOR)
+            depth++;
+        else if(kind == ZIR_STMT_BLOCK_CLOSE && --depth == 0)
+            return i;
+    }
+    return -1;
+}
+
+static int
+eval_header_condition(EvalBody *body, const char *header,
+                      const char *word, long *value)
+{
+    char condition[ZIR_TEXT_MAX];
+    const char *source = skip_ws(header + strlen(word));
+    copy_text(condition, sizeof(condition), source);
+    trim_in_place(condition);
+    size_t length = strlen(condition);
+    if(length == 0 || condition[length - 1] != '{') return 0;
+    condition[--length] = '\0';
+    trim_in_place(condition);
+    length = strlen(condition);
+    if(length >= 4 && !strcmp(condition + length - 4, "then") &&
+       (length == 4 || isspace((unsigned char)condition[length - 5]))) {
+        condition[length - 4] = '\0';
+        trim_in_place(condition);
+    }
+    return condition[0] && eval_body_expression(body, condition, value);
+}
+
+/* Flow: 0 continues, 1 returns, 2 breaks, 3 continues a loop. */
+static int
+eval_body_statements(EvalBody *body, int start, int stop,
+                     int *flow, long *result)
+{
+    int saved_locals = body->local_count;
+    for(int i = start; i < stop && !*flow; i++) {
+        const ZirStmt *statement = &body->fn->stmts[i];
+        const char *source = skip_ws(statement->text);
+        if(--body->fuel < 0) goto failed;
+        if(statement->kind == ZIR_STMT_IF) {
+            int taken = 0;
+            for(;;) {
+                const ZirStmt *arm = &body->fn->stmts[i];
+                const char *header = skip_ws(arm->text);
+                int close = eval_close(body->fn, i, stop);
+                long condition = 1;
+                if(close < 0) goto failed;
+                if(starts_word(header, "else if")) {
+                    if(!taken && !*flow &&
+                       !eval_header_condition(body, header, "else if",
+                                              &condition)) goto failed;
+                } else if(starts_word(header, "if")) {
+                    if(!taken && !*flow &&
+                       !eval_header_condition(body, header, "if",
+                                              &condition)) goto failed;
+                } else if(!starts_word(header, "else")) goto failed;
+                if(!taken && condition) {
+                    if(!eval_body_statements(body, i + 1, close,
+                                             flow, result)) goto failed;
+                    taken = 1;
+                }
+                i = close;
+                if(i + 1 >= stop ||
+                   body->fn->stmts[i + 1].kind != ZIR_STMT_IF ||
+                   !starts_word(skip_ws(body->fn->stmts[i + 1].text),
+                                "else")) break;
+                i++;
+            }
+            continue;
+        }
+        if(statement->kind == ZIR_STMT_WHILE) {
+            int close = eval_close(body->fn, i, stop);
+            if(close < 0) goto failed;
+            for(;;) {
+                long condition = 0;
+                if(--body->fuel < 0 ||
+                   !eval_header_condition(body, source, "while",
+                                          &condition)) goto failed;
+                if(!condition) break;
+                if(!eval_body_statements(body, i + 1, close,
+                                         flow, result)) goto failed;
+                if(*flow == 2) { *flow = 0; break; }
+                if(*flow == 3) *flow = 0;
+                if(*flow == 1) break;
+            }
+            i = close;
+            continue;
+        }
+        if(statement->kind == ZIR_STMT_BLOCK_OPEN) {
+            int close = eval_close(body->fn, i, stop);
+            if(close < 0 ||
+               !eval_body_statements(body, i + 1, close,
+                                     flow, result)) goto failed;
+            i = close;
+            continue;
+        }
+        if(statement->kind == ZIR_STMT_RETURN) {
+            char expression[ZIR_TEXT_MAX];
+            copy_text(expression, sizeof(expression), skip_ws(source + 6));
+            trim_in_place(expression);
+            size_t length = strlen(expression);
+            if(length && expression[length - 1] == ';')
+                expression[length - 1] = '\0';
+            if(!expression[0] ||
+               !eval_body_expression(body, expression, result)) goto failed;
+            *flow = 1;
+            break;
+        }
+        if(statement->kind == ZIR_STMT_DECL) {
+            char text[ZIR_TEXT_MAX];
+            copy_text(text, sizeof(text), source);
+            char *colon = strchr(text, ':');
+            if(colon == NULL) goto failed;
+            *colon++ = '\0';
+            trim_in_place(text);
+            char *equals = strchr(colon, '=');
+            if(equals != NULL) *equals++ = '\0';
+            trim_in_place(colon);
+            size_t type_length = strlen(colon);
+            if(type_length && colon[type_length - 1] == ';') {
+                colon[type_length - 1] = '\0';
+                trim_in_place(colon);
+            }
+            const char *type = colon[0] ? colon : "s64";
+            long value = 0;
+            if(equals != NULL) {
+                trim_in_place(equals);
+                if(!eval_body_expression(body, equals, &value)) goto failed;
+            }
+            if(!eval_add_local(body, text, type, value,
+                               equals != NULL)) goto failed;
+            continue;
+        }
+        if(statement->kind == ZIR_STMT_ASSIGN) {
+            char text[ZIR_TEXT_MAX];
+            copy_text(text, sizeof(text), source);
+            char *equals = strchr(text, '=');
+            if(equals == NULL) goto failed;
+            char op = equals > text ? equals[-1] : '\0';
+            if(op && strchr("+-*/%", op) != NULL) equals[-1] = '\0';
+            else op = '\0';
+            *equals++ = '\0';
+            trim_in_place(text);
+            int local_index = eval_local(body, text);
+            if(local_index < 0) goto failed; /* never mutate globals */
+            long value = 0;
+            if(op) {
+                char combined[ZIR_TEXT_MAX];
+                int written = snprintf(combined, sizeof(combined),
+                                       "%s %c (%s)",
+                                       body->names.items[local_index].expr,
+                                       op, equals);
+                if(written < 0 || (size_t)written >= sizeof(combined) ||
+                   !eval_body_expression(body, combined, &value)) goto failed;
+            } else if(!eval_body_expression(body, equals, &value)) goto failed;
+            if(!eval_integer_type(body->names.items[local_index].type,
+                                  value)) goto failed;
+            snprintf(body->names.items[local_index].expr,
+                     sizeof(body->names.items[local_index].expr),
+                     "%ld", value);
+            continue;
+        }
+        if(statement->kind == ZIR_STMT_EXPR) {
+            long ignored = 0;
+            if(!eval_body_expression(body, source, &ignored)) goto failed;
+            continue;
+        }
+        if(statement->kind == ZIR_STMT_BREAK ||
+           statement->kind == ZIR_STMT_CONTINUE) {
+            char control[ZIR_TEXT_MAX];
+            copy_text(control, sizeof(control), source);
+            trim_in_place(control);
+            size_t length = strlen(control);
+            if(length && control[length - 1] == ';')
+                control[length - 1] = '\0';
+            if(strcmp(control, statement->kind == ZIR_STMT_BREAK ?
+                       "break" : "continue") != 0) goto failed;
+            *flow = statement->kind == ZIR_STMT_BREAK ? 2 : 3;
+            break;
+        }
+        goto failed;
+    }
+    eval_leave_scope(body, saved_locals);
+    return 1;
+failed:
+    eval_leave_scope(body, saved_locals);
+    return 0;
+}
+
+/* The parser only executes a bounded, pure integer/boolean subset. Every
+ * statement and nested call must stay in this evaluator's whitelist. */
+static int
+eval_const_function(ZirEval *ev, const char *name, const long *values,
+                    const char argument_names[][ZIR_NAME_MAX],
+                    int argument_count, long *result)
+{
+    const ZirFunction *fn = NULL;
+    const ZirModule *owner = NULL;
+    char parameters[16][ZIR_TEXT_MAX];
+    long ordered[16];
+    unsigned used = 0;
+    EvalBody body = {0};
+    int expected;
+    int flow = 0, ok;
+
+    if(ev->module == NULL || ev->consts == NULL || ev->depth >= 16)
+        return 0;
+    if(ResolveFunctionAt(ev->module, name, ev->lookup_path,
+                         &owner, &fn) != 1 ||
+       fn == NULL || fn->is_extern || fn->stmt_count == 0 ||
+       fn->is_template)
+        return 0;
+    if(!eval_integer_type(fn->return_type, 0))
+        return 0;
+    expected = *skip_ws(fn->args) ?
+        split_top_level(fn->args, parameters[0], 16,
+                        sizeof(parameters[0])) : 0;
+    if(argument_count > expected || expected < 0)
+        return 0;
+    for(int argument = 0; argument < argument_count; argument++) {
+        int position = -1;
+        if(argument_names[argument][0]) {
+            size_t length = strlen(argument_names[argument]);
+            for(int i = 0; i < expected; i++) {
+                const char *start = skip_ws(parameters[i]);
+                const char *colon = strchr(start, ':');
+                if(colon == NULL) continue;
+                const char *end = colon;
+                while(end > start && isspace((unsigned char)end[-1])) end--;
+                if((size_t)(end - start) == length &&
+                   !strncmp(start, argument_names[argument], length)) {
+                    position = i;
+                    break;
+                }
+            }
+        } else {
+            for(int i = 0; i < expected; i++)
+                if(!(used & (1u << i))) { position = i; break; }
+        }
+        if(position < 0 || (used & (1u << position)))
+            return 0;
+        used |= 1u << position;
+        ordered[position] = values[argument];
+    }
+    if(used != ((1u << expected) - 1u)) {
+        char defaults[16][ZIR_TEXT_MAX];
+        int count = fn->default_args[0] ?
+            split_top_level(fn->default_args, defaults[0], 16,
+                            sizeof(defaults[0])) : 0;
+        if(count != expected) return 0;
+        for(int i = 0; i < expected; i++) {
+            if(used & (1u << i)) continue;
+            char *assignment = top_level_assignment(defaults[i]);
+            if(assignment == NULL ||
+               !eval_const_condition(skip_ws(assignment + 1), &ordered[i],
+                                     owner, ev->consts, fn->span.path,
+                                     ev->depth + 1))
+                return 0;
+            used |= 1u << i;
+        }
+    }
+    int inherited_count = 0;
+    if(owner == ev->module) {
+        for(int i = 0; i < ev->consts->count; i++)
+            if(ev->consts->items[i].type[0] == '\0')
+                inherited_count++;
+    } else {
+        inherited_count = owner->define_count;
+    }
+    body.capacity = expected + inherited_count + fn->stmt_count + 1;
+    body.names.items = calloc((size_t)body.capacity,
+                              sizeof(*body.names.items));
+    if(body.names.items == NULL)
+        die("out of memory evaluating #run procedure");
+    body.call = ev;
+    body.module = owner;
+    body.fn = fn;
+    body.fuel = 10000;
+    for(int i = 0; i < expected; i++) {
+        char *part = trim(parameters[i]);
+        char *colon = strchr(part, ':');
+        char *type;
+        if(colon == NULL) { free(body.names.items); return 0; }
+        *colon = '\0';
+        trim_in_place(part);
+        type = trim(colon + 1);
+        if(!is_identifier_text(part) ||
+           !eval_integer_type(type, ordered[i])) {
+            free(body.names.items);
+            return 0;
+        }
+        copy_text(body.names.items[i].name,
+                  sizeof(body.names.items[i].name), part);
+        copy_text(body.names.items[i].type,
+                  sizeof(body.names.items[i].type), type);
+        snprintf(body.names.items[i].expr, sizeof(body.names.items[i].expr),
+                 "%ld", ordered[i]);
+        copy_text(body.names.items[i].path,
+                  sizeof(body.names.items[i].path),
+                  fn->span.path);
+    }
+    if(owner == ev->module) {
+        int target = expected;
+        for(int i = 0; i < ev->consts->count; i++)
+            if(ev->consts->items[i].type[0] == '\0')
+                body.names.items[target++] = ev->consts->items[i];
+    } else for(int i = 0; i < inherited_count; i++) {
+        const ZirDefine *definition = &owner->defines[i];
+        ZirConst *constant = &body.names.items[expected + i];
+        copy_text(constant->name, sizeof(constant->name), definition->name);
+        copy_text(constant->expr, sizeof(constant->expr),
+                  definition->value);
+        copy_text(constant->path, sizeof(constant->path),
+                  definition->span.path);
+        constant->is_file_private = definition->is_file_private;
+    }
+    body.local_count = expected;
+    body.names.count = expected + inherited_count;
+    ok = eval_body_statements(&body, 0, fn->stmt_count, &flow, result);
+    free(body.names.items);
+    if(!ok || flow != 1 ||
+       !eval_integer_type(fn->return_type, *result))
+        return 0;
+    return 1;
+}
 
 static long
 eval_primary(ZirEval *ev)
@@ -1375,8 +2338,9 @@ eval_primary(ZirEval *ev)
         return value;
     }
     if(isdigit((unsigned char)*ev->p)) {
+        errno = 0;
         value = strtol(ev->p, &end, 0);
-        if(end == ev->p) {
+        if(end == ev->p || errno == ERANGE) {
             ev->known = 0;
             return 0;
         }
@@ -1386,8 +2350,103 @@ eval_primary(ZirEval *ev)
         return value;
     }
     if(isalpha((unsigned char)*ev->p) || *ev->p == '_') {
+        const char *word = ev->p;
         while(isalnum((unsigned char)*ev->p) || *ev->p == '_')
             ev->p++;
+        if(ev->module != NULL) {
+            const char *after_name = ev->p;
+            const char *call_end = after_name;
+            long arguments[16];
+            char argument_names[16][ZIR_NAME_MAX] = {{0}};
+            int count = 0;
+            char name[ZIR_NAME_MAX];
+            eval_skip(ev);
+            if(*ev->p == '.' &&
+               (isalpha((unsigned char)ev->p[1]) || ev->p[1] == '_')) {
+                ev->p++;
+                while(isalnum((unsigned char)*ev->p) || *ev->p == '_')
+                    ev->p++;
+                call_end = ev->p;
+                eval_skip(ev);
+            }
+            if(*ev->p == '(') {
+                size_t length = (size_t)(call_end - word);
+                if(length == 0 || length >= sizeof(name)) {
+                    ev->known = 0;
+                    return 0;
+                }
+                memcpy(name, word, length);
+                name[length] = '\0';
+                ev->p++;
+                eval_skip(ev);
+                while(*ev->p != ')' && *ev->p != '\0') {
+                    if(count == 16) { ev->known = 0; return 0; }
+                    const char *candidate = ev->p;
+                    if(isalpha((unsigned char)*candidate) || *candidate == '_') {
+                        const char *end = candidate + 1;
+                        while(isalnum((unsigned char)*end) || *end == '_') end++;
+                        const char *equals = skip_ws(end);
+                        if(*equals == '=' && equals[1] != '=') {
+                            size_t n = (size_t)(end - candidate);
+                            if(n >= sizeof(argument_names[count])) {
+                                ev->known = 0;
+                                return 0;
+                            }
+                            memcpy(argument_names[count], candidate, n);
+                            argument_names[count][n] = '\0';
+                            ev->p = equals + 1;
+                        }
+                    }
+                    arguments[count++] = eval_or(ev);
+                    eval_skip(ev);
+                    if(*ev->p != ',')
+                        break;
+                    ev->p++;
+                    eval_skip(ev);
+                    if(*ev->p == ')') { ev->known = 0; return 0; }
+                }
+                eval_skip(ev);
+                if(*ev->p != ')' || !ev->known) {
+                    ev->known = 0;
+                    return 0;
+                }
+                ev->p++;
+                if(!eval_const_function(ev, name, arguments,
+                                        argument_names, count, &value))
+                    ev->known = 0;
+                return ev->known ? value : 0;
+            }
+            ev->p = after_name;
+        }
+        if((size_t)(ev->p - word) == 4 && !strncmp(word, "true", 4))
+            return 1;
+        if((size_t)(ev->p - word) == 5 && !strncmp(word, "false", 5))
+            return 0;
+        if((size_t)(ev->p - word) == 2 && !strncmp(word, "OS", 2)) {
+#if defined(_WIN32)
+            return 1;
+#elif defined(__APPLE__)
+            return 2;
+#elif defined(__linux__)
+            return 3;
+#else
+            ev->known = 0;
+            return 0;
+#endif
+        }
+        ev->known = 0;
+        return 0;
+    }
+    if(*ev->p == '.') {
+        const char *word = ++ev->p;
+        while(isalnum((unsigned char)*ev->p) || *ev->p == '_')
+            ev->p++;
+        if((size_t)(ev->p - word) == 7 && !strncmp(word, "WINDOWS", 7))
+            return 1;
+        if((size_t)(ev->p - word) == 5 && !strncmp(word, "MACOS", 5))
+            return 2;
+        if((size_t)(ev->p - word) == 5 && !strncmp(word, "LINUX", 5))
+            return 3;
         ev->known = 0;
         return 0;
     }
@@ -1407,14 +2466,53 @@ eval_unary(ZirEval *ev)
         return ev->known ? !v : 0;
     }
     if(*ev->p == '-') {
+        long value;
         ev->p++;
-        return -eval_unary(ev);
+        value = eval_unary(ev);
+        if(value == LONG_MIN) { ev->known = 0; return 0; }
+        return -value;
     }
     if(*ev->p == '+') {
         ev->p++;
         return eval_unary(ev);
     }
     return eval_primary(ev);
+}
+
+static int
+checked_add_long(long left, long right, long *result)
+{
+    if((right > 0 && left > LONG_MAX - right) ||
+       (right < 0 && left < LONG_MIN - right))
+        return 0;
+    *result = left + right;
+    return 1;
+}
+
+static int
+checked_sub_long(long left, long right, long *result)
+{
+    if((right < 0 && left > LONG_MAX + right) ||
+       (right > 0 && left < LONG_MIN + right))
+        return 0;
+    *result = left - right;
+    return 1;
+}
+
+static int
+checked_mul_long(long left, long right, long *result)
+{
+    if(left > 0) {
+        if((right > 0 && left > LONG_MAX / right) ||
+           (right < 0 && right < LONG_MIN / left))
+            return 0;
+    } else if(left < 0) {
+        if((right > 0 && left < LONG_MIN / right) ||
+           (right < 0 && left < LONG_MAX / right))
+            return 0;
+    }
+    *result = left * right;
+    return 1;
 }
 
 static long
@@ -1433,11 +2531,15 @@ eval_mul(ZirEval *ev)
         op = *ev->p++;
         left_known = ev->known;
         right = eval_unary(ev);
-        if(!left_known || !ev->known || (right == 0 && op != '*')) {
+        if(!left_known || !ev->known || (right == 0 && op != '*') ||
+           (left == LONG_MIN && right == -1 && op != '*')) {
             ev->known = 0;
             left = 0;
         } else if(op == '*') {
-            left *= right;
+            if(!checked_mul_long(left, right, &left)) {
+                ev->known = 0;
+                left = 0;
+            }
         } else if(op == '/') {
             left /= right;
         } else {
@@ -1466,9 +2568,15 @@ eval_add(ZirEval *ev)
             ev->known = 0;
             left = 0;
         } else if(op == '+') {
-            left += right;
+            if(!checked_add_long(left, right, &left)) {
+                ev->known = 0;
+                left = 0;
+            }
         } else {
-            left -= right;
+            if(!checked_sub_long(left, right, &left)) {
+                ev->known = 0;
+                left = 0;
+            }
         }
     }
 }
@@ -1596,12 +2704,18 @@ eval_or(ZirEval *ev)
 }
 
 static int
-eval_const_condition(const char *src, long *value)
+eval_const_condition(const char *src, long *value,
+                     const ZirModule *module, const ZirConsts *consts,
+                     const char *lookup_path, int depth)
 {
     ZirEval ev;
 
     ev.p = src;
     ev.known = 1;
+    ev.module = module;
+    ev.consts = consts;
+    ev.lookup_path = lookup_path;
+    ev.depth = depth;
     ev.value = eval_or(&ev);
     eval_skip(&ev);
     if(*ev.p != '\0')
@@ -1611,11 +2725,1206 @@ eval_const_condition(const char *src, long *value)
     return ev.known;
 }
 
+typedef enum {
+    COMPILE_INVALID, COMPILE_INTEGER, COMPILE_REAL, COMPILE_STRING,
+    COMPILE_COMPOUND
+} CompileKind;
+
+typedef struct {
+    CompileKind kind;
+    long integer;
+    double real;
+    char literal[ZIR_TEXT_MAX];
+} CompileValue;
+
+static int evaluate_typed_expression(const ZirModule *module,
+                                     const ZirConsts *names,
+                                     const char *source, const char *path,
+                                     int depth, int *fuel,
+                                     CompileValue *result);
+
+static int
+compile_value_literal(CompileValue *value)
+{
+    if(value->kind == COMPILE_INTEGER)
+        return snprintf(value->literal, sizeof(value->literal), "%ld",
+                        value->integer) < (int)sizeof(value->literal);
+    if(value->kind == COMPILE_REAL) {
+        int written = snprintf(value->literal, sizeof(value->literal),
+                               "%.17g", value->real);
+        if(written < 0 || (size_t)written >= sizeof(value->literal)) return 0;
+        if(strpbrk(value->literal, ".eE") == NULL) {
+            if((size_t)written + 2 >= sizeof(value->literal)) return 0;
+            strcat(value->literal, ".0");
+        }
+    }
+    return value->kind != COMPILE_INVALID;
+}
+
+static int
+compile_truth(const CompileValue *value, int *truth)
+{
+    if(value->kind == COMPILE_INTEGER) *truth = value->integer != 0;
+    else if(value->kind == COMPILE_REAL) *truth = value->real != 0.0;
+    else return 0;
+    return 1;
+}
+
+static int
+compile_type_value(const char *type, CompileValue *value)
+{
+    if(eval_integer_type(type, 0))
+        return value->kind == COMPILE_INTEGER &&
+               eval_integer_type(type, value->integer);
+    if(!strcmp(type, "float32") || !strcmp(type, "float64")) {
+        if(value->kind == COMPILE_INTEGER) {
+            value->real = (double)value->integer;
+            value->kind = COMPILE_REAL;
+        }
+        if(value->kind != COMPILE_REAL) return 0;
+        if(!strcmp(type, "float32"))
+            value->real = (float)value->real;
+        return isfinite(value->real) && compile_value_literal(value);
+    }
+    if(!strcmp(type, "string")) return value->kind == COMPILE_STRING;
+    if(value->kind == COMPILE_COMPOUND &&
+       strncmp(value->literal, type, strlen(type)) == 0 &&
+       value->literal[strlen(type)] == '.') return 1;
+    return 0;
+}
+
+
+static int
+compile_values_equal(const CompileValue *left, const CompileValue *right,
+                     int *equal)
+{
+    if(left->kind == COMPILE_STRING && right->kind == COMPILE_STRING) {
+        unsigned char a[ZIR_TEXT_MAX], b[ZIR_TEXT_MAX];
+        size_t an, bn;
+        if(!DecodeStringLiteral(left->literal, a, sizeof(a), &an) ||
+           !DecodeStringLiteral(right->literal, b, sizeof(b), &bn)) return 0;
+        *equal = an == bn && memcmp(a, b, an) == 0;
+        return 1;
+    }
+    if(left->kind == COMPILE_INTEGER && right->kind == COMPILE_INTEGER) {
+        *equal = left->integer == right->integer;
+        return 1;
+    }
+    if((left->kind == COMPILE_REAL || left->kind == COMPILE_INTEGER) &&
+       (right->kind == COMPILE_REAL || right->kind == COMPILE_INTEGER)) {
+        double a = left->kind == COMPILE_REAL ? left->real :
+                   (double)left->integer;
+        double b = right->kind == COMPILE_REAL ? right->real :
+                   (double)right->integer;
+        *equal = a == b;
+        return 1;
+    }
+    return 0;
+}
+
+static int evaluate_typed_function(const ZirModule *module,
+                                   const char *name, const char *path,
+                                   CompileValue *arguments,
+                                   char argument_names[][ZIR_NAME_MAX],
+                                   int argument_count, int depth, int *fuel,
+                                   CompileValue *result);
+
+static int
+evaluate_typed_node(const ZirFunction *probe, int index,
+                    const ZirModule *module, const char *path,
+                    int depth, int *fuel, CompileValue *result)
+{
+    if(index < 0 || index >= probe->expr_count || depth > 64 ||
+       --*fuel < 0) return 0;
+    const ZirExpr *expression = &probe->exprs[index];
+    CompileValue left = {0}, right = {0};
+    char *end;
+    long integer;
+    double real;
+    int truth;
+    switch(expression->kind) {
+    case ZIR_EXPR_INT:
+        errno = 0;
+        integer = strtol(expression->text, &end, 0);
+        if(errno == ERANGE || end == expression->text || *end) return 0;
+        result->kind = COMPILE_INTEGER;
+        result->integer = integer;
+        return compile_value_literal(result);
+    case ZIR_EXPR_FLOAT:
+        errno = 0;
+        real = strtod(expression->text, &end);
+        if(errno == ERANGE || end == expression->text || *end ||
+           !isfinite(real)) return 0;
+        result->kind = COMPILE_REAL;
+        result->real = real;
+        return compile_value_literal(result);
+    case ZIR_EXPR_STRING:
+        result->kind = COMPILE_STRING;
+        copy_text(result->literal, sizeof(result->literal),
+                  expression->text);
+        return 1;
+    case ZIR_EXPR_IDENT:
+        if(!strcmp(expression->name, "true") ||
+           !strcmp(expression->name, "false")) {
+            result->kind = COMPILE_INTEGER;
+            result->integer = !strcmp(expression->name, "true");
+            return compile_value_literal(result);
+        }
+        return 0;
+    case ZIR_EXPR_SIZE_OF: {
+        size_t size, alignment;
+        if(!TypeLayout(module, expression->name, &size, &alignment) ||
+           size > LONG_MAX) return 0;
+        result->kind = COMPILE_INTEGER;
+        result->integer = (long)size;
+        return compile_value_literal(result);
+    }
+    case ZIR_EXPR_UNARY:
+        if(!evaluate_typed_node(probe, expression->right, module, path,
+                                depth + 1, fuel, &right)) return 0;
+        if(!strcmp(expression->op, "!")) {
+            if(!compile_truth(&right, &truth)) return 0;
+            result->kind = COMPILE_INTEGER;
+            result->integer = !truth;
+        } else if(!strcmp(expression->op, "+")) {
+            *result = right;
+        } else if(!strcmp(expression->op, "-")) {
+            *result = right;
+            if(right.kind == COMPILE_REAL) result->real = -right.real;
+            else if(right.kind == COMPILE_INTEGER && right.integer != LONG_MIN)
+                result->integer = -right.integer;
+            else return 0;
+        } else if(!strcmp(expression->op, "~") &&
+                  right.kind == COMPILE_INTEGER) {
+            result->kind = COMPILE_INTEGER;
+            result->integer = ~right.integer;
+        } else return 0;
+        return compile_value_literal(result);
+    case ZIR_EXPR_BINARY: {
+        const char *op = expression->op;
+        if(!evaluate_typed_node(probe, expression->left, module, path,
+                                depth + 1, fuel, &left)) return 0;
+        if(!strcmp(op, "&&") || !strcmp(op, "||")) {
+            if(!compile_truth(&left, &truth)) return 0;
+            if((!strcmp(op, "&&") && !truth) ||
+               (!strcmp(op, "||") && truth)) {
+                result->kind = COMPILE_INTEGER;
+                result->integer = truth;
+                return compile_value_literal(result);
+            }
+        }
+        if(!evaluate_typed_node(probe, expression->right, module, path,
+                                depth + 1, fuel, &right)) return 0;
+        if(!strcmp(op, "==") || !strcmp(op, "!=")) {
+            int equal;
+            if(!compile_values_equal(&left, &right, &equal)) return 0;
+            result->kind = COMPILE_INTEGER;
+            result->integer = !strcmp(op, "==") ? equal : !equal;
+            return compile_value_literal(result);
+        }
+        if(!strcmp(op, "&&") || !strcmp(op, "||")) {
+            if(!compile_truth(&right, &truth)) return 0;
+            result->kind = COMPILE_INTEGER;
+            result->integer = truth;
+            return compile_value_literal(result);
+        }
+        if((left.kind != COMPILE_INTEGER && left.kind != COMPILE_REAL) ||
+           (right.kind != COMPILE_INTEGER && right.kind != COMPILE_REAL))
+            return 0;
+        double a = left.kind == COMPILE_REAL ? left.real :
+                   (double)left.integer;
+        double b = right.kind == COMPILE_REAL ? right.real :
+                   (double)right.integer;
+        if(!strcmp(op, "<") || !strcmp(op, "<=") ||
+           !strcmp(op, ">") || !strcmp(op, ">=")) {
+            result->kind = COMPILE_INTEGER;
+            result->integer = !strcmp(op, "<") ? a < b :
+                              !strcmp(op, "<=") ? a <= b :
+                              !strcmp(op, ">") ? a > b : a >= b;
+            return compile_value_literal(result);
+        }
+        if(left.kind == COMPILE_INTEGER && right.kind == COMPILE_INTEGER) {
+            long x = left.integer, y = right.integer, folded;
+            if(!strcmp(op, "+")) {
+                if(!checked_add_long(x, y, &folded)) return 0;
+            } else if(!strcmp(op, "-")) {
+                if(!checked_sub_long(x, y, &folded)) return 0;
+            } else if(!strcmp(op, "*")) {
+                if(!checked_mul_long(x, y, &folded)) return 0;
+            } else if(!strcmp(op, "/") && y != 0 &&
+                      !(x == LONG_MIN && y == -1)) folded = x / y;
+            else if(!strcmp(op, "%") && y != 0 &&
+                    !(x == LONG_MIN && y == -1)) folded = x % y;
+            else if(!strcmp(op, "&")) folded = x & y;
+            else if(!strcmp(op, "|")) folded = x | y;
+            else if(!strcmp(op, "^")) folded = x ^ y;
+            else if(!strcmp(op, "<<") && y >= 0 &&
+                    y < (long)(sizeof(long) * CHAR_BIT) && x >= 0 &&
+                    x <= (LONG_MAX >> y)) folded = x << y;
+            else if(!strcmp(op, ">>") && y >= 0 &&
+                    y < (long)(sizeof(long) * CHAR_BIT)) folded = x >> y;
+            else return 0;
+            result->kind = COMPILE_INTEGER;
+            result->integer = folded;
+            return compile_value_literal(result);
+        }
+        result->kind = COMPILE_REAL;
+        if(!strcmp(op, "+")) result->real = a + b;
+        else if(!strcmp(op, "-")) result->real = a - b;
+        else if(!strcmp(op, "*")) result->real = a * b;
+        else if(!strcmp(op, "/") && b != 0.0) result->real = a / b;
+        else return 0;
+        return isfinite(result->real) && compile_value_literal(result);
+    }
+    case ZIR_EXPR_MEMBER:
+        if(!evaluate_typed_node(probe, expression->left, module, path,
+                                depth + 1, fuel, &left)) return 0;
+        if(left.kind == COMPILE_STRING &&
+           !strcmp(expression->name, "count")) {
+            unsigned char bytes[ZIR_TEXT_MAX];
+            size_t length;
+            if(!DecodeStringLiteral(left.literal, bytes, sizeof(bytes),
+                                     &length) || length > LONG_MAX) return 0;
+            result->kind = COMPILE_INTEGER;
+            result->integer = (long)length;
+            return compile_value_literal(result);
+        }
+        return 0;
+    case ZIR_EXPR_CAST:
+        if(!evaluate_typed_node(probe, expression->right, module, path,
+                                depth + 1, fuel, result)) return 0;
+        if(eval_integer_type(expression->name, 0) &&
+           result->kind == COMPILE_REAL) {
+            if(result->real < (double)LONG_MIN ||
+               result->real >= -(double)LONG_MIN) return 0;
+            result->integer = (long)result->real;
+            result->kind = COMPILE_INTEGER;
+            compile_value_literal(result);
+        }
+        return compile_type_value(expression->name, result);
+    case ZIR_EXPR_CONDITIONAL:
+        if(!evaluate_typed_node(probe, expression->left, module, path,
+                                depth + 1, fuel, &left) ||
+           !compile_truth(&left, &truth)) return 0;
+        return evaluate_typed_node(probe, truth ? expression->right :
+                                   expression->third, module, path,
+                                   depth + 1, fuel, result);
+    case ZIR_EXPR_CALL: {
+        char name[ZIR_NAME_MAX];
+        CompileValue args[16] = {{0}};
+        char names[16][ZIR_NAME_MAX] = {{0}};
+        int count = 0;
+        copy_text(name, sizeof(name), expression->name);
+        if(!name[0] && expression->left >= 0) {
+            const ZirExpr *callee = &probe->exprs[expression->left];
+            if(callee->kind != ZIR_EXPR_MEMBER || callee->left < 0 ||
+               probe->exprs[callee->left].kind != ZIR_EXPR_IDENT ||
+               snprintf(name, sizeof(name), "%s.%s",
+                        probe->exprs[callee->left].name, callee->name) >=
+                   (int)sizeof(name)) return 0;
+        }
+        for(int child = expression->first_child; child >= 0;
+            child = probe->exprs[child].next_sibling) {
+            if(count == 16 ||
+               !evaluate_typed_node(probe, child, module, path,
+                                    depth + 1, fuel, &args[count])) return 0;
+            copy_text(names[count], sizeof(names[count]),
+                      probe->exprs[child].argument_name);
+            count++;
+        }
+        return evaluate_typed_function(module, name, path, args, names,
+                                       count, depth + 1, fuel, result);
+    }
+    default:
+        return 0;
+    }
+}
+
+static int
+evaluate_typed_expression(const ZirModule *module, const ZirConsts *names,
+                          const char *source, const char *path, int depth,
+                          int *fuel, CompileValue *result)
+{
+    ZirConsts empty = {0};
+    ZirFunction probe = {0};
+    char input[ZIR_TEXT_MAX], expanded[ZIR_TEXT_MAX];
+    long integer;
+    int root, ok;
+    if(depth > 32 || source == NULL || --*fuel < 0) return 0;
+    copy_text(input, sizeof(input), source);
+    trim_in_place(input);
+    size_t length = strlen(input);
+    if(length && input[length - 1] == ';') {
+        input[length - 1] = '\0';
+        trim_in_place(input);
+    }
+    if(!input[0]) return 0;
+    if(names == NULL) names = &empty;
+    expand_compile_expr(expanded, sizeof(expanded), names, input, path);
+    if(eval_const_condition(expanded, &integer, module, names,
+                            path, depth)) {
+        result->kind = COMPILE_INTEGER;
+        result->integer = integer;
+        return compile_value_literal(result);
+    }
+    root = ParseExpr(&probe, module, expanded, Span(path, 1, 1));
+    ok = root >= 0 &&
+         evaluate_typed_node(&probe, root, module, path,
+                             depth + 1, fuel, result);
+    free(probe.exprs);
+    return ok;
+}
+
+typedef struct {
+    const ZirModule *module;
+    const ZirFunction *fn;
+    ZirConsts names;
+    int local_count;
+    int capacity;
+    int depth;
+    int *fuel;
+} TypedBody;
+
+static int
+typed_body_expression(TypedBody *body, const char *source,
+                      CompileValue *value)
+{
+    return evaluate_typed_expression(body->module, &body->names, source,
+                                     body->fn->span.path, body->depth + 1,
+                                     body->fuel, value);
+}
+
+static int
+typed_body_condition(TypedBody *body, const char *header,
+                     const char *word, int *truth)
+{
+    char condition[ZIR_TEXT_MAX];
+    const char *source = skip_ws(header + strlen(word));
+    copy_text(condition, sizeof(condition), source);
+    trim_in_place(condition);
+    size_t length = strlen(condition);
+    if(!length || condition[length - 1] != '{') return 0;
+    condition[length - 1] = '\0';
+    trim_in_place(condition);
+    length = strlen(condition);
+    if(length >= 4 && !strcmp(condition + length - 4, "then") &&
+       (length == 4 || isspace((unsigned char)condition[length - 5]))) {
+        condition[length - 4] = '\0';
+        trim_in_place(condition);
+    }
+    CompileValue value = {0};
+    return typed_body_expression(body, condition, &value) &&
+           compile_truth(&value, truth);
+}
+
+static void
+typed_leave_scope(TypedBody *body, int saved)
+{
+    int removed = body->local_count - saved;
+    if(removed <= 0) return;
+    memmove(body->names.items, body->names.items + removed,
+            (size_t)(body->names.count - removed) *
+                sizeof(*body->names.items));
+    body->names.count -= removed;
+    body->local_count = saved;
+}
+
+static int
+typed_add_local(TypedBody *body, const char *name, const char *type,
+                const CompileValue *value)
+{
+    if(!is_identifier_text(name) ||
+       body->names.count >= body->capacity) return 0;
+    memmove(body->names.items + 1, body->names.items,
+            (size_t)body->names.count * sizeof(*body->names.items));
+    ZirConst *local = &body->names.items[0];
+    memset(local, 0, sizeof(*local));
+    copy_text(local->name, sizeof(local->name), name);
+    copy_text(local->type, sizeof(local->type), type);
+    copy_text(local->path, sizeof(local->path), body->fn->span.path);
+    if(value != NULL)
+        copy_text(local->expr, sizeof(local->expr), value->literal);
+    body->names.count++;
+    body->local_count++;
+    return 1;
+}
+
+static int
+typed_local_index(TypedBody *body, const char *name)
+{
+    for(int i = 0; i < body->local_count; i++)
+        if(!strcmp(body->names.items[i].name, name)) return i;
+    return -1;
+}
+
+static int
+typed_body_statements(TypedBody *body, int start, int stop,
+                      int *flow, CompileValue *result)
+{
+    int saved = body->local_count;
+    for(int i = start; i < stop && !*flow; i++) {
+        const ZirStmt *statement = &body->fn->stmts[i];
+        const char *source = skip_ws(statement->text);
+        if(--*body->fuel < 0) goto failed;
+        if(statement->kind == ZIR_STMT_IF) {
+            int taken = 0;
+            for(;;) {
+                const ZirStmt *arm = &body->fn->stmts[i];
+                const char *header = skip_ws(arm->text);
+                int close = eval_close(body->fn, i, stop);
+                int condition = 1;
+                if(close < 0) goto failed;
+                if(starts_word(header, "else if")) {
+                    if(!taken &&
+                       !typed_body_condition(body, header, "else if",
+                                             &condition)) goto failed;
+                } else if(starts_word(header, "if")) {
+                    if(!taken &&
+                       !typed_body_condition(body, header, "if",
+                                             &condition)) goto failed;
+                } else if(!starts_word(header, "else")) goto failed;
+                if(!taken && condition) {
+                    if(!typed_body_statements(body, i + 1, close,
+                                              flow, result)) goto failed;
+                    taken = 1;
+                }
+                i = close;
+                if(i + 1 >= stop ||
+                   body->fn->stmts[i + 1].kind != ZIR_STMT_IF ||
+                   !starts_word(skip_ws(body->fn->stmts[i + 1].text),
+                                "else")) break;
+                i++;
+            }
+            continue;
+        }
+        if(statement->kind == ZIR_STMT_WHILE) {
+            int close = eval_close(body->fn, i, stop);
+            if(close < 0) goto failed;
+            for(;;) {
+                int condition = 0;
+                if(--*body->fuel < 0 ||
+                   !typed_body_condition(body, source, "while",
+                                         &condition)) goto failed;
+                if(!condition) break;
+                if(!typed_body_statements(body, i + 1, close,
+                                          flow, result)) goto failed;
+                if(*flow == 2) { *flow = 0; break; }
+                if(*flow == 3) *flow = 0;
+                if(*flow == 1) break;
+            }
+            i = close;
+            continue;
+        }
+        if(statement->kind == ZIR_STMT_BLOCK_OPEN) {
+            int close = eval_close(body->fn, i, stop);
+            if(close < 0 ||
+               !typed_body_statements(body, i + 1, close,
+                                      flow, result)) goto failed;
+            i = close;
+            continue;
+        }
+        if(statement->kind == ZIR_STMT_RETURN) {
+            if(!typed_body_expression(body, skip_ws(source + 6),
+                                      result)) goto failed;
+            *flow = 1;
+            break;
+        }
+        if(statement->kind == ZIR_STMT_DECL) {
+            char text[ZIR_TEXT_MAX];
+            copy_text(text, sizeof(text), source);
+            char *colon = strchr(text, ':');
+            if(colon == NULL) goto failed;
+            *colon++ = '\0';
+            trim_in_place(text);
+            char *equals = strchr(colon, '=');
+            if(equals != NULL) *equals++ = '\0';
+            trim_in_place(colon);
+            size_t length = strlen(colon);
+            if(length && colon[length - 1] == ';') {
+                colon[length - 1] = '\0';
+                trim_in_place(colon);
+            }
+            CompileValue value = {0};
+            if(equals != NULL) {
+                if(!typed_body_expression(body, equals, &value)) goto failed;
+            }
+            const char *type = colon[0] ? colon :
+                value.kind == COMPILE_REAL ? "float64" :
+                value.kind == COMPILE_STRING ? "string" : "s64";
+            if(equals != NULL && !compile_type_value(type, &value))
+                goto failed;
+            if(!typed_add_local(body, text, type,
+                                equals != NULL ? &value : NULL)) goto failed;
+            continue;
+        }
+        if(statement->kind == ZIR_STMT_ASSIGN) {
+            char text[ZIR_TEXT_MAX];
+            copy_text(text, sizeof(text), source);
+            char *equals = strchr(text, '=');
+            if(equals == NULL) goto failed;
+            char op = equals > text ? equals[-1] : '\0';
+            if(op && strchr("+-*/%", op) != NULL) equals[-1] = '\0';
+            else op = '\0';
+            *equals++ = '\0';
+            trim_in_place(text);
+            int local = typed_local_index(body, text);
+            if(local < 0) goto failed;
+            CompileValue value = {0};
+            if(op) {
+                char combined[ZIR_TEXT_MAX];
+                int written = snprintf(combined, sizeof(combined),
+                    "(%s) %c (%s)", body->names.items[local].expr, op,
+                    equals);
+                if(written < 0 || (size_t)written >= sizeof(combined) ||
+                   !typed_body_expression(body, combined, &value)) goto failed;
+            } else if(!typed_body_expression(body, equals, &value)) goto failed;
+            if(!compile_type_value(body->names.items[local].type,
+                                   &value)) goto failed;
+            copy_text(body->names.items[local].expr,
+                      sizeof(body->names.items[local].expr), value.literal);
+            continue;
+        }
+        if(statement->kind == ZIR_STMT_EXPR) {
+            CompileValue ignored = {0};
+            if(!typed_body_expression(body, source, &ignored)) goto failed;
+            continue;
+        }
+        if(statement->kind == ZIR_STMT_BREAK ||
+           statement->kind == ZIR_STMT_CONTINUE) {
+            char control[ZIR_TEXT_MAX];
+            copy_text(control, sizeof(control), source);
+            trim_in_place(control);
+            size_t length = strlen(control);
+            if(length && control[length - 1] == ';')
+                control[length - 1] = '\0';
+            if(strcmp(control, statement->kind == ZIR_STMT_BREAK ?
+                       "break" : "continue") != 0) goto failed;
+            *flow = statement->kind == ZIR_STMT_BREAK ? 2 : 3;
+            break;
+        }
+        goto failed;
+    }
+    typed_leave_scope(body, saved);
+    return 1;
+failed:
+    typed_leave_scope(body, saved);
+    return 0;
+}
+
+static int
+evaluate_typed_function(const ZirModule *module, const char *name,
+                        const char *path, CompileValue *arguments,
+                        char argument_names[][ZIR_NAME_MAX],
+                        int argument_count, int depth, int *fuel,
+                        CompileValue *result)
+{
+    const ZirModule *owner = NULL;
+    const ZirFunction *fn = NULL;
+    char parameters[16][ZIR_TEXT_MAX];
+    CompileValue ordered[16] = {{0}};
+    unsigned used = 0;
+    TypedBody body = {0};
+    int expected, flow = 0, ok = 0;
+    if(depth >= 32 || module == NULL || !name[0] ||
+       ResolveFunctionAt(module, name, path, &owner, &fn) != 1 ||
+       fn == NULL || fn->is_extern || fn->is_template ||
+       fn->stmt_count == 0) return 0;
+    expected = *skip_ws(fn->args) ?
+        split_top_level(fn->args, parameters[0], 16,
+                        sizeof(parameters[0])) : 0;
+    if(expected < 0 || argument_count > expected) return 0;
+    for(int argument = 0; argument < argument_count; argument++) {
+        int position = -1;
+        if(argument_names[argument][0]) {
+            size_t length = strlen(argument_names[argument]);
+            for(int i = 0; i < expected; i++) {
+                const char *start = skip_ws(parameters[i]);
+                const char *colon = strchr(start, ':');
+                if(colon == NULL) continue;
+                const char *end = colon;
+                while(end > start && isspace((unsigned char)end[-1])) end--;
+                if((size_t)(end - start) == length &&
+                   !strncmp(start, argument_names[argument], length)) {
+                    position = i;
+                    break;
+                }
+            }
+        } else {
+            for(int i = 0; i < expected; i++)
+                if(!(used & (1u << i))) { position = i; break; }
+        }
+        if(position < 0 || (used & (1u << position))) return 0;
+        used |= 1u << position;
+        ordered[position] = arguments[argument];
+    }
+    body.capacity = expected + owner->define_count + fn->stmt_count + 1;
+    body.names.items = calloc((size_t)body.capacity,
+                              sizeof(*body.names.items));
+    if(body.names.items == NULL) die("out of memory evaluating #run procedure");
+    body.module = owner;
+    body.fn = fn;
+    body.depth = depth;
+    body.fuel = fuel;
+    for(int i = 0; i < expected; i++) {
+        char *part = trim(parameters[i]);
+        char *colon = strchr(part, ':');
+        if(colon == NULL) goto done;
+        *colon++ = '\0';
+        trim_in_place(part);
+        char *type = trim(colon);
+        char *default_value = strchr(type, '=');
+        if(default_value != NULL) {
+            *default_value++ = '\0';
+            trim_in_place(type);
+            default_value = trim(default_value);
+        }
+        if(!(used & (1u << i)) &&
+           (default_value == NULL ||
+            !evaluate_typed_expression(owner, &body.names, default_value,
+                                       fn->span.path, depth + 1, fuel,
+                                       &ordered[i]))) goto done;
+        if(!is_identifier_text(part) ||
+           !compile_type_value(type, &ordered[i])) goto done;
+        ZirConst *binding = &body.names.items[i];
+        copy_text(binding->name, sizeof(binding->name), part);
+        copy_text(binding->type, sizeof(binding->type), type);
+        copy_text(binding->expr, sizeof(binding->expr),
+                  ordered[i].literal);
+        copy_text(binding->path, sizeof(binding->path), fn->span.path);
+        body.names.count++;
+    }
+    body.local_count = expected;
+    for(int i = 0; i < owner->define_count; i++) {
+        const ZirDefine *definition = &owner->defines[i];
+        ZirConst *constant = &body.names.items[body.names.count++];
+        copy_text(constant->name, sizeof(constant->name),
+                  definition->name);
+        copy_text(constant->expr, sizeof(constant->expr),
+                  definition->value);
+        copy_text(constant->path, sizeof(constant->path),
+                  definition->span.path);
+        constant->is_file_private = definition->is_file_private;
+    }
+    ok = typed_body_statements(&body, 0, fn->stmt_count,
+                               &flow, result) && flow == 1 &&
+         compile_type_value(fn->return_type, result);
+done:
+    free(body.names.items);
+    return ok;
+}
+
+static int
+eval_typed_condition(const char *source, const ZirModule *module,
+                     const ZirConsts *names, const char *path,
+                     long *result)
+{
+    int fuel = 10000, truth;
+    CompileValue value = {0};
+    if(!evaluate_typed_expression(module, names, source, path, 0,
+                                  &fuel, &value) ||
+       !compile_truth(&value, &truth)) return 0;
+    *result = truth;
+    return 1;
+}
+
+int
+EvaluateCompileExpression(const ZirModule *module, const char *source,
+                          ZirSourceSpan span, long *value)
+{
+    ZirConsts constants = {0};
+    char expanded[ZIR_TEXT_MAX];
+    if(module == NULL || source == NULL || value == NULL) return 0;
+    if(module->define_count > 0) {
+        constants.items = calloc((size_t)module->define_count,
+                                 sizeof(*constants.items));
+        if(constants.items == NULL) return 0;
+        constants.count = module->define_count;
+        for(int i = 0; i < module->define_count; i++) {
+            const ZirDefine *definition = &module->defines[i];
+            ZirConst *constant = &constants.items[i];
+            copy_text(constant->name, sizeof(constant->name),
+                      definition->name);
+            copy_text(constant->expr, sizeof(constant->expr),
+                      definition->value);
+            copy_text(constant->path, sizeof(constant->path),
+                      definition->span.path);
+            constant->is_file_private = definition->is_file_private;
+        }
+    }
+    expand_compile_expr(expanded, sizeof(expanded), &constants,
+                        source, span.path);
+    if(strstr(expanded, "size_of") != NULL)
+        lower_size_of_value(expanded, sizeof(expanded), module, span);
+    int ok = eval_const_condition(expanded, value, module, &constants,
+                                  span.path, 0);
+    free(constants.items);
+    return ok;
+}
+
+int
+EvaluateCompileLiteral(const ZirModule *module, const char *source,
+                       ZirSourceSpan span, char *literal,
+                       size_t literal_size)
+{
+    ZirConsts constants = {0};
+    CompileValue value = {0};
+    int fuel = 10000;
+    if(module == NULL || source == NULL || literal == NULL ||
+       literal_size == 0) return 0;
+    constants.count = module->define_count;
+    constants.items = calloc((size_t)constants.count + 1,
+                             sizeof(*constants.items));
+    if(constants.items == NULL) return 0;
+    for(int i = 0; i < constants.count; i++) {
+        const ZirDefine *definition = &module->defines[i];
+        ZirConst *constant = &constants.items[i];
+        copy_text(constant->name, sizeof(constant->name),
+                  definition->name);
+        copy_text(constant->expr, sizeof(constant->expr),
+                  definition->value);
+        copy_text(constant->path, sizeof(constant->path),
+                  definition->span.path);
+        constant->is_file_private = definition->is_file_private;
+    }
+    int ok = evaluate_typed_expression(module, &constants, source,
+                                       span.path, 0, &fuel, &value) &&
+             value.kind != COMPILE_INVALID &&
+             strlen(value.literal) < literal_size;
+    if(ok) copy_text(literal, literal_size, value.literal);
+    free(constants.items);
+    return ok;
+}
+
+static void lower_size_of_value(char *value, size_t capacity,
+                                const ZirModule *module, ZirSourceSpan span);
+
+typedef struct CompileParseContext {
+    ZirProgram *program;
+    const char *root;
+    ZirCompileImportResolver resolver;
+    void *resolver_context;
+} CompileParseContext;
+
+static int
+select_compile_condition(ZirModule *module, const ZirConsts *consts,
+                         const char *source, ZirSourceSpan span,
+                         const CompileParseContext *context,
+                         const char *source_path)
+{
+    char expanded[ZIR_TEXT_MAX];
+    long value = 0;
+    int known;
+    expand_compile_expr(expanded, sizeof(expanded), consts, source, span.path);
+    if(strstr(expanded, "size_of") != NULL && context != NULL &&
+       context->resolver != NULL &&
+       !context->resolver(context->resolver_context, context->program,
+                          module, source_path, context->root, expanded))
+        die_at(span, "cannot resolve imports for #if condition");
+    if(strstr(expanded, "size_of") != NULL)
+        lower_size_of_value(expanded, sizeof(expanded), module, span);
+    known = eval_const_condition(expanded, &value, module, consts,
+                                 span.path, 0);
+    if(!known)
+        known = eval_typed_condition(expanded, module, consts,
+                                     span.path, &value);
+    if(!known && context != NULL) {
+        /* Embedded source imports already belong to this partially parsed
+         * program. External imports are loaded on demand by ProgramsLoad. */
+        for(int i = 0; i < module->import_count; i++) {
+            ZirImport *import = &module->imports[i];
+            if(import->resolved_module != NULL ||
+               (import->kind != ZIR_IMPORT_OPEN &&
+                import->kind != ZIR_IMPORT_MODULE)) continue;
+            for(int m = 0; m < context->program->module_count; m++) {
+                ZirModule *candidate = &context->program->modules[m];
+                if(candidate != module &&
+                   strcmp(candidate->name, import->target) == 0) {
+                    import->resolved_module = candidate;
+                    break;
+                }
+            }
+        }
+        if(context->resolver != NULL &&
+           !context->resolver(context->resolver_context, context->program,
+                              module, source_path, context->root,
+                              expanded))
+            die_at(span, "cannot resolve imports for #if condition");
+        known = eval_const_condition(expanded, &value, module, consts,
+                                     span.path, 0);
+        if(!known)
+            known = eval_typed_condition(expanded, module, consts,
+                                         span.path, &value);
+    }
+    if(!known)
+        die_at(span, "#if condition is not a compile-time constant: %s",
+               expanded);
+    return value != 0;
+}
+
+static char *
+find_unquoted_text(char *source, const char *needle)
+{
+    size_t length = strlen(needle);
+    for(char *p = source; *p;) {
+        if(*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while(*p && *p != quote) {
+                if(*p == '\\' && p[1]) p++;
+                p++;
+            }
+            if(*p) p++;
+            continue;
+        }
+        if(!strncmp(p, needle, length)) return p;
+        p++;
+    }
+    return NULL;
+}
+
+static char *
+find_unquoted_word(char *source, const char *word)
+{
+    size_t length = strlen(word);
+    for(char *at = find_unquoted_text(source, word); at != NULL;
+        at = find_unquoted_text(at + length, word)) {
+        int before = at == source ? 0 : (unsigned char)at[-1];
+        int after = (unsigned char)at[length];
+        if(!(isalnum(before) || before == '_') &&
+           !(isalnum(after) || after == '_'))
+            return at;
+    }
+    return NULL;
+}
+
+static const ZirExpr *
+outer_compile_ifx(const ZirFunction *fn)
+{
+    const ZirExpr *found = NULL;
+    for(int i = 0; i < fn->expr_count; i++) {
+        const ZirExpr *expr = &fn->exprs[i];
+        if(expr->kind == ZIR_EXPR_CONDITIONAL &&
+           !strcmp(expr->op, "#ifx") &&
+           (expr->left < 0 ||
+            strstr(fn->exprs[expr->left].text, "#ifx") == NULL) &&
+           (found == NULL || strlen(expr->text) > strlen(found->text)))
+            found = expr;
+    }
+    return found;
+}
+
+static int
+compile_size_of_ready(const ZirModule *module, char *condition)
+{
+    if(find_unquoted_word(condition, "size_of") != NULL)
+        for(int i = 0; i < module->import_count; i++)
+            if((module->imports[i].kind == ZIR_IMPORT_OPEN ||
+                module->imports[i].kind == ZIR_IMPORT_MODULE) &&
+               module->imports[i].resolved_module == NULL)
+                return 0;
+    for(char *at = find_unquoted_word(condition, "size_of"); at != NULL;
+        at = find_unquoted_word(at + 7, "size_of")) {
+        char *start = (char *)skip_ws(at + 7);
+        if(*start != '(') return 0;
+        start++;
+        char *end = start;
+        int depth = 1;
+        while(*end && depth > 0) {
+            if(*end == '(') depth++;
+            else if(*end == ')') depth--;
+            if(depth > 0) end++;
+        }
+        if(depth != 0 || (size_t)(end - start) >= ZIR_TEXT_MAX)
+            return 0;
+        char type[ZIR_TEXT_MAX];
+        size_t length = (size_t)(end - start);
+        memcpy(type, start, length);
+        type[length] = '\0';
+        trim_in_place(type);
+        size_t size, alignment;
+        if(!TypeLayout(module, type, &size, &alignment)) return 0;
+    }
+    return 1;
+}
+
+static int
+replace_compile_ifx(char *source, size_t capacity, const ZirFunction *fn,
+                    const ZirModule *module, const ZirExpr *expr,
+                    const ZirConsts *consts,
+                    ZirSourceSpan span, int allow_deferred)
+{
+    char condition[ZIR_TEXT_MAX], rewritten[ZIR_TEXT_MAX];
+    long value = 0;
+    char *at;
+    const char *selected;
+    int written;
+
+    if(expr->left < 0 || expr->right < 0 || expr->third < 0)
+        die_at(span, "malformed #ifx expression");
+    expand_compile_expr(condition, sizeof(condition), consts,
+                        fn->exprs[expr->left].text, span.path);
+    if(allow_deferred && !compile_size_of_ready(module, condition))
+        return 0;
+    if(strstr(condition, "size_of") != NULL)
+        lower_size_of_value(condition, sizeof(condition), module, span);
+    if(!eval_const_condition(condition, &value, module, consts,
+                             span.path, 0) &&
+       !eval_typed_condition(condition, module, consts,
+                             span.path, &value)) {
+        if(allow_deferred) return 0;
+        die_at(span, "#ifx condition is not a compile-time constant: %s",
+               condition);
+    }
+    selected = fn->exprs[value ? expr->right : expr->third].text;
+    at = find_unquoted_text(source, expr->text);
+    if(at == NULL)
+        die_at(span, "cannot locate #ifx expression in source");
+    written = snprintf(rewritten, sizeof(rewritten), "%.*s(%s)%s",
+                       (int)(at - source), source, selected,
+                       at + strlen(expr->text));
+    if(written < 0 || (size_t)written >= sizeof(rewritten) ||
+       (size_t)written >= capacity)
+        die_at(span, "#ifx selection exceeds expression limit");
+    copy_text(source, capacity, rewritten);
+    return 1;
+}
+
+static int
+lower_compile_ifx_value(char *value, size_t capacity,
+                        const ZirModule *module, const ZirConsts *consts,
+                        ZirSourceSpan span, int allow_deferred)
+{
+    for(int pass = 0; pass < 128; pass++) {
+        ZirFunction probe = {0};
+        ParseExpr(&probe, module, value, span);
+        const ZirExpr *expr = outer_compile_ifx(&probe);
+        if(expr == NULL) {
+            free(probe.exprs);
+            if(find_unquoted_text(value, "#ifx") != NULL)
+                die_at(span, "invalid #ifx expression");
+            return 1;
+        }
+        int replaced = replace_compile_ifx(value, capacity, &probe, module,
+                                           expr, consts, span,
+                                           allow_deferred);
+        free(probe.exprs);
+        if(!replaced) return 0;
+    }
+    die_at(span, "too many nested #ifx expressions");
+}
+
+static int
+lower_compile_ifx_function(ZirFunction *fn, const ZirModule *module,
+                           const ZirConsts *consts, int allow_deferred)
+{
+    for(int pass = 0; pass < 128; pass++) {
+        StructureFunction(fn, module);
+        const ZirExpr *expr = outer_compile_ifx(fn);
+        if(expr == NULL) {
+            for(int i = 0; i < fn->stmt_count; i++)
+                if(find_unquoted_text(fn->stmts[i].text, "#ifx") != NULL)
+                    die_at(fn->stmts[i].span, "invalid #ifx expression");
+            return 1;
+        }
+        int replaced = 0;
+        for(int i = 0; i < fn->stmt_count; i++) {
+            ZirStmt *st = &fn->stmts[i];
+            if(find_unquoted_text(st->text, expr->text) == NULL)
+                continue;
+            if(!replace_compile_ifx(st->text, sizeof(st->text), fn, module,
+                                    expr, consts, st->span,
+                                    allow_deferred)) return 0;
+            replaced = 1;
+            break;
+        }
+        if(!replaced)
+            die_at(fn->span, "cannot locate #ifx expression in function");
+    }
+    die_at(fn->span, "too many nested #ifx expressions");
+}
+
+static int
+function_has_compile_ifx(const ZirFunction *fn)
+{
+    for(int i = 0; i < fn->stmt_count; i++)
+        if(find_unquoted_text((char *)fn->stmts[i].text, "#ifx") != NULL)
+            return 1;
+    return 0;
+}
+
+static const ZirExpr *
+first_size_of(const ZirFunction *fn, int include_type_of)
+{
+    for(int i = 0; i < fn->expr_count; i++)
+        if(fn->exprs[i].kind == ZIR_EXPR_SIZE_OF &&
+           (include_type_of ||
+            strncmp(skip_ws(fn->exprs[i].name), "type_of", 7) != 0))
+            return &fn->exprs[i];
+    return NULL;
+}
+
+static void
+replace_size_of(char *source, size_t capacity, const ZirModule *module,
+                const ZirExpr *expr, ZirSourceSpan span)
+{
+    char rewritten[ZIR_TEXT_MAX];
+    char operand[ZIR_TEXT_MAX], inferred[ZIR_NAME_MAX];
+    size_t size, alignment;
+    char *at = find_unquoted_text(source, expr->text);
+    const char *sized_type = expr->name;
+    int written;
+
+    if(TypeOfOperand(expr->name, operand, sizeof(operand))) {
+        if(!InferExpressionType(module, operand, span, inferred,
+                                sizeof(inferred)))
+            die_at(span, "size_of(type_of(...)) requires a checked expression");
+        sized_type = inferred;
+    } else if(!JaiTypeSpelling(span, expr->name)) exit(1);
+    if(!TypeLayout(module, sized_type, &size, &alignment) ||
+       size > LONG_MAX)
+        die_at(span, "size_of requires a known sized type: %s", sized_type);
+    if(at == NULL)
+        die_at(span, "cannot locate size_of expression in source");
+    written = snprintf(rewritten, sizeof(rewritten), "%.*s(%zu)%s",
+                       (int)(at - source), source, size,
+                       at + strlen(expr->text));
+    if(written < 0 || (size_t)written >= sizeof(rewritten) ||
+       (size_t)written >= capacity)
+        die_at(span, "size_of selection exceeds expression limit");
+    copy_text(source, capacity, rewritten);
+}
+
+static void
+lower_size_of_value(char *value, size_t capacity, const ZirModule *module,
+                    ZirSourceSpan span)
+{
+    for(int pass = 0; pass < 128; pass++) {
+        ZirFunction probe = {0};
+        ParseExpr(&probe, module, value, span);
+        const ZirExpr *expr = first_size_of(&probe, 1);
+        if(expr == NULL) {
+            free(probe.exprs);
+            if(find_unquoted_word(value, "size_of") != NULL)
+                die_at(span, "invalid size_of expression");
+            return;
+        }
+        replace_size_of(value, capacity, module, expr, span);
+        free(probe.exprs);
+    }
+    die_at(span, "too many size_of expressions");
+}
+
+static void
+lower_size_of_function(ZirFunction *fn, const ZirModule *module)
+{
+    for(int pass = 0; pass < 128; pass++) {
+        StructureFunction(fn, module);
+        const ZirExpr *expr = first_size_of(fn, 0);
+        if(expr == NULL)
+            return;
+        int replaced = 0;
+        for(int i = 0; i < fn->stmt_count; i++) {
+            ZirStmt *st = &fn->stmts[i];
+            if(find_unquoted_text(st->text, expr->text) == NULL)
+                continue;
+            replace_size_of(st->text, sizeof(st->text), module,
+                            expr, st->span);
+            replaced = 1;
+            break;
+        }
+        if(!replaced)
+            die_at(fn->span, "cannot locate size_of expression in function");
+    }
+    die_at(fn->span, "too many size_of expressions");
+}
+
+/* Imports are linked after parsing. Finish any #ifx selection that called
+ * into another module, then lower size_of only in the selected branch. */
+int
+LowerLinkedCompileExpressions(ZirModule *module, int allow_deferred)
+{
+    ZirConsts constants = {0};
+    char saved_lookup_path[ZIR_PATH_MAX];
+    int progress = 0;
+    copy_text(saved_lookup_path, sizeof(saved_lookup_path),
+              module->lookup_path);
+    constants.count = module->define_count;
+    constants.items = calloc((size_t)constants.count + 1,
+                             sizeof(*constants.items));
+    if(constants.items == NULL) die("out of memory lowering #ifx");
+    for(int i = 0; i < constants.count; i++) {
+        ZirDefine *definition = &module->defines[i];
+        ZirConst *constant = &constants.items[i];
+        copy_text(constant->name, sizeof(constant->name), definition->name);
+        copy_text(constant->expr, sizeof(constant->expr), definition->value);
+        copy_text(constant->path, sizeof(constant->path),
+                  definition->span.path);
+        constant->is_file_private = definition->is_file_private;
+    }
+    for(int i = 0; i < module->define_count; i++) {
+        ZirDefine *definition = &module->defines[i];
+        char before[ZIR_TEXT_MAX];
+        copy_text(module->lookup_path, sizeof(module->lookup_path),
+                  definition->span.path);
+        copy_text(before, sizeof(before), definition->value);
+        if(find_unquoted_text(definition->value, "#ifx") != NULL)
+            lower_compile_ifx_value(definition->value,
+                                    sizeof(definition->value), module,
+                                    &constants, definition->span,
+                                    allow_deferred);
+        if(!starts_word(definition->value, "#run") &&
+           find_unquoted_text(definition->value, "#ifx") == NULL &&
+           find_unquoted_word(definition->value, "size_of") != NULL)
+            lower_size_of_value(definition->value,
+                                sizeof(definition->value), module,
+                                definition->span);
+        if(strcmp(before, definition->value) != 0) progress++;
+        copy_text(constants.items[i].expr,
+                  sizeof(constants.items[i].expr), definition->value);
+    }
+    for(int i = 0; i < module->global_count; i++) {
+        ZirGlobal *global = &module->globals[i];
+        char before[ZIR_TEXT_MAX];
+        copy_text(module->lookup_path, sizeof(module->lookup_path),
+                  global->span.path);
+        copy_text(before, sizeof(before), global->init);
+        if(find_unquoted_text(global->init, "#ifx") != NULL)
+            lower_compile_ifx_value(global->init, sizeof(global->init),
+                                    module, &constants, global->span,
+                                    allow_deferred);
+        if(find_unquoted_text(global->init, "#ifx") == NULL &&
+           find_unquoted_word(global->init, "size_of") != NULL)
+            lower_size_of_value(global->init, sizeof(global->init),
+                                module, global->span);
+        if(strcmp(before, global->init) != 0) progress++;
+    }
+    for(int i = 0; i < module->function_count; i++) {
+        ZirFunction *fn = &module->functions[i];
+        copy_text(module->lookup_path, sizeof(module->lookup_path),
+                  fn->span.path);
+        if(function_has_compile_ifx(fn)) {
+            if(lower_compile_ifx_function(fn, module, &constants,
+                                          allow_deferred)) progress++;
+        }
+        if(!function_has_compile_ifx(fn)) {
+            for(int s = 0; s < fn->stmt_count; s++)
+                if(find_unquoted_word(fn->stmts[s].text, "size_of") != NULL) {
+                    lower_size_of_function(fn, module);
+                    break;
+                }
+        }
+    }
+    copy_text(module->lookup_path, sizeof(module->lookup_path),
+              saved_lookup_path);
+    free(constants.items);
+    return progress;
+}
+
 static int
 parse_compile_check(ZirModule *module, const char *path, int line_no,
-                    char *line, const ZirConsts *consts, const char *guard)
+                    char *line, const ZirConsts *consts)
 {
     char cond[ZIR_TEXT_MAX];
+    char raw[ZIR_TEXT_MAX];
     char msg[ZIR_TEXT_MAX];
     ZirAssert *a;
 
@@ -1635,18 +3944,26 @@ parse_compile_check(ZirModule *module, const char *path, int line_no,
         } else {
             snprintf(msg, sizeof(msg), "\"Ziran #assert failed\"");
         }
-        expand_compile_expr(cond, sizeof(cond), consts, trim(body));
+        copy_text(raw, sizeof(raw), trim(body));
+        expand_compile_expr(cond, sizeof(cond), consts, raw, path);
         {
             long value = 0;
-            int known = eval_const_condition(cond, &value);
+            int known = strstr(cond, "size_of") == NULL &&
+                (eval_const_condition(cond, &value, module, consts,
+                                      path, 0) ||
+                 eval_typed_condition(cond, module, consts,
+                                      path, &value));
 
-            if(guard[0] == '\0' && known && !value)
+            if(known && !value)
                 die_at(Span(path, line_no, 1), "#assert failed: %s", msg);
+            if(known)
+                copy_text(cond, sizeof(cond), value ? "1" : "0");
+            else
+                copy_text(cond, sizeof(cond), raw);
             a = ModuleAddAssert(module, cond, msg, Span(path, line_no, 1));
             if(a != NULL) {
                 a->known = known;
                 a->value = value != 0;
-                snprintf(a->guard, sizeof(a->guard), "%s", guard);
             }
         }
         return 1;
@@ -1657,143 +3974,63 @@ parse_compile_check(ZirModule *module, const char *path, int line_no,
 
         if(body[0] == '\0')
             die_at(Span(path, line_no, 1), "#error needs a message");
-        a = ModuleAddAssert(module, "0", body, Span(path, line_no, 1));
-        if(a != NULL) {
-            a->known = 1;
-            a->value = 0;
-            snprintf(a->guard, sizeof(a->guard), "%s", guard);
-        }
-        return 1;
+        die_at(Span(path, line_no, 1), "#error: %s", body);
     }
     return 0;
 }
 
-static void
-text_append(char *dst, size_t dst_size, const char *part)
-{
-    size_t used;
-    size_t remaining;
-
-    if(dst == NULL || dst_size == 0 || part == NULL)
-        return;
-    used = strlen(dst);
-    if(used >= dst_size - 1)
-        return;
-    remaining = dst_size - used - 1;
-    if(strlen(part) < remaining)
-        remaining = strlen(part);
-    memcpy(dst + used, part, remaining);
-    dst[used + remaining] = '\0';
-}
-
-static void
-format_else_if_guard(char *dst, size_t dst_size, const char *excluded,
-                     const char *expanded)
-{
-    copy_text(dst, dst_size, "!(");
-    text_append(dst, dst_size, excluded);
-    text_append(dst, dst_size, ") && (");
-    text_append(dst, dst_size, expanded);
-    text_append(dst, dst_size, ")");
-}
-
-static void
-format_else_guard(char *dst, size_t dst_size, const char *excluded)
-{
-    copy_text(dst, dst_size, "!(");
-    text_append(dst, dst_size, excluded);
-    text_append(dst, dst_size, ")");
-}
-
-static void
-format_excluded_guard(char *dst, size_t dst_size, const char *previous,
-                      const char *expanded)
-{
-    copy_text(dst, dst_size, "(");
-    text_append(dst, dst_size, previous);
-    text_append(dst, dst_size, ") || (");
-    text_append(dst, dst_size, expanded);
-    text_append(dst, dst_size, ")");
-}
-
-static void
-format_preprocessor_cond(char *dst, size_t dst_size, const char *directive,
-                         const char *expanded)
-{
-    copy_text(dst, dst_size, directive);
-    text_append(dst, dst_size, " ");
-    text_append(dst, dst_size, expanded);
-}
-
-static void
-combine_active_guard(char *dst, size_t dst_size, const ZirCondFrame *frames,
-                     int count)
-{
-    int i;
-
-    dst[0] = '\0';
-    for(i = 0; i < count; i++) {
-        if(dst[0] == '\0')
-            snprintf(dst, dst_size, "%s", frames[i].cond);
-        else
-            snprintf(dst + strlen(dst), dst_size - strlen(dst), " && %s",
-                     frames[i].cond);
-    }
-}
-
 /* Returns 1 when the line is consumed by top-level conditional handling
- * ('#if'/'#else'/'#else_if' open or retarget a frame; the matching '}'
+ * ('#if'/'else #if'/'else' open or retarget a frame; the matching '}'
  * pops one). A plain line inside a region only settles the frame's brace
- * count and returns 0, so normal captures proceed — stamped with the
- * active guard by the caller. */
+ * count and returns 0. Only the selected branch is parsed. */
 static int
-cond_top_step(char *line, ZirCondFrame *frames, int *count, char *guard,
-              size_t guard_size, const ZirConsts *consts, const char *path,
-              int line_no)
+cond_top_step(char *line, ZirCondFrame *frames, int *count,
+              ZirModule *module, const ZirConsts *consts,
+              const CompileParseContext *context,
+              const char *source_path, const char *path, int line_no)
 {
     char *cnd = NULL;
     int ck = parse_cond_start(line, &cnd);
     ZirCondFrame *fr;
 
     if(ck == 1) {
-        char expanded[ZIR_TEXT_MAX];
-
         if(*count >= 8)
             die_at(Span(path, line_no, 1), "too many nested #if blocks");
-        expand_compile_expr(expanded, sizeof(expanded), consts, cnd);
         fr = &frames[(*count)++];
-        copy_text(fr->cond, sizeof(fr->cond), expanded);
-        copy_text(fr->excluded, sizeof(fr->excluded), expanded);
+        fr->parent_active = *count == 1 || frames[*count - 2].active;
+        fr->selected = fr->parent_active &&
+            select_compile_condition(module, consts, cnd,
+                                     Span(path, line_no, 1),
+                                     context, source_path);
+        fr->active = fr->parent_active && fr->selected;
         fr->braces = 1;
-        combine_active_guard(guard, guard_size, frames, *count);
         return 1;
     }
-    if(*count <= 0)
+    if(*count <= 0) {
+        if(ck == 2 || line_is_compile_else(line))
+            die_at(Span(path, line_no, 1), "else without a matching #if");
         return 0;
+    }
     fr = &frames[*count - 1];
     if(ck == 2) {
-        char expanded[ZIR_TEXT_MAX];
-        char next[ZIR_TEXT_MAX * 2];
-
-        expand_compile_expr(expanded, sizeof(expanded), consts, cnd);
-        format_else_if_guard(fr->cond, sizeof(fr->cond), fr->excluded,
-                             expanded);
-        format_excluded_guard(next, sizeof(next), fr->excluded, expanded);
-        copy_text(fr->excluded, sizeof(fr->excluded), next);
+        int chosen = fr->parent_active && !fr->selected &&
+            select_compile_condition(module, consts, cnd,
+                                     Span(path, line_no, 1),
+                                     context, source_path);
+        fr->active = fr->parent_active && !fr->selected && chosen;
+        fr->selected |= chosen;
         fr->braces = 1;
-        combine_active_guard(guard, guard_size, frames, *count);
         return 1;
     }
-    if(line_is_hash_else(line)) {
-        format_else_guard(fr->cond, sizeof(fr->cond), fr->excluded);
+    if(line_is_compile_else(line)) {
+        fr->active = fr->parent_active && !fr->selected;
+        fr->selected = 1;
         fr->braces = 1;
-        combine_active_guard(guard, guard_size, frames, *count);
         return 1;
     }
     fr->braces += net_block_braces(line);
     if(fr->braces <= 0) {
         (*count)--;
-        combine_active_guard(guard, guard_size, frames, *count);
         return 1;
     }
     return 0;
@@ -1808,15 +4045,10 @@ cond_frame_settle(ZirCondFrame *frames, int count)
         frames[count - 1].braces--;
 }
 
-/* Strip C-style block comments in place, preserving newlines so line
- * numbers stay honest. *in_comment carries the state across lines (a
- * comment opened on one line keeps stripping on the next). String and
- * char literals are respected, and reset at each newline since Ziran
- * literals never span lines. Without this, a comment close at end of
- * line trips the trailing-slash continuation rule and glues the comment
- * onto the next function header, silently dropping the function. */
+/* Strip nested block and line comments in place while preserving newlines.
+ * Block depth carries across source lines; quoted delimiters are inert. */
 static void
-strip_block_comments(char *s, int *in_comment)
+strip_block_comments(char *s, int *comment_depth)
 {
     char *w = s;
     char *r = s;
@@ -1824,16 +4056,18 @@ strip_block_comments(char *s, int *in_comment)
     int in_chr = 0;
 
     while(*r != '\0') {
-        if(*in_comment) {
-            while(*r != '\0' && !(*r == '*' && r[1] == '/')) {
-                if(*r == '\n')
-                    *w++ = '\n';
-                r++;
-            }
-            if(*r != '\0') {
+        if(*comment_depth) {
+            if(*r == '/' && r[1] == '*') {
+                (*comment_depth)++;
                 r += 2;
-                *in_comment = 0;
-                *w++ = ' ';   /* keep tokens on either side apart */
+            } else if(*r == '*' && r[1] == '/') {
+                (*comment_depth)--;
+                r += 2;
+                if(*comment_depth == 0)
+                    *w++ = ' ';   /* keep tokens on either side apart */
+            } else {
+                if(*r == '\n') *w++ = '\n';
+                r++;
             }
             continue;
         }
@@ -1854,8 +4088,11 @@ strip_block_comments(char *s, int *in_comment)
         } else if(*r == '\'') {
             in_chr = 1;
             *w++ = *r++;
+        } else if(*r == '/' && r[1] == '/') {
+            while(*r != '\0' && *r != '\n') r++;
+            if(*r == '\n') *w++ = *r++;
         } else if(*r == '/' && r[1] == '*') {
-            *in_comment = 1;
+            *comment_depth = 1;
             r += 2;
         } else if(*r == '\n') {
             *w++ = *r++;
@@ -1866,20 +4103,18 @@ strip_block_comments(char *s, int *in_comment)
     *w = '\0';
 }
 
-/* Keep the existing checked IR type names while requiring Jai spellings in
- * source. Scan tokens after block comments are stripped so text in comments
- * and quoted literals does not become a type or a migration error. */
+/* Canonicalize Jai's scalar aliases before parsing declarations. Quoted text
+ * and comments are left intact. Historical type names remain invalid input. */
 static void
 normalize_jai_type_names(char *line, const char *path, int line_no)
 {
     static const struct { const char *jai, *internal; } names[] = {
-        {"s8", "i8"}, {"s16", "i16"}, {"s32", "i32"}, {"s64", "i64"},
-        {"float32", "float"}, {"float64", "double"}
+        {"int", "s64"}, {"float", "float32"}
     };
     static const char *const old[] = {
         "i8", "i16", "i32", "i64", "f32", "f64", "double", NULL
     };
-    char normalized[K2ZIR_LINE_MAX];
+    char normalized[SOURCE_LINE_MAX];
     size_t used = 0;
     for(const char *p = line; *p; ) {
         if(*p == '/' && p[1] == '/') {
@@ -1918,6 +4153,9 @@ normalize_jai_type_names(char *line, const char *path, int line_no)
             if(length == 3 && strncmp(start, "nil", 3) == 0)
                 die_at(Span(path, line_no, (int)(start - line) + 1),
                        "nil is not Jai syntax; use null");
+            if(length == 6 && strncmp(start, "sizeof", 6) == 0)
+                die_at(Span(path, line_no, (int)(start - line) + 1),
+                       "sizeof is not Jai syntax; use size_of(Type)");
             for(size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
                 if(strlen(names[i].jai) == length &&
                    strncmp(start, names[i].jai, length) == 0) {
@@ -1944,22 +4182,15 @@ normalize_jai_type_names(char *line, const char *path, int line_no)
         normalized[used++] = *p++;
     }
     normalized[used] = '\0';
-    copy_text(line, K2ZIR_LINE_MAX, normalized);
+    copy_text(line, SOURCE_LINE_MAX, normalized);
 }
 
 /* File and embedded declarations share the complete frontend. A line that
  * does not fit whole is refused: silently splitting it would change meaning. */
 static char *
-read_source_line(char *line, size_t size, FILE *file, const char **source,
+read_source_line(char *line, size_t size, const char **source,
                  const char *path, int line_no)
 {
-    if(file != NULL) {
-        if(fgets(line, (int)size, file) == NULL)
-            return NULL;
-        if(!feof(file) && strchr(line, '\n') == NULL)
-            die_at(Span(path, line_no + 1, 1), "source line exceeds %d characters", (int)size - 1);
-        return line;
-    }
     if(**source == '\0')
         return NULL;
     size_t length = 0;
@@ -1975,123 +4206,162 @@ read_source_line(char *line, size_t size, FILE *file, const char **source,
     return line;
 }
 
-static ZirFunction *
-variant_function(ZirModule *module, const ZirType *type,
-                 const char *name, const char *args, const char *result)
-{
-    ZirFunction *fn = ModuleAddFunction(module, name, args, result, 0, type->span);
-    if(fn == NULL)
-        die_at(type->span, "cannot allocate variant operation");
-    fn->is_generated = 1;
-    fn->is_public = 1;
-    copy_text(fn->guard, sizeof(fn->guard), type->guard);
-    return fn;
-}
-
+/* Jai constant declarations inside enums use 'Member :: value'. The checked
+ * IR stores explicit values in the backend-neutral 'Member = value' form. */
 static void
-variant_statement(ZirFunction *fn, ZirStmtKind kind,
-                  const char *text, ZirSourceSpan span)
+canonical_enum_values(ZirType *type)
 {
-    if(FunctionAddStmt(fn, kind, text, "", span) == NULL)
-        die_at(span, "cannot allocate variant operation body");
-}
-
-static void
-finalize_variant(ZirModule *module, ZirType *type)
-{
-    ZirVariantCase item, earlier;
-    size_t offset = 0;
-    int ordinal = 0, status;
-    char name[ZIR_NAME_MAX], args[ZIR_TEXT_MAX], line[ZIR_TEXT_MAX];
-    int length = snprintf(type->body, sizeof(type->body), "variant_tag: i32\n");
-    if(length < 0 || (size_t)length >= sizeof(type->body))
-        die_at(type->span, "variant storage exceeds size limit");
-    size_t used = (size_t)length;
-    while((status = VariantNextCase(type, &offset, &item)) == 1) {
-        size_t previous = 0;
-        while(previous < offset) {
-            size_t before = previous;
-            if(VariantNextCase(type, &previous, &earlier) != 1 ||
-               previous <= before)
-                die_at(type->span, "malformed variant case");
-            if(previous == offset) break;
-            if(!strcmp(earlier.name, item.name))
-                die_at(type->span, "duplicate variant case: %s", item.name);
-        }
-        if(ordinal == 0) {
-            length = snprintf(name, sizeof(name), "%s_Tag", type->name);
-            if(length < 0 || (size_t)length >= sizeof(name))
-                die_at(type->span, "variant operation name exceeds size limit");
-            length = snprintf(args, sizeof(args), "value: %s", type->name);
-            if(length < 0 || (size_t)length >= sizeof(args))
-                die_at(type->span, "variant operation signature exceeds size limit");
-            ZirFunction *tag = variant_function(module, type, name, args, "i32");
-            variant_statement(tag, ZIR_STMT_RETURN,
-                              "return value.variant_tag", type->span);
-        }
-        if(item.type[0]) {
-            length = snprintf(type->body + used, sizeof(type->body) - used,
-                              "variant_payload_%s: %s\n", item.name, item.type);
-            if(length < 0 || (size_t)length >= sizeof(type->body) - used)
-                die_at(type->span, "variant storage exceeds size limit");
-            used += (size_t)length;
-        }
-        length = snprintf(name, sizeof(name), "%s_%s", type->name, item.name);
-        if(length < 0 || (size_t)length >= sizeof(name))
-            die_at(type->span, "variant constructor name exceeds size limit");
-        args[0] = 0;
-        if(item.type[0]) {
-            length = snprintf(args, sizeof(args), "value: %s", item.type);
-            if(length < 0 || (size_t)length >= sizeof(args))
-                die_at(type->span, "variant operation signature exceeds size limit");
-        }
-        ZirFunction *constructor = variant_function(module, type,
-            name, args, type->name);
-        length = snprintf(line, sizeof(line), "result: %s", type->name);
-        if(length < 0 || (size_t)length >= sizeof(line))
-            die_at(type->span, "variant statement exceeds size limit");
-        variant_statement(constructor, ZIR_STMT_DECL, line, type->span);
-        length = snprintf(line, sizeof(line), "result.variant_tag = %d", ordinal);
-        if(length < 0 || (size_t)length >= sizeof(line))
-            die_at(type->span, "variant statement exceeds size limit");
-        variant_statement(constructor, ZIR_STMT_ASSIGN, line, type->span);
-        if(item.type[0]) {
-            length = snprintf(line, sizeof(line),
-                              "result.variant_payload_%s = value", item.name);
-            if(length < 0 || (size_t)length >= sizeof(line))
-                die_at(type->span, "variant statement exceeds size limit");
-            variant_statement(constructor, ZIR_STMT_ASSIGN, line, type->span);
-        }
-        variant_statement(constructor, ZIR_STMT_RETURN,
-                          "return result", type->span);
-        if(item.type[0]) {
-            length = snprintf(name, sizeof(name),
-                              "%s_%sValue", type->name, item.name);
-            if(length < 0 || (size_t)length >= sizeof(name))
-                die_at(type->span, "variant accessor name exceeds size limit");
-            length = snprintf(args, sizeof(args), "value: %s", type->name);
-            if(length < 0 || (size_t)length >= sizeof(args))
-                die_at(type->span, "variant operation signature exceeds size limit");
-            ZirFunction *accessor = variant_function(module, type,
-                name, args, item.type);
-            length = snprintf(line, sizeof(line),
-                              "if value.variant_tag != %d {", ordinal);
-            if(length < 0 || (size_t)length >= sizeof(line))
-                die_at(type->span, "variant statement exceeds size limit");
-            variant_statement(accessor, ZIR_STMT_IF, line, type->span);
-            variant_statement(accessor, ZIR_STMT_UNREACHABLE,
-                              "unreachable", type->span);
-            variant_statement(accessor, ZIR_STMT_BLOCK_CLOSE, "}", type->span);
-            length = snprintf(line, sizeof(line),
-                              "return value.variant_payload_%s", item.name);
-            if(length < 0 || (size_t)length >= sizeof(line))
-                die_at(type->span, "variant statement exceeds size limit");
-            variant_statement(accessor, ZIR_STMT_RETURN, line, type->span);
-        }
-        ordinal++;
+    char canonical[sizeof(type->body)];
+    size_t used = 0;
+    const char *cursor = type->body;
+    if(!EnumMemberValue(type, NULL, NULL))
+        die_at(type->span, "invalid enum value or value outside backing type: %s",
+               type->name);
+    while(*cursor) {
+        while(*cursor == ',' || isspace((unsigned char)*cursor)) cursor++;
+        if(!*cursor) break;
+        const char *start = cursor;
+        while(isalnum((unsigned char)*cursor) || *cursor == '_') cursor++;
+        char name[ZIR_NAME_MAX];
+        int64_t value;
+        size_t length = (size_t)(cursor - start);
+        if(length == 0 || length >= sizeof(name))
+            die_at(type->span, "invalid enum member");
+        snprintf(name, sizeof(name), "%.*s", (int)length, start);
+        if(!EnumMemberValue(type, name, &value))
+            die_at(type->span, "invalid enum member: %s", name);
+        int written = snprintf(canonical + used, sizeof(canonical) - used,
+                               "%s = %lld\n", name, (long long)value);
+        if(written < 0 || (size_t)written >= sizeof(canonical) - used)
+            die_at(type->span, "enum body exceeds size limit");
+        used += (size_t)written;
+        while(*cursor && *cursor != ',' && *cursor != '\n') cursor++;
+        if(*cursor) cursor++;
     }
-    if(status < 0 || ordinal == 0)
-        die_at(type->span, "variant requires valid cases");
+    canonical[used] = '\0';
+    copy_text(type->body, sizeof(type->body), canonical);
+}
+
+static void
+lower_enum_values(ZirType *type)
+{
+    char lowered[sizeof(type->body)];
+    size_t used = 0;
+    for(const char *p = type->body; *p; p++) {
+        if(type->is_enum && *p == '=')
+            die_at(type->span,
+                   "enum members use Jai Member :: value syntax, not =");
+        if(p[0] == ':' && p[1] == ':') {
+            if(used + 3 >= sizeof(lowered))
+                die_at(type->span, "enum body exceeds size limit");
+            memcpy(lowered + used, " = ", 3);
+            used += 3;
+            p++;
+        } else {
+            if(used + 1 >= sizeof(lowered))
+                die_at(type->span, "enum body exceeds size limit");
+            lowered[used++] = *p;
+        }
+    }
+    lowered[used] = '\0';
+    if(type->is_enum_specified) {
+        for(const char *p = lowered; *p;) {
+            const char *end = p;
+            while(*end && *end != '\n' && *end != ',') end++;
+            const char *member = p;
+            while(member < end && isspace((unsigned char)*member)) member++;
+            if(member < end) {
+                const char *name = member;
+                while(member < end &&
+                      (isalnum((unsigned char)*member) || *member == '_'))
+                    member++;
+                while(member < end && isspace((unsigned char)*member)) member++;
+                if(member == name || member == end || *member != '=')
+                    die_at(type->span,
+                           "#specified enum requires an explicit value for every member");
+            }
+            p = *end ? end + 1 : end;
+        }
+    }
+    if(!type->is_enum_flags) {
+        copy_text(type->body, sizeof(type->body), lowered);
+        if(type->is_enum)
+            canonical_enum_values(type);
+        return;
+    }
+    char flags[sizeof(type->body)];
+    char previous[ZIR_NAME_MAX] = "";
+    size_t emitted = 0;
+    for(char *p = lowered; *p;) {
+        char member[ZIR_TEXT_MAX];
+        char name[ZIR_NAME_MAX];
+        char *end = p;
+        while(*end && *end != '\n' && *end != ',') end++;
+        if((size_t)(end - p) >= sizeof(member))
+            die_at(type->span, "enum_flags member exceeds size limit");
+        snprintf(member, sizeof(member), "%.*s", (int)(end - p), p);
+        trim_in_place(member);
+        p = *end ? end + 1 : end;
+        if(member[0] == '\0') continue;
+        size_t n = 0;
+        while(isalnum((unsigned char)member[n]) || member[n] == '_') n++;
+        if(n == 0 || n >= sizeof(name) ||
+           !(isalpha((unsigned char)member[0]) || member[0] == '_'))
+            die_at(type->span, "invalid enum_flags member: %s", member);
+        snprintf(name, sizeof(name), "%.*s", (int)n, member);
+        const char *rest = skip_ws(member + n);
+        int written;
+        if(*rest == '=')
+            written = snprintf(flags + emitted, sizeof(flags) - emitted,
+                               "%s\n", member);
+        else if(*rest == '\0' && previous[0])
+            written = snprintf(flags + emitted, sizeof(flags) - emitted,
+                               "%s = %s << 1\n", name, previous);
+        else if(*rest == '\0')
+            written = snprintf(flags + emitted, sizeof(flags) - emitted,
+                               "%s = 1\n", name);
+        else
+            die_at(type->span, "invalid enum_flags member: %s", member);
+        if(written < 0 || (size_t)written >= sizeof(flags) - emitted)
+            die_at(type->span, "enum_flags body exceeds size limit");
+        emitted += (size_t)written;
+        copy_text(previous, sizeof(previous), name);
+    }
+    flags[emitted] = '\0';
+    copy_text(type->body, sizeof(type->body), flags);
+    canonical_enum_values(type);
+}
+
+static void
+parse_enum_backing(ZirType *type, const char *header)
+{
+    const char *start = skip_ws(header + (type->is_enum_flags ? 10 : 4));
+    const char *end = strchr(start, '{');
+    char backing[ZIR_NAME_MAX];
+    if(end == NULL) end = start + strlen(start);
+    if((size_t)(end - start) >= sizeof(backing))
+        die_at(type->span, "enum backing type exceeds size limit");
+    snprintf(backing, sizeof(backing), "%.*s", (int)(end - start), start);
+    trim_in_place(backing);
+    char *directive = strstr(backing, "#specified");
+    if(directive != NULL) {
+        char *after = directive + strlen("#specified");
+        if(*skip_ws(after) != '\0' ||
+           (directive > backing && !isspace((unsigned char)directive[-1])))
+            die_at(type->span, "invalid #specified enum modifier");
+        *directive = '\0';
+        trim_in_place(backing);
+        type->is_enum_specified = 1;
+    }
+    if(backing[0] == '\0')
+        copy_text(backing, sizeof(backing), "s64");
+    if(strcmp(backing, "s8") && strcmp(backing, "u8") &&
+       strcmp(backing, "s16") && strcmp(backing, "u16") &&
+       strcmp(backing, "s32") && strcmp(backing, "u32") &&
+       strcmp(backing, "s64") && strcmp(backing, "u64"))
+        die_at(type->span, "enum requires an integer backing type: %s",
+               backing);
+    copy_text(type->enum_backing, sizeof(type->enum_backing), backing);
 }
 
 int
@@ -2133,13 +4403,11 @@ SubstituteGenericType(const char *source, char *output, size_t capacity,
 }
 
 int
-InstantiateGenericType(ZirModule *module, ZirType *instance,
-                       const ZirType *generic)
+InstantiateGenericRecord(ZirType *instance, const ZirType *generic)
 {
     char params[16][ZIR_NAME_MAX], actual[16][ZIR_NAME_MAX];
     int parameter_count, argument_count;
-    if(!instance->is_type_instance ||
-       (!generic->is_variant_template && !generic->is_record_template))
+    if(!instance->is_type_instance || !generic->is_record_template)
         return 0;
     parameter_count = split_top_level(generic->template_params, params[0],
                                       16, sizeof(params[0]));
@@ -2156,160 +4424,182 @@ InstantiateGenericType(ZirModule *module, ZirType *instance,
     }
     size_t offset = 0, used = 0;
     int members = 0, status;
-    if(generic->is_variant_template) {
-        ZirVariantCase item;
-        while((status = VariantNextCase(generic, &offset, &item)) == 1) {
-            char payload[ZIR_NAME_MAX];
-            if(item.type[0] && !SubstituteGenericType(item.type, payload,
-                    sizeof(payload), params, actual, parameter_count))
-                return 0;
-            int length = snprintf(instance->variant_cases + used,
-                sizeof(instance->variant_cases) - used, "%s%s%s\n",
-                item.name, item.type[0] ? ": " : "",
-                item.type[0] ? payload : "");
-            if(length < 0 || (size_t)length >=
-               sizeof(instance->variant_cases) - used)
-                return 0;
-            used += (size_t)length;
-            members++;
-        }
-    } else {
-        ZirTypeField field;
-        while((status = TypeNextField(generic, &offset, &field)) == 1) {
-            char type[ZIR_NAME_MAX];
-            if(!SubstituteGenericType(field.type, type, sizeof(type),
-                                        params, actual, parameter_count))
-                return 0;
-            int length = snprintf(instance->body + used,
-                sizeof(instance->body) - used, "%s: %s\n",
-                field.name, type);
-            if(length < 0 || (size_t)length >= sizeof(instance->body) - used)
-                return 0;
-            used += (size_t)length;
-            members++;
-        }
+    ZirTypeField field;
+    while((status = TypeNextField(generic, &offset, &field)) == 1) {
+        char type[ZIR_NAME_MAX];
+        if(!SubstituteGenericType(field.type, type, sizeof(type),
+                                   params, actual, parameter_count))
+            return 0;
+        int length = snprintf(instance->body + used,
+            sizeof(instance->body) - used, "%s: %s\n",
+            field.name, type);
+        if(length < 0 || (size_t)length >= sizeof(instance->body) - used)
+            return 0;
+        used += (size_t)length;
+        members++;
     }
     if(status < 0 || members == 0)
         return 0;
+    instance->is_union = generic->is_union;
+    if(!strcmp(generic->name, "Vec") && members == 3) {
+        size_t position = 0;
+        ZirTypeField part;
+        if(TypeNextField(generic, &position, &part) == 1 &&
+           !strcmp(part.name, "data") && !strcmp(part.type, "*T") &&
+           TypeNextField(generic, &position, &part) == 1 &&
+           !strcmp(part.name, "count") &&
+           !strcmp(part.type, "s64") &&
+           TypeNextField(generic, &position, &part) == 1 &&
+           !strcmp(part.name, "capacity") &&
+           !strcmp(part.type, "s64"))
+            instance->is_owned_vec = 1;
+    }
     instance->is_type_instance = 0;
     instance->template_name[0] = '\0';
     instance->template_args[0] = '\0';
-    if(generic->is_variant_template) {
-        instance->is_variant = 1;
-        finalize_variant(module, instance);
-    }
     return 1;
 }
 
-int
-RegenerateVariantOperations(ZirModule *module)
+static char *
+read_lowered_source(const char *path)
 {
-    ZirModule generated = {0};
-    unsigned char *matched = calloc((size_t)module->function_count + 1, 1);
-    int valid = matched != NULL;
-
-    for(int t = 0; valid && t < module->type_count; t++) {
-        const ZirType *original = &module->types[t];
-        if(!original->is_variant)
-            continue;
-        if(!VariantLayoutValid(original)) {
-            valid = 0;
-            break;
+    FILE *in = fopen(path, "rb");
+    if(in == NULL)
+        die_at(Span(path, 0, 0), "open failed: %s", strerror(errno));
+    SourceBuffer input = {0};
+    unsigned char bytes[8192];
+    size_t count;
+    while((count = fread(bytes, 1, sizeof(bytes), in)) != 0)
+        for(size_t i = 0; i < count; i++) {
+            if(bytes[i] == 0)
+                die_at(Span(path, 0, 0), "source contains a null byte");
+            source_append(&input, (char)bytes[i]);
         }
-        size_t offset = 0;
-        ZirVariantCase item;
-        int status;
-        while((status = VariantNextCase(original, &offset, &item)) == 1) {
-            /* The generator uses these exact names for the constructor and
-             * payload accessor. Reject long saved names before it runs. */
-            if(strlen(original->name) + strlen(item.name) +
-               strlen("_Value") >= ZIR_NAME_MAX) {
-                valid = 0;
-                break;
-            }
-        }
-        if(!valid || status < 0) {
-            valid = 0;
-            break;
-        }
-        ZirType copy = *original;
-        finalize_variant(&generated, &copy);
+    if(ferror(in))
+        die_at(Span(path, 0, 0), "read failed: %s", strerror(errno));
+    fclose(in);
+    if(input.text == NULL) {
+        input.text = malloc(1);
+        if(input.text == NULL)
+            die("out of memory reading source");
+        input.text[0] = '\0';
     }
-    for(int g = 0; valid && g < generated.function_count; g++) {
-        ZirFunction *expected = &generated.functions[g];
-        int found = -1;
-        for(int f = 0; f < module->function_count; f++) {
-            ZirFunction *saved = &module->functions[f];
-            if(!saved->is_generated || strcmp(saved->name, expected->name))
-                continue;
-            if(found >= 0 || matched[f] ||
-               strcmp(saved->args, expected->args) ||
-               strcmp(saved->return_type, expected->return_type) ||
-               strcmp(saved->guard, expected->guard) ||
-               strcmp(saved->span.path, expected->span.path) ||
-               saved->span.line != expected->span.line ||
-               saved->span.column != expected->span.column ||
-               saved->span.end_line != expected->span.end_line ||
-               saved->span.end_column != expected->span.end_column ||
-               !saved->is_public || saved->is_extern || saved->is_closure ||
-               saved->exported || saved->extern_kind != ZIR_EXTERN_NONE ||
-               saved->extern_target[0] || saved->extern_symbol[0] ||
-               saved->checked != 1 || saved->uses_host != 0 ||
-               saved->capture_count || saved->stmt_count || saved->expr_count) {
-                valid = 0;
-                break;
-            }
-            found = f;
-        }
-        /* Portable bundles may retain only reachable generated functions.
-         * Every retained slot must still match its canonical declaration. */
-        if(!valid)
-            break;
-        if(found < 0)
-            continue;
-        ZirFunction *saved = &module->functions[found];
-        expected->checked = 1;
-        free(saved->captures);
-        free(saved->stmts);
-        free(saved->exprs);
-        *saved = *expected;
-        memset(expected, 0, sizeof(*expected));
-        matched[found] = 1;
-    }
-    for(int f = 0; valid && f < module->function_count; f++)
-        if(module->functions[f].is_generated && !matched[f])
-            valid = 0;
-    for(int g = 0; g < generated.function_count; g++) {
-        free(generated.functions[g].captures);
-        free(generated.functions[g].stmts);
-        free(generated.functions[g].exprs);
-    }
-    free(generated.functions);
-    free(matched);
-    return valid;
+    char *lowered = lower_jai_multiline_strings(input.text, path);
+    free(input.text);
+    return lowered;
 }
 
+/* Decode the literal source of Jai's #import, string form. A raw #string
+ * body has already been lowered to this same quoted spelling. */
+static char *
+import_string_source(const char *line, ZirSourceSpan span)
+{
+    const char *directive = skip_ws(line);
+    if(!starts_word(directive, "#import") &&
+       strncmp(directive, "#import,", 8) != 0) {
+        char alias[ZIR_NAME_MAX];
+        if(!parse_symbol_before_colons(directive, alias, sizeof(alias)))
+            return NULL;
+        directive = skip_ws(strstr(directive, "::") + 2);
+        if(!starts_word(directive, "#import") &&
+           strncmp(directive, "#import,", 8) != 0)
+            return NULL;
+    }
+    const char *mode = skip_ws(directive + strlen("#import"));
+    if(*mode != ',')
+        return NULL;
+    mode = skip_ws(mode + 1);
+    if(strncmp(mode, "string", 6) != 0 ||
+       !isspace((unsigned char)mode[6]))
+        return NULL;
+    const char *cursor = skip_ws(mode + 6);
+    if(*cursor++ != '"')
+        die_at(span, "#import, string requires a source string");
+    SourceBuffer output = {0};
+    int closed = 0;
+    while(*cursor) {
+        unsigned char byte = (unsigned char)*cursor++;
+        if(byte == '"') {
+            closed = 1;
+            break;
+        }
+        if(byte == '\\') {
+            byte = (unsigned char)*cursor++;
+            if(byte == '\0')
+                die_at(span, "unterminated #import, string literal");
+            if(byte == 'n') byte = '\n';
+            else if(byte == 'r') byte = '\r';
+            else if(byte == 't') byte = '\t';
+            else if(byte == 'a') byte = '\a';
+            else if(byte == 'b') byte = '\b';
+            else if(byte == 'f') byte = '\f';
+            else if(byte == 'v') byte = '\v';
+            else if(byte == 'x') {
+                int high = isxdigit((unsigned char)cursor[0]) ?
+                    (isdigit((unsigned char)cursor[0]) ? cursor[0] - '0' :
+                     tolower((unsigned char)cursor[0]) - 'a' + 10) : -1;
+                int low = high >= 0 && isxdigit((unsigned char)cursor[1]) ?
+                    (isdigit((unsigned char)cursor[1]) ? cursor[1] - '0' :
+                     tolower((unsigned char)cursor[1]) - 'a' + 10) : -1;
+                if(low < 0)
+                    die_at(span, "#import, string needs two hex digits after \\x");
+                byte = (unsigned char)(high * 16 + low);
+                cursor += 2;
+            } else if(byte != '"' && byte != '\\')
+                die_at(span, "unsupported #import, string escape");
+        }
+        if(byte == 0)
+            die_at(span, "#import, string source cannot contain a null byte");
+        source_append(&output, (char)byte);
+    }
+    if(!closed || strcmp(skip_ws(cursor), ";") != 0)
+        die_at(span, "#import, string requires a closing quote and ';'");
+    if(output.text == NULL) {
+        output.text = malloc(1);
+        if(output.text == NULL)
+            die("out of memory reading imported string");
+        output.text[0] = '\0';
+    }
+    return output.text;
+}
+
+typedef struct LoadFrame {
+    const char *path;
+    const char *source;
+    char *canonical;
+    char *owned_source;
+    char rel[SOURCE_PATH_MAX];
+    char lookahead[SOURCE_LINE_MAX];
+    int line_no;
+    int have_look;
+    int scope_public;
+    int scope_file;
+    int in_block_comment;
+    int conditional_depth;
+} LoadFrame;
+
 static ZirProgram *
-parse_source(const char *path, const char *root, FILE *in, const char *source)
+parse_source(const char *path, const char *root, const char *source,
+             ZirCompileImportResolver resolver, void *resolver_context)
 {
     ZirProgram *program;
+    CompileParseContext compile_context = {0};
     ZirModule *module;
     ZirFunction *fn = NULL;
-    char line[K2ZIR_LINE_MAX];
+    char line[SOURCE_LINE_MAX];
     char module_name[ZIR_NAME_MAX];
-    char rel[K2ZIR_PATH_MAX];
+    char rel[SOURCE_PATH_MAX];
     int line_no = 0;
-    enum { TOP, STATE, TYPE, ENUM, FUNCTION } mode = TOP;
-    int enum_return = TOP;
+    enum { TOP, TYPE, FUNCTION } mode = TOP;
     int depth = 0;
-    char pending[K2ZIR_LINE_MAX * 4];
+    char pending[SOURCE_LINE_MAX * 4];
     pending[0] = '\0';
-    char lookahead[K2ZIR_LINE_MAX];
+    char lookahead[SOURCE_LINE_MAX];
     int have_look = 0;
     /* One-line control blocks ('if cond { body }') are split into header /
      * body / '}' logical lines; the body and closer re-enter the main loop
      * through this FIFO so they flow through the normal join machinery. */
-    char onelineq[16][K2ZIR_LINE_MAX * 2];
+    char onelineq[16][SOURCE_LINE_MAX * 2];
     int onelineq_count = 0;
     int from_queue = 0;
     int pending_len = 0;
@@ -2322,28 +4612,33 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
     int expr_brace = 0;
     ZirCondFrame tframes[8];
     int tframe_count = 0;
+    ZirCondFrame type_frames[8];
+    int type_frame_count = 0;
     ZirConsts consts;
-    char cur_guard[ZIR_TEXT_MAX];
     int body_mdepth[8];
+    int body_mselected[8];
+    int body_mactive[8];
+    int body_mparent_active[8];
     int body_mcount = 0;
     int in_block_comment = 0;
     int program_export = 0;
     int program_export_line = 0;
     int scope_public = 1;
+    int scope_file = 0;
     char foreign_library_names[32][ZIR_NAME_MAX];
     char foreign_library_targets[32][ZIR_PATH_MAX];
+    char foreign_library_paths[32][SOURCE_PATH_MAX];
+    int foreign_library_file_private[32] = {0};
     int foreign_library_count = 0;
-    enum { BLOCK_CALL_CAP = 64 };
-    BlockCall *block_calls = calloc(BLOCK_CALL_CAP, sizeof(*block_calls));
-    int block_call_count = 0;
-    int root_anonymous_block_count = 0;
-    SlotParseFrame slot_frames[64];
-    int slot_frame_count = 0;
-
-    if(block_calls == NULL)
-        die("out of memory");
+    LoadFrame load_frames[32];
+    int load_depth = 0;
+    char *canonical = realpath(path, NULL);
+    char *owned_source = NULL;
+    if(canonical == NULL)
+        canonical = strdup(path);
+    if(canonical == NULL)
+        die("out of memory tracking source path");
     memset(&consts, 0, sizeof(consts));
-    cur_guard[0] = '\0';
     snprintf(rel, sizeof(rel), "%s", relative_path(root, path));
     const char *basename = strrchr(path, '/');
     basename = basename != NULL ? basename + 1 : path;
@@ -2357,15 +4652,47 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
     program = ProgramNew();
     if(program == NULL)
         die("out of memory");
+    compile_context.program = program;
+    compile_context.root = root;
+    compile_context.resolver = resolver;
+    compile_context.resolver_context = resolver_context;
 
     module = ProgramAddModule(program, module_name, rel, Span(rel, 1, 1));
     if(module == NULL)
         die("out of memory");
 
-    while(have_look || onelineq_count > 0 || read_source_line(line, sizeof(line), in, &source, path, line_no) != NULL) {
-        char raw[K2ZIR_LINE_MAX];
+    for(;;) {
+        if(!have_look && onelineq_count == 0 &&
+           read_source_line(line, sizeof(line), &source, path, line_no) == NULL) {
+            if(in_block_comment)
+                die_at(Span(rel, line_no, 1), "unterminated block comment");
+            if(load_depth == 0)
+                break;
+            LoadFrame *frame = &load_frames[--load_depth];
+            if(mode != TOP || tframe_count != frame->conditional_depth ||
+               type_frame_count != 0 ||
+               body_mcount != 0 || program_export)
+                die_at(Span(rel, line_no, 1),
+                       "unterminated declaration or directive in loaded file");
+            free(owned_source);
+            free(canonical);
+            path = frame->path;
+            source = frame->source;
+            canonical = frame->canonical;
+            owned_source = frame->owned_source;
+            copy_text(rel, sizeof(rel), frame->rel);
+            copy_text(lookahead, sizeof(lookahead), frame->lookahead);
+            line_no = frame->line_no;
+            have_look = frame->have_look;
+            scope_public = frame->scope_public;
+            scope_file = frame->scope_file;
+            in_block_comment = frame->in_block_comment;
+            continue;
+        }
+        char raw[SOURCE_LINE_MAX];
         char *t;
         int from_lookahead = 0;
+        copy_text(module->lookup_path, sizeof(module->lookup_path), rel);
 
         /* Queued one-liner parts outrank the stashed lookahead: they belong
          * before the next source line, and have_look persists until the
@@ -2383,7 +4710,12 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
         }
 
         line_no++;
-        strip_block_comments(line, &in_block_comment);
+        if(!from_queue && !from_lookahead)
+            strip_block_comments(line, &in_block_comment);
+        if(contains_source_directive(line, "#else_if") ||
+           contains_source_directive(line, "#else"))
+            die_at(Span(rel, line_no, 1),
+                   "Jai compile-time branches use 'else #if' or 'else', not #else_if/#else");
         if(!from_queue && !from_lookahead)
             normalize_jai_type_names(line, rel, line_no);
         snprintf(raw, sizeof(raw), "%s", line);
@@ -2430,13 +4762,9 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                     char nc = pending[wl];
                     char block_callee[ZIR_NAME_MAX];
                     char block_name[ZIR_NAME_MAX];
-                    char slot_binding[ZIR_TEXT_MAX], slot_arguments[ZIR_TEXT_MAX];
-
                     header_line =
                         pending[0] == '#' ||
                         strcmp(pending, "{") == 0 ||   /* bare scope-open */
-                        parse_slot_header(pending, slot_binding, sizeof(slot_binding),
-                                          slot_arguments, sizeof(slot_arguments)) ||
                         parse_block_call_header(pending, block_callee,
                                                 sizeof(block_callee), block_name,
                                                 sizeof(block_name)) ||
@@ -2445,6 +4773,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                          * logical line continues until they balance. Header
                          * forms ('name :: struct {', 'f :: (args) {', typedefs,
                          * externs) never contain ' = '. */
+                        looks_like_function_header(pending) ||
                         (strstr(pending, " :: ") != NULL &&
                          strstr(pending, " = ") == NULL) ||
                         (nc != '\0' && nc != '-' && nc != '.' &&
@@ -2453,31 +4782,24 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                           strcmp(w0, "else") == 0 ||
                           strcmp(w0, "while") == 0 ||
                           strcmp(w0, "for") == 0 ||
+                          strcmp(w0, "defer") == 0 ||
                           strcmp(w0, "switch") == 0 ||
                           strcmp(w0, "match") == 0 ||
                           strcmp(w0, "do") == 0 ||
                           strcmp(w0, "case") == 0 ||
-                          strcmp(w0, "default") == 0 ||
                           strcmp(w0, "struct") == 0 ||
                           strcmp(w0, "enum") == 0 ||
                           strcmp(w0, "state") == 0));
                 }
-                /* K&R "} else {" / "} else if (...) {": the leading '}' closes
-                 * the if-body and the trailing '{' re-opens the else-body, so
-                 * both braces are block braces even though the leading word
-                 * extraction above saw only '}'. The same holds for chained
-                 * regions: "} #else_if COND {" / "} #else {" / "} #if COND {"
-                 * (parse_cond_start accepts the optional leading '}'), whose
-                 * braces belong to the region, not the statement. */
+                /* K&R "} else {" / "} else if (...) {" also covers Jai's
+                 * "} else #if COND {" compile-time branch. The leading and
+                 * trailing braces balance as one logical header line. */
                 if(!header_line && pending[0] == '}') {
                     const char *eq = pending + 1;
 
                     while(*eq == ' ' || *eq == '\t')
                         eq++;
-                    if(starts_word(eq, "else") ||
-                       strncmp(eq, "#else", 5) == 0 ||
-                       starts_word(eq, "#if ") ||
-                       starts_word(eq, "#elif "))
+                    if(starts_word(eq, "else"))
                         header_line = 1;
                 }
                 {
@@ -2559,7 +4881,7 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                  * not the next physical source line, and reading ahead here
                  * would overwrite/lose the stashed one. */
                 if(!from_queue && !have_look) {
-                    char la[K2ZIR_LINE_MAX];
+                    char la[SOURCE_LINE_MAX];
                     int pend_str;
 
                     /* C adjacent-literal concatenation: a statement whose
@@ -2579,21 +4901,26 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                      * statement; the first non-continuation line is stashed
                      * for the next iteration (appending it blindly here is
                      * how block-closing '}'s used to get swallowed). */
-                    while(read_source_line(la, sizeof(la), in, &source, path, line_no) != NULL) {
+                    while(read_source_line(la, sizeof(la), &source, path, line_no) != NULL) {
                         const char *lt;
                         int cont;
 
                         strip_block_comments(la, &in_block_comment);
+                        if(contains_source_directive(la, "#else_if") ||
+                           contains_source_directive(la, "#else"))
+                            die_at(Span(rel, line_no + 1, 1),
+                                   "Jai compile-time branches use 'else #if' or 'else', not #else_if/#else");
                         normalize_jai_type_names(la, rel, line_no + 1);
                         /* trim in place: the lookahead is appended verbatim,
                          * and a raw fgets line would carry its '\n' into the
                          * joined statement text. */
                         lt = trim(la);
-                        if(lt[0] == '\0') {
-                            line_no++;   /* blank lookaheads still count */
+                        if(lt[0] == '\0' || strncmp(lt, "//", 2) == 0) {
+                            line_no++;   /* comments and blank lines still count */
                             continue;
                         }
                         cont =
+                            (last == '}' && starts_word(lt, "else")) ||
                             *lt == '?' || (*lt == ':' && lt[1] != ':') ||
                             *lt == '.' || *lt == ',' || *lt == '+' ||
                             *lt == '/' || *lt == '%' ||
@@ -2636,56 +4963,105 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
         }
         t = pending;
         {
-            static char logical[K2ZIR_LINE_MAX * 4];
+            static char logical[SOURCE_LINE_MAX * 4];
 
             snprintf(logical, sizeof(logical), "%s", pending);
             t = logical;
+            char *separator = statement_separator(logical);
+            if(separator != NULL) {
+                prepend_logical_line(onelineq, &onelineq_count,
+                                     skip_ws(separator + 1),
+                                     Span(rel, line_no, 1));
+                char *before = separator;
+                while(before > logical && isspace((unsigned char)before[-1]))
+                    before--;
+                if(before > logical && before[-1] == '}')
+                    *before = '\0'; /* A block ends at its closing brace. */
+                else
+                    separator[1] = '\0'; /* Keep declaration terminators. */
+                trim_in_place(logical);
+            }
             /* One-line control block: keep the header as this logical line
              * and queue the body + closer for the next iterations (nested
              * one-liners split again when their body is finalized). */
-            if(mode != TOP) {
-                char head[K2ZIR_LINE_MAX * 2];
-                char body[K2ZIR_LINE_MAX * 2];
+            if(mode == TOP) {
+                char head[SOURCE_LINE_MAX * 2];
+                char body[SOURCE_LINE_MAX * 2];
+
+                if(split_oneline_function(t, head, sizeof(head),
+                                          body, sizeof(body))) {
+                    prepend_logical_line(onelineq, &onelineq_count, "}",
+                                         Span(rel, line_no, 1));
+                    if(body[0])
+                        prepend_logical_line(onelineq, &onelineq_count,
+                                             body, Span(rel, line_no, 1));
+                    snprintf(logical, sizeof(logical), "%s", head);
+                    t = logical;
+                }
+            } else {
+                char head[SOURCE_LINE_MAX * 2];
+                char body[SOURCE_LINE_MAX * 2];
+                char tail[SOURCE_LINE_MAX * 2];
 
                 if(split_oneline_block(t, head, sizeof(head),
-                                       body, sizeof(body))) {
-                    if(onelineq_count + 2 <=
-                       (int)(sizeof(onelineq) / sizeof(onelineq[0]))) {
-                        snprintf(onelineq[onelineq_count++],
-                                 sizeof(onelineq[0]), "%s", body);
-                        snprintf(onelineq[onelineq_count++],
-                                 sizeof(onelineq[0]), "}");
-                        snprintf(logical, sizeof(logical), "%s", head);
-                        t = logical;
-                    }
+                                       body, sizeof(body),
+                                       tail, sizeof(tail))) {
+                    if(tail[0])
+                        prepend_logical_line(onelineq, &onelineq_count,
+                                             tail, Span(rel, line_no, 1));
+                    prepend_logical_line(onelineq, &onelineq_count, "}",
+                                         Span(rel, line_no, 1));
+                    if(body[0])
+                        prepend_logical_line(onelineq, &onelineq_count,
+                                             body, Span(rel, line_no, 1));
+                    snprintf(logical, sizeof(logical), "%s", head);
+                    t = logical;
                 }
+            }
+            if(mode == FUNCTION) {
+                split_jai_control_line(logical, sizeof(logical), onelineq,
+                                       &onelineq_count,
+                                       Span(rel, line_no, 1));
+                t = logical;
             }
         }
         pending[0] = '\0';
         pending_len = 0;
+        if(*t == '\0') continue;
+        char *string_source = NULL;
+        if(contains_source_directive(t, "#slot"))
+            die_at(Span(rel, line_no, 1),
+                   "#slot is not Jai syntax; use a procedure type and a named function");
         if(mode == TOP && contains_source_directive(t, "#private"))
             die_at(Span(rel, line_no, 1),
                    "#private is not Jai syntax; use #scope_file");
-        if(mode == TOP && looks_like_function_header(t))
-            for(const char *modifier = strchr(t, '#'); modifier != NULL;
+        if(mode == TOP && looks_like_function_header(t)) {
+            const char *body_open = strchr(t, '{');
+            for(const char *modifier = strchr(t, '#');
+                modifier != NULL &&
+                (body_open == NULL || modifier < body_open);
                 modifier = strchr(modifier + 1, '#'))
-                if(!starts_word(modifier, "#foreign") &&
-                   !starts_word(modifier, "#slot"))
+                if(!starts_word(modifier, "#foreign"))
                     die_at(Span(rel, line_no, 1),
                            "unknown function modifier: %s", modifier);
+        }
         if(mode == TOP &&
-           cond_top_step(t, tframes, &tframe_count, cur_guard,
-                         sizeof(cur_guard), &consts, rel, line_no)) {
+           cond_top_step(t, tframes, &tframe_count,
+                         module, &consts, &compile_context,
+                         path, rel, line_no)) {
+            continue;
+        } else if(mode == TOP && tframe_count > 0 &&
+                  !tframes[tframe_count - 1].active) {
             continue;
         } else if(mode == TOP &&
-                  parse_compile_check(module, rel, line_no, t, &consts,
-                                      cur_guard)) {
+                  parse_compile_check(module, rel, line_no, t, &consts)) {
             continue;
         } else if(mode == TOP &&
                   (strcmp(t, "#scope_file") == 0 ||
                    strcmp(t, "#scope_module") == 0 ||
                    strcmp(t, "#scope_export") == 0)) {
             scope_public = strcmp(t, "#scope_export") == 0;
+            scope_file = strcmp(t, "#scope_file") == 0;
             continue;
         } else if(mode == TOP && strcmp(t, "#program_export") == 0) {
             if(program_export)
@@ -2698,103 +5074,299 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                   !looks_like_function_header(t)) {
             die_at(Span(rel, program_export_line, 1),
                    "#program_export must precede a function declaration");
+        } else if(mode == TOP && starts_word(t, "#load")) {
+            char requested[SOURCE_PATH_MAX];
+            char candidate[SOURCE_PATH_MAX * 2];
+            const char *argument = skip_ws(t + strlen("#load"));
+            const char *end = *argument == '"' ?
+                              strchr(argument + 1, '"') : NULL;
+            const char *slash = strrchr(path, '/');
+            if(end == NULL || strcmp(skip_ws(end + 1), ";") != 0 ||
+               (size_t)(end - argument - 1) >= sizeof(requested))
+                die_at(Span(rel, line_no, 1),
+                       "#load requires a quoted relative .zi path and ';'");
+            memcpy(requested, argument + 1,
+                   (size_t)(end - argument - 1));
+            requested[end - argument - 1] = '\0';
+            size_t length = strlen(requested);
+            if(requested[0] == '/' || length < 4 ||
+               strcmp(requested + length - 3, ".zi") != 0 ||
+               strchr(requested, '\\') != NULL)
+                die_at(Span(rel, line_no, 1),
+                       "#load requires a quoted relative .zi path and ';'");
+            if(load_depth >= (int)(sizeof(load_frames) / sizeof(load_frames[0])))
+                die_at(Span(rel, line_no, 1), "#load nesting limit exceeded");
+            if(slash != NULL) {
+                if(snprintf(candidate, sizeof(candidate), "%.*s/%s",
+                            (int)(slash - path), path, requested) >=
+                   (int)sizeof(candidate))
+                    die_at(Span(rel, line_no, 1), "#load path is too long");
+            } else
+                copy_text(candidate, sizeof(candidate), requested);
+            char *next_path = realpath(candidate, NULL);
+            if(next_path == NULL)
+                die_at(Span(rel, line_no, 1),
+                       "cannot find loaded file: %s", requested);
+            if(strcmp(next_path, canonical) == 0)
+                die_at(Span(rel, line_no, 1), "cyclic #load: %s", requested);
+            for(int i = 0; i < load_depth; i++)
+                if(strcmp(next_path, load_frames[i].canonical) == 0)
+                    die_at(Span(rel, line_no, 1), "cyclic #load: %s", requested);
+            LoadFrame *frame = &load_frames[load_depth++];
+            frame->path = path;
+            frame->source = source;
+            frame->canonical = canonical;
+            frame->owned_source = owned_source;
+            copy_text(frame->rel, sizeof(frame->rel), rel);
+            copy_text(frame->lookahead, sizeof(frame->lookahead), lookahead);
+            frame->line_no = line_no;
+            frame->have_look = have_look;
+            frame->scope_public = scope_public;
+            frame->scope_file = scope_file;
+            frame->in_block_comment = in_block_comment;
+            frame->conditional_depth = tframe_count;
+            canonical = next_path;
+            path = canonical;
+            owned_source = read_lowered_source(path);
+            source = owned_source;
+            copy_text(rel, sizeof(rel), relative_path(root, path));
+            line_no = 0;
+            have_look = 0;
+            lookahead[0] = '\0';
+            scope_public = 1;
+            scope_file = 0;
+            in_block_comment = 0;
+            continue;
+        } else if(mode == TOP &&
+                  (string_source = import_string_source(
+                       t, Span(rel, line_no, 1))) != NULL) {
+            char alias[ZIR_NAME_MAX];
+            char synthetic_name[ZIR_NAME_MAX];
+            char synthetic_path[SOURCE_PATH_MAX * 2];
+            uint32_t hash = 2166136261u;
+            for(const unsigned char *p = (const unsigned char *)rel; *p; p++)
+                hash = (hash ^ *p) * 16777619u;
+            for(const unsigned char *p = (const unsigned char *)t; *p; p++)
+                hash = (hash ^ *p) * 16777619u;
+            hash = (hash ^ (uint32_t)line_no) * 16777619u;
+            snprintf(synthetic_name, sizeof(synthetic_name),
+                     "string_%08x", hash);
+            const char *slash = strrchr(path, '/');
+            int written = slash == NULL ?
+                snprintf(synthetic_path, sizeof(synthetic_path), "%s.zi",
+                         synthetic_name) :
+                snprintf(synthetic_path, sizeof(synthetic_path),
+                         "%.*s/%s.zi", (int)(slash - path), path,
+                         synthetic_name);
+            if(written < 0 || (size_t)written >= sizeof(synthetic_path))
+                die_at(Span(rel, line_no, 1),
+                       "#import, string source path is too long");
+            int named = parse_symbol_before_colons(t, alias, sizeof(alias));
+            ZirProgram *fragment = parse_source(synthetic_path, root,
+                                                string_source, resolver,
+                                                resolver_context);
+            free(string_source);
+            if(fragment == NULL) {
+                ProgramFree(program);
+                free(consts.items);
+                free(canonical);
+                return NULL;
+            }
+            for(int imported = 0; imported < fragment->module_count;
+                imported++) {
+                ZirModule *incoming = &fragment->modules[imported];
+                for(int existing = 0; existing < program->module_count;
+                    existing++)
+                    if(strcmp(program->modules[existing].name,
+                              incoming->name) == 0)
+                        die_at(Span(rel, line_no, 1),
+                               "duplicate #import, string module identity");
+                ZirModule *added = ProgramAddModule(program, incoming->name,
+                    incoming->source_path, incoming->span);
+                if(added == NULL)
+                    die("out of memory importing source string");
+                *added = *incoming;
+                *incoming = (ZirModule){0};
+            }
+            ProgramFree(fragment);
+            module = &program->modules[0];
+            ZirImport *import = ModuleAddImport(module,
+                named ? ZIR_IMPORT_MODULE : ZIR_IMPORT_OPEN,
+                named ? alias : synthetic_name, synthetic_name, "string",
+                scope_public, Span(rel, line_no, 1));
+            if(import == NULL)
+                die("out of memory importing source string");
+            import->is_file_private = scope_file;
+            continue;
         } else if(mode == TOP && t[0] == '#' &&
                   !starts_word(t, "#import") &&
+                  strncmp(t, "#import,", 8) != 0 &&
                   !starts_word(t, "#enum")) {
-            if(t[1] != '\0' && t[1] != ' ' && t[1] != '\t')
-                die_at(Span(rel, line_no, 1),
-                       "unknown directive: %s", t);
+            die_at(Span(rel, line_no, 1),
+                   "unknown directive: %s", t);
         } else if(mode == TOP &&
                   parse_foreign_library_line(rel, line_no, t,
                       foreign_library_names, foreign_library_targets,
                       &foreign_library_count)) {
+            copy_text(foreign_library_paths[foreign_library_count - 1],
+                      sizeof(foreign_library_paths[0]), rel);
+            foreign_library_file_private[foreign_library_count - 1] =
+                scope_file;
             continue;
         } else if(mode == TOP &&
                   (parse_import_line(module, rel, line_no, t,
                                      scope_public) ||
                    parse_foreign_line(module, rel, line_no, t,
                        scope_public, foreign_library_names,
-                       foreign_library_targets, foreign_library_count))) {
+                       foreign_library_targets, foreign_library_paths,
+                       foreign_library_file_private,
+                       foreign_library_count))) {
             program_export = 0;
             if(module->import_count > 0)
-                snprintf(module->imports[module->import_count - 1].guard,
-                         sizeof(module->imports[0].guard), "%s", cur_guard);
+                module->imports[module->import_count - 1].is_file_private = scope_file;
             continue;
-        } else if(mode == TOP && starts_word(t, "state") && strchr(t, '{') != NULL) {
-            mode = STATE;
-        } else if(mode == STATE) {
-            if(t[0] == '}') {
-                mode = TOP;
-                cond_frame_settle(tframes, tframe_count);
-            } else {
-                parse_state_field(module, rel, line_no, t);
-                if(module->state_count > 0)
-                    snprintf(module->state_fields[module->state_count - 1].guard,
-                             sizeof(module->state_fields[0].guard), "%s",
-                             cur_guard);
-            }
-        } else if(mode == TOP && looks_like_function_header(t)) {
+        } else if(mode == TOP && starts_word(t, "state") &&
+                  *skip_ws(t + 5) == '{') {
+            die_at(Span(rel, line_no, 1),
+                   "state blocks are not Jai syntax; declare named globals");
+        } else if(mode == TOP && strstr(t, "::") != NULL &&
+                  starts_word(skip_ws(strstr(t, "::") + 2), "#type")) {
             char name[ZIR_NAME_MAX];
             char args[ZIR_TEXT_MAX];
             char ret[ZIR_NAME_MAX];
-            int is_extern = strstr(t, "#foreign") != NULL;
+            const char *declaration = skip_ws(strstr(t, "::") + 2);
+            const char *parameters = skip_ws(declaration + strlen("#type"));
+            if(!parse_symbol_before_colons(t, name, sizeof(name)) ||
+               *parameters != '(' || strchr(t, '{') != NULL ||
+               t[strlen(t) - 1] != ';')
+                die_at(Span(rel, line_no, 1),
+                       "procedure type requires Name :: #type (Types) -> Result;");
+            parse_function_header(name, sizeof(name), args, sizeof(args),
+                                  ret, sizeof(ret), t);
+            size_t return_length = strlen(ret);
+            const char *c_call = strstr(t, "#c_call");
+            int is_c_call = c_call != NULL;
+            if(is_c_call) {
+                if(*skip_ws(c_call + strlen("#c_call")) != ';' ||
+                   skip_ws(c_call + strlen("#c_call"))[1] != '\0' ||
+                   return_length == 0)
+                    die_at(Span(rel, line_no, 1),
+                           "procedure type requires Result #c_call;");
+            } else {
+                if(return_length == 0 || ret[return_length - 1] != ';')
+                    die_at(Span(rel, line_no, 1),
+                           "procedure type requires a result type and ';'");
+                ret[--return_length] = '\0';
+                while(return_length > 0 &&
+                      isspace((unsigned char)ret[return_length - 1]))
+                    ret[--return_length] = '\0';
+            }
+            if(strcmp(ret, "()") == 0)
+                copy_text(ret, sizeof(ret), "void");
+            if(program_export)
+                die_at(Span(rel, program_export_line, 1),
+                       "#program_export requires a function");
+            ZirType *slot = ModuleAddType(module, name, Span(rel, line_no, 1));
+            if(slot == NULL)
+                die("out of memory declaring procedure type");
+            slot->is_procedure_type = 1;
+            slot->is_c_call = is_c_call;
+            slot->is_public = scope_public;
+            slot->is_file_private = scope_file;
+            copy_text(slot->procedure_return_type,
+                      sizeof(slot->procedure_return_type), ret);
+            if(*skip_ws(args)) {
+                char parts[16][ZIR_TEXT_MAX];
+                int count = split_top_level(args, parts[0], 16,
+                                            sizeof(parts[0]));
+                size_t used = 0;
+                if(count < 1 || count > 16)
+                    die_at(slot->span, "invalid procedure type parameters");
+                for(int parameter = 0; parameter < count; parameter++) {
+                    char *part = trim(parts[parameter]);
+                    char *colon = strchr(part, ':');
+                    const char *type = colon == NULL ? part : skip_ws(colon + 1);
+                    char parameter_name[ZIR_NAME_MAX];
+                    int written;
+                    if(colon != NULL) {
+                        *colon = '\0';
+                        trim_in_place(part);
+                        if(!is_identifier_text(part))
+                            die_at(slot->span,
+                                   "procedure type parameter needs a name");
+                        copy_text(parameter_name, sizeof(parameter_name), part);
+                    } else
+                        snprintf(parameter_name, sizeof(parameter_name),
+                                 "arg%d", parameter);
+                    if(*type == '\0' || strchr(type, ':') != NULL)
+                        die_at(slot->span,
+                               "procedure type parameter needs a type");
+                    written = snprintf(slot->body + used,
+                                       sizeof(slot->body) - used,
+                                       "%s%s: %s", parameter ? ", " : "",
+                                       parameter_name, type);
+                    if(written < 0 || (size_t)written >=
+                        sizeof(slot->body) - used)
+                        die_at(slot->span,
+                               "procedure type parameters exceed size limit");
+                    used += (size_t)written;
+                }
+            }
+            continue;
+        } else if(mode == TOP && looks_like_function_header(t)) {
+            char name[ZIR_NAME_MAX];
+            char args[ZIR_TEXT_MAX];
+            char defaults[ZIR_TEXT_MAX] = "";
+            char ret[ZIR_NAME_MAX];
             int has_body = strchr(t, '{') != NULL;
 
             parse_function_header(name, sizeof(name), args, sizeof(args),
                                   ret, sizeof(ret), t);
-            if(strstr(t, "#slot") != NULL) {
-                if(program_export)
-                    die_at(Span(rel, program_export_line, 1),
-                           "#program_export requires a function");
-                if(has_body || is_extern || strcmp(ret, "void") != 0)
-                    die_at(Span(rel, line_no, 1), "slot declarations require a bodyless void signature");
-                ZirType *slot = ModuleAddType(module, name, Span(rel, line_no, 1));
-                slot->is_slot = 1;
-                slot->is_public = scope_public;
-                copy_text(slot->body, sizeof(slot->body), args);
-                copy_text(slot->guard, sizeof(slot->guard), cur_guard);
-            } else if(name[0] != '\0') {
+            if(!has_body)
+                die_at(Span(rel, line_no, 1),
+                       "procedure types require Jai #type syntax");
+            if(name[0] != '\0') {
+                separate_parameter_defaults(args, sizeof(args), defaults,
+                                            sizeof(defaults),
+                                            Span(rel, line_no, 1));
                 fn = ModuleAddFunction(module, name, args, ret, 0,
                                           Span(rel, line_no, 1));
-                snprintf(fn->guard, sizeof(fn->guard), "%s", cur_guard);
-                fn->is_extern = is_extern;
-                /* Foreign declarations are normally imports, handled above.
-                 * Keep function metadata complete if this path is reached. */
-                if(is_extern) {
-                    const char *dir = strstr(t, "#foreign");
-
-                    if(dir != NULL) {
-                        const char *q = strchr(dir + 8, '"');
-
-                        if(q != NULL) {
-                            size_t n = 0;
-                            const char *r = q + 1;
-
-                            while(*r != '\0' && *r != '"' &&
-                                  n + 1 < sizeof(fn->extern_target))
-                                fn->extern_target[n++] = *r++;
-                            fn->extern_target[n] = '\0';
-                        }
+                copy_text(fn->default_args, sizeof(fn->default_args), defaults);
+                if(strchr(args, '$') != NULL) {
+                    char parameters[64][ZIR_TEXT_MAX];
+                    int count = split_top_level(args, parameters[0], 64,
+                                                sizeof(parameters[0]));
+                    if(count < 1)
+                        die_at(fn->span, "invalid polymorphic procedure parameters");
+                    for(int parameter = 0; parameter < count; parameter++) {
+                        char *colon = strchr(parameters[parameter], ':');
+                        char *type = colon == NULL ? NULL : trim(colon + 1);
+                        if(type == NULL || strchr(type, '$') == NULL)
+                            continue;
+                        if(type[0] != '$' || !is_identifier_text(type + 1) ||
+                           (fn->template_param[0] &&
+                            strcmp(fn->template_param, type + 1)))
+                            die_at(fn->span,
+                                   "polymorphic procedure requires one $Type parameter");
+                        copy_text(fn->template_param,
+                                  sizeof(fn->template_param), type + 1);
                     }
-                    fn->extern_kind = classify_extern_target(
-                        fn->extern_target, fn->extern_symbol,
-                        sizeof(fn->extern_symbol), rel, line_no);
+                    if(fn->template_param[0] == '\0')
+                        die_at(fn->span, "invalid polymorphic procedure parameter");
+                    if(program_export)
+                        die_at(fn->span,
+                               "#program_export requires a concrete procedure");
+                    fn->is_template = 1;
                 }
                 /* Jai's standalone #program_export keeps the plain symbol
                  * for native callers. */
                 fn->exported = program_export;
                 program_export = 0;
                 /* Public functions are emitted in headers. */
-                fn->is_public = !is_extern && scope_public;
-                if(has_body && !is_extern) {
-                    mode = FUNCTION;
-                    depth = 1;
-                    block_call_count = 0;
-                    root_anonymous_block_count = 0;
-                } else {
-                    /* extern / body-less prototype: no body follows */
-                    fn = NULL;
-                }
+                fn->is_public = scope_public;
+                fn->is_file_private = scope_file;
+                mode = FUNCTION;
+                depth = 1;
             }
         } else if(mode == TOP && contains_source_directive(t, "#global")) {
             die_at(Span(rel, line_no, 1),
@@ -2868,56 +5440,11 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                 ModuleAddStatic(module, gname, gtype, ginit,
                                 Span(rel, line_no, 1));
             if(module->global_count > 0)
-                snprintf(module->globals[module->global_count - 1].guard,
-                         sizeof(module->globals[0].guard), "%s", cur_guard);
+                module->globals[module->global_count - 1].is_file_private = scope_file;
         } else if(mode == TOP && strstr(t, "::") != NULL &&
                   strstr(t, "#type") != NULL) {
-            /* 'Name :: C-type #type' — a typedef. Build the C declarator:
-             * function-pointer types insert the name after '(*'; others
-             * append ' NAME'. Must precede the struct catch-all below. */
-            ZirType *tty;
-            const char *colons0 = strstr(t, "::");
-            const char *tybegin = colons0 + 2;
-            const char *hash = strstr(t, "#type");
-            char tname[ZIR_NAME_MAX];
-            size_t tn = 0;
-            const char *q = t;
-
-            while(q < colons0 && (isalnum((unsigned char)*q) || *q == '_') &&
-                  tn + 1 < sizeof(tname))
-                tname[tn++] = *q++;
-            tname[tn] = '\0';
-            tty = ModuleAddType(module, "#typedef",
-                                   Span(rel, line_no, 1));
-            if(tty != NULL) {
-                tty->is_public = scope_public;
-                snprintf(tty->guard, sizeof(tty->guard), "%s", cur_guard);
-            }
-            if(tty != NULL && tname[0] != '\0') {
-                char tytext[ZIR_TEXT_MAX];
-                size_t tl;
-                const char *lp;
-
-                while(tybegin < hash && (*tybegin == ' ' || *tybegin == '\t'))
-                    tybegin++;
-                tl = (size_t)(hash - tybegin);
-                while(tl > 0 && (tybegin[tl - 1] == ' ' || tybegin[tl - 1] == '\t'))
-                    tl--;
-                if(tl >= sizeof(tytext))
-                    tl = sizeof(tytext) - 1;
-                memcpy(tytext, tybegin, tl);
-                tytext[tl] = '\0';
-                lp = strstr(tytext, "(*");
-                if(lp != NULL) {
-                    size_t off = (size_t)(lp - tytext) + 2;
-
-                    snprintf(tty->body, sizeof(tty->body), "%.*s%s%s",
-                             (int)off, tytext, tname, tytext + off);
-                } else {
-                    snprintf(tty->body, sizeof(tty->body), "%s %s",
-                             tytext, tname);
-                }
-            }
+            die_at(Span(rel, line_no, 1),
+                   "C declarator #type is not Jai syntax; use Name :: #type (arguments) -> Result;");
         } else if(mode == TOP && strstr(t, "::") != NULL &&
                   starts_word(skip_ws(strstr(t, "::") + 2),
                               "specialize")) {
@@ -2925,6 +5452,11 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                    "use Jai-style type application: Name :: Generic(Type)");
         } else if(mode == TOP && strstr(t, "::") != NULL &&
                   strchr(t, '{') == NULL &&
+                  !starts_word(skip_ws(strstr(t, "::") + 2), "struct") &&
+                  !starts_word(skip_ws(strstr(t, "::") + 2), "union") &&
+                  !starts_word(skip_ws(strstr(t, "::") + 2), "enum") &&
+                  !starts_word(skip_ws(strstr(t, "::") + 2), "enum_flags") &&
+                  !starts_word(skip_ws(strstr(t, "::") + 2), "variant") &&
                   !looks_like_function_header(t)) {
             /* 'Name :: expr' is the Ziran constant declaration. Ordinary
              * constants are also emitted into generated interfaces so public
@@ -2951,12 +5483,17 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
             while(expression_length > 0 &&
                   isspace((unsigned char)expr[expression_length - 1]))
                 expr[--expression_length] = '\0';
+            if(find_unquoted_word(expr, "#this") != NULL)
+                die_at(Span(rel, line_no, 1),
+                       "#this requires a procedure or type scope");
             if(cname[0] != '\0' && *expr != '\0') {
                 if(starts_word(expr, "#define"))
                     die_at(Span(rel, line_no, 1), "use '%s :: value'; #define is not Ziran syntax", cname);
                 else {
                     char run_value[ZIR_TEXT_MAX];
+                    char selected_value[ZIR_TEXT_MAX];
                     ZirDefine *def;
+                    int deferred_run = 0;
 
                     if(consts.count == consts.capacity) {
                         int capacity = consts.capacity > 0 ? consts.capacity * 2 : 16;
@@ -2971,13 +5508,65 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                     if(starts_word(expr, "#run")) {
                         char expanded[ZIR_TEXT_MAX];
                         long value = 0;
+                        int folded;
 
                         expand_compile_expr(expanded, sizeof(expanded),
-                                            &consts, trim((char *)(expr + 4)));
-                        if(!eval_const_condition(expanded, &value))
-                            die_at(Span(rel, line_no, 1), "#run expression is not a constant: %s", expanded);
-                        snprintf(run_value, sizeof(run_value), "%ld", value);
+                                            &consts, trim((char *)(expr + 4)),
+                                            rel);
+                        folded = strstr(expanded, "size_of") == NULL &&
+                                 eval_const_condition(expanded, &value, module,
+                                                      &consts, rel, 0);
+                        if(folded)
+                            snprintf(run_value, sizeof(run_value),
+                                     "%ld", value);
+                        else {
+                            CompileValue typed = {0};
+                            int fuel = 10000;
+                            if(compile_context.resolver != NULL &&
+                               !compile_context.resolver(
+                                   compile_context.resolver_context, program,
+                                   module, path, root, expanded))
+                                die_at(Span(rel, line_no, 1),
+                                       "cannot resolve imports for #run expression");
+                            if(evaluate_typed_expression(module, &consts,
+                                    expanded, rel, 0, &fuel, &typed) &&
+                               typed.kind != COMPILE_INVALID) {
+                                copy_text(run_value, sizeof(run_value),
+                                          typed.literal);
+                                folded = 1;
+                            }
+                        }
+                        if(!folded) {
+                            int written = snprintf(run_value,
+                                sizeof(run_value), "#run %s",
+                                trim((char *)(expr + 4)));
+                            if(written < 0 ||
+                               (size_t)written >= sizeof(run_value))
+                                die_at(Span(rel, line_no, 1),
+                                       "#run expression is too long");
+                            deferred_run = 1;
+                        }
                         expr = run_value;
+                    }
+                    if(!deferred_run &&
+                       find_unquoted_text(expr, "#ifx") != NULL) {
+                        copy_text(selected_value, sizeof(selected_value), expr);
+                        lower_compile_ifx_value(selected_value,
+                                                sizeof(selected_value), module,
+                                                &consts, Span(rel, line_no, 1),
+                                                1);
+                        expr = selected_value;
+                    }
+                    if(!deferred_run &&
+                       find_unquoted_text(expr, "#ifx") == NULL &&
+                       find_unquoted_word(expr, "size_of") != NULL) {
+                        if(expr != selected_value)
+                            copy_text(selected_value,
+                                      sizeof(selected_value), expr);
+                        lower_size_of_value(selected_value,
+                                            sizeof(selected_value), module,
+                                            Span(rel, line_no, 1));
+                        expr = selected_value;
                     }
                     int emitted_alias = 0;
                     if(is_identifier_text(expr)) {
@@ -2994,34 +5583,46 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                                                  Span(rel, line_no, 1));
                         if(def != NULL) {
                             def->is_public = scope_public;
-                            snprintf(def->guard, sizeof(def->guard), "%s",
-                                     cur_guard);
+                            def->is_file_private = scope_file;
                         }
                     }
+                    memset(&consts.items[consts.count], 0,
+                           sizeof(consts.items[consts.count]));
                     snprintf(consts.items[consts.count].name,
                              sizeof(consts.items[0].name), "%s", cname);
                     snprintf(consts.items[consts.count].expr,
                              sizeof(consts.items[0].expr), "%s", expr);
+                    copy_text(consts.items[consts.count].path,
+                              sizeof(consts.items[0].path), rel);
+                    consts.items[consts.count].is_file_private = scope_file;
                     consts.count++;
                 }
             }
         } else if(mode == TOP && strstr(t, "::") != NULL) {
-            /* Named records, enums, and variants. Variant cases elaborate
-             * into sealed tagged storage and ordinary checked operations. */
+            /* Named records and enums. */
             const char *colons = strstr(t, "::");
             const char *after = colons + 2;
             char tname[ZIR_NAME_MAX];
             size_t tn = 0;
 
             after = skip_ws(after);
+            if(starts_word(after, "variant"))
+                die_at(Span(rel, line_no, 1),
+                       "variant declarations are not Jai syntax; use a struct or union");
+            int enum_flags = strncmp(after, "enum_flags", 10) == 0 &&
+                (after[10] == '\0' || isspace((unsigned char)after[10]) ||
+                 after[10] == '{');
+            int named_enum = enum_flags ||
+                (strncmp(after, "enum", 4) == 0 &&
+                 (after[4] == '\0' || isspace((unsigned char)after[4]) ||
+                  after[4] == '{'));
+            int named_union = strncmp(after, "union", 5) == 0 &&
+                (after[5] == '\0' || after[5] == ' ' ||
+                 after[5] == '(' || after[5] == '{');
             if((strncmp(after, "struct", 6) == 0 &&
                 (after[6] == '\0' || after[6] == ' ' ||
-                 after[6] == '(' || after[6] == '{')) ||
-               (strncmp(after, "enum", 4) == 0 &&
-                (after[4] == '\0' || after[4] == ' ' || after[4] == '{')) ||
-               (strncmp(after, "variant", 7) == 0 &&
-                (after[7] == '\0' || after[7] == ' ' ||
-                 after[7] == '(' || after[7] == '{'))) {
+                 after[6] == '(' || after[6] == '{')) || named_union ||
+               named_enum) {
                 const char *q = t;
                 ZirType *ty;
 
@@ -3035,56 +5636,33 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                            "type declarations require a plain name before ::");
                 if(!is_identifier_text(tname))
                     die_at(Span(rel, line_no, 1), "invalid type name");
-                if((strncmp(after, "struct", 6) == 0 &&
-                     !parse_type_parameters(after, "struct", parameters,
-                                            sizeof(parameters))) ||
-                   (strncmp(after, "variant", 7) == 0 &&
-                     !parse_type_parameters(after, "variant", parameters,
-                                            sizeof(parameters))))
+                if((strncmp(after, "struct", 6) == 0 || named_union) &&
+                   !parse_type_parameters(after, named_union ? "union" : "struct", parameters,
+                                          sizeof(parameters)))
                     die_at(Span(rel, line_no, 1),
                            "polymorphic type parameters require (T: Type, ...)");
                 ty = ModuleAddType(module, tname,
                                       Span(rel, line_no, 1));
                 if(ty != NULL) {
                     ty->is_public = scope_public;
-                    ty->is_enum = strncmp(after, "enum", 4) == 0;
-                    ty->is_variant_template = parameters[0] != '\0' &&
-                        strncmp(after, "variant", 7) == 0;
+                    ty->is_file_private = scope_file;
+                    ty->is_enum = named_enum;
+                    ty->is_union = named_union;
+                    ty->is_enum_flags = enum_flags;
+                    if(ty->is_enum)
+                        parse_enum_backing(ty, after);
                     ty->is_record_template = parameters[0] != '\0' &&
-                        strncmp(after, "struct", 6) == 0;
-                    ty->is_variant = strncmp(after, "variant", 7) == 0 &&
-                                     !ty->is_variant_template;
+                        (strncmp(after, "struct", 6) == 0 || named_union);
                     copy_text(ty->template_params,
                               sizeof(ty->template_params), parameters);
                     if(strstr(after, "#extern") != NULL)
                         die_at(Span(rel, line_no, 1),
                                "#extern is not Jai syntax for a type declaration");
-                    snprintf(ty->guard, sizeof(ty->guard), "%s", cur_guard);
-                    const char *opening =
-                        (ty->is_enum || ty->is_variant ||
-                         ty->is_variant_template || ty->is_record_template) ?
-                        strchr(after, '{') : NULL;
+                    const char *opening = strchr(after, '{');
                     const char *closing = opening ? strchr(opening + 1, '}') : NULL;
                     if(closing != NULL) {
                         size_t body_length = (size_t)(closing - opening - 1);
-                        if(ty->is_variant || ty->is_variant_template) {
-                            if(body_length + 1 >= sizeof(ty->variant_cases))
-                                die_at(ty->span, "variant body exceeds size limit");
-                            memcpy(ty->variant_cases, opening + 1, body_length);
-                            int nesting = 0;
-                            for(size_t byte = 0; byte < body_length; byte++) {
-                                if(ty->variant_cases[byte] == '[' ||
-                                   ty->variant_cases[byte] == '(') nesting++;
-                                if(ty->variant_cases[byte] == ']' ||
-                                   ty->variant_cases[byte] == ')') nesting--;
-                                if(ty->variant_cases[byte] == ',' && nesting == 0)
-                                    ty->variant_cases[byte] = '\n';
-                            }
-                            ty->variant_cases[body_length] = '\n';
-                            ty->variant_cases[body_length + 1] = '\0';
-                            if(ty->is_variant)
-                                finalize_variant(module, ty);
-                        } else if(ty->is_record_template) {
+                        if(ty->is_record_template) {
                             if(body_length + 1 >= sizeof(ty->body))
                                 die_at(ty->span, "generic record body exceeds size limit");
                             memcpy(ty->body, opening + 1, body_length);
@@ -3094,7 +5672,8 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                                     nesting++;
                                 if(ty->body[byte] == ']' || ty->body[byte] == ')')
                                     nesting--;
-                                if(ty->body[byte] == ',' && nesting == 0)
+                                if((ty->body[byte] == ',' ||
+                                    ty->body[byte] == ';') && nesting == 0)
                                     ty->body[byte] = '\n';
                             }
                             ty->body[body_length] = '\n';
@@ -3104,67 +5683,50 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                                 die_at(ty->span, "enum body exceeds size limit");
                             memcpy(ty->body, opening + 1, body_length);
                             ty->body[body_length] = '\0';
+                            for(size_t byte = 0; byte < body_length; byte++)
+                                if(ty->body[byte] == ';') ty->body[byte] = '\n';
                             if(ty->is_enum)
-                                for(size_t byte = 0; byte < body_length; byte++)
-                                    if(ty->body[byte] == ';') ty->body[byte] = '\n';
+                                lower_enum_values(ty);
                         }
+                        if(!expand_type_this(ty))
+                            die_at(ty->span, "#this type body exceeds size limit");
                     } else {
                         mode = TYPE;
+                        type_frame_count = 0;
                     }
                 }
                 fn = NULL;
             }
         } else if((mode == TOP || mode == TYPE) &&
-                  strncmp(t, "#enum", 5) == 0) {
-            /* #enum { ... } — capture the constants as a type body. */
-            ZirType *ety = ModuleAddType(module, "#enum",
-                                            Span(rel, line_no, 1));
-
-            if(ety != NULL)
-                ety->is_public = scope_public;
-            if(ety != NULL)
-                snprintf(ety->guard, sizeof(ety->guard), "%s", cur_guard);
-            (void)ety;
-            enum_return = mode;
-            if(strchr(t, '}') == NULL)
-                mode = ENUM;
-        } else if(mode == ENUM) {
-            size_t tl = strlen(t);
-
-            if(t[0] == '}') {
-                mode = enum_return;
-                cond_frame_settle(tframes, tframe_count);
-            } else if(tl > 0 && t[tl - 1] == '}') {
-                /* joined constants + closing brace on one line */
-                ZirType *ety = &module->types[module->type_count - 1];
-                size_t used = strlen(ety->body);
-
-                snprintf(ety->body + used, sizeof(ety->body) - used,
-                         "%.*s\n", (int)(tl - 1), t);
-                mode = enum_return;
-                cond_frame_settle(tframes, tframe_count);
-            } else {
-                ZirType *ety = &module->types[module->type_count - 1];
-                size_t used = strlen(ety->body);
-
-                snprintf(ety->body + used, sizeof(ety->body) - used,
-                         "%s\n", t);
-            }
+                  starts_word(t, "#enum")) {
+            die_at(Span(rel, line_no, 1),
+                   "#enum is not Jai syntax; use Name :: enum { ... }");
         } else if(mode == TYPE) {
+            if(cond_top_step(t, type_frames, &type_frame_count,
+                             module, &consts, &compile_context,
+                             path, rel, line_no))
+                continue;
+            if(type_frame_count > 0 &&
+               !type_frames[type_frame_count - 1].active)
+                continue;
             if(t[0] == '}') {
                 ZirType *ty = &module->types[module->type_count - 1];
-                if(ty->is_variant)
-                    finalize_variant(module, ty);
+                if(!expand_type_this(ty))
+                    die_at(ty->span, "#this type body exceeds size limit");
+                if(ty->is_enum)
+                    lower_enum_values(ty);
                 mode = TOP;
                 cond_frame_settle(tframes, tframe_count);
+            } else if(strcmp(t, "{") == 0 &&
+                      module->types[module->type_count - 1].body[0] == '\0') {
+                /* Jai commonly places a type's opening brace on the next line. */
             } else if(t[0] == '#') {
-                /* comment inside a struct body — skip */
+                die_at(Span(rel, line_no, 1),
+                       "unknown type-body directive: %s", t);
             } else {
                 ZirType *ty = &module->types[module->type_count - 1];
-                char *body = (ty->is_variant || ty->is_variant_template) ?
-                    ty->variant_cases : ty->body;
-                size_t capacity = (ty->is_variant || ty->is_variant_template) ?
-                    sizeof(ty->variant_cases) : sizeof(ty->body);
+                char *body = ty->body;
+                size_t capacity = sizeof(ty->body);
                 size_t used = strlen(body);
                 int written = snprintf(body + used, capacity - used, "%s\n", t);
                 if(written < 0 || (size_t)written >= capacity - used)
@@ -3177,86 +5739,78 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
             char *bcnd = NULL;
             int bck = parse_cond_start(t, &bcnd);
 
-            if(bck != 0 || line_is_hash_else(t)) {
-                /* body-level '#if COND {' — the braces are consumed here;
-                 * the region lowers to raw #if/#elif/#else/#endif lines.
-                 * (bck was computed once above: parse_cond_start strips the
-                 * trailing '{' in place, so re-parsing would misfire.) */
-                char raw[ZIR_TEXT_MAX];
-                char expanded[ZIR_TEXT_MAX];
+            int compile_else = body_mcount > 0 &&
+                depth == body_mdepth[body_mcount - 1] &&
+                line_is_compile_else(t);
+            int compile_else_if = bck == 2 && body_mcount > 0 &&
+                depth == body_mdepth[body_mcount - 1];
 
-                if(line_is_hash_else(t)) {
-                    snprintf(raw, sizeof(raw), "#else");
-                } else if(bck == 1) {
-                    if(body_mcount >= 8)
-                        die_at(Span(rel, line_no, 1), "too many nested #if blocks");
-                    body_mdepth[body_mcount++] = depth;
-                    expand_compile_expr(expanded, sizeof(expanded), &consts,
-                                        bcnd);
-                    format_preprocessor_cond(raw, sizeof(raw), "#if",
-                                             expanded);
-                } else {
-                    expand_compile_expr(expanded, sizeof(expanded), &consts,
-                                        bcnd);
-                    format_preprocessor_cond(raw, sizeof(raw), "#elif",
-                                             expanded);
-                }
-                FunctionAddStmt(fn, ZIR_STMT_RAW, raw, "",
-                                   Span(rel, line_no, 1));
+            if(bck == 1) {
+                int parent_active = body_mcount == 0 ||
+                    body_mactive[body_mcount - 1];
+                int chosen = parent_active &&
+                    select_compile_condition(module, &consts, bcnd,
+                                             Span(rel, line_no, 1),
+                                             &compile_context, path);
+                if(body_mcount >= 8)
+                    die_at(Span(rel, line_no, 1), "too many nested #if blocks");
+                body_mdepth[body_mcount] = depth;
+                body_mselected[body_mcount] = chosen;
+                body_mparent_active[body_mcount] = parent_active;
+                body_mactive[body_mcount] = parent_active && chosen;
+                body_mcount++;
+            } else if(compile_else_if) {
+                int i = body_mcount - 1;
+                int chosen = body_mparent_active[i] &&
+                    !body_mselected[i] &&
+                    select_compile_condition(module, &consts, bcnd,
+                                             Span(rel, line_no, 1),
+                                             &compile_context, path);
+                body_mactive[i] = body_mparent_active[i] &&
+                    !body_mselected[i] && chosen;
+                body_mselected[i] |= chosen;
+            } else if(compile_else) {
+                int i = body_mcount - 1;
+                body_mactive[i] = body_mparent_active[i] &&
+                    !body_mselected[i];
+                body_mselected[i] = 1;
+            } else if(bck == 2) {
+                die_at(Span(rel, line_no, 1),
+                       "else #if without a matching #if");
             } else if(t[0] == '}' && body_mcount > 0 &&
                       depth == body_mdepth[body_mcount - 1]) {
                 /* this '}' closes a body-level '#if' region, not a block */
                 body_mcount--;
-                FunctionAddStmt(fn, ZIR_STMT_RAW, "#endif", "",
-                                   Span(rel, line_no, 1));
-            } else if(t[0] == '#') {
-                /* comment inside a body — skip (directives are top-level) */
-            } else if(t[0] == '}' && slot_frame_count > 0 && depth == 1 && block_call_count == 0) {
-                if(*skip_ws(t + 1))
-                    die_at(Span(rel, line_no, 1), "slot body closing brace must be on its own line");
-                SlotParseFrame *frame = &slot_frames[--slot_frame_count];
-                fn = &module->functions[frame->function_index];
-                depth = frame->depth;
-                root_anonymous_block_count = frame->root_anonymous_count;
-                block_call_count = frame->block_count;
-                if(block_call_count)
-                    memcpy(block_calls, frame->blocks, (size_t)block_call_count * sizeof(*block_calls));
-                free(frame->blocks);
-                frame->blocks = NULL;
-                body_mcount = frame->body_count;
-                memcpy(body_mdepth, frame->body_depth, sizeof(body_mdepth));
-            } else if(t[0] == '}' && block_call_count > 0 &&
-                      depth == block_calls[block_call_count - 1].close_depth) {
-                BlockCall *block = &block_calls[block_call_count - 1];
-                ZirSourceSpan block_span = block_call_close_span(block, rel,
-                                                               line_no, t);
-
-                block_call_open(fn, block, block_span, 1);
-                if(block->statement_index >= 0 &&
-                   block->statement_index < fn->stmt_count)
-                    fn->stmts[block->statement_index].span = block_span;
-                block_call_count--;
-                if(depth > 0)
-                    depth--;
+            } else if(body_mcount > 0 &&
+                      !body_mactive[body_mcount - 1]) {
+                depth += net_block_braces(t);
+            } else if(t[0] == '#' && strcmp(t, "#through") != 0 &&
+                      strcmp(t, "#through;") != 0) {
+                die_at(Span(rel, line_no, 1),
+                       "unknown function-body directive: %s", t);
             } else if(t[0] == '}') {
-                /* K&R "} else {" / "} else if (...) {": the brace closes the
-                 * if-body and the else re-opens a new one, so depth is net
-                 * unchanged. Recorded as BLOCK_CLOSE plus an IF whose text
-                 * starts with "else" — the C lowering emits the "} else"
-                 * itself and suppresses the duplicate close. */
+                /* A leading brace closes the if-body. A braced else opens a
+                 * new body here; a single-statement else is braced during
+                 * normalization. Record the close and following else as
+                 * separate checked statements. */
                 const char *eq = t + 1;
 
                 while(*eq == ' ' || *eq == '\t')
                     eq++;
                 if(depth > 1 && starts_word(eq, "else")) {
+                    split_jai_control_line((char *)eq,
+                                           SOURCE_LINE_MAX * 4 - (size_t)(eq - t),
+                                           onelineq, &onelineq_count,
+                                           Span(rel, line_no, 1));
                     ZirSourceSpan span = SpanEnd(rel, line_no,
                                                     pending_start_column +
                                                     (int)(eq - t),
                                                     line_no,
                                                     pending_end_column);
-                    FunctionAddStmt(fn, ZIR_STMT_BLOCK_CLOSE, "}", "",
+                    FunctionAddStmt(fn, ZIR_STMT_BLOCK_CLOSE, "}",
                                        Span(rel, line_no, 1));
-                    FunctionAddStmt(fn, ZIR_STMT_IF, eq, "", span);
+                    FunctionAddStmt(fn, ZIR_STMT_IF, eq, span);
+                    depth += net_block_braces(t);
                 } else {
                     if(depth > 0)
                         depth--;
@@ -3264,138 +5818,73 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
                         mode = TOP;
                         cond_frame_settle(tframes, tframe_count);
                         fn = NULL;
-                        block_call_count = 0;
                     } else {
-                        FunctionAddStmt(fn, ZIR_STMT_BLOCK_CLOSE, t, "",
+                        FunctionAddStmt(fn, ZIR_STMT_BLOCK_CLOSE, t,
                                            Span(rel, line_no, 1));
                     }
                 }
             } else {
+                if(starts_word(t, "match")) {
+                    const char *after_match = skip_ws(t + 5);
+                    if((t[5] == '!' || t[5] == '?' ||
+                        (isspace((unsigned char)t[5]) &&
+                         *after_match != '=' && *after_match != ':' &&
+                         *after_match != '+' && *after_match != '-' &&
+                         *after_match != '*' && *after_match != '/' &&
+                         *after_match != '%' && *after_match != '&' &&
+                         *after_match != '|' && *after_match != '^' &&
+                         *after_match != '.' && *after_match != '(')) &&
+                       strchr(t, '{') != NULL)
+                        die_at(Span(rel, line_no, 1),
+                               "match is not Jai syntax; use if value == { case ... }");
+                }
                 ZirStmtKind kind = classify_stmt(t);
                 int brace_delta = net_block_braces(t);
                 char block_callee[ZIR_NAME_MAX];
                 char block_name[ZIR_NAME_MAX];
-                char prop_field[ZIR_NAME_MAX];
-                char prop_value[ZIR_TEXT_MAX];
-                char prop_line[ZIR_TEXT_MAX];
 
-                char slot_binding[ZIR_TEXT_MAX], slot_arguments[ZIR_TEXT_MAX];
-                if(parse_slot_header(t, slot_binding, sizeof(slot_binding),
-                                     slot_arguments, sizeof(slot_arguments))) {
-                    if(slot_frame_count == 64)
-                        die_at(Span(rel, line_no, 1), "too many nested slot bodies");
-                    SlotParseFrame *frame = &slot_frames[slot_frame_count++];
-                    frame->function_index = (int)(fn - module->functions);
-                    frame->depth = depth;
-                    frame->root_anonymous_count = root_anonymous_block_count;
-                    frame->body_count = body_mcount;
-                    memcpy(frame->body_depth, body_mdepth, sizeof(body_mdepth));
-                    char name[ZIR_NAME_MAX];
-                    snprintf(name, sizeof(name), "slot_body_%d_%d", module->function_count, line_no);
-                    ZirSourceSpan span = Span(rel, line_no, 1);
-                    if(block_call_count > 0 && !block_calls[block_call_count - 1].opened &&
-                       depth == block_calls[block_call_count - 1].close_depth &&
-                       is_identifier_text(slot_binding)) {
-                        block_call_append_field(&block_calls[block_call_count - 1], slot_binding, name, span);
-                    } else {
-                        char initializer[ZIR_TEXT_MAX];
-                        int written = snprintf(initializer, sizeof(initializer),
-                                               "%s = %s", slot_binding, name);
-                        if(written < 0 || (size_t)written >= sizeof(initializer))
-                            die_at(span, "slot initializer is too long");
-                        FunctionAddStmt(fn, strchr(slot_binding, ':') ? ZIR_STMT_DECL : ZIR_STMT_ASSIGN,
-                                           initializer, "", span);
-                    }
-                    frame->block_count = block_call_count;
-                    frame->blocks = block_call_count ? malloc((size_t)block_call_count * sizeof(*block_calls)) : NULL;
-                    if(block_call_count && frame->blocks == NULL)
-                        die("out of memory parsing slot body");
-                    if(block_call_count)
-                        memcpy(frame->blocks, block_calls, (size_t)block_call_count * sizeof(*block_calls));
-                    fn = ModuleAddFunction(module, name, slot_arguments, "void", 0, span);
-                    fn->is_closure = 1;
-                    copy_text(fn->guard, sizeof(fn->guard), cur_guard);
-                    depth = 1;
-                    root_anonymous_block_count = 0;
-                    block_call_count = body_mcount = 0;
-                    continue;
+                if(looks_like_non_jai_control(t, "guard"))
+                    die_at(Span(rel, line_no, 1),
+                           "guard is not Jai syntax; use if and return");
+                if(t[0] == 'c' && isspace((unsigned char)t[1])) {
+                    const char *rest = skip_ws(t + 1);
+                    if(isalpha((unsigned char)*rest) || *rest == '_')
+                        die_at(Span(rel, line_no, 1),
+                               "raw C statements are not Jai syntax; use #foreign");
                 }
+                if(looks_like_non_jai_control(t, "switch"))
+                    die_at(Span(rel, line_no, 1),
+                           "switch is not Jai syntax; use if value == { case ... }");
+                if(looks_like_non_jai_control(t, "goto") ||
+                   looks_like_label(t))
+                    die_at(Span(rel, line_no, 1),
+                           "goto and labels are not Jai syntax; use structured control flow");
+                if(kind == ZIR_STMT_DECL && strchr(t, ':') == NULL)
+                    die_at(Span(rel, line_no, 1),
+                           "C-style local declarations are not Jai syntax; use name: Type");
+
                 if(parse_block_call_header(t, block_callee,
                                          sizeof(block_callee),
                                          block_name, sizeof(block_name))) {
-                    BlockCall *block;
-
-                    if(block_name[0] != '\0' &&
-                       !is_identifier_text(block_name))
-                        die_at(Span(rel, line_no, 1),
-                               "invalid block result name: %s", block_name);
-                    if(block_call_count > 0)
-                        block_call_open(fn, &block_calls[block_call_count - 1],
-                                      Span(rel, line_no,
-                                              pending_start_column), 0);
-                    if(block_call_count >= BLOCK_CALL_CAP)
-                        die_at(Span(rel, line_no, 1), "too many nested block calls");
-                    block = &block_calls[block_call_count++];
-                    memset(block, 0, sizeof(*block));
-                    block->statement_index = -1;
-                    block->span = SpanEnd(rel, pending_start_line,
-                                             pending_start_column, line_no,
-                                             pending_end_column);
-                    snprintf(block->callee, sizeof(block->callee), "%s",
-                             block_callee);
-                    snprintf(block->name, sizeof(block->name), "%s",
-                             block_name);
-                    block->close_depth = depth + 1;
-                    depth++;
-                    continue;
+                    die_at(Span(rel, line_no, 1),
+                           "block calls are not Jai syntax; call with a record literal");
                 }
-
-                copy_text(prop_line, sizeof(prop_line), t);
-                if(block_call_count > 0 &&
-                   !block_calls[block_call_count - 1].opened &&
-                   depth == block_calls[block_call_count - 1].close_depth &&
-                   parse_block_field_line(prop_line, prop_field,
-                                      sizeof(prop_field), prop_value,
-                                      sizeof(prop_value))) {
-                    BlockCall *block = &block_calls[block_call_count - 1];
-                    block_call_append_field(block, prop_field, prop_value,
-                                             Span(rel, line_no, 1));
-                    continue;
-                }
-
-
-                if(block_call_count > 0 &&
-                   !block_calls[block_call_count - 1].opened &&
-                   depth == block_calls[block_call_count - 1].close_depth)
-                    block_call_open(fn, &block_calls[block_call_count - 1],
-                                  Span(rel, line_no, pending_start_column),
-                                  0);
 
                 {
                     ZirSourceSpan span = SpanEnd(rel, pending_start_line,
                                                     pending_start_column,
                                                     line_no,
                                                     pending_end_column);
-                    char jai_case[K2ZIR_LINE_MAX * 4];
-                    const char *statement = t;
                     if(kind == ZIR_STMT_IF && starts_word(t, "if")) {
                         const char *condition = skip_ws(t + 2);
-                        int complete = starts_word(condition, "#complete");
-                        if(complete)
+                        if(starts_word(condition, "#complete"))
                             condition = skip_ws(condition + strlen("#complete"));
                         const char *equals = strstr(condition, "==");
                         if(equals != NULL && *skip_ws(equals + 2) == '{' &&
-                           *skip_ws(skip_ws(equals + 2) + 1) == '\0') {
-                            int length = snprintf(jai_case, sizeof(jai_case),
-                                "%s %.*s {", complete ? "match!" : "match?",
-                                (int)(equals - condition), condition);
-                            if(length < 0 || (size_t)length >= sizeof(jai_case))
-                                die_at(span, "if-case condition exceeds statement limit");
-                            statement = jai_case;
-                            kind = ZIR_STMT_MATCH;
-                        }
+                           *skip_ws(skip_ws(equals + 2) + 1) == '\0')
+                            kind = ZIR_STMT_IF_CASE;
                     }
-                    FunctionAddStmt(fn, kind, statement, "", span);
+                    FunctionAddStmt(fn, kind, t, span);
                 }
                 depth += brace_delta;
                 if(depth < 0)
@@ -3405,39 +5894,96 @@ parse_source(const char *path, const char *root, FILE *in, const char *source)
             die_at(Span(rel, line_no, 1), "invalid top-level declaration");
         }
     }
+    if(mode != TOP)
+        die_at(Span(rel, line_no, 1),
+               "unterminated declaration or function body");
+    if(tframe_count > 0 || type_frame_count > 0 ||
+       body_mcount > 0)
+        die_at(Span(rel, line_no, 1), "unterminated #if block");
     if(program_export)
         die_at(Span(rel, program_export_line, 1),
                "#program_export must precede a function declaration");
-    if(slot_frame_count)
-        die_at(Span(rel, line_no, 1), "unterminated slot body");
-    if(in != NULL)
-        fclose(in);
-    for(int mi = 0; mi < program->module_count; mi++)
-        for(int fi = 0; fi < program->modules[mi].function_count; fi++) {
-            if(!LowerCleanup(&program->modules[mi].functions[fi])) {
+    for(int mi = 0; mi < program->module_count; mi++) {
+        ZirModule *module = &program->modules[mi];
+        add_default_helpers(program, module, path, root,
+                            resolver, resolver_context);
+        for(int gi = 0; gi < module->global_count; gi++) {
+            ZirGlobal *global = &module->globals[gi];
+            copy_text(module->lookup_path, sizeof(module->lookup_path),
+                      global->span.path);
+            if(find_unquoted_text(global->init, "#ifx") != NULL)
+                lower_compile_ifx_value(global->init, sizeof(global->init),
+                                        module, &consts, global->span, 1);
+            if(find_unquoted_text(global->init, "#ifx") == NULL &&
+               find_unquoted_word(global->init, "size_of") != NULL)
+                lower_size_of_value(global->init, sizeof(global->init),
+                                    module, global->span);
+        }
+        for(int fi = 0; fi < module->function_count; fi++) {
+            ZirFunction *fn = &module->functions[fi];
+            copy_text(module->lookup_path, sizeof(module->lookup_path),
+                      fn->span.path);
+            int has_compile_ifx = 0;
+            for(int si = 0; si < fn->stmt_count; si++)
+                if(find_unquoted_text(fn->stmts[si].text, "#ifx") != NULL) {
+                    has_compile_ifx = 1;
+                    break;
+                }
+            if(has_compile_ifx)
+                lower_compile_ifx_function(fn, module, &consts, 1);
+            int has_size_of = 0;
+            for(int si = 0; si < fn->stmt_count; si++)
+                if(find_unquoted_word(fn->stmts[si].text, "size_of") != NULL) {
+                    has_size_of = 1;
+                    break;
+                }
+            if(has_size_of &&
+               !function_has_compile_ifx(fn))
+                lower_size_of_function(fn, module);
+            if(!NormalizeJaiBodies(fn) || !BindJaiLoopControls(fn) ||
+               !LowerCleanup(fn)) {
                 ProgramFree(program);
                 free(consts.items);
-                free(block_calls);
+                free(canonical);
                 return NULL;
             }
-            StructureFunction(&program->modules[mi].functions[fi], &program->modules[mi]);
+            if(!LowerJaiFor(fn, module)) {
+                ProgramFree(program);
+                free(consts.items);
+                free(canonical);
+                return NULL;
+            }
+            StructureFunction(fn, module);
         }
+        module->lookup_path[0] = '\0';
+    }
     free(consts.items);
-    free(block_calls);
+    free(canonical);
+    return program;
+}
+
+ZirProgram *
+parse_file_with_imports(const char *path, const char *root,
+                        ZirCompileImportResolver resolver, void *context)
+{
+    char *lowered = read_lowered_source(path);
+    ZirProgram *program = parse_source(path, root, lowered,
+                                       resolver, context);
+    free(lowered);
     return program;
 }
 
 ZirProgram *
 parse_file(const char *path, const char *root)
 {
-    FILE *in = fopen(path, "rb");
-    if(in == NULL)
-        die_at(Span(path, 0, 0), "open failed: %s", strerror(errno));
-    return parse_source(path, root, in, NULL);
+    return parse_file_with_imports(path, root, NULL, NULL);
 }
 
 ZirProgram *
 parse_source_text(const char *path, const char *source)
 {
-    return parse_source(path, ".", NULL, source);
+    char *lowered = lower_jai_multiline_strings(source, path);
+    ZirProgram *program = parse_source(path, ".", lowered, NULL, NULL);
+    free(lowered);
+    return program;
 }

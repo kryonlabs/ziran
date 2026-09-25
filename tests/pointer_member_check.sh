@@ -53,7 +53,7 @@ for input in source saved; do
     fi
     output=$work/$input
 
-    "$bin/zi2c" --no-main --strict --root "$root" -o "$output/c" "$file"
+    "$bin/zi2c" --no-main --root "$root" -o "$output/c" "$file"
     cat > "$output/c/main.c" <<'C'
 #include "read.h"
 int main(void) {
@@ -64,11 +64,11 @@ int main(void) {
 }
 C
     "${CC:-cc}" -std=c11 -I"$repo/include" -I"$output/c" \
-        "$output/c/types.c" "$output/c/read.c" "$output/c/main.c" \
+        "$output/c/read.c" "$output/c/main.c" \
         -o "$output/c/test"
     env -u DISPLAY -u WAYLAND_DISPLAY "$output/c/test"
 
-    "$bin/zi2cpp" --no-main --strict --root "$root" -o "$output/cpp" "$file"
+    "$bin/zi2cpp" --no-main --root "$root" -o "$output/cpp" "$file"
     cat > "$output/cpp/main.cpp" <<'CPP'
 #include "read.hpp"
 int main() {
@@ -79,11 +79,11 @@ int main() {
 }
 CPP
     "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$output/cpp" \
-        "$output/cpp/types.cpp" "$output/cpp/read.cpp" "$output/cpp/main.cpp" \
+        "$output/cpp/read.cpp" "$output/cpp/main.cpp" \
         -o "$output/cpp/test"
     env -u DISPLAY -u WAYLAND_DISPLAY "$output/cpp/test"
 
-    "$bin/zi2go" --no-main --strict --root "$root" -o "$output/go" "$file"
+    "$bin/zi2go" --no-main --root "$root" -o "$output/go" "$file"
     cat > "$output/go/read_test.go" <<'GO'
 package ziran
 import "testing"

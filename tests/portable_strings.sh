@@ -22,11 +22,11 @@ Same :: (left: string, right: string) -> bool {
 #program_export
 Answer :: () -> s32 {
     if Greeting != "hello \"Ziran\"" || GreetingAlias != Greeting { return 0 }
-    if Greeting.length != 13 { return 0 }
+    if Greeting.count != 13 { return 0 }
     empty: string
-    if empty.length != 0 || empty != "" { return 0 }
+    if empty.count != 0 || empty != "" { return 0 }
     text: string = "a\u00e9\x00z"
-    if text.length != 5 { return 0 }
+    if text.count != 5 { return 0 }
     if text[0] != cast(u8)97 || text[1] != cast(u8)0xc3 ||
        text[2] != cast(u8)0xa9 || text[3] != cast(u8)0 ||
        text[4] != cast(u8)122 { return 0 }
@@ -35,7 +35,7 @@ Answer :: () -> s32 {
     pair.second = "a\u00e9\x00z"
     if !Same(pair.first, pair.second) { return 0 }
     if pair.first == "a\u00e9z" { return 0 }
-    if "\U0001f642".length != 4 { return 0 }
+    if "\U0001f642".count != 4 { return 0 }
     return 42
 }
 EOF
@@ -59,7 +59,7 @@ for input in source ir; do
     for target in c cpp go; do
         output="$work/$target-$input"
         if test "$target" = go; then
-            "$ziran" build --target=go --strict --pkg main --root "$work" \
+            "$ziran" build --target=go --pkg main --root "$work" \
                 -o "$output" "$filename"
             cat > "$output/main.go" <<'GO'
 package main
@@ -67,7 +67,7 @@ func main() { if Strings_Answer() != 42 { panic("wrong string result") } }
 GO
             GO111MODULE=off go run "$output/strings.go" "$output/main.go"
         elif test "$target" = c; then
-            "$ziran" build --target=c --strict --root "$work" \
+            "$ziran" build --target=c --root "$work" \
                 -o "$output" "$filename"
             cat > "$output/main.c" <<'C'
 #include "strings.h"
@@ -77,7 +77,7 @@ C
                 "$output/main.c" -o "$output/app"
             "$output/app"
         else
-            "$ziran" build --target=cpp --strict --root "$work" \
+            "$ziran" build --target=cpp --root "$work" \
                 -o "$output" "$filename"
             cat > "$output/main.cpp" <<'CPP'
 #include "strings.hpp"

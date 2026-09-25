@@ -11,7 +11,7 @@ TypeNextField(const ZirType *record, size_t *offset, ZirTypeField *field)
     size_t length = strlen(record->body);
 
     memset(field, 0, sizeof(*field));
-    if(record->is_enum || record->is_slot)
+    if(record->is_enum || record->is_procedure_type)
         return -1;
     while(*offset < length) {
         const char *start = record->body + *offset;
@@ -58,81 +58,6 @@ TypeNextField(const ZirType *record, size_t *offset, ZirTypeField *field)
         return 1;
     }
     return 0;
-}
-
-int
-VariantNextCase(const ZirType *variant, size_t *offset,
-                ZirVariantCase *item)
-{
-    size_t length = strlen(variant->variant_cases);
-    memset(item, 0, sizeof(*item));
-    if(!variant->is_variant && !variant->is_variant_template)
-        return -1;
-    while(*offset < length) {
-        const char *start = variant->variant_cases + *offset;
-        const char *newline = strchr(start, '\n');
-        const char *end = newline ? newline : variant->variant_cases + length;
-        *offset = newline ? (size_t)(newline - variant->variant_cases) + 1 : length;
-        while(start < end && isspace((unsigned char)*start)) start++;
-        while(end > start && isspace((unsigned char)end[-1])) end--;
-        if(end > start && (end[-1] == ',' || end[-1] == ';')) end--;
-        while(end > start && isspace((unsigned char)end[-1])) end--;
-        if(start == end) continue;
-        const char *colon = memchr(start, ':', (size_t)(end - start));
-        const char *name_end = colon ? colon : end;
-        while(name_end > start && isspace((unsigned char)name_end[-1])) name_end--;
-        size_t name_length = (size_t)(name_end - start);
-        if(name_length == 0 || name_length >= sizeof(item->name) ||
-           (!isalpha((unsigned char)*start) && *start != '_'))
-            return -1;
-        for(const char *cursor = start + 1; cursor < name_end; cursor++)
-            if(!isalnum((unsigned char)*cursor) && *cursor != '_')
-                return -1;
-        memcpy(item->name, start, name_length);
-        if(colon) {
-            const char *type = colon + 1;
-            while(type < end && isspace((unsigned char)*type)) type++;
-            size_t type_length = (size_t)(end - type);
-            if(type_length == 0 || type_length >= sizeof(item->type))
-                return -1;
-            memcpy(item->type, type, type_length);
-        }
-        return 1;
-    }
-    return 0;
-}
-
-int
-VariantLayoutValid(const ZirType *variant)
-{
-    char body[sizeof(variant->body)];
-    int written = snprintf(body, sizeof(body), "variant_tag: i32\n");
-    if(!variant->is_variant || written < 0 ||
-       (size_t)written >= sizeof(body))
-        return 0;
-    size_t used = (size_t)written, offset = 0;
-    ZirVariantCase item, earlier;
-    int count = 0, status;
-    while((status = VariantNextCase(variant, &offset, &item)) == 1) {
-        size_t previous = 0;
-        while(previous < offset) {
-            if(VariantNextCase(variant, &previous, &earlier) != 1)
-                return 0;
-            if(previous == offset) break;
-            if(!strcmp(earlier.name, item.name))
-                return 0;
-        }
-        if(item.type[0]) {
-            written = snprintf(body + used, sizeof(body) - used,
-                               "variant_payload_%s: %s\n", item.name,
-                               item.type);
-            if(written < 0 || (size_t)written >= sizeof(body) - used)
-                return 0;
-            used += (size_t)written;
-        }
-        count++;
-    }
-    return status == 0 && count > 0 && !strcmp(body, variant->body);
 }
 
 int
@@ -204,10 +129,43 @@ ArrayElementType(const char *type, char *element, size_t element_size,
     return 1;
 }
 
+int
+VecElementType(const ZirModule *module, const char *name,
+               char *element, size_t element_size)
+{
+    if(module == NULL || name == NULL)
+        return 0;
+    const ZirType *type = FindType(module, name, NULL);
+    if(type == NULL || !type->is_owned_vec || type->is_enum || type->is_procedure_type ||
+       type->is_record_template || type->is_extern)
+        return 0;
+    size_t offset = 0;
+    ZirTypeField field;
+    if(TypeNextField(type, &offset, &field) != 1 ||
+       strcmp(field.name, "data") || field.type[0] != '*' ||
+       !field.type[1])
+        return 0;
+    char item[ZIR_NAME_MAX];
+    strcpy(item, field.type + 1);
+    if(TypeNextField(type, &offset, &field) != 1 ||
+       strcmp(field.name, "count") || strcmp(field.type, "s64"))
+        return 0;
+    if(TypeNextField(type, &offset, &field) != 1 ||
+       strcmp(field.name, "capacity") || strcmp(field.type, "s64"))
+        return 0;
+    if(TypeNextField(type, &offset, &field) != 0)
+        return 0;
+    if(element != NULL) {
+        if(strlen(item) >= element_size) return 0;
+        strcpy(element, item);
+    }
+    return 1;
+}
+
 static int
 enum_has_member(const ZirType *type, const char *name)
 {
-    if(!type->is_enum && strcmp(type->name, "#enum") != 0)
+    if(!type->is_enum)
         return 0;
     const char *cursor = type->body;
     while(*cursor) {
@@ -225,15 +183,29 @@ enum_has_member(const ZirType *type, const char *name)
     return 0;
 }
 
+static int
+file_scope_visible(const ZirModule *module, int is_file_private,
+                   ZirSourceSpan span)
+{
+    return !is_file_private || module->lookup_path[0] == '\0' ||
+           strcmp(module->lookup_path, span.path) == 0;
+}
+
+static int
+file_scope_visible_at(const char *source_path, int is_file_private,
+                      ZirSourceSpan span)
+{
+    return !is_file_private || source_path == NULL || !source_path[0] ||
+           strcmp(source_path, span.path) == 0;
+}
+
 int
 ResolveEnumMember(const ZirModule *module, const char *name,
                      const ZirModule **owner, const ZirType **type)
 {
     *owner = NULL;
     *type = NULL;
-    /* An empty identifier is never a member reference: unsupported host
-     * expressions lower to empty names and the lenient checker relies on
-     * them staying unresolved instead of turning into ambiguity errors. */
+    /* An empty identifier is never a member reference. */
     if(!*name)
         return 0;
     /* Local declarations shadow imports, just as functions and types do. */
@@ -242,7 +214,11 @@ ResolveEnumMember(const ZirModule *module, const char *name,
         for(int i = 0; i < count; i++) {
             const ZirModule *scope = module;
             if(pass != 0) {
-                if(module->imports[i].kind != ZIR_IMPORT_HEADER)
+                if(module->imports[i].kind != ZIR_IMPORT_OPEN)
+                    continue;
+                if(!file_scope_visible(module,
+                                       module->imports[i].is_file_private,
+                                       module->imports[i].span))
                     continue;
                 scope = module->imports[i].resolved_module;
             }
@@ -250,7 +226,9 @@ ResolveEnumMember(const ZirModule *module, const char *name,
                 continue;
             for(int j = 0; j < scope->type_count; j++) {
                 const ZirType *candidate = &scope->types[j];
-                if(pass != 0 && !candidate->is_public)
+                if((pass != 0 && !candidate->is_public) ||
+                   (pass == 0 && !file_scope_visible(
+                       module, candidate->is_file_private, candidate->span)))
                     continue;
                 if(!enum_has_member(candidate, name))
                     continue;
@@ -270,19 +248,68 @@ ResolveEnumMember(const ZirModule *module, const char *name,
 }
 
 int
-ResolveFunction(const ZirModule *module, const char *name,
-                   const ZirModule **owner, const ZirFunction **function)
+ResolveFunctionAt(const ZirModule *module, const char *name,
+                  const char *source_path, const ZirModule **owner,
+                  const ZirFunction **function)
 {
     *owner = NULL;
     *function = NULL;
+    const char *dot = strchr(name, '.');
+    if(dot != NULL) {
+        size_t alias_length = (size_t)(dot - name);
+        if(alias_length == 0 || dot[1] == '\0' || strchr(dot + 1, '.') != NULL)
+            return 0;
+        for(int i = 0; i < module->import_count; i++) {
+            const ZirImport *import = &module->imports[i];
+            const ZirModule *target = import->resolved_module;
+            if(import->kind != ZIR_IMPORT_MODULE || target == NULL ||
+               !file_scope_visible_at(source_path, import->is_file_private,
+                                      import->span) ||
+               strlen(import->name) != alias_length ||
+               strncmp(import->name, name, alias_length) != 0)
+                continue;
+            for(int f = 0; f < target->function_count; f++) {
+                const ZirFunction *candidate = &target->functions[f];
+                if(candidate->is_public && !strcmp(candidate->name, dot + 1)) {
+                    if(*function != NULL && *function != candidate) {
+                        *owner = NULL;
+                        *function = NULL;
+                        return -1;
+                    }
+                    *owner = target;
+                    *function = candidate;
+                }
+            }
+        }
+        return *function != NULL;
+    }
     for(int i = 0; i < module->function_count; i++) {
-        if(strcmp(module->functions[i].name, name) == 0) {
+        const ZirFunction *candidate = &module->functions[i];
+        if(strcmp(candidate->name, name) != 0 ||
+           !file_scope_visible_at(source_path, candidate->is_file_private,
+                                  candidate->span))
+            continue;
+        if(candidate->is_file_private) {
             *owner = module;
-            *function = &module->functions[i];
+            *function = candidate;
             return 1;
         }
+        if(*function != NULL) {
+            *owner = NULL;
+            *function = NULL;
+            return -1;
+        }
+        *owner = module;
+        *function = candidate;
     }
+    if(*function != NULL)
+        return 1;
     for(int i = 0; i < module->import_count; i++) {
+        if(module->imports[i].kind != ZIR_IMPORT_OPEN ||
+           !file_scope_visible_at(source_path,
+                                  module->imports[i].is_file_private,
+                                  module->imports[i].span))
+            continue;
         const ZirModule *imported = module->imports[i].resolved_module;
         if(imported == NULL)
             continue;
@@ -302,17 +329,65 @@ ResolveFunction(const ZirModule *module, const char *name,
     return *function != NULL;
 }
 
+int
+ResolveFunction(const ZirModule *module, const char *name,
+                const ZirModule **owner, const ZirFunction **function)
+{
+    return ResolveFunctionAt(module, name, module->lookup_path,
+                             owner, function);
+}
+
 const ZirType *
 FindType(const ZirModule *module, const char *name, const ZirModule **owner)
 {
     const ZirType *found = NULL;
     const ZirModule *scope = NULL;
+    const char *dot = strchr(name, '.');
 
     if(owner)
         *owner = NULL;
 
+    if(dot != NULL) {
+        size_t alias_length = (size_t)(dot - name);
+        if(alias_length == 0 || dot[1] == '\0' || strchr(dot + 1, '.') != NULL)
+            return NULL;
+        for(int i = 0; i < module->import_count; i++) {
+            const ZirImport *import = &module->imports[i];
+            const ZirModule *target = import->resolved_module;
+            if(import->kind != ZIR_IMPORT_MODULE || target == NULL ||
+               !file_scope_visible(module, import->is_file_private,
+                                   import->span) ||
+               strlen(import->name) != alias_length ||
+               strncmp(import->name, name, alias_length) != 0)
+                continue;
+            for(int t = 0; t < target->type_count; t++) {
+                const ZirType *candidate = &target->types[t];
+                if(!candidate->is_public || strcmp(candidate->name, dot + 1))
+                    continue;
+                if(found != NULL && found != candidate)
+                    return NULL;
+                found = candidate;
+                scope = target;
+            }
+        }
+        if(owner)
+            *owner = scope;
+        return found;
+    }
+
     for(int i = 0; i < module->type_count; i++) {
-        if(strcmp(module->types[i].name, name) == 0) {
+        const ZirType *candidate = &module->types[i];
+        if(candidate->is_file_private &&
+           strcmp(candidate->name, name) == 0 &&
+           file_scope_visible(module, 1, candidate->span)) {
+            if(owner) *owner = module;
+            return candidate;
+        }
+    }
+    for(int i = 0; i < module->type_count; i++) {
+        if(strcmp(module->types[i].name, name) == 0 &&
+           file_scope_visible(module, module->types[i].is_file_private,
+                              module->types[i].span)) {
             if(owner)
                 *owner = module;
             return &module->types[i];
@@ -321,7 +396,9 @@ FindType(const ZirModule *module, const char *name, const ZirModule **owner)
     for(int i = 0; i < module->import_count; i++) {
         const ZirImport *import = &module->imports[i];
         const ZirModule *target = import->resolved_module;
-        if(import->kind != ZIR_IMPORT_HEADER || target == NULL)
+        if(import->kind != ZIR_IMPORT_OPEN || target == NULL ||
+           !file_scope_visible(module, import->is_file_private,
+                               import->span))
             continue;
         for(int j = 0; j < target->type_count; j++) {
             const ZirType *candidate = &target->types[j];
@@ -386,9 +463,7 @@ ProgramFree(ZirProgram *program)
         for(j = 0; j < m->function_count; j++) {
             free(m->functions[j].stmts);
             free(m->functions[j].exprs);
-            free(m->functions[j].captures);
         }
-        free(m->state_fields);
         free(m->globals);
         free(m->imports);
         free(m->functions);
@@ -442,29 +517,6 @@ ProgramAddModule(ZirProgram *program, const char *name,
     return m;
 }
 
-ZirStateField *
-ModuleAddStateField(ZirModule *module, const char *name, const char *type,
-                       const char *init, ZirSourceSpan span)
-{
-    ZirStateField *fields;
-    ZirStateField *f;
-
-    if(module == NULL)
-        return NULL;
-    fields = realloc_array(module->state_fields, &module->state_cap,
-                               module->state_count, sizeof(ZirStateField));
-    if(fields == NULL)
-        return NULL;
-    module->state_fields = fields;
-    f = &module->state_fields[module->state_count++];
-    memset(f, 0, sizeof(*f));
-    copy_text(f->name, sizeof(f->name), name);
-    copy_text(f->type, sizeof(f->type), type);
-    copy_text(f->init, sizeof(f->init), init);
-    f->span = span;
-    return f;
-}
-
 ZirImport *
 ModuleAddImport(ZirModule *module, ZirImportKind kind, const char *name,
                    const char *target, const char *signature, int required,
@@ -513,6 +565,30 @@ ModuleAddFunction(ZirModule *module, const char *name, const char *args,
     fn->exported = exported;
     fn->span = span;
     return fn;
+}
+
+void
+FunctionDefaultHelperName(const ZirFunction *function, int parameter,
+                          char *out, size_t size)
+{
+    uint64_t hash = UINT64_C(14695981039346656037);
+    const char *pieces[] = {function->span.path, function->name, NULL};
+    for(int i = 0; pieces[i] != NULL; i++) {
+        for(const unsigned char *p = (const unsigned char *)pieces[i]; *p; p++) {
+            hash ^= *p;
+            hash *= UINT64_C(1099511628211);
+        }
+        hash ^= 0xff;
+        hash *= UINT64_C(1099511628211);
+    }
+    unsigned int numbers[] = {(unsigned int)function->span.line,
+                              (unsigned int)parameter};
+    for(size_t i = 0; i < sizeof(numbers) / sizeof(numbers[0]); i++)
+        for(int byte = 0; byte < 4; byte++) {
+            hash ^= (numbers[i] >> (byte * 8)) & 0xffu;
+            hash *= UINT64_C(1099511628211);
+        }
+    snprintf(out, size, "zi_default_%016llx", (unsigned long long)hash);
 }
 
 void
@@ -615,7 +691,7 @@ ModuleAddType(ZirModule *module, const char *name, ZirSourceSpan span)
 
 ZirStmt *
 FunctionAddStmt(ZirFunction *fn, ZirStmtKind kind, const char *text,
-                   const char *callee, ZirSourceSpan span)
+                   ZirSourceSpan span)
 {
     ZirStmt *stmts;
     ZirStmt *st;
@@ -631,21 +707,9 @@ FunctionAddStmt(ZirFunction *fn, ZirStmtKind kind, const char *text,
     memset(st, 0, sizeof(*st));
     st->kind = kind;
     copy_text(st->text, sizeof(st->text), text);
-    copy_text(st->callee, sizeof(st->callee), callee);
     st->expr_root = -1;
     st->lhs_root = -1;
     st->span = span;
-    return st;
-}
-
-ZirStmt *
-FunctionAddBlockCall(ZirFunction *fn, const char *callee, const char *args,
-                     const char *text, ZirSourceSpan span)
-{
-    ZirStmt *st = FunctionAddStmt(fn, ZIR_STMT_BLOCK_CALL, text, callee, span);
-
-    if(st != NULL)
-        copy_text(st->args, sizeof(st->args), args);
     return st;
 }
 
@@ -671,6 +735,7 @@ FunctionAddExpr(ZirFunction *fn, ZirExprKind kind, const char *text,
     expr->first_child = -1;
     expr->next_sibling = -1;
     expr->third = -1;
+    expr->argument_index = -1;
     copy_text(expr->text, sizeof(expr->text), text);
     expr->span = span;
     return expr;
@@ -680,11 +745,9 @@ const char *
 ImportKindName(ZirImportKind kind)
 {
     switch(kind) {
-    case ZIR_IMPORT_HEADER: return "header";
+    case ZIR_IMPORT_OPEN: return "open";
     case ZIR_IMPORT_MODULE: return "module";
     case ZIR_IMPORT_EXTERN: return "extern";
-    case ZIR_IMPORT_CAPABILITY: return "capability";
-    case ZIR_IMPORT_HOST: return "host";
     default: return "unknown";
     }
 }
@@ -718,10 +781,8 @@ ExprKindName(ZirExprKind kind)
     case ZIR_EXPR_CAST: return "cast";
     case ZIR_EXPR_COMPOUND: return "compound";
     case ZIR_EXPR_FIELD_INIT: return "field_initializer";
-    case ZIR_EXPR_SIZEOF: return "sizeof";
-    case ZIR_EXPR_CHAR: return "char";
+    case ZIR_EXPR_SIZE_OF: return "size_of";
     case ZIR_EXPR_CONDITIONAL: return "conditional";
-    case ZIR_EXPR_POSTFIX: return "postfix";
     default: return "unknown";
     }
 }
@@ -738,19 +799,14 @@ StmtKindName(ZirStmtKind kind)
     case ZIR_STMT_IF: return "if";
     case ZIR_STMT_WHILE: return "while";
     case ZIR_STMT_FOR: return "for";
-    case ZIR_STMT_SWITCH: return "switch";
     case ZIR_STMT_CASE: return "case";
     case ZIR_STMT_RETURN: return "return";
     case ZIR_STMT_BREAK: return "break";
     case ZIR_STMT_CONTINUE: return "continue";
-    case ZIR_STMT_GOTO: return "goto";
-    case ZIR_STMT_LABEL: return "label";
     case ZIR_STMT_DEFER: return "defer";
     case ZIR_STMT_UNUSED: return "unused";
-    case ZIR_STMT_RAW: return "raw";
-    case ZIR_STMT_BLOCK_CALL: return "block_call";
     case ZIR_STMT_UNREACHABLE: return "unreachable";
-    case ZIR_STMT_MATCH: return "match";
+    case ZIR_STMT_IF_CASE: return "if-case";
     default: return "unknown";
     }
 }
@@ -821,14 +877,6 @@ ProgramDump(const ZirProgram *program, FILE *out)
             dump_span(out, imp->span);
             fprintf(out, "\n");
         }
-        for(j = 0; j < m->state_count; j++) {
-            const ZirStateField *f = &m->state_fields[j];
-
-            fprintf(out, "  state %s type %s init %s span ",
-                    f->name, f->type, f->init);
-            dump_span(out, f->span);
-            fprintf(out, "\n");
-        }
         for(j = 0; j < m->assert_count; j++) {
             const ZirAssert *a = &m->asserts[j];
 
@@ -848,9 +896,8 @@ ProgramDump(const ZirProgram *program, FILE *out)
             for(k = 0; k < fn->stmt_count; k++) {
                 const ZirStmt *st = &fn->stmts[k];
 
-                fprintf(out, "    stmt %s callee %s args %s text %s span ",
-                        StmtKindName(st->kind), st->callee, st->args,
-                        st->text);
+                fprintf(out, "    stmt %s text %s span ",
+                        StmtKindName(st->kind), st->text);
                 dump_span(out, st->span);
                 fprintf(out, "\n");
                 if(st->expr_root >= 0)

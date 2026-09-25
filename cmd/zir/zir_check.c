@@ -3,6 +3,7 @@
 #include "zir_text.h"
 #include "zir_emit.h"
 #include "zir_expr.h"
+#include "zir_token.h"
 #include "zir_parse.h"
 #include "zir_diagnostic.h"
 
@@ -10,7 +11,6 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include <string.h>
 
 typedef struct Binding {
@@ -19,40 +19,366 @@ typedef struct Binding {
     int depth;
 } Binding;
 
+typedef struct SpecializationRequest {
+    ZirModule *template_owner;
+    ZirModule *instance_owner;
+    int template_index;
+    char name[ZIR_NAME_MAX];
+    char type[ZIR_NAME_MAX];
+    ZirSourceSpan call_span;
+} SpecializationRequest;
+
 typedef struct Checker {
-    struct Checker *parent;
     ZirProgram **programs;
     int program_count;
     ZirModule *module;
     ZirFunction *fn;
+    ZirStmt *current_stmt;
+    char expected_type[ZIR_NAME_MAX];
     Binding *bindings;
-    int count, capacity, depth, strict, errors, failed;
+    int count, capacity, depth, errors, failed;
+    int inference_only;
+    SpecializationRequest *specializations;
+    int specialization_count, specialization_capacity;
 } Checker;
+
+static void
+select_lookup_file(ZirModule *module, ZirSourceSpan span)
+{
+    copy_text(module->lookup_path, sizeof(module->lookup_path), span.path);
+}
+
+static int
+in_lookup_file(const ZirModule *module, int is_file_private,
+               ZirSourceSpan span)
+{
+    return !is_file_private || module->lookup_path[0] == '\0' ||
+           strcmp(module->lookup_path, span.path) == 0;
+}
+
+static int
+file_private_name(const ZirModule *module, const char *name,
+                  const char *path)
+{
+    /* A declaration visible in this file wins over private declarations
+     * with the same spelling in other loaded files. */
+    for(int i = 0; i < module->function_count; i++)
+        if(strcmp(module->functions[i].name, name) == 0 &&
+           (!module->functions[i].is_file_private ||
+            strcmp(module->functions[i].span.path, path) == 0)) return 0;
+    for(int i = 0; i < module->global_count; i++)
+        if(strcmp(module->globals[i].name, name) == 0 &&
+           (!module->globals[i].is_file_private ||
+            strcmp(module->globals[i].span.path, path) == 0)) return 0;
+    for(int i = 0; i < module->define_count; i++)
+        if(strcmp(module->defines[i].name, name) == 0 &&
+           (!module->defines[i].is_file_private ||
+            strcmp(module->defines[i].span.path, path) == 0)) return 0;
+    for(int i = 0; i < module->type_count; i++)
+        if(strcmp(module->types[i].name, name) == 0 &&
+           (!module->types[i].is_file_private ||
+            strcmp(module->types[i].span.path, path) == 0)) return 0;
+    for(int i = 0; i < module->import_count; i++)
+        if(strcmp(module->imports[i].name, name) == 0 &&
+           (!module->imports[i].is_file_private ||
+            strcmp(module->imports[i].span.path, path) == 0)) return 0;
+    for(int i = 0; i < module->function_count; i++)
+        if(module->functions[i].is_file_private &&
+           strcmp(module->functions[i].span.path, path) != 0 &&
+           strcmp(module->functions[i].name, name) == 0)
+            return 1;
+    for(int i = 0; i < module->global_count; i++)
+        if(module->globals[i].is_file_private &&
+           strcmp(module->globals[i].span.path, path) != 0 &&
+           strcmp(module->globals[i].name, name) == 0)
+            return 1;
+    for(int i = 0; i < module->define_count; i++)
+        if(module->defines[i].is_file_private &&
+           strcmp(module->defines[i].span.path, path) != 0 &&
+           strcmp(module->defines[i].name, name) == 0)
+            return 1;
+    for(int i = 0; i < module->type_count; i++)
+        if(module->types[i].is_file_private &&
+           strcmp(module->types[i].span.path, path) != 0 &&
+           strcmp(module->types[i].name, name) == 0)
+            return 1;
+    for(int i = 0; i < module->import_count; i++)
+        if(module->imports[i].is_file_private &&
+           strcmp(module->imports[i].span.path, path) != 0 &&
+           strcmp(module->imports[i].name, name) == 0)
+            return 1;
+    return 0;
+}
+
+static int
+check_file_private_expression(const ZirModule *module, const char *source,
+                              ZirSourceSpan span)
+{
+    ZirLexer lexer;
+    ZirToken previous = {0};
+    ZirToken current, next;
+    LexerInit(&lexer, source, span.path);
+    current = LexerNext(&lexer);
+    next = LexerNext(&lexer);
+    while(current.kind != ZIR_TOKEN_EOF) {
+        if(current.kind == ZIR_TOKEN_IDENT &&
+           strcmp(previous.text, ".") != 0 &&
+           strcmp(next.text, ":") != 0 &&
+           file_private_name(module, current.text, span.path)) {
+            Diagnostic(span, "check.file_scope",
+                       "file-private declaration is not visible: %s",
+                       current.text);
+            return 0;
+        }
+        previous = current;
+        current = next;
+        next = LexerNext(&lexer);
+    }
+    return 1;
+}
 
 const char *
 ScalarType(const char *type)
 {
     static const struct { const char *source, *type; } types[] = {
-        {"int", "i32"}, {"unsigned int", "u32"}, {"unsigned", "u32"},
-        {"int8_t", "i8"}, {"int16_t", "i16"}, {"int32_t", "i32"}, {"int64_t", "i64"},
-        {"uint8_t", "u8"}, {"uint16_t", "u16"}, {"uint32_t", "u32"}, {"uint64_t", "u64"},
-        {"float", "f32"}, {"double", "f64"}, {"intptr_t", "isize"}, {"uintptr_t", "usize"},
-        {"size_t", "usize"}, {"ptrdiff_t", "isize"}, {"char", "char"},
-        {"bool", "bool"}, {"void", "void"}, {"i8", "i8"}, {"u8", "u8"},
-        {"i16", "i16"}, {"u16", "u16"}, {"i32", "i32"}, {"u32", "u32"},
-        {"i64", "i64"}, {"u64", "u64"}, {"isize", "isize"}, {"usize", "usize"},
-        {"f32", "f32"}, {"f64", "f64"}, {"string", "string"}, {NULL, NULL}
+        {"bool", "bool"}, {"void", "void"}, {"s8", "s8"}, {"u8", "u8"},
+        {"s16", "s16"}, {"u16", "u16"}, {"s32", "s32"}, {"u32", "u32"},
+        {"s64", "s64"}, {"u64", "u64"}, {"isize", "isize"}, {"usize", "usize"},
+        {"float32", "float32"}, {"float64", "float64"}, {"string", "string"}, {NULL, NULL}
     };
     for(int i = 0; types[i].source; i++)
         if(!strcmp(type, types[i].source)) return types[i].type;
     return "";
 }
 
+static int
+contains_vec(const ZirModule *module, const char *type, int depth)
+{
+    if(depth > 32 || type == NULL || !*type || *type == '*')
+        return 0;
+    if(VecElementType(module, type, NULL, 0))
+        return 1;
+    char element[ZIR_NAME_MAX];
+    if(ArrayElementType(type, element, sizeof(element), NULL))
+        return contains_vec(module, element, depth + 1);
+    const ZirModule *owner = NULL;
+    const ZirType *record = FindType(module, type, &owner);
+    if(record == NULL || record->is_enum || record->is_procedure_type ||
+       record->is_record_template || record->is_extern)
+        return 0;
+    size_t offset = 0;
+    ZirTypeField field;
+    while(TypeNextField(record, &offset, &field) == 1)
+        if(contains_vec(owner ? owner : module, field.type, depth + 1))
+            return 1;
+    return 0;
+}
+
+static int
+align_size(size_t value, size_t alignment, size_t *rounded)
+{
+    if(alignment == 0 || value > SIZE_MAX - (alignment - 1))
+        return 0;
+    *rounded = ((value + alignment - 1) / alignment) * alignment;
+    return 1;
+}
+
+static int bound_expression(const ZirModule *module,
+                            const ZirFunction *expression, int index,
+                            int depth, int64_t *value);
+static const char *local_storage_error(const ZirModule *module,
+                                       const char *type);
+
+static int
+layout_type(const ZirModule *module, const char *source, int depth,
+            size_t *size, size_t *alignment)
+{
+    char type[ZIR_NAME_MAX], element[ZIR_NAME_MAX];
+    const char *scalar;
+    const ZirModule *owner = NULL;
+    const ZirType *record;
+    ZirType instance = {0};
+    int capacity = 0;
+
+    if(depth > 32 || strlen(source) >= sizeof(type)) return 0;
+    copy_text(type, sizeof(type), source);
+    trim_in_place(type);
+    if(type[0] == '(') {
+        int nesting = 0, wrapped = 1;
+        size_t length = strlen(type);
+        for(size_t i = 0; i < length; i++) {
+            if(type[i] == '(') nesting++;
+            else if(type[i] == ')' && --nesting < 0) wrapped = 0;
+            if(nesting == 0 && i + 1 < length) wrapped = 0;
+        }
+        if(wrapped && nesting == 0 && length > 2 &&
+           type[length - 1] == ')') {
+            type[length - 1] = '\0';
+            return layout_type(module, type + 1, depth + 1,
+                               size, alignment);
+        }
+    }
+    scalar = ScalarType(type);
+    if(!strcmp(scalar, "void")) { *size = 0; *alignment = 1; return 1; }
+    if(!strcmp(scalar, "bool") || !strcmp(scalar, "s8") ||
+       !strcmp(scalar, "u8")) {
+        *size = *alignment = 1; return 1;
+    }
+    if(!strcmp(scalar, "s16") || !strcmp(scalar, "u16")) {
+        *size = *alignment = 2; return 1;
+    }
+    if(!strcmp(scalar, "s32") || !strcmp(scalar, "u32") ||
+       !strcmp(scalar, "float32")) {
+        *size = *alignment = 4; return 1;
+    }
+    if(!strcmp(scalar, "s64") || !strcmp(scalar, "u64") ||
+       !strcmp(scalar, "float64")) {
+        *size = *alignment = 8; return 1;
+    }
+    if(!strcmp(scalar, "string")) {
+        struct { int64_t count; const char *data; } view;
+        *size = sizeof(view);
+        *alignment = _Alignof(view);
+        return 1;
+    }
+    if(SliceElementType(type, element, sizeof(element))) {
+        if(local_storage_error(module, type) != NULL)
+            return 0;
+        struct { void *data; int64_t count; } view;
+        *size = sizeof(view);
+        *alignment = _Alignof(view);
+        return 1;
+    }
+    if(!strcmp(scalar, "isize") || !strcmp(scalar, "usize") ||
+       type[0] == '*') {
+        *size = *alignment = sizeof(void *); return 1;
+    }
+    if(ArrayElementType(type, element, sizeof(element), &capacity)) {
+        size_t item_size, item_alignment;
+        if(capacity < 0) {
+            const char *close = strchr(type, ']');
+            char bound[ZIR_NAME_MAX];
+            ZirFunction probe = {0};
+            int64_t resolved = -1;
+            int root, status;
+            size_t length = close ? (size_t)(close - type - 1) : 0;
+            if(length == 0 || length >= sizeof(bound)) return 0;
+            memcpy(bound, type + 1, length);
+            bound[length] = '\0';
+            trim_in_place(bound);
+            root = ParseExpr(&probe, module, bound, Span("", 0, 0));
+            status = bound_expression(module, &probe, root,
+                                      depth + 1, &resolved);
+            free(probe.exprs);
+            if(status != 1 || resolved < 0 || resolved > INT32_MAX)
+                return 0;
+            capacity = (int)resolved;
+        }
+        if(!layout_type(module, element, depth + 1,
+                        &item_size, &item_alignment) ||
+           (item_size && (size_t)capacity > SIZE_MAX / item_size))
+            return 0;
+        *size = (size_t)capacity * item_size;
+        *alignment = item_alignment;
+        return 1;
+    }
+    record = FindType(module, type, &owner);
+    if(record == NULL) {
+        const char *opening = strchr(type, '(');
+        const char *closing = strrchr(type, ')');
+        if(opening != NULL && closing != NULL && closing[1] == '\0' &&
+           opening < closing) {
+            char base[ZIR_NAME_MAX];
+            size_t length = (size_t)(opening - type);
+            int nesting = 0, balanced = 1;
+            for(const char *cursor = opening; cursor <= closing; cursor++) {
+                if(*cursor == '(') nesting++;
+                else if(*cursor == ')' && --nesting < 0) balanced = 0;
+                if(nesting == 0 && cursor != closing) balanced = 0;
+            }
+            if(length > 0 && length < sizeof(base) && balanced &&
+               nesting == 0 &&
+               (size_t)(closing - opening - 1) <
+                   sizeof(instance.template_args)) {
+                memcpy(base, type, length);
+                base[length] = '\0';
+                trim_in_place(base);
+                const ZirType *generic = FindType(module, base, &owner);
+                if(generic != NULL && generic->is_record_template) {
+                    copy_text(instance.name, sizeof(instance.name), type);
+                    copy_text(instance.template_name,
+                              sizeof(instance.template_name), base);
+                    memcpy(instance.template_args, opening + 1,
+                           (size_t)(closing - opening - 1));
+                    instance.template_args[closing - opening - 1] = '\0';
+                    instance.is_type_instance = 1;
+                    if(!InstantiateGenericRecord(&instance, generic)) return 0;
+                    record = &instance;
+                }
+            }
+        }
+    } else if(record->is_type_instance) {
+        const ZirType *generic = FindType(owner ? owner : module,
+                                          record->template_name, NULL);
+        if(generic == NULL || !generic->is_record_template) return 0;
+        instance = *record;
+        instance.body[0] = '\0';
+        if(!InstantiateGenericRecord(&instance, generic)) return 0;
+        record = &instance;
+    }
+    if(record == NULL) {
+        for(int d = 0; d < module->define_count; d++) {
+            const ZirDefine *definition = &module->defines[d];
+            if(strcmp(definition->name, type) == 0 &&
+               in_lookup_file(module, definition->is_file_private,
+                              definition->span))
+                return layout_type(module, definition->value,
+                                   depth + 1, size, alignment);
+        }
+    }
+    if(record == NULL || record->is_procedure_type || record->is_extern ||
+       record->is_record_template || record->is_type_instance)
+        return 0;
+    if(record->is_enum)
+        return layout_type(owner ? owner : module, record->enum_backing,
+                           depth + 1, size, alignment);
+    size_t offset = 0, maximum_alignment = 1, field_offset = 0;
+    ZirTypeField field;
+    int result, field_count = 0;
+    while((result = TypeNextField(record, &field_offset, &field)) == 1) {
+        size_t field_size, field_alignment;
+        if(!layout_type(owner ? owner : module, field.type, depth + 1,
+                        &field_size, &field_alignment) ||
+           field_size == 0 ||
+           (!record->is_union &&
+            (!align_size(offset, field_alignment, &offset) ||
+             offset > SIZE_MAX - field_size)))
+            return 0;
+        if(record->is_union) {
+            if(field_size > offset) offset = field_size;
+        } else offset += field_size;
+        field_count++;
+        if(field_alignment > maximum_alignment)
+            maximum_alignment = field_alignment;
+    }
+    if(result < 0 || field_count == 0 ||
+       !align_size(offset, maximum_alignment, size))
+        return 0;
+    *alignment = maximum_alignment;
+    return 1;
+}
+
+int
+TypeLayout(const ZirModule *module, const char *type,
+           size_t *size, size_t *alignment)
+{
+    return layout_type(module, type, 0, size, alignment);
+}
+
 static void
 error(Checker *c, ZirSourceSpan span, const char *message, const char *detail)
 {
     c->errors++;
-    if(!c->strict) return;
     Diagnostic(span, "check.type", "%s%s%s",
             message, detail && *detail ? ": " : "", detail ? detail : "");
 }
@@ -64,19 +390,105 @@ signature_error(Checker *c, ZirSourceSpan span,
     error(c, span, message, name);
 }
 
+/* Keep children in source order. Their checked indices select the callee
+ * parameter while native emission and the VM evaluate them in that order. */
+static int
+bind_call_arguments(Checker *c, ZirExpr *call,
+                    char parts[][ZIR_TEXT_MAX], int expected,
+                    const char *display_name, const char *default_args)
+{
+    unsigned char used[64] = {0};
+    int actual = 0;
+    if(expected < 0 || expected > 64)
+        return 0;
+    for(int child = call->first_child; child >= 0;
+        child = c->fn->exprs[child].next_sibling) {
+        ZirExpr *argument = &c->fn->exprs[child];
+        int index = -1;
+        if(argument->argument_name[0]) {
+            size_t wanted = strlen(argument->argument_name);
+            for(int i = 0; i < expected; i++) {
+                const char *start = skip_ws(parts[i]);
+                const char *colon = strchr(start, ':');
+                if(colon == NULL) continue;
+                const char *end = colon;
+                while(end > start && isspace((unsigned char)end[-1])) end--;
+                if((size_t)(end - start) == wanted &&
+                   !strncmp(start, argument->argument_name, wanted)) {
+                    index = i;
+                    break;
+                }
+            }
+            if(index < 0) {
+                signature_error(c, argument->span,
+                                "unknown named argument", argument->argument_name);
+                return 0;
+            }
+        } else {
+            for(int i = 0; i < expected; i++)
+                if(!used[i]) { index = i; break; }
+            if(index < 0) {
+                signature_error(c, argument->span,
+                                "argument count mismatch", display_name);
+                return 0;
+            }
+        }
+        if(used[index]) {
+            signature_error(c, argument->span,
+                            "duplicate call argument", argument->argument_name);
+            return 0;
+        }
+        used[index] = 1;
+        argument->argument_index = index;
+        actual++;
+    }
+    if(actual != expected) {
+        int complete = 0;
+        if(c->inference_only && default_args != NULL && *default_args) {
+            char (*defaults)[ZIR_TEXT_MAX] = calloc(64, sizeof(*defaults));
+            if(defaults == NULL) { c->failed = 1; return 0; }
+            complete = split_top_level(default_args, defaults[0], 64,
+                                       sizeof(defaults[0])) == expected;
+            for(int i = 0; complete && i < expected; i++)
+                if(!used[i] && top_level_assignment(defaults[i]) == NULL)
+                    complete = 0;
+            free(defaults);
+        }
+        if(!complete) {
+            signature_error(c, call->span, "argument count mismatch", display_name);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void
 bind(Checker *c, const char *name, const char *type, ZirSourceSpan span)
 {
     if(!*name) return;
+    for(int i = 0; i < c->module->import_count; i++)
+        if(c->module->imports[i].kind == ZIR_IMPORT_MODULE &&
+           in_lookup_file(c->module,
+                          c->module->imports[i].is_file_private,
+                          c->module->imports[i].span) &&
+           strcmp(c->module->imports[i].name, name) == 0) {
+            error(c, span, "binding shadows an imported module", name);
+            return;
+        }
     for(int pass = 0; pass < 2; pass++) {
         int count = pass == 0 ? 1 : c->module->import_count;
         for(int i = 0; i < count; i++) {
             const ZirModule *scope = pass == 0 ? c->module :
                                      c->module->imports[i].resolved_module;
+            if(pass != 0 && c->module->imports[i].kind != ZIR_IMPORT_OPEN)
+                continue;
             if(scope == NULL)
                 continue;
             for(int d = 0; d < scope->define_count; d++)
                 if((pass == 0 || scope->defines[d].is_public) &&
+                   (pass != 0 || in_lookup_file(c->module,
+                       scope->defines[d].is_file_private,
+                       scope->defines[d].span)) &&
                    !strcmp(scope->defines[d].name, name)) {
                     error(c, span, "binding shadows a compile-time definition", name);
                     return;
@@ -111,31 +523,129 @@ function(Checker *c, const char *name, ZirSourceSpan span)
     return found;
 }
 
+static int
+replace_template_type(char *target, size_t capacity, const char *source,
+                      const char *parameter, const char *concrete)
+{
+    size_t used = 0, parameter_length = strlen(parameter);
+    for(const char *p = source; *p;) {
+        const char *start = p;
+        if(*p == '$' || isalpha((unsigned char)*p) || *p == '_') {
+            if(*p == '$') p++;
+            while(isalnum((unsigned char)*p) || *p == '_') p++;
+        } else p++;
+        size_t length = (size_t)(p - start);
+        int match = (length == parameter_length &&
+                     !strncmp(start, parameter, length)) ||
+                    (length == parameter_length + 1 && *start == '$' &&
+                     !strncmp(start + 1, parameter, parameter_length));
+        const char *piece = match ? concrete : start;
+        size_t piece_length = match ? strlen(concrete) : length;
+        if(used + piece_length >= capacity) return 0;
+        memcpy(target + used, piece, piece_length);
+        used += piece_length;
+    }
+    target[used] = '\0';
+    return 1;
+}
+
+static uint64_t
+specialization_hash(const ZirModule *owner, const ZirModule *instance_owner,
+                    const ZirFunction *fn,
+                    const char *type)
+{
+    uint64_t hash = UINT64_C(14695981039346656037);
+    const char *pieces[] = {owner->name, owner->source_path, fn->span.path,
+                            fn->name, type, instance_owner->source_path, NULL};
+    for(int i = 0; pieces[i]; i++) {
+        for(const unsigned char *p = (const unsigned char *)pieces[i]; *p; p++) {
+            hash ^= *p;
+            hash *= UINT64_C(1099511628211);
+        }
+        hash ^= 0xff;
+        hash *= UINT64_C(1099511628211);
+    }
+    unsigned int position[] = {(unsigned int)fn->span.line,
+                               (unsigned int)fn->span.column};
+    for(int i = 0; i < 2; i++) for(int shift = 0; shift < 32; shift += 8) {
+        hash ^= (position[i] >> shift) & 0xffu;
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+static int
+queue_specialization(Checker *c, const ZirModule *owner,
+                     const ZirModule *instance_owner,
+                     const ZirFunction *fn, const char *type,
+                     char *name, size_t name_size, ZirSourceSpan span)
+{
+    int length = snprintf(name, name_size, "__zi_spec_%016llx",
+                          (unsigned long long)specialization_hash(
+                              owner, instance_owner, fn, type));
+    if(length < 0 || (size_t)length >= name_size) return 0;
+    int index = (int)(fn - owner->functions);
+    for(int i = 0; i < instance_owner->function_count; i++) {
+        const ZirFunction *other = &instance_owner->functions[i];
+        if(strcmp(other->name, name)) continue;
+        if(other->is_specialization &&
+           !strcmp(other->specialization_type, type) &&
+           !strcmp(other->template_param, fn->template_param)) return 1;
+        error(c, span, "specialization name collision", name);
+        return 0;
+    }
+    for(int i = 0; i < c->specialization_count; i++) {
+        SpecializationRequest *request = &c->specializations[i];
+        if(request->instance_owner != instance_owner ||
+           strcmp(request->name, name)) continue;
+        if(request->template_owner == owner &&
+           request->template_index == index && !strcmp(request->type, type))
+            return 1;
+        error(c, span, "specialization name collision", name);
+        return 0;
+    }
+    if(c->specialization_count == c->specialization_capacity) {
+        int capacity = c->specialization_capacity ?
+            c->specialization_capacity * 2 : 8;
+        SpecializationRequest *next = realloc(c->specializations,
+            (size_t)capacity * sizeof(*next));
+        if(next == NULL) { c->failed = 1; return 0; }
+        c->specializations = next;
+        c->specialization_capacity = capacity;
+    }
+    SpecializationRequest *request =
+        &c->specializations[c->specialization_count++];
+    request->template_owner = (ZirModule *)owner;
+    request->instance_owner = (ZirModule *)instance_owner;
+    request->template_index = index;
+    request->call_span = span;
+    copy_text(request->name, sizeof(request->name), name);
+    copy_text(request->type, sizeof(request->type), type);
+    return 1;
+}
+
 static const char *
 lookup_lexical(Checker *c, const char *name)
 {
     for(int i = c->count - 1; i >= 0; i--)
         if(!strcmp(c->bindings[i].name, name))
             return c->bindings[i].type;
-    if(c->parent == NULL)
-        return "";
-    const char *type = lookup_lexical(c->parent, name);
-    if(!*type)
-        return "";
-    for(int i = 0; i < c->fn->capture_count; i++)
-        if(!strcmp(c->fn->captures[i].name, name))
-            return c->fn->captures[i].type;
-    ZirCapture *captures = realloc(c->fn->captures,
-        (size_t)(c->fn->capture_count + 1) * sizeof(*captures));
-    if(captures == NULL) {
-        c->failed = 1;
-        return "";
+    return "";
+}
+
+static const ZirGlobal *
+global_binding(Checker *c, const char *name)
+{
+    const ZirGlobal *module_binding = NULL;
+    for(int i = 0; i < c->module->global_count; i++) {
+        const ZirGlobal *global = &c->module->globals[i];
+        if(strcmp(global->name, name) ||
+           !in_lookup_file(c->module, global->is_file_private,
+                           global->span)) continue;
+        if(global->is_file_private) return global;
+        if(module_binding == NULL) module_binding = global;
     }
-    c->fn->captures = captures;
-    ZirCapture *capture = &captures[c->fn->capture_count++];
-    copy_text(capture->name, sizeof(capture->name), name);
-    copy_text(capture->type, sizeof(capture->type), type);
-    return capture->type;
+    return module_binding;
 }
 
 static const char *
@@ -144,10 +654,8 @@ lookup(Checker *c, const char *name)
     const char *lexical = lookup_lexical(c, name);
     if(*lexical)
         return lexical;
-    for(int i = 0; i < c->module->state_count; i++)
-        if(!strcmp(c->module->state_fields[i].name, name)) return c->module->state_fields[i].type;
-    for(int i = 0; i < c->module->global_count; i++)
-        if(!strcmp(c->module->globals[i].name, name)) return c->module->globals[i].type;
+    const ZirGlobal *global = global_binding(c, name);
+    if(global != NULL) return global->type;
     const ZirModule *owner = NULL;
     const ZirType *type = NULL;
     int resolved = ResolveEnumMember(c->module, name, &owner, &type);
@@ -164,18 +672,18 @@ static int
 numeric(const char *type)
 {
     return !strcmp(type, "integer") || !strcmp(type, "real") ||
-           (*type && strchr("iuf", type[0]) && *ScalarType(type)) || !strcmp(type, "char");
+           (*type && strchr("suf", type[0]) && *ScalarType(type));
 }
 
 static int
 integer_type(const char *type)
 {
     const char *scalar = ScalarType(type);
-    return !strcmp(type, "integer") || !strcmp(scalar, "char") ||
-           scalar[0] == 'i' || scalar[0] == 'u';
+    return !strcmp(type, "integer") || scalar[0] == 's' ||
+           scalar[0] == 'u';
 }
 
-/* Bounds use a checked integer subset: every intermediate must fit i32.
+/* Bounds use a checked integer subset: every intermediate must fit s32.
  * This avoids accepting a size whose C constant expression overflows while
  * Go evaluates it with arbitrary precision. Unknown host macros stay opaque. */
 static int bound_constant(const ZirModule *module, const char *name, int depth, int64_t *value);
@@ -189,6 +697,15 @@ bound_expression(const ZirModule *module, const ZirFunction *expression, int ind
     const ZirExpr *node = &expression->exprs[index];
     if(node->kind == ZIR_EXPR_IDENT)
         return bound_constant(module, node->name, depth + 1, value);
+    if(node->kind == ZIR_EXPR_SIZE_OF) {
+        size_t size, alignment;
+        if(!layout_type(module, node->name, depth + 1,
+                        &size, &alignment) ||
+           size > INT32_MAX)
+            return -1;
+        *value = (int64_t)size;
+        return 1;
+    }
     if(node->kind == ZIR_EXPR_INT) {
         char *end;
         errno = 0;
@@ -243,16 +760,35 @@ bound_constant(const ZirModule *module, const char *name, int depth, int64_t *va
         return -1;
     const ZirDefine *definition = NULL;
     const ZirModule *owner = NULL;
+    const char *dot = strchr(name, '.');
+    const char *symbol = dot == NULL ? name : dot + 1;
     for(int pass = 0; pass < 2; pass++) {
+        if(dot != NULL && pass == 0)
+            continue;
         int count = pass == 0 ? 1 : module->import_count;
         for(int i = 0; i < count; i++) {
+            if(pass != 0) {
+                const ZirImport *import = &module->imports[i];
+                if(!in_lookup_file(module, import->is_file_private,
+                                   import->span))
+                    continue;
+                if(dot == NULL && import->kind != ZIR_IMPORT_OPEN)
+                    continue;
+                if(dot != NULL &&
+                   (import->kind != ZIR_IMPORT_MODULE ||
+                    strlen(import->name) != (size_t)(dot - name) ||
+                    strncmp(import->name, name, (size_t)(dot - name)) != 0))
+                    continue;
+            }
             const ZirModule *scope = pass == 0 ? module : module->imports[i].resolved_module;
             if(scope == NULL)
                 continue;
             for(int j = 0; j < scope->define_count; j++) {
                 const ZirDefine *candidate = &scope->defines[j];
                 if((pass != 0 && !candidate->is_public) ||
-                   strcmp(candidate->name, name))
+                   (pass == 0 && !in_lookup_file(module,
+                       candidate->is_file_private, candidate->span)) ||
+                   strcmp(candidate->name, symbol))
                     continue;
                 if(definition != NULL && definition != candidate)
                     return -1;
@@ -282,9 +818,26 @@ bound_string_constant(const ZirModule *module, const char *name, int depth,
         return -1;
     const ZirDefine *definition = NULL;
     const ZirModule *owner = NULL;
+    const char *dot = strchr(name, '.');
+    const char *symbol = dot == NULL ? name : dot + 1;
     for(int pass = 0; pass < 2; pass++) {
+        if(dot != NULL && pass == 0)
+            continue;
         int count = pass == 0 ? 1 : module->import_count;
         for(int i = 0; i < count; i++) {
+            if(pass != 0) {
+                const ZirImport *import = &module->imports[i];
+                if(!in_lookup_file(module, import->is_file_private,
+                                   import->span))
+                    continue;
+                if(dot == NULL && import->kind != ZIR_IMPORT_OPEN)
+                    continue;
+                if(dot != NULL &&
+                   (import->kind != ZIR_IMPORT_MODULE ||
+                    strlen(import->name) != (size_t)(dot - name) ||
+                    strncmp(import->name, name, (size_t)(dot - name)) != 0))
+                    continue;
+            }
             const ZirModule *scope = pass == 0 ? module :
                                      module->imports[i].resolved_module;
             if(scope == NULL)
@@ -292,7 +845,9 @@ bound_string_constant(const ZirModule *module, const char *name, int depth,
             for(int j = 0; j < scope->define_count; j++) {
                 const ZirDefine *candidate = &scope->defines[j];
                 if((pass != 0 && !candidate->is_public) ||
-                   strcmp(candidate->name, name))
+                   (pass == 0 && !in_lookup_file(module,
+                       candidate->is_file_private, candidate->span)) ||
+                   strcmp(candidate->name, symbol))
                     continue;
                 if(definition != NULL && definition != candidate)
                     return -1;
@@ -317,6 +872,64 @@ bound_string_constant(const ZirModule *module, const char *name, int depth,
         status = bound_string_constant(owner, expression.exprs[index].name,
                                        depth + 1, literal, size);
     }
+    free(expression.exprs);
+    return status;
+}
+
+/* Fold real definitions into typed expression nodes before writing .zir.
+ * Backends then see the same literal from source and saved IR. */
+static int
+bound_real_constant(const ZirModule *module, const char *name, int depth,
+                    char *literal, size_t size)
+{
+    if(depth > 128) return -1;
+    const ZirDefine *definition = NULL;
+    const ZirModule *owner = NULL;
+    const char *dot = strchr(name, '.');
+    const char *symbol = dot == NULL ? name : dot + 1;
+    for(int pass = 0; pass < 2; pass++) {
+        if(dot != NULL && pass == 0) continue;
+        int count = pass == 0 ? 1 : module->import_count;
+        for(int i = 0; i < count; i++) {
+            if(pass != 0) {
+                const ZirImport *import = &module->imports[i];
+                if(!in_lookup_file(module, import->is_file_private,
+                                   import->span)) continue;
+                if(dot == NULL && import->kind != ZIR_IMPORT_OPEN) continue;
+                if(dot != NULL &&
+                   (import->kind != ZIR_IMPORT_MODULE ||
+                    strlen(import->name) != (size_t)(dot - name) ||
+                    strncmp(import->name, name,
+                            (size_t)(dot - name)) != 0)) continue;
+            }
+            const ZirModule *scope = pass == 0 ? module :
+                                     module->imports[i].resolved_module;
+            if(scope == NULL) continue;
+            for(int j = 0; j < scope->define_count; j++) {
+                const ZirDefine *candidate = &scope->defines[j];
+                if((pass != 0 && !candidate->is_public) ||
+                   (pass == 0 && !in_lookup_file(module,
+                       candidate->is_file_private, candidate->span)) ||
+                   strcmp(candidate->name, symbol)) continue;
+                if(definition != NULL && definition != candidate) return -1;
+                definition = candidate;
+                owner = scope;
+            }
+        }
+        if(definition != NULL) break;
+    }
+    if(definition == NULL) return 0;
+    ZirFunction expression = {0};
+    int index = ParseExpr(&expression, owner, definition->value,
+                          definition->span);
+    int status = 0;
+    if(index < 0) status = -1;
+    else if(expression.exprs[index].kind == ZIR_EXPR_FLOAT) {
+        copy_text(literal, size, expression.exprs[index].text);
+        status = 1;
+    } else if(expression.exprs[index].kind == ZIR_EXPR_IDENT)
+        status = bound_real_constant(owner, expression.exprs[index].name,
+                                     depth + 1, literal, size);
     free(expression.exprs);
     return status;
 }
@@ -373,14 +986,6 @@ normalize_array(const ZirModule *module, char *type, size_t size)
 static int
 pointer_type(const char *type)
 {
-    /* Native Go represents legacy char pointers as strings, which have no
-     * null value. A nullable text handle needs its own portable contract. */
-    const char *base = skip_ws(type);
-    if(!strncmp(base, "const ", 6))
-        base = skip_ws(base + 6);
-    if(!strncmp(base, "char", 4) &&
-       (base[4] == '*' || base[4] == ' ' || base[4] == '\t'))
-        return 0;
     return type[0] != '[' && strchr(type, '*') != NULL;
 }
 
@@ -393,16 +998,6 @@ compatible(const char *to, const char *from)
     if(!strcmp(to, "null") && !strcmp(from, "null")) return 0;
     if(!strcmp(to, from)) return 1;
     if(!strcmp(from, "null")) return pointer_type(to);
-    /* A mutable pointer may be read through a const pointee. Keep this at
-     * one pointer level: T** to const T** would permit unsafe writes. */
-    if(!strncmp(to, "const ", 6)) {
-        const char *pointee = skip_ws(to + 6);
-        const char *star = strchr(pointee, '*');
-        if(star != NULL && star == strrchr(pointee, '*') &&
-           !*skip_ws(star + 1) && pointer_type(pointee) &&
-           !strcmp(pointee, from))
-            return 1;
-    }
     if(SliceElementType(to, NULL, 0) || SliceElementType(from, NULL, 0)) {
         char a[ZIR_NAME_MAX], b[ZIR_NAME_MAX];
         if(!SliceElementType(to, a, sizeof(a)) || !SliceElementType(from, b, sizeof(b)))
@@ -428,26 +1023,29 @@ compatible(const char *to, const char *from)
         return !strcmp(*to_scalar ? to_scalar : to_element,
                        *from_scalar ? from_scalar : from_element);
     }
-    if(!strcmp(to, "const char*") && !strcmp(from, "string")) return 1;
     if(!strcmp(from, "integer") && numeric(to)) return 1;
     if(!strcmp(from, "real") && (to[0] == 'f')) return 1;
     return 0;
 }
 
+static const ZirType *
+flags_type(Checker *c, const char *name)
+{
+    const ZirType *type = FindType(c->module, name, NULL);
+    return type != NULL && type->is_enum_flags ? type : NULL;
+}
+
+static int
+compatible_checked(Checker *c, const char *to, const char *from)
+{
+    if(flags_type(c, to) != NULL && integer_type(from)) return 1;
+    return compatible(to, from);
+}
+
 static int
 text_type(const char *type)
 {
-    return !strcmp(type, "string") || !strcmp(type, "const char*");
-}
-
-static void
-check_borrowed_string(Checker *c, const char *destination, int index)
-{
-    if(index < 0 || strcmp(destination, "const char*"))
-        return;
-    const ZirExpr *value = &c->fn->exprs[index];
-    if(!strcmp(value->type, "string") && value->kind != ZIR_EXPR_STRING)
-        error(c, value->span, "borrowed string requires a literal or another borrowed value", "");
+    return !strcmp(type, "string");
 }
 
 static int
@@ -456,28 +1054,37 @@ assignable(Checker *c, int index)
     const ZirExpr *e;
     if(index < 0 || index >= c->fn->expr_count) return 0;
     e = &c->fn->exprs[index];
-    return (e->kind == ZIR_EXPR_IDENT && strcmp(e->name, "true") &&
+    return (e->kind == ZIR_EXPR_IDENT && !e->is_this &&
+            strcmp(e->name, "true") &&
             strcmp(e->name, "false") && strcmp(e->name, "null")) ||
            e->kind == ZIR_EXPR_INDEX || e->kind == ZIR_EXPR_MEMBER ||
            e->kind == ZIR_EXPR_POINTER_MEMBER || (e->kind == ZIR_EXPR_UNARY && !strcmp(e->op, "*"));
 }
 
-/* String bytes and the string length member are read-only views. */
+/* Collection counts and borrowed string bytes are read-only views. */
 static int
-readonly_text_destination(const ZirFunction *fn, int index)
+readonly_text_destination(Checker *c, int index)
 {
+    const ZirFunction *fn = c->fn;
     const ZirExpr *e;
     if(index < 0 || index >= fn->expr_count)
         return 0;
     e = &fn->exprs[index];
-    if(e->kind == ZIR_EXPR_MEMBER && !strcmp(e->name, "length") &&
-       SliceElementType(fn->exprs[e->left].type, NULL, 0))
+    if(e->kind == ZIR_EXPR_MEMBER &&
+       (!strcmp(e->name, "count") || !strcmp(e->name, "capacity")) &&
+       VecElementType(c->module, fn->exprs[e->left].type, NULL, 0))
         return 1;
+    if(e->kind == ZIR_EXPR_MEMBER && !strcmp(e->name, "count")) {
+        const char *base = fn->exprs[e->left].type;
+        if(!strcmp(base, "string") ||
+           SliceElementType(base, NULL, 0) ||
+           ArrayElementType(base, NULL, 0, NULL)) return 1;
+    }
     if(e->kind == ZIR_EXPR_INDEX || e->kind == ZIR_EXPR_MEMBER) {
         if(fn->exprs[e->left].kind == ZIR_EXPR_IDENT &&
            !strcmp(fn->exprs[e->left].type, "string"))
             return 1;
-        return readonly_text_destination(fn, e->left);
+        return readonly_text_destination(c, e->left);
     }
     return 0;
 }
@@ -492,7 +1099,7 @@ contextual_slot(Checker *c, int index, const char *expected)
 {
     const ZirModule *slot_owner = NULL;
     const ZirType *slot = FindType(c->module, expected, &slot_owner);
-    if(index < 0 || slot == NULL || !slot->is_slot)
+    if(index < 0 || slot == NULL || !slot->is_procedure_type)
         return;
     ZirExpr *value = &c->fn->exprs[index];
     if(value->kind == ZIR_EXPR_CONDITIONAL) {
@@ -500,13 +1107,25 @@ contextual_slot(Checker *c, int index, const char *expected)
         contextual_slot(c, value->third, expected);
         return;
     }
-    if(value->kind != ZIR_EXPR_IDENT || *lookup(c, value->name))
+    if(value->kind != ZIR_EXPR_IDENT ||
+       (!value->is_this && *lookup(c, value->name)))
         return;
     const ZirModule *owner = NULL;
     const ZirFunction *declaration = NULL;
     int resolved = ResolveFunction(c->module, value->name, &owner, &declaration);
-    int matches = resolved == 1 && !declaration->is_extern &&
-                  !strcmp(declaration->return_type, "void");
+    int matches = resolved == 1 && !declaration->is_extern;
+    if(matches) {
+        const char *actual_scalar = ScalarType(declaration->return_type);
+        const char *wanted_scalar = ScalarType(slot->procedure_return_type);
+        if(*actual_scalar || *wanted_scalar) {
+            matches = !strcmp(actual_scalar, wanted_scalar);
+        } else {
+            const ZirType *actual_record = FindType(owner, declaration->return_type, NULL);
+            const ZirType *wanted_record = FindType(slot_owner, slot->procedure_return_type, NULL);
+            matches = actual_record || wanted_record ? actual_record == wanted_record :
+                !strcmp(declaration->return_type, slot->procedure_return_type);
+        }
+    }
     char actual[64][ZIR_TEXT_MAX], wanted[64][ZIR_TEXT_MAX];
     int actual_count = matches && *skip_ws(declaration->args) ?
         split_top_level(declaration->args, actual[0], 64, sizeof(actual[0])) : 0;
@@ -540,37 +1159,138 @@ contextual_slot(Checker *c, int index, const char *expected)
         c->failed = 1;
         return;
     }
-    if(declaration->is_closure && !declaration->checked) {
-        Checker child = *c;
-        child.parent = c;
-        child.bindings = NULL;
-        child.count = child.capacity = 0;
-        child.errors = child.failed = 0;
-        child.strict = 1;
-        if(!check_function(&child, (ZirFunction *)declaration))
-            child.failed = 1;
-        c->errors += child.errors;
-        c->failed |= child.failed;
-        free(child.bindings);
-    }
     value->is_function_value = 1;
     copy_text(value->type, sizeof(value->type), expected);
 }
 
-/* Modules that import C headers interoperate with C: calls and names the
- * frontend cannot see are verified by the C compiler, not by strict checking.
- * A quoted import that resolved to another Ziran module is not C interop. */
-static int
-module_uses_c(const Checker *c)
+int
+TypeOfOperand(const char *source, char *operand, size_t capacity)
 {
-    for(int i = 0; i < c->module->import_count; i++)
-        if(c->module->imports[i].kind == ZIR_IMPORT_HEADER &&
-           c->module->imports[i].resolved_module == NULL)
-            return 1;
-    return 0;
+    const char *open, *close = NULL;
+    int depth = 0, quote = 0;
+    source = skip_ws(source);
+    if(strncmp(source, "type_of", 7) != 0 ||
+       (isalnum((unsigned char)source[7]) || source[7] == '_'))
+        return 0;
+    open = skip_ws(source + 7);
+    if(*open != '(') return 0;
+    for(const char *p = open; *p; p++) {
+        if(quote) {
+            if(*p == '\\' && p[1]) p++;
+            else if(*p == quote) quote = 0;
+        } else if(*p == '"' || *p == '\'') {
+            quote = *p;
+        } else if(*p == '(') {
+            depth++;
+        } else if(*p == ')' && --depth == 0) {
+            close = p;
+            break;
+        }
+    }
+    if(close == NULL || *skip_ws(close + 1) != '\0' ||
+       (size_t)(close - open - 1) >= capacity)
+        return 0;
+    snprintf(operand, capacity, "%.*s", (int)(close - open - 1), open + 1);
+    trim_in_place(operand);
+    return operand[0] != '\0';
 }
 
-static const char *local_storage_error(const ZirModule *module, const char *type);
+static char *
+find_unquoted_expression(char *source, const char *needle)
+{
+    size_t length = strlen(needle);
+    for(char *p = source; *p;) {
+        if(*p == '"' || *p == '\'') {
+            char quote = *p++;
+            while(*p && *p != quote) {
+                if(*p == '\\' && p[1]) p++;
+                p++;
+            }
+            if(*p) p++;
+        } else if(strncmp(p, needle, length) == 0) {
+            return p;
+        } else {
+            p++;
+        }
+    }
+    return NULL;
+}
+
+static int
+replace_checked_text(char *source, size_t capacity, const char *needle,
+                     const char *replacement)
+{
+    char rewritten[ZIR_TEXT_MAX];
+    char *at = find_unquoted_expression(source, needle);
+    int written;
+    if(at == NULL) return 0;
+    written = snprintf(rewritten, sizeof(rewritten), "%.*s%s%s",
+                       (int)(at - source), source, replacement,
+                       at + strlen(needle));
+    if(written < 0 || (size_t)written >= sizeof(rewritten) ||
+       (size_t)written >= capacity) return 0;
+    copy_text(source, capacity, rewritten);
+    return 1;
+}
+
+static int
+rewrite_checked_text(Checker *c, const ZirExpr *expr, const char *replacement)
+{
+    char needle[ZIR_TEXT_MAX];
+    if(c->current_stmt == NULL || c->fn->from_ir) return 1;
+    copy_text(needle, sizeof(needle), expr->text);
+    if(!replace_checked_text(c->current_stmt->text,
+                             sizeof(c->current_stmt->text), needle, replacement))
+        return 0;
+    for(int i = 0; i < c->fn->expr_count; i++) {
+        ZirExpr *candidate = &c->fn->exprs[i];
+        if(candidate != expr &&
+           candidate->span.line == expr->span.line &&
+           candidate->kind != ZIR_EXPR_STRING &&
+           candidate->kind != ZIR_EXPR_SIZE_OF &&
+           candidate->kind != ZIR_EXPR_IDENT &&
+           candidate->kind != ZIR_EXPR_INT &&
+           candidate->kind != ZIR_EXPR_FLOAT &&
+           candidate->kind != ZIR_EXPR_MEMBER &&
+           candidate->kind != ZIR_EXPR_POINTER_MEMBER &&
+           find_unquoted_expression(candidate->text, needle) != NULL &&
+           !replace_checked_text(candidate->text, sizeof(candidate->text),
+                                 needle, replacement))
+            return 0;
+    }
+    return 1;
+}
+
+static int
+rewrite_checked_size(Checker *c, const ZirExpr *expr, size_t size)
+{
+    char replacement[64];
+    snprintf(replacement, sizeof(replacement), "(%zu)", size);
+    return rewrite_checked_text(c, expr, replacement);
+}
+
+static int
+lower_enum_reference(Checker *c, ZirExpr *expr, const ZirType *enumeration,
+                     const char *member)
+{
+    int64_t value;
+    char replacement[64];
+    if(!EnumMemberValue(enumeration, member, &value)) {
+        error(c, expr->span, "unknown enum member", member);
+        return 0;
+    }
+    snprintf(replacement, sizeof(replacement), "%lld", (long long)value);
+    if(!rewrite_checked_text(c, expr, replacement)) {
+        error(c, expr->span, "cannot lower enum member", expr->text);
+        return 0;
+    }
+    copy_text(expr->text, sizeof(expr->text), replacement);
+    expr->name[0] = '\0';
+    expr->kind = ZIR_EXPR_INT;
+    expr->left = expr->right = expr->third = -1;
+    copy_text(expr->type, sizeof(expr->type), enumeration->name);
+    return 1;
+}
 
 static const char *
 expression_type(Checker *c, int index)
@@ -580,12 +1300,152 @@ expression_type(Checker *c, int index)
     char member_type[ZIR_NAME_MAX] = "";
     if(index < 0 || index >= c->fn->expr_count) return "";
     e = &c->fn->exprs[index];
+    if(e->is_this && e->kind != ZIR_EXPR_IDENT && e->kind != ZIR_EXPR_CALL) {
+        error(c, e->span, "invalid #this expression", e->name);
+        return "";
+    }
+    if(e->kind == ZIR_EXPR_CALL && e->type[0]) {
+        const char *unqualified = strrchr(e->name, '.');
+        unqualified = unqualified == NULL ? e->name : unqualified + 1;
+        for(int request = 0; request < c->specialization_count; request++)
+            if(!strcmp(unqualified, c->specializations[request].name))
+                return e->type;
+    }
+    if(e->kind == ZIR_EXPR_MEMBER && e->left >= 0 &&
+       c->fn->exprs[e->left].kind == ZIR_EXPR_IDENT) {
+        const char *alias = c->fn->exprs[e->left].name;
+        for(int i = 0; i < c->module->import_count; i++) {
+            const ZirImport *import = &c->module->imports[i];
+            if(import->kind != ZIR_IMPORT_MODULE ||
+               !in_lookup_file(c->module, import->is_file_private,
+                               import->span) ||
+               strcmp(import->name, alias) != 0)
+                continue;
+            char qualified[ZIR_NAME_MAX];
+            int length = snprintf(qualified, sizeof(qualified), "%s.%s",
+                                  alias, e->name);
+            if(length < 0 || (size_t)length >= sizeof(qualified)) {
+                error(c, e->span, "qualified name is too long", alias);
+                return "";
+            }
+            e->kind = ZIR_EXPR_IDENT;
+            e->left = -1;
+            copy_text(e->name, sizeof(e->name), qualified);
+            break;
+        }
+    }
+    if(e->kind == ZIR_EXPR_MEMBER && e->left >= 0 &&
+       c->fn->exprs[e->left].kind == ZIR_EXPR_IDENT) {
+        const ZirType *enumeration = FindType(c->module,
+            c->fn->exprs[e->left].name, NULL);
+        if(enumeration != NULL && enumeration->is_enum) {
+            if(lower_enum_reference(c, e, enumeration, e->name))
+                return e->type;
+            return "";
+        }
+    }
+    if(e->kind == ZIR_EXPR_IDENT && e->name[0] == '.') {
+        const ZirType *enumeration = FindType(c->module, c->expected_type, NULL);
+        if(enumeration == NULL || !enumeration->is_enum) {
+            error(c, e->span, "inferred enum member needs an enum type", e->name);
+            return "";
+        }
+        if(lower_enum_reference(c, e, enumeration, e->name + 1))
+            return e->type;
+        return "";
+    }
+    if(e->kind == ZIR_EXPR_CONDITIONAL && !strcmp(e->op, "#ifx")) {
+        error(c, e->span, "unlowered #ifx expression", e->text);
+        return "";
+    }
+    if(e->kind == ZIR_EXPR_SIZE_OF) {
+        size_t size, alignment;
+        char operand[ZIR_TEXT_MAX], resolved[ZIR_NAME_MAX];
+        const char *sized_type = e->name;
+        int from_value = TypeOfOperand(e->name, operand, sizeof(operand));
+        if(!from_value && !JaiTypeSpelling(e->span, e->name)) {
+            c->errors++;
+            return "";
+        }
+        if(from_value) {
+            ZirFunction probe = {0};
+            ZirFunction *saved_fn = c->fn;
+            ZirStmt *saved_stmt = c->current_stmt;
+            int root = ParseExpr(&probe, c->module, operand, e->span);
+            c->fn = &probe;
+            c->current_stmt = NULL;
+            const char *inferred = expression_type(c, root);
+            copy_text(resolved, sizeof(resolved),
+                      !strcmp(inferred, "integer") ? "s64" :
+                      !strcmp(inferred, "real") ? "float64" : inferred);
+            c->fn = saved_fn;
+            c->current_stmt = saved_stmt;
+            free(probe.exprs);
+            sized_type = resolved;
+        }
+        if(!TypeLayout(c->module, sized_type, &size, &alignment)) {
+            error(c, e->span, "size_of requires a known sized type", e->name);
+            return "";
+        }
+        if(!rewrite_checked_size(c, e, size)) {
+            error(c, e->span, "cannot lower size_of expression", e->text);
+            return "";
+        }
+        snprintf(e->text, sizeof(e->text), "%zu", size);
+        e->name[0] = '\0';
+        e->kind = ZIR_EXPR_INT;
+        e->left = e->right = e->third = -1;
+        copy_text(e->type, sizeof(e->type), "integer");
+        return e->type;
+    }
     if(e->is_function_value)
         return e->type;
-    if(e->left >= 0) left = expression_type(c, e->left);
-    if(e->right >= 0) right = expression_type(c, e->right);
+    if(e->kind == ZIR_EXPR_CALL && e->name[0] == '\0' && e->left >= 0 &&
+       c->fn->exprs[e->left].kind == ZIR_EXPR_MEMBER) {
+        const ZirExpr *member = &c->fn->exprs[e->left];
+        if(member->left >= 0 &&
+           c->fn->exprs[member->left].kind == ZIR_EXPR_IDENT) {
+            const char *alias = c->fn->exprs[member->left].name;
+            for(int i = 0; i < c->module->import_count; i++) {
+                const ZirImport *import = &c->module->imports[i];
+                if(import->kind != ZIR_IMPORT_MODULE ||
+                   !in_lookup_file(c->module, import->is_file_private,
+                                   import->span) ||
+                   strcmp(import->name, alias) != 0)
+                    continue;
+                int length = snprintf(e->name, sizeof(e->name),
+                                      "%s.%s", alias, member->name);
+                if(length < 0 || (size_t)length >= sizeof(e->name))
+                    error(c, e->span, "qualified call name is too long", alias);
+                else
+                    e->left = -1;
+                break;
+            }
+        }
+    }
+    if(e->left >= 0 && !(e->kind == ZIR_EXPR_CALL && e->name[0]))
+        left = expression_type(c, e->left);
+    if(e->right >= 0) {
+        char saved_expected[ZIR_NAME_MAX];
+        copy_text(saved_expected, sizeof(saved_expected), c->expected_type);
+        if(e->kind == ZIR_EXPR_BINARY) {
+            const ZirType *enumeration = FindType(c->module, left, NULL);
+            if(enumeration != NULL && enumeration->is_enum)
+                copy_text(c->expected_type, sizeof(c->expected_type), left);
+        }
+        right = expression_type(c, e->right);
+        copy_text(c->expected_type, sizeof(c->expected_type), saved_expected);
+    }
     switch(e->kind) {
     case ZIR_EXPR_COMPOUND: {
+        if(!e->name[0]) {
+            if(!c->expected_type[0]) {
+                error(c, e->span,
+                      "inferred record literal needs a record type", e->text);
+                break;
+            }
+            copy_text(e->name, sizeof(e->name), c->expected_type);
+        }
         if(SliceElementType(e->name, NULL, 0)) {
             error(c, e->span, "slice literals require a backing range", e->name);
             break;
@@ -608,9 +1468,8 @@ expression_type(Checker *c, int index)
                 if(!strcmp(entry->op, "="))
                     error(c, entry->span, "array literals require positional elements", entry->name);
                 const char *value_type = expression_type(c, entry->right);
-                if(!compatible(element, value_type))
+                if(!compatible_checked(c, element, value_type))
                     error(c, entry->span, "array initializer element type mismatch", element);
-                check_borrowed_string(c, element, entry->right);
                 copy_text(entry->type, sizeof(entry->type), element);
                 count++;
             }
@@ -623,13 +1482,9 @@ expression_type(Checker *c, int index)
         const ZirType *record = FindType(c->module, e->name, &record_owner);
         int ordinal = 0;
         int mode = -1;
-        if(record == NULL || record->is_enum || record->is_slot ||
-           record->is_variant_template || record->is_record_template) {
+        if(record == NULL || record->is_enum || record->is_procedure_type ||
+           record->is_record_template) {
             error(c, e->span, "initializer requires a declared record type", e->name);
-            break;
-        }
-        if(record->is_variant && !c->fn->is_generated) {
-            error(c, e->span, "variant values require a case constructor", e->name);
             break;
         }
         for(int child = e->first_child; child >= 0; child = c->fn->exprs[child].next_sibling) {
@@ -655,7 +1510,12 @@ expression_type(Checker *c, int index)
                 if(initializer->kind == ZIR_EXPR_COMPOUND)
                     normalize_array(record_owner, initializer->name, sizeof(initializer->name));
             }
+            char saved_expected[ZIR_NAME_MAX];
+            copy_text(saved_expected, sizeof(saved_expected), c->expected_type);
+            if(found)
+                copy_text(c->expected_type, sizeof(c->expected_type), field.type);
             const char *value_type = expression_type(c, entry->right);
+            copy_text(c->expected_type, sizeof(c->expected_type), saved_expected);
             if(!found) {
                 error(c, entry->span, named ? "unknown initializer field" : "too many positional record fields", entry->name);
                 ordinal++;
@@ -667,9 +1527,10 @@ expression_type(Checker *c, int index)
             }
             copy_text(entry->name, sizeof(entry->name), field.name);
             copy_text(entry->type, sizeof(entry->type), field.type);
-            if(!compatible(field.type, value_type))
+            if(!compatible_checked(c, field.type, value_type))
                 error(c, entry->span, "initializer field type mismatch", field.name);
-            check_borrowed_string(c, field.type, entry->right);
+            if(contains_vec(c->module, field.type, 0))
+                error(c, entry->span, "Vec values cannot be copied", field.name);
             ordinal++;
         }
         type = e->name;
@@ -711,18 +1572,26 @@ expression_type(Checker *c, int index)
         }
         const ZirModule *record_owner = NULL;
         const ZirType *record = FindType(c->module, record_name, &record_owner);
+        if(e->kind == ZIR_EXPR_MEMBER && !strcmp(e->name, "length") &&
+           (!strcmp(left, "string") || SliceElementType(left, NULL, 0) ||
+            ArrayElementType(left, NULL, 0, NULL))) {
+            error(c, e->span, "length is not Jai syntax; use count", e->name);
+            break;
+        }
         if(e->kind == ZIR_EXPR_MEMBER && record == NULL &&
-           (!strcmp(left, "string") || SliceElementType(left, NULL, 0)) &&
-           !strcmp(e->name, "length")) {
-            /* Byte length of a borrowed string value; read-only. */
-            type = "i32";
+           (!strcmp(left, "string") || SliceElementType(left, NULL, 0) ||
+            ArrayElementType(left, NULL, 0, NULL))) {
+            if(!strcmp(e->name, "count")) {
+                type = "s64";
+                break;
+            }
+        }
+        if(VecElementType(c->module, record_name, NULL, 0) &&
+           strcmp(e->name, "count") && strcmp(e->name, "capacity")) {
+            error(c, e->span, "Vec storage is private", e->name);
             break;
         }
         if(record != NULL && !record->is_enum) {
-            if(record->is_variant && !c->fn->is_generated) {
-                error(c, e->span, "variant storage is private; use match", e->name);
-                break;
-            }
             size_t offset = 0;
             ZirTypeField field;
             while(TypeNextField(record, &offset, &field) == 1) {
@@ -733,7 +1602,7 @@ expression_type(Checker *c, int index)
                 }
             }
         }
-        if(!*member_type && (record != NULL || !module_uses_c(c)))
+        if(!*member_type)
             error(c, e->span, "unknown record field", e->name);
         type = member_type;
         break;
@@ -741,20 +1610,24 @@ expression_type(Checker *c, int index)
     case ZIR_EXPR_SLICE: {
         char element[ZIR_NAME_MAX];
         int array = ArrayElementType(left, element, sizeof(element), NULL);
-        if(!array && !SliceElementType(left, element, sizeof(element))) {
-            error(c, e->span, "slice source requires an array or slice", e->text);
+        int string = !strcmp(left, "string");
+        if(!string && !array && !SliceElementType(left, element, sizeof(element))) {
+            error(c, e->span, "slice source requires a string, array, or slice", e->text);
             break;
         }
         if(array && !assignable(c, e->left))
             error(c, e->span, "slice source requires persistent array storage", e->text);
-        if((!strcmp(element, "char") || !strcmp(element, "const char")) || element[0] == '[')
+        if(!string && ((!strcmp(element, "char") || !strcmp(element, "const char")) || element[0] == '['))
             error(c, e->span, "unsupported slice element type", element);
         if(e->right >= 0 && !integer_type(right))
             error(c, e->span, "slice lower bound requires an integer", e->text);
         if(e->third >= 0 && !integer_type(expression_type(c, e->third)))
             error(c, e->span, "slice upper bound requires an integer", e->text);
-        snprintf(member_type, sizeof(member_type), "[]%s", element);
-        type = member_type;
+        if(string) type = "string";
+        else {
+            snprintf(member_type, sizeof(member_type), "[]%s", element);
+            type = member_type;
+        }
         break;
     }
     case ZIR_EXPR_INDEX: {
@@ -768,9 +1641,10 @@ expression_type(Checker *c, int index)
                 error(c, e->span, "string index requires an integer operand", e->text);
             copy_text(element, sizeof(element), "u8");
         } else if(!ArrayElementType(left, element, sizeof(element), NULL) &&
-                  !SliceElementType(left, element, sizeof(element))) {
+                  !SliceElementType(left, element, sizeof(element)) &&
+                  !VecElementType(c->module, left, element, sizeof(element))) {
             error(c, e->span, "index requires a fixed array or string", e->text);
-            copy_text(element, sizeof(element), "i32");
+            copy_text(element, sizeof(element), "s32");
         } else if(!integer_type(right)) {
             error(c, e->span, "array index requires an integer operand", e->text);
         }
@@ -778,25 +1652,57 @@ expression_type(Checker *c, int index)
         type = member_type;
         break;
     }
-    case ZIR_EXPR_INT: type = "integer"; break;
+    case ZIR_EXPR_INT: {
+        const ZirType *enumeration = FindType(c->module, e->type, NULL);
+        type = enumeration != NULL && enumeration->is_enum ? e->type : "integer";
+        break;
+    }
     case ZIR_EXPR_FLOAT: type = "real"; break;
-    case ZIR_EXPR_CHAR: type = "char"; break;
     case ZIR_EXPR_STRING: type = "string"; break;
     case ZIR_EXPR_IDENT:
+        if(e->is_this) {
+            error(c, e->span, "#this needs a procedure type or call", e->name);
+            break;
+        }
         if(!strcmp(e->name, "true") || !strcmp(e->name, "false")) type = "bool";
         else if(!strcmp(e->name, "null")) type = "null";
-        else type = lookup(c, e->name);
+        else {
+            const ZirModule *owner = NULL;
+            const ZirType *enumeration = NULL;
+            int enum_member = !*lookup_lexical(c, e->name) &&
+                              global_binding(c, e->name) == NULL ?
+                ResolveEnumMember(c->module, e->name, &owner, &enumeration) : 0;
+            if(enum_member == 1) {
+                if(!lower_enum_reference(c, e, enumeration, e->name))
+                    break;
+                /* Bare members have the same integer type they had before
+                 * lowering; qualified members keep their enum type. */
+                type = "integer";
+                break;
+            }
+            type = lookup(c, e->name);
+            e->is_global_value = !*lookup_lexical(c, e->name) &&
+                                  global_binding(c, e->name) != NULL;
+        }
         if(!*type) {
             char literal[ZIR_TEXT_MAX];
             int string_status = bound_string_constant(c->module, e->name, 0,
                                                        literal, sizeof(literal));
+            int real_status = string_status == 0 ?
+                bound_real_constant(c->module, e->name, 0,
+                                    literal, sizeof(literal)) : 0;
             int64_t value = 0;
-            int status = string_status == 0 ?
-                bound_constant(c->module, e->name, 0, &value) : string_status;
+            int status = string_status == 0 && real_status == 0 ?
+                bound_constant(c->module, e->name, 0, &value) :
+                string_status != 0 ? string_status : real_status;
             if(string_status == 1) {
                 copy_text(e->text, sizeof(e->text), literal);
                 e->kind = ZIR_EXPR_STRING;
                 type = "string";
+            } else if(real_status == 1) {
+                copy_text(e->text, sizeof(e->text), literal);
+                e->kind = ZIR_EXPR_FLOAT;
+                type = "real";
             } else if(status == 1) {
                 snprintf(e->text, sizeof(e->text), "%lld", (long long)value);
                 e->kind = ZIR_EXPR_INT;
@@ -809,79 +1715,223 @@ expression_type(Checker *c, int index)
         }
         break;
     case ZIR_EXPR_CALL: {
-        const char *binding = lookup(c, e->name);
+        char display_name[ZIR_NAME_MAX];
+        copy_text(display_name, sizeof(display_name), e->name);
+        if(!strcmp(e->name, "VecPush") || !strcmp(e->name, "VecClear") ||
+           !strcmp(e->name, "VecFree") || !strcmp(e->name, "VecSwap")) {
+            for(int child = e->first_child; child >= 0;
+                child = c->fn->exprs[child].next_sibling)
+                if(c->fn->exprs[child].argument_name[0])
+                    error(c, c->fn->exprs[child].span,
+                          "Vec operation has no named parameters",
+                          c->fn->exprs[child].argument_name);
+            int first = e->first_child;
+            int second = first >= 0 ? c->fn->exprs[first].next_sibling : -1;
+            int push = !strcmp(e->name, "VecPush");
+            int swap = !strcmp(e->name, "VecSwap");
+            char element[ZIR_NAME_MAX];
+            const char *vector_type = expression_type(c, first);
+            if(first < 0 || !VecElementType(c->module, vector_type,
+                                           element, sizeof(element)) ||
+               !assignable(c, first))
+                error(c, e->span, "Vec operation requires mutable Vec storage",
+                      e->name);
+            if(push) {
+                if(contains_vec(c->module, element, 0))
+                    error(c, e->span, "nested Vec elements are not supported", element);
+                if(second < 0 || c->fn->exprs[second].next_sibling >= 0)
+                    error(c, e->span, "VecPush requires a value", e->name);
+                else {
+                    const char *item_type = expression_type(c, second);
+                    if(!compatible_checked(c, element, item_type))
+                        error(c, e->span, "VecPush element type mismatch", element);
+                    else if(!strcmp(item_type, "integer") ||
+                            !strcmp(item_type, "real")) {
+                        const char *scalar = ScalarType(element);
+                        if(*scalar)
+                            copy_text(c->fn->exprs[second].type,
+                                      ZIR_NAME_MAX, scalar);
+                    }
+                }
+            } else if(swap) {
+                if(second < 0 || c->fn->exprs[second].next_sibling >= 0 ||
+                   !assignable(c, second) ||
+                   strcmp(vector_type, expression_type(c, second)))
+                    error(c, e->span, "VecSwap requires two matching Vec places", e->name);
+            } else if(second >= 0)
+                error(c, e->span, "Vec operation takes one argument", e->name);
+            type = push ? "bool" : "void";
+            break;
+        }
+        const char *binding = e->is_this ? "" : lookup(c, e->name);
+        e->is_global_value = !e->is_this && !*lookup_lexical(c, e->name) &&
+                              global_binding(c, e->name) != NULL;
         const ZirType *slot = FindType(c->module, binding, NULL);
-        if(slot != NULL && !slot->is_slot)
+        if(slot != NULL && !slot->is_procedure_type)
             slot = NULL;
         copy_text(e->slot_type, sizeof(e->slot_type), slot ? binding : "");
         const ZirFunction *callee = *binding ? NULL : function(c, e->name, e->span);
+        char specialized_args[ZIR_TEXT_MAX] = "";
+        char specialized_return[ZIR_NAME_MAX] = "";
+        if(callee != NULL && callee->is_template) {
+            const ZirModule *owner = NULL;
+            const ZirFunction *resolved = NULL;
+            if(ResolveFunction(c->module, e->name, &owner, &resolved) != 1 ||
+               resolved != callee || owner == NULL) {
+                error(c, e->span, "cannot resolve polymorphic procedure", e->name);
+                break;
+            }
+            char (*parameters)[ZIR_TEXT_MAX] = calloc(64, sizeof(*parameters));
+            if(parameters == NULL) { c->failed = 1; break; }
+            int parameter_count = *skip_ws(callee->args) ?
+                split_top_level(callee->args, parameters[0], 64,
+                                sizeof(parameters[0])) : 0;
+            if(!bind_call_arguments(c, e, parameters, parameter_count,
+                                    display_name, callee->default_args)) {
+                free(parameters);
+                break;
+            }
+            char concrete[ZIR_NAME_MAX] = "";
+            for(int child = e->first_child; child >= 0;
+                child = c->fn->exprs[child].next_sibling) {
+                int argument = c->fn->exprs[child].argument_index;
+                const char *colon = strchr(parameters[argument], ':');
+                if(colon == NULL) continue;
+                const char *parameter_type = skip_ws(colon + 1);
+                if(*parameter_type != '$' ||
+                   strcmp(parameter_type + 1, callee->template_param))
+                    continue;
+                char saved_expected[ZIR_NAME_MAX];
+                copy_text(saved_expected, sizeof(saved_expected), c->expected_type);
+                if(concrete[0])
+                    copy_text(c->expected_type, sizeof(c->expected_type), concrete);
+                const char *actual_type = expression_type(c, child);
+                copy_text(c->expected_type, sizeof(c->expected_type), saved_expected);
+                if(!strcmp(actual_type, "integer") || !strcmp(actual_type, "real")) {
+                    if(concrete[0]) actual_type = concrete;
+                    else if(!strcmp(callee->return_type, callee->template_param) &&
+                            ScalarType(saved_expected)[0])
+                        actual_type = saved_expected;
+                    else {
+                        error(c, c->fn->exprs[child].span,
+                              "polymorphic literal needs a concrete type", e->name);
+                        continue;
+                    }
+                }
+                if(!*actual_type || !strcmp(actual_type, "null")) {
+                    error(c, c->fn->exprs[child].span,
+                          "cannot infer polymorphic type", e->name);
+                    continue;
+                }
+                if(!concrete[0])
+                    copy_text(concrete, sizeof(concrete), actual_type);
+                else if(strcmp(concrete, actual_type))
+                    signature_error(c, c->fn->exprs[child].span,
+                                    "polymorphic type mismatch", e->name);
+            }
+            free(parameters);
+            if(!concrete[0]) {
+                error(c, e->span, "cannot infer polymorphic type", e->name);
+                break;
+            }
+            if(!replace_template_type(specialized_args, sizeof(specialized_args),
+                                      callee->args, callee->template_param, concrete) ||
+               !replace_template_type(specialized_return,
+                                      sizeof(specialized_return),
+                                      callee->return_type,
+                                      callee->template_param, concrete)) {
+                error(c, e->span, "specialized signature is too long", e->name);
+                break;
+            }
+            char name[ZIR_NAME_MAX];
+            const ZirModule *instance_owner = owner;
+            if(owner != c->module &&
+               FindType(owner, concrete, NULL) == NULL &&
+               FindType(c->module, concrete, NULL) != NULL)
+                instance_owner = c->module;
+            if(!queue_specialization(c, owner, instance_owner,
+                                     callee, concrete,
+                                     name, sizeof(name), e->span)) break;
+            const char *dot = instance_owner == owner ?
+                strchr(e->name, '.') : NULL;
+            if(dot) {
+                char qualified[ZIR_NAME_MAX];
+                int written = snprintf(qualified, sizeof(qualified), "%.*s.%s",
+                                       (int)(dot - e->name), e->name, name);
+                if(written < 0 || (size_t)written >= sizeof(qualified)) {
+                    error(c, e->span, "specialized name is too long", e->name);
+                    break;
+                }
+                copy_text(e->name, sizeof(e->name), qualified);
+            } else copy_text(e->name, sizeof(e->name), name);
+        }
         if(callee != NULL && callee->is_extern && callee->extern_kind == ZIR_EXTERN_HOST)
             c->fn->uses_host = 1;
-        const char *args = slot ? slot->body : callee ? callee->args : NULL;
-        const char *return_type = slot ? "void" : callee ? callee->return_type : "";
+        const char *args = slot ? slot->body :
+                           specialized_args[0] ? specialized_args :
+                           callee ? callee->args : NULL;
+        const char *return_type = slot ? slot->procedure_return_type :
+                                  specialized_return[0] ? specialized_return :
+                                  callee ? callee->return_type : "";
         char (*parts)[ZIR_TEXT_MAX] = calloc(64, sizeof(*parts));
         int actual = 0, expected;
-        int strict_before_slot = c->strict;
-        int errors_before_slot = c->errors;
-        int slot_contract = slot != NULL;
-        if(slot_contract)
-            c->strict = 1;
         if(!parts) { c->errors++; c->failed=1; break; }
         if(*binding && slot == NULL)
             error(c, e->span, "binding is not a callable function", e->name);
         if(!callee && slot == NULL) for(int i = 0; i < c->module->import_count; i++) {
             const ZirImport *imp = &c->module->imports[i];
-            if(imp->kind == ZIR_IMPORT_EXTERN && !strcmp(imp->name, e->name)) {
+            if(imp->kind == ZIR_IMPORT_EXTERN &&
+               in_lookup_file(c->module, imp->is_file_private, imp->span) &&
+               !strcmp(imp->name, e->name)) {
                 if(imp->extern_kind == ZIR_EXTERN_HOST)
                     c->fn->uses_host = 1;
                 args = imp->args; return_type = imp->return_type; break;
             }
         }
         expected = args && *skip_ws(args) ? split_top_level(args, parts[0], 64, sizeof(parts[0])) : 0;
-        const ZirModule *signature_owner = c->module;
-        if(callee != NULL) {
-            const ZirFunction *resolved = NULL;
-            ResolveFunction(c->module, e->name, &signature_owner, &resolved);
+        if(args && !bind_call_arguments(c, e, parts, expected, display_name,
+                                       callee ? callee->default_args : NULL)) {
+            free(parts);
+            break;
         }
-        for(int parameter = 0; parameter < expected; parameter++) {
-            const char *colon = strchr(parts[parameter], ':');
-            const ZirType *parameter_type = colon ?
-                FindType(signature_owner, skip_ws(colon + 1), NULL) : NULL;
-            slot_contract |= parameter_type != NULL && parameter_type->is_slot;
-        }
-        if(slot_contract)
-            c->strict = 1;
         for(int child = e->first_child; child >= 0; child = c->fn->exprs[child].next_sibling) {
-            const char *expected_type = actual < expected ? strchr(parts[actual], ':') : NULL;
+            int parameter = c->fn->exprs[child].argument_index;
+            const char *expected_type = parameter >= 0 && parameter < expected ?
+                strchr(parts[parameter], ':') : NULL;
+            char saved_expected[ZIR_NAME_MAX];
+            copy_text(saved_expected, sizeof(saved_expected), c->expected_type);
             if(expected_type != NULL)
                 contextual_slot(c, child, skip_ws(expected_type + 1));
+            if(expected_type != NULL)
+                copy_text(c->expected_type, sizeof(c->expected_type),
+                          skip_ws(expected_type + 1));
             const char *arg_type = expression_type(c, child);
-            if(args && actual < expected) {
-                char *colon = strchr(parts[actual], ':');
-                if(colon)
-                    check_borrowed_string(c, skip_ws(colon + 1), child);
-                if(colon && !compatible(skip_ws(colon + 1), arg_type))
+            if(contains_vec(c->module, arg_type, 0))
+                error(c, c->fn->exprs[child].span,
+                      "Vec values cannot be copied", display_name);
+            copy_text(c->expected_type, sizeof(c->expected_type), saved_expected);
+            if(args && parameter >= 0 && parameter < expected) {
+                char *colon = strchr(parts[parameter], ':');
+                if(colon && !compatible_checked(c, skip_ws(colon + 1), arg_type))
                     signature_error(c, c->fn->exprs[child].span,
-                                    "argument type mismatch", e->name);
+                                    "argument type mismatch", display_name);
                 if(colon && (!strcmp(arg_type, "integer") || !strcmp(arg_type, "real"))) {
                     const char *context = ScalarType(skip_ws(colon + 1));
                     if(*context) copy_text(c->fn->exprs[child].type, ZIR_NAME_MAX, context);
                 }
-                if(colon && c->fn->exprs[child].kind == ZIR_EXPR_STRING &&
-                   !strcmp(skip_ws(colon + 1), "const char*"))
-                    copy_text(c->fn->exprs[child].type, ZIR_NAME_MAX, "const char*");
             }
             actual++;
         }
         if(args) {
             type = return_type;
-            if(actual != expected)
-                signature_error(c, e->span, "argument count mismatch", e->name);
-        } else if(!module_uses_c(c))
+            if(specialized_return[0]) {
+                copy_text(e->type, sizeof(e->type), specialized_return);
+                type = e->type;
+            }
+            if(actual != expected && !c->inference_only)
+                signature_error(c, e->span, "argument count mismatch", display_name);
+        } else
             error(c, e->span, "unresolved function", e->name);
-        if(slot_contract && c->errors != errors_before_slot)
-            c->failed = 1;
-        c->strict = strict_before_slot;
         free(parts);
         break;
     }
@@ -890,13 +1940,11 @@ expression_type(Checker *c, int index)
             error(c, e->span, "array values do not support binary operations", e->op);
         const ZirType *left_slot = FindType(c->module, left, NULL);
         const ZirType *right_slot = FindType(c->module, right, NULL);
-        if((left_slot && left_slot->is_slot) || (right_slot && right_slot->is_slot))
+        if((left_slot && left_slot->is_procedure_type) || (right_slot && right_slot->is_procedure_type))
             error(c, e->span, "slot values do not support binary operations", e->op);
         if((text_type(left) || text_type(right)) &&
            strcmp(e->op, "==") && strcmp(e->op, "!="))
             error(c, e->span, "string operation is not supported", e->op);
-        check_borrowed_string(c, left, e->right);
-        check_borrowed_string(c, right, e->left);
         if((!strcmp(e->op, "&") || !strcmp(e->op, "|") || !strcmp(e->op, "^") ||
             !strcmp(e->op, "<<") || !strcmp(e->op, ">>") || !strcmp(e->op, "%")) &&
            (left[0] == 'f' || right[0] == 'f' || !strcmp(left, "real") || !strcmp(right, "real")))
@@ -904,6 +1952,24 @@ expression_type(Checker *c, int index)
         if((!strcmp(e->op, "&&") || !strcmp(e->op, "||")) &&
            (strcmp(left, "bool") || strcmp(right, "bool")))
             error(c, e->span, "logical operands require bool", e->op);
+        const ZirType *left_flags = flags_type(c, left);
+        const ZirType *right_flags = flags_type(c, right);
+        if(left_flags != NULL || right_flags != NULL) {
+            const char *flag_name = left_flags != NULL ? left : right;
+            const char *other = left_flags != NULL ? right : left;
+            if((left_flags != NULL && right_flags != NULL && strcmp(left, right)) ||
+               (strcmp(other, flag_name) && !integer_type(other)))
+                error(c, e->span, "flag operands require the same enum or an integer", e->op);
+            if(!strcmp(e->op, "==") || !strcmp(e->op, "!="))
+                type = "bool";
+            else if(!strcmp(e->op, "&") || !strcmp(e->op, "|") ||
+                    !strcmp(e->op, "^") || !strcmp(e->op, "+") ||
+                    !strcmp(e->op, "-"))
+                type = flag_name;
+            else
+                error(c, e->span, "unsupported enum_flags operation", e->op);
+            break;
+        }
         if(!compatible(left, right) && !compatible(right, left))
             error(c, e->span, "operand types differ; use an explicit cast", e->op);
         if(!strcmp(e->op, "==") || !strcmp(e->op, "!=") || !strcmp(e->op, "<") ||
@@ -915,10 +1981,14 @@ expression_type(Checker *c, int index)
         break;
     }
     case ZIR_EXPR_UNARY:
+        if(strcmp(e->op, "+") && strcmp(e->op, "-") &&
+           strcmp(e->op, "!") && strcmp(e->op, "~") &&
+           strcmp(e->op, "&") && strcmp(e->op, "*"))
+            error(c, e->span, "unsupported unary operator", e->op);
         if(!strcmp(e->op, "!") && strcmp(right, "bool"))
             error(c, e->span, "logical operand requires bool", e->op);
-        if((!strcmp(e->op, "++") || !strcmp(e->op, "--")) && !assignable(c, e->right))
-            error(c, e->span, "increment requires an assignable expression", "");
+        if(!strcmp(e->op, "~") && !integer_type(right))
+            error(c, e->span, "bitwise operand requires an integer", e->op);
         if(!strcmp(e->op, "&")) {
             if(!assignable(c, e->right))
                 error(c, e->span, "address-of requires an assignable expression", e->text);
@@ -932,19 +2002,14 @@ expression_type(Checker *c, int index)
             type = skip_ws(right + 1);
         } else if(!strcmp(e->op, "!")) type = "bool";
         else if(numeric(right)) type = right;
-        else if(!module_uses_c(c))
+        else
             error(c, e->span, "unresolved unary operation", e->op);
         break;
-    case ZIR_EXPR_POSTFIX:
-        if(!strcmp(e->op, "?")) {
-            error(c, e->span, "unlowered error propagation", "?");
-            break;
-        }
-        if(!numeric(left)) error(c, e->span, "increment requires a numeric value", e->op);
-        if(!assignable(c, e->left)) error(c, e->span, "increment requires an assignable expression", "");
-        type = left;
-        break;
     case ZIR_EXPR_CAST: {
+        if(!JaiTypeSpelling(e->span, e->name)) {
+            c->errors++;
+            return "";
+        }
         if(right[0] == '[' || e->name[0] == '[')
             error(c, e->span, "array casts are not supported", e->name);
         const ZirType *destination = FindType(c->module, e->name, NULL);
@@ -965,20 +2030,43 @@ expression_type(Checker *c, int index)
             error(c, e->span, "conditional arms have different types", "");
         type = !strcmp(right, "integer") || !strcmp(right, "null") ?
                third : right;
-        if(!strcmp(right, "const char*") || !strcmp(third, "const char*")) {
-            type = "const char*";
-            check_borrowed_string(c, type, e->right);
-            check_borrowed_string(c, type, e->third);
-        }
         break;
     }
-    default: error(c, e->span, "expression is not supported by strict checking", e->text); break;
+    default: error(c, e->span, "expression is not supported by language checking", e->text); break;
     }
     if(*ScalarType(type)) type = ScalarType(type);
     if(type != e->type)
         copy_text(e->type, sizeof(e->type), type);
     normalize_array(c->module, e->type, sizeof(e->type));
     return e->type;
+}
+
+int
+InferExpressionType(const ZirModule *module, const char *expression,
+                    ZirSourceSpan span, char *type, size_t capacity)
+{
+    ZirModule lookup = *module;
+    ZirFunction probe = {0};
+    Checker checker = {0};
+    int root, valid;
+    const char *inferred;
+
+    copy_text(lookup.lookup_path, sizeof(lookup.lookup_path), span.path);
+    probe.span = span;
+    root = ParseExprNoDefaults(&probe, &lookup, expression, span);
+    checker.module = &lookup;
+    checker.fn = &probe;
+    checker.inference_only = 1;
+    inferred = root >= 0 ? expression_type(&checker, root) : "";
+    if(strcmp(inferred, "integer") == 0) inferred = "s64";
+    else if(strcmp(inferred, "real") == 0) inferred = "float64";
+    valid = checker.errors == 0 && *inferred != '\0' &&
+            strlen(inferred) < capacity;
+    if(valid) copy_text(type, capacity, inferred);
+    free(checker.bindings);
+    free(checker.specializations);
+    free(probe.exprs);
+    return valid;
 }
 
 static int
@@ -991,8 +2079,8 @@ record_declaration_error(const ZirType *record, const char *message,
     return 0;
 }
 
-/* Structural errors are invalid in every backend, including non-strict mode.
- * Check them before function eligibility can select a fallback emitter. */
+/* Structural errors are invalid in every backend. Check them before function
+ * eligibility can select a native emitter. */
 typedef struct RecordPath {
     const ZirType *record;
     const struct RecordPath *parent;
@@ -1004,23 +2092,16 @@ typedef struct ValidatedRecords {
     size_t count;
 } ValidatedRecords;
 
-static int
-has_foreign_types(const ZirModule *module)
-{
-    for(int i = 0; i < module->import_count; i++) {
-        const ZirImport *import = &module->imports[i];
-        if(import->kind == ZIR_IMPORT_HEADER && import->resolved_module == NULL)
-            return 1;
-    }
-    return 0;
-}
-
 /* Validate stored shapes before choosing an emitter. In particular, a slice
  * must never be mistaken for a fixed array, nor a recursive value layout for
  * an opaque host type. Pointers stop layout recursion but still name a type. */
+static int declared_application_valid(const ZirModule *module,
+                                      const char *text, int depth);
+
 static const char *
 storage_type_error(const ZirModule *module, const char *source,
-                   const RecordPath *path, int indirect, ValidatedRecords *checked)
+                   const RecordPath *path, int indirect, ValidatedRecords *checked,
+                   char *detail, size_t detail_capacity)
 {
     char type[ZIR_NAME_MAX];
     char element[ZIR_NAME_MAX];
@@ -1040,7 +2121,8 @@ storage_type_error(const ZirModule *module, const char *source,
         const char *pointee = skip_ws(type + 1);
         if(!*pointee)
             return "pointer requires an element type";
-        return storage_type_error(module, pointee, path, 1, checked);
+        return storage_type_error(module, pointee, path, 1, checked,
+                                  detail, detail_capacity);
     }
     if(type[0] == '[') {
         if(type[1] == ']')
@@ -1053,10 +2135,11 @@ storage_type_error(const ZirModule *module, const char *source,
             int status = array_capacity(module, type, &capacity);
             if(status < 0)
                 return "array capacity is not a valid bounded integer constant";
-            if(status == 0 && !has_foreign_types(module))
+            if(status == 0)
                 return "array capacity requires a known integer constant";
         }
-        return storage_type_error(module, element, path, indirect, checked);
+        return storage_type_error(module, element, path, indirect, checked,
+                                  detail, detail_capacity);
     }
     size_t length = strlen(type);
     if(length > 0 && type[length - 1] == '*') {
@@ -1064,15 +2147,21 @@ storage_type_error(const ZirModule *module, const char *source,
         trim_in_place(type);
         if(!strncmp(type, "const ", 6))
             memmove(type, type + 6, strlen(type + 6) + 1);
-        return storage_type_error(module, type, path, 1, checked);
+        return storage_type_error(module, type, path, 1, checked,
+                                  detail, detail_capacity);
     }
     record = FindType(module, type, &owner);
-    if(record == NULL)
-        return has_foreign_types(module) ? NULL : "unknown stored type";
-    if(record->is_variant_template || record->is_record_template)
+    if(record == NULL) {
+        if(indirect && declared_application_valid(module, type, 0))
+            return NULL;
+        if(detail != NULL && detail_capacity > 0)
+            copy_text(detail, detail_capacity, type);
+        return "unknown stored type";
+    }
+    if(record->is_record_template)
         return "generic types require a concrete specialization";
-    if(record->is_slot)
-        return "slot values cannot be stored in aggregates or pointers";
+    if(record->is_procedure_type)
+        return NULL;
     if(record->is_enum || indirect)
         return NULL;
     for(const RecordPath *ancestor = path; ancestor != NULL; ancestor = ancestor->parent) {
@@ -1090,7 +2179,8 @@ storage_type_error(const ZirModule *module, const char *source,
     size_t offset = 0;
     int status;
     while((status = TypeNextField(record, &offset, &field)) == 1) {
-        const char *error = storage_type_error(owner, field.type, &current, 0, checked);
+        const char *error = storage_type_error(owner, field.type, &current, 0,
+                                               checked, detail, detail_capacity);
         if(error != NULL)
             return error;
     }
@@ -1114,7 +2204,8 @@ local_storage_error(const ZirModule *module, const char *type)
     if(slice && (element[0] == '[' || !strcmp(element, "char") || !strcmp(element, "const char")))
         problem = "unsupported slice element type";
     else
-        problem = storage_type_error(module, slice ? element : type, NULL, 0, &checked);
+        problem = storage_type_error(module, slice ? element : type, NULL, 0,
+                                     &checked, NULL, 0);
     free(checked.items);
     return problem;
 }
@@ -1146,8 +2237,7 @@ declared_application_valid(const ZirModule *module, const char *text, int depth)
     memcpy(arguments, start, (size_t)(cursor - start));
     arguments[cursor - start] = '\0';
     const ZirType *generic = FindType(module, name, NULL);
-    if(generic == NULL ||
-       (!generic->is_record_template && !generic->is_variant_template))
+    if(generic == NULL || !generic->is_record_template)
         return 0;
     int expected = split_top_level(generic->template_params, parameters[0],
                                    16, sizeof(parameters[0]));
@@ -1162,27 +2252,26 @@ declared_application_valid(const ZirModule *module, const char *text, int depth)
 }
 
 static int
-check_type_declarations(const ZirModule *module, int strict)
+check_type_declarations(ZirModule *module)
 {
     for(int i = 0; i < module->type_count; i++) {
         const ZirType *record = &module->types[i];
+        select_lookup_file(module, record->span);
         size_t offset = 0;
         int status;
         ZirTypeField field;
 
-        /* Anonymous enum groups and foreign typedef payloads are not records. */
         if(record->name[0] == '#')
-            continue;
+            return record_declaration_error(record,
+                "retired compiler-generated type", NULL);
         for(int previous = 0; previous < i; previous++) {
             const ZirType *other = &module->types[previous];
             if(strcmp(record->name, other->name) == 0 &&
-               strcmp(record->guard, other->guard) == 0)
+               !(strcmp(record->span.path, other->span.path) != 0 &&
+                 (record->is_file_private || other->is_file_private)))
                 return record_declaration_error(record, "duplicate type declaration", NULL);
         }
-        if(record->is_variant && !VariantLayoutValid(record))
-            return record_declaration_error(record,
-                "variant cases do not match their checked storage", NULL);
-        if(record->is_variant_template || record->is_record_template) {
+        if(record->is_record_template) {
             char parameters[16][ZIR_NAME_MAX];
             char concrete[16][ZIR_NAME_MAX];
             int parameter_count = split_top_level(record->template_params,
@@ -1205,43 +2294,11 @@ check_type_declarations(const ZirModule *module, int strict)
                         return record_declaration_error(record,
                             "duplicate generic type parameter", parameters[parameter]);
                 copy_text(concrete[parameter], sizeof(concrete[parameter]),
-                          "i32");
+                          "s32");
             }
             int members = 0;
             size_t member_offset = 0;
-            if(record->is_variant_template) {
-                ZirVariantCase item, previous;
-                while((status = VariantNextCase(record, &member_offset,
-                                                &item)) == 1) {
-                    size_t prior_offset = 0;
-                    while(prior_offset < member_offset) {
-                        if(VariantNextCase(record, &prior_offset,
-                                           &previous) != 1)
-                            return record_declaration_error(record,
-                                "malformed generic variant case", NULL);
-                        if(prior_offset == member_offset) break;
-                        if(!strcmp(previous.name, item.name))
-                            return record_declaration_error(record,
-                                "duplicate generic variant case", item.name);
-                    }
-                    if(item.type[0]) {
-                        char resolved[ZIR_NAME_MAX];
-                        if(!SubstituteGenericType(item.type, resolved,
-                                sizeof(resolved), parameters, concrete,
-                                parameter_count))
-                            return record_declaration_error(record,
-                                "generic variant payload type exceeds size limit",
-                                item.name);
-                        const char *problem = local_storage_error(module,
-                                                                   resolved);
-                        if(problem != NULL &&
-                           !declared_application_valid(module, resolved, 0))
-                            return record_declaration_error(record, problem,
-                                                            item.name);
-                    }
-                    members++;
-                }
-            } else {
+            {
                 ZirTypeField item, previous;
                 while((status = TypeNextField(record, &member_offset,
                                               &item)) == 1) {
@@ -1282,7 +2339,17 @@ check_type_declarations(const ZirModule *module, int strict)
         }
         if(record->is_enum)
             continue;
-        if(record->is_slot) {
+        if(record->is_procedure_type) {
+            const ZirType *result = FindType(module,
+                record->procedure_return_type, NULL);
+            if(!record->procedure_return_type[0] ||
+               (record->is_c_call ?
+                (strcmp(record->procedure_return_type, "void") &&
+                 local_storage_error(module, record->procedure_return_type) != NULL) :
+                (TargetType(record->procedure_return_type, ZIR_C) == NULL &&
+                 result == NULL)) || (result && result->is_procedure_type))
+                return record_declaration_error(record,
+                    "invalid procedure type result", record->procedure_return_type);
             char parameters[64][ZIR_TEXT_MAX];
             int count = *skip_ws(record->body) ?
                 split_top_level(record->body, parameters[0], 64, sizeof(parameters[0])) : 0;
@@ -1295,7 +2362,10 @@ check_type_declarations(const ZirModule *module, int strict)
                 trim_in_place(colon);
                 const ZirType *type = FindType(module, colon, NULL);
                 if(!*parameters[parameter] || !strcmp(colon, "void") ||
-                   (TargetType(colon, ZIR_C) == NULL && type == NULL) || (type && type->is_slot))
+                   (record->is_c_call ?
+                    local_storage_error(module, colon) != NULL :
+                    (TargetType(colon, ZIR_C) == NULL && type == NULL)) ||
+                   (type && type->is_procedure_type))
                     return record_declaration_error(record, "invalid slot parameter", parameters[parameter]);
                 for(int previous = 0; previous < parameter; previous++)
                     if(!strcmp(parameters[previous], parameters[parameter]))
@@ -1311,9 +2381,6 @@ check_type_declarations(const ZirModule *module, int strict)
                 return record_declaration_error(record, "slice descriptors cannot be stored in aggregates", field.name);
             if(strcmp(field.type, "void") == 0)
                 return record_declaration_error(record, "record field cannot have void type", field.name);
-            const ZirType *field_type = FindType(module, field.type, NULL);
-            if(field_type != NULL && field_type->is_slot)
-                return record_declaration_error(record, "slot values cannot be stored in records", field.name);
             while(TypeNextField(record, &previous_offset, &previous) == 1 &&
                   previous_offset < offset) {
                 if(strcmp(previous.name, field.name) == 0)
@@ -1322,13 +2389,14 @@ check_type_declarations(const ZirModule *module, int strict)
         }
         if(status < 0)
             return record_declaration_error(record, "malformed record field", NULL);
-        if(strict) {
-            ValidatedRecords checked = {0};
-            const char *error = storage_type_error(module, record->name, NULL, 0, &checked);
-            free(checked.items);
-            if(error != NULL)
-                return record_declaration_error(record, error, NULL);
-        }
+        ValidatedRecords checked = {0};
+        char detail[ZIR_NAME_MAX] = "";
+        const char *error = storage_type_error(module, record->name, NULL, 0,
+                                               &checked, detail, sizeof(detail));
+        free(checked.items);
+        if(error != NULL)
+            return record_declaration_error(record, error,
+                                            detail[0] ? detail : NULL);
     }
     return 1;
 }
@@ -1341,7 +2409,8 @@ normalize_record_arrays(ZirModule *module)
 {
     for(int i = 0; i < module->type_count; i++) {
         ZirType *record = &module->types[i];
-        if(record->is_slot || record->is_enum || record->name[0] == '#')
+        select_lookup_file(module, record->span);
+        if(record->is_procedure_type || record->is_enum)
             continue;
         size_t offset = 0;
         ZirTypeField field;
@@ -1375,262 +2444,6 @@ normalize_record_arrays(ZirModule *module)
             return 0;
         copy_text(record->body, sizeof(record->body), body);
     }
-    return 1;
-}
-
-static ZirStmt *
-block_statement(ZirFunction *body, ZirStmtKind kind, ZirSourceSpan span,
-                  const char *format, ...)
-{
-    char text[ZIR_TEXT_MAX];
-    va_list arguments;
-    va_start(arguments, format);
-    int length = vsnprintf(text, sizeof(text), format, arguments);
-    va_end(arguments);
-    if(length < 0 || (size_t)length >= sizeof(text))
-        return NULL;
-    ZirStmt *statement = FunctionAddStmt(body, kind, text, "", span);
-    if(statement == NULL)
-        return NULL;
-    statement->declared_block_call = 1;
-    return statement;
-}
-
-static void
-inherit_block_call_metadata(ZirStmt *statement, const ZirStmt *source)
-{
-    char text[ZIR_TEXT_MAX];
-    char args[ZIR_TEXT_MAX];
-    ZirStmtKind kind;
-
-    if(statement == NULL || source == NULL)
-        return;
-    kind = statement->kind;
-    copy_text(text, sizeof(text), statement->text);
-    copy_text(args, sizeof(args), statement->args);
-    *statement = *source;
-    statement->kind = kind;
-    copy_text(statement->text, sizeof(statement->text), text);
-    copy_text(statement->args, sizeof(statement->args), args);
-    statement->declared_block_call = 1;
-    statement->expr_root = -1;
-    statement->lhs_root = -1;
-}
-
-/* A block initializes props and callable arguments in source order, then calls
- * the same declaration as ordinary function syntax. Captured child bodies can
- * later enter this path as slot values without another backend block-call path. */
-static int
-lower_block_call(Checker *c, int index, const ZirModule *owner,
-                      const ZirType *props, const char *temporary,
-                      const char *return_type,
-                      char parameters[][ZIR_TEXT_MAX], int parameter_count)
-{
-    const ZirStmt *source = &c->fn->stmts[index];
-    ZirSourceSpan span = source->span;
-    ZirFunction lowered = {0};
-    char fields[64][ZIR_TEXT_MAX];
-    char slot_names[64][ZIR_NAME_MAX] = {{0}};
-    const char *slot_types[64] = {0};
-    int supplied[64] = {0};
-    const char *diagnostic = "block-call fields exceed the lowering size limit";
-    int field_count = *skip_ws(source->args) ?
-        split_top_level(source->args, fields[0], 64, sizeof(fields[0])) : 0;
-    if(field_count == 64)
-        goto failed;
-    for(int parameter = 1; parameter < parameter_count; parameter++) {
-        char *colon = strchr(parameters[parameter], ':');
-        diagnostic = "block-call parameters after props must be typed slots";
-        if(colon == NULL)
-            goto failed;
-        *colon++ = '\0';
-        trim_in_place(parameters[parameter]);
-        trim_in_place(colon);
-        const ZirType *slot = FindType(owner, colon, NULL);
-        if(slot == NULL || !slot->is_slot)
-            goto failed;
-        diagnostic = "block-call slot type is shadowed or not directly imported";
-        if(FindType(c->module, colon, NULL) != slot)
-            goto failed;
-        slot_types[parameter] = colon;
-        int length = snprintf(slot_names[parameter], sizeof(slot_names[parameter]),
-                              "%s_slot_%d", temporary, parameter);
-        diagnostic = "block-call slot binding exceeds the lowering size limit";
-        if(length < 0 || (size_t)length >= sizeof(slot_names[parameter]))
-            goto failed;
-        diagnostic = "block-call slot name conflicts with a props field or another slot";
-        size_t offset = 0;
-        ZirTypeField field;
-        while(TypeNextField(props, &offset, &field) == 1)
-            if(!strcmp(field.name, parameters[parameter]))
-                goto failed;
-        for(int previous = 1; previous < parameter; previous++)
-            if(!strcmp(parameters[previous], parameters[parameter]))
-                goto failed;
-    }
-    diagnostic = "block-call fields exceed the lowering size limit";
-    if(block_statement(&lowered, ZIR_STMT_DECL, span, "%s: %s", temporary, props->name) == NULL)
-        goto failed;
-    for(int property = 0; property < field_count; property++) {
-        char *field = fields[property];
-        if(!*field)
-            continue;
-        char *equals = strchr(field, '=');
-        diagnostic = "invalid block-call field";
-        if(field[0] != '.' || equals == NULL)
-            goto failed;
-        *equals++ = '\0';
-        trim_in_place(field);
-        const char *name = field + 1;
-        for(int previous = 0; previous < property; previous++) {
-            diagnostic = "duplicate block-call field or slot";
-            if(!strcmp(fields[previous], field))
-                goto failed;
-        }
-        int parameter = 1;
-        while(parameter < parameter_count && strcmp(parameters[parameter], name))
-            parameter++;
-        diagnostic = "block-call fields exceed the lowering size limit";
-        if(parameter < parameter_count) {
-            supplied[parameter] = 1;
-            if(block_statement(&lowered, ZIR_STMT_DECL, span, "%s: %s = %s",
-                                slot_names[parameter], slot_types[parameter],
-                                equals) == NULL)
-                goto failed;
-        } else {
-            char prefix[ZIR_NAME_MAX + 3] = "";
-            size_t offset = 0;
-            ZirTypeField field_type;
-            int found = 0;
-            while(TypeNextField(props, &offset, &field_type) == 1) {
-                if(!strcmp(field_type.name, name)) {
-                    found = 1;
-                    if(*skip_ws(equals) == '{')
-                        snprintf(prefix, sizeof(prefix), "%s.", field_type.type);
-                    break;
-                }
-            }
-            diagnostic = "unknown block-call field or slot";
-            if(!found)
-                goto failed;
-            diagnostic = "block-call fields exceed the lowering size limit";
-            if(block_statement(&lowered, ZIR_STMT_ASSIGN, span,
-                                "%s.%s = %s%s", temporary, name, prefix,
-                                skip_ws(equals)) == NULL)
-                goto failed;
-        }
-    }
-    char arguments[ZIR_TEXT_MAX];
-    size_t length = (size_t)snprintf(arguments, sizeof(arguments), "%s", temporary);
-    for(int parameter = 1; parameter < parameter_count; parameter++) {
-        diagnostic = "missing required block-call slot";
-        if(!supplied[parameter])
-            goto failed;
-        int added = snprintf(arguments + length, sizeof(arguments) - length, ", %s", slot_names[parameter]);
-        diagnostic = "block-call arguments exceed the lowering size limit";
-        if(added < 0 || (size_t)added >= sizeof(arguments) - length)
-            goto failed;
-        length += (size_t)added;
-    }
-    {
-        ZirStmt *call = source->text[0] != '\0' ?
-            block_statement(&lowered, ZIR_STMT_DECL, span,
-                            "%s: %s = %s(%s)", source->text, return_type,
-                            source->callee, arguments) :
-            block_statement(&lowered, ZIR_STMT_EXPR, span,
-                            "%s(%s)", source->callee, arguments);
-        if(call == NULL)
-            goto failed;
-        inherit_block_call_metadata(call, source);
-    }
-    int replacement_count = lowered.stmt_count;
-    int total = c->fn->stmt_count - 1 + replacement_count;
-    ZirStmt *statements = realloc(c->fn->stmts, (size_t)total * sizeof(*statements));
-    if(statements == NULL)
-        goto failed;
-    memmove(&statements[index + replacement_count], &statements[index + 1],
-            (size_t)(c->fn->stmt_count - index - 1) * sizeof(*statements));
-    memcpy(&statements[index], lowered.stmts, (size_t)replacement_count * sizeof(*statements));
-    c->fn->stmts = statements;
-    c->fn->stmt_count = c->fn->stmt_cap = total;
-    free(lowered.stmts);
-    return replacement_count;
-failed:
-    Diagnostic(span, "check.callee", "%s: %s", diagnostic, source->callee);
-    free(lowered.stmts);
-    c->failed = 1;
-    return -1;
-}
-
-static int
-resolve_block_calls(Checker *c)
-{
-    int changed = 0;
-    for(int i = 0; i < c->fn->stmt_count; i++) {
-        ZirStmt *statement = &c->fn->stmts[i];
-        if(statement->kind != ZIR_STMT_BLOCK_CALL)
-            continue;
-        const ZirModule *owner = NULL;
-        const ZirFunction *declaration = NULL;
-        int resolved = ResolveFunction(c->module, statement->callee, &owner, &declaration);
-        if(!statement->declared_block_call) {
-            Diagnostic(statement->span, "check.block_call",
-                          "block call has no declared syntax: %s", statement->callee);
-            c->failed = 1;
-            return 0;
-        }
-        char parameters[64][ZIR_TEXT_MAX];
-        int count = declaration ? split_top_level(declaration->args, parameters[0], 64, sizeof(parameters[0])) : 0;
-        char *type = count > 0 ? strchr(parameters[0], ':') : NULL;
-        if(type != NULL) {
-            type++;
-            trim_in_place(type);
-        }
-        const ZirType *props = type ? FindType(owner, type, NULL) : NULL;
-        const char *diagnostic = NULL;
-        if(resolved < 0)
-            diagnostic = "ambiguous block-call declaration";
-        else if(resolved == 0)
-            diagnostic = "unknown block-call declaration";
-        else if(declaration->is_extern)
-            diagnostic = "block calls require a Ziran function declaration";
-        else if(count < 1 || count == 64 || props == NULL || props->is_enum || props->is_slot)
-            diagnostic = "block-call declaration requires one typed record parameter";
-        else if(statement->text[0] != '\0' &&
-                strcmp(declaration->return_type, "void") == 0)
-            diagnostic = "named block call requires a return value";
-        if(diagnostic != NULL) {
-            Diagnostic(statement->span, "check.callee", "%s: %s", diagnostic, statement->callee);
-            c->failed = 1;
-            return 0;
-        }
-        if(FindType(c->module, type, NULL) != props) {
-            Diagnostic(statement->span, "check.callee_type",
-                          "block-call record type is shadowed or not directly imported: %s", type);
-            c->failed = 1;
-            return 0;
-        }
-        char temporary[ZIR_NAME_MAX];
-        int serial = i;
-        int collision;
-        do {
-            snprintf(temporary, sizeof(temporary), "block_value_%d", serial++);
-            collision = strstr(c->fn->args, temporary) != NULL;
-            for(int s = 0; s < c->fn->stmt_count; s++) {
-                collision |= strstr(c->fn->stmts[s].text, temporary) != NULL ||
-                             strstr(c->fn->stmts[s].args, temporary) != NULL;
-            }
-        } while(collision);
-        int added = lower_block_call(c, i, owner, props, temporary,
-                                     declaration->return_type,
-                                     parameters, count);
-        if(added < 0)
-            return 0;
-        i += added - 1;
-        changed = 1;
-    }
-    if(changed)
-        StructureFunction(c->fn, c->module);
     return 1;
 }
 
@@ -1691,106 +2504,23 @@ sequence_returns(const ZirFunction *fn, int begin, int end)
 }
 
 static int
-match_opens_block(ZirStmtKind kind)
+starts_word(const char *source, const char *word)
+{
+    size_t length = strlen(word);
+    return strncmp(source, word, length) == 0 &&
+           (source[length] == '\0' || isspace((unsigned char)source[length]));
+}
+
+static int
+if_case_opens_block(ZirStmtKind kind)
 {
     return kind == ZIR_STMT_IF || kind == ZIR_STMT_WHILE ||
-           kind == ZIR_STMT_FOR || kind == ZIR_STMT_SWITCH ||
-           kind == ZIR_STMT_MATCH || kind == ZIR_STMT_BLOCK_OPEN;
-}
-
-static int
-match_label(const char *text, const char *owner, int jai_case,
-            char *name, char *binding, size_t capacity)
-{
-    binding[0] = 0;
-    const char *cursor = skip_ws(text);
-    if(strncmp(cursor, "case", 4) != 0 || !isspace((unsigned char)cursor[4]))
-        return 0;
-    cursor = skip_ws(cursor + 4);
-    int qualified = *cursor == '.';
-    if(qualified) cursor++;
-    const char *start = cursor;
-    if(!isalpha((unsigned char)*cursor) && *cursor != '_')
-        return 0;
-    while(isalnum((unsigned char)*cursor) || *cursor == '_')
-        cursor++;
-    size_t length = (size_t)(cursor - start);
-    if(length >= capacity)
-        return 0;
-    memcpy(name, start, length);
-    name[length] = 0;
-    cursor = skip_ws(cursor);
-    if(*cursor == '.') {
-        qualified = 1;
-        if(strcmp(name, owner) != 0) return 0;
-        cursor++;
-        start = cursor;
-        if(!isalpha((unsigned char)*cursor) && *cursor != '_')
-            return 0;
-        while(isalnum((unsigned char)*cursor) || *cursor == '_') cursor++;
-        length = (size_t)(cursor - start);
-        if(length >= capacity) return 0;
-        memcpy(name, start, length);
-        name[length] = 0;
-        cursor = skip_ws(cursor);
-    }
-    if(*cursor == '(') {
-        cursor = skip_ws(cursor + 1);
-        start = cursor;
-        if(!isalpha((unsigned char)*cursor) && *cursor != '_')
-            return 0;
-        while(isalnum((unsigned char)*cursor) || *cursor == '_')
-            cursor++;
-        length = (size_t)(cursor - start);
-        if(length >= capacity)
-            return 0;
-        memcpy(binding, start, length);
-        binding[length] = 0;
-        cursor = skip_ws(cursor);
-        if(*cursor != ')')
-            return 0;
-        cursor = skip_ws(cursor + 1);
-    }
-    return (!jai_case || (qualified && *cursor == ';')) &&
-           (*cursor == ':' || *cursor == ';') &&
-           *skip_ws(cursor + 1) == 0;
-}
-
-static int
-match_members(const ZirType *enumeration,
-              char (*names)[ZIR_NAME_MAX], int capacity)
-{
-    const char *cursor = enumeration->body;
-    int count = 0;
-    while(*cursor) {
-        while(isspace((unsigned char)*cursor) ||
-              *cursor == ',' || *cursor == ';')
-            cursor++;
-        if(!*cursor)
-            break;
-        const char *start = cursor;
-        if(!isalpha((unsigned char)*cursor) && *cursor != '_')
-            return -1;
-        while(isalnum((unsigned char)*cursor) || *cursor == '_')
-            cursor++;
-        size_t length = (size_t)(cursor - start);
-        if(count >= capacity || length >= ZIR_NAME_MAX)
-            return -1;
-        for(int previous = 0; previous < count; previous++)
-            if(strlen(names[previous]) == length &&
-               strncmp(names[previous], start, length) == 0)
-                return -1;
-        memcpy(names[count], start, length);
-        names[count++][length] = 0;
-        while(*cursor && *cursor != ',' && *cursor != ';' &&
-              *cursor != '\n')
-            cursor++;
-    }
-    return count;
+           kind == ZIR_STMT_FOR || kind == ZIR_STMT_IF_CASE ||
+           kind == ZIR_STMT_BLOCK_OPEN;
 }
 
 static void
-match_generated(ZirStmt *statement, ZirStmtKind kind,
+if_case_generated(ZirStmt *statement, ZirStmtKind kind,
                 const char *text, ZirSourceSpan span)
 {
     memset(statement, 0, sizeof(*statement));
@@ -1801,812 +2531,470 @@ match_generated(ZirStmt *statement, ZirStmtKind kind,
 }
 
 static void
-match_error(Checker *c, ZirSourceSpan span, const char *message,
+if_case_error(Checker *c, ZirSourceSpan span, const char *message,
             const char *detail)
 {
     c->errors++;
     c->failed = 1;
-    Diagnostic(span, "check.match", "%s%s%s", message,
+    Diagnostic(span, "check.if_case", "%s%s%s", message,
                detail && *detail ? ": " : "", detail ? detail : "");
 }
 
-/* Exhaustive matches reduce to checked declarations and branches before any
- * backend sees them. A final trap catches invalid enum casts or variant tags. */
 static int
-lower_match(Checker *c, int index, const ZirType *matched)
+if_case_through(Checker *c, const ZirFunction *fn, const int *cases,
+                   int case_count, int close, unsigned char *through)
+{
+    int has_through = 0;
+    for(int arm = 0; arm < case_count; arm++) {
+        int arm_end = arm + 1 < case_count ? cases[arm + 1] : close;
+        int nested = 0;
+        for(int i = cases[arm] + 1; i < arm_end; i++) {
+            const ZirStmt *statement = &fn->stmts[i];
+            if(statement->kind == ZIR_STMT_IF_CASE) {
+                int inner_depth = 1;
+                while(++i < arm_end && inner_depth > 0) {
+                    if(if_case_opens_block(fn->stmts[i].kind)) inner_depth++;
+                    if(fn->stmts[i].kind == ZIR_STMT_BLOCK_CLOSE)
+                        inner_depth--;
+                }
+                if(inner_depth != 0) {
+                    if_case_error(c, statement->span,
+                                "unterminated nested if-case", "");
+                    return -1;
+                }
+                continue;
+            }
+            if(strcmp(statement->text, "#through") == 0 ||
+               strcmp(statement->text, "#through;") == 0) {
+                if(nested != 0 || i != arm_end - 1 ||
+                   arm == case_count - 1) {
+                    if_case_error(c, statement->span,
+                        "#through must end a case before another case", "");
+                    return -1;
+                }
+                through[arm] = has_through = 1;
+            }
+            if(if_case_opens_block(statement->kind)) nested++;
+            if(statement->kind == ZIR_STMT_BLOCK_CLOSE) nested--;
+        }
+    }
+    return has_through;
+}
+
+static int
+if_cases_return(const ZirFunction *fn, const int *cases,
+                   int case_count, int close, const unsigned char *through)
+{
+    int next_returns = 0, all_return = 1;
+    for(int arm = case_count - 1; arm >= 0; arm--) {
+        int end = arm + 1 < case_count ? cases[arm + 1] : close;
+        if(through[arm]) end--;
+        int escapes = 0;
+        for(int i = cases[arm] + 1; i < end; i++)
+            escapes |= fn->stmts[i].kind == ZIR_STMT_BREAK ||
+                       fn->stmts[i].kind == ZIR_STMT_CONTINUE ||
+                       fn->stmts[i].kind == ZIR_STMT_IF_CASE;
+        int returns = !escapes &&
+            sequence_returns(fn, cases[arm] + 1, end);
+        if(!returns && !escapes && through[arm])
+            returns = next_returns;
+        all_return &= returns;
+        next_returns = returns;
+    }
+    return all_return;
+}
+
+static int
+scalar_case_label(const ZirStmt *statement, char *label, size_t capacity)
+{
+    const char *cursor = skip_ws(statement->text);
+    if(strncmp(cursor, "case", 4) != 0 ||
+       (cursor[4] != ';' && !isspace((unsigned char)cursor[4])))
+        return 0;
+    cursor = skip_ws(cursor + 4);
+    size_t length = strlen(cursor);
+    while(length && isspace((unsigned char)cursor[length - 1])) length--;
+    if(length == 0 || cursor[length - 1] != ';' || length >= capacity)
+        return 0;
+    memcpy(label, cursor, length - 1);
+    label[length - 1] = '\0';
+    trim_in_place(label);
+    return 1;
+}
+
+static int
+scalar_case_type(const char *type)
+{
+    return !strcmp(type, "bool") || !strcmp(type, "string") ||
+           numeric(type);
+}
+
+static int
+enum_case_members(const ZirType *enumeration,
+                  char (*names)[ZIR_NAME_MAX], int capacity)
+{
+    const char *cursor = enumeration->body;
+    int count = 0;
+    while(*cursor) {
+        while(isspace((unsigned char)*cursor) ||
+              *cursor == ',' || *cursor == ';') cursor++;
+        if(!*cursor) break;
+        const char *start = cursor;
+        if(!isalpha((unsigned char)*cursor) && *cursor != '_') return -1;
+        while(isalnum((unsigned char)*cursor) || *cursor == '_') cursor++;
+        size_t length = (size_t)(cursor - start);
+        if(count >= capacity || length >= ZIR_NAME_MAX) return -1;
+        memcpy(names[count], start, length);
+        names[count++][length] = '\0';
+        while(*cursor && *cursor != ',' && *cursor != ';' &&
+              *cursor != '\n') cursor++;
+    }
+    return count;
+}
+
+static int
+enum_case_member(const ZirType *enumeration, const char *label,
+                 char *member, size_t capacity)
+{
+    const char *start = label;
+    if(*start == '.') start++;
+    else {
+        size_t length = strlen(enumeration->name);
+        if(strncmp(start, enumeration->name, length) != 0 ||
+           start[length] != '.') return 0;
+        start += length + 1;
+    }
+    if(!isalpha((unsigned char)*start) && *start != '_') return 0;
+    const char *end = start + 1;
+    while(isalnum((unsigned char)*end) || *end == '_') end++;
+    size_t length = (size_t)(end - start);
+    if(*end || length >= capacity) return 0;
+    memcpy(member, start, length);
+    member[length] = '\0';
+    return EnumMemberValue(enumeration, member, NULL);
+}
+
+/* A Jai if-case evaluates its selector once. With #through, an active flag
+ * carries execution into the next arm without retesting its label. */
+static int
+lower_if_case(Checker *c, int index, const char *checked_type)
 {
     ZirFunction *fn = c->fn;
     ZirStmt *head = &fn->stmts[index];
-    int complete = strncmp(head->text, "match?", 6) != 0;
-    int jai_case = strncmp(head->text, "match!", 6) == 0 || !complete;
-    int member_capacity = (int)strlen(matched->is_variant ?
-        matched->variant_cases : matched->body) + 1;
-    char (*members)[ZIR_NAME_MAX] =
-        calloc((size_t)member_capacity, sizeof(*members));
-    char (*payload_types)[ZIR_NAME_MAX] =
-        calloc((size_t)member_capacity, sizeof(*payload_types));
-    char (*bindings)[ZIR_NAME_MAX] =
-        calloc((size_t)member_capacity, sizeof(*bindings));
-    int *cases = calloc((size_t)member_capacity, sizeof(*cases));
-    int *member_index = calloc((size_t)member_capacity, sizeof(*member_index));
-    unsigned char *seen = calloc((size_t)member_capacity, sizeof(*seen));
-    if(members == NULL || payload_types == NULL || bindings == NULL ||
-       cases == NULL || member_index == NULL || seen == NULL) {
-        match_error(c, head->span, "out of memory lowering match", "");
-        goto failed;
-    }
-    int member_count = 0;
-    if(matched->is_variant) {
-        size_t offset = 0;
-        ZirVariantCase item;
-        int status;
-        while((status = VariantNextCase(matched, &offset, &item)) == 1) {
-            if(member_count >= member_capacity) break;
-            copy_text(members[member_count], ZIR_NAME_MAX, item.name);
-            copy_text(payload_types[member_count], ZIR_NAME_MAX, item.type);
-            member_count++;
-        }
-        if(status < 0 || member_count >= member_capacity)
-            member_count = -1;
-    } else {
-        member_count = match_members(matched, members, member_capacity);
-    }
-    int case_count = 0, depth = 1, close = -1;
-    if(member_count <= 0) {
-        match_error(c, head->span, "match requires a nonempty enum or variant", matched->name);
-        goto failed;
+    const ZirType *enumeration = FindType(c->module, checked_type, NULL);
+    int complete = enumeration != NULL &&
+        starts_word(skip_ws(head->text + 2), "#complete");
+    int *cases = calloc((size_t)fn->stmt_count + 1, sizeof(*cases));
+    unsigned char *through = calloc((size_t)fn->stmt_count + 1,
+                                    sizeof(*through));
+    int member_capacity = enumeration != NULL ?
+        (int)strlen(enumeration->body) + 1 : 0;
+    char (*members)[ZIR_NAME_MAX] = enumeration != NULL ?
+        calloc((size_t)member_capacity, sizeof(*members)) : NULL;
+    unsigned char *seen = enumeration != NULL ?
+        calloc((size_t)member_capacity, sizeof(*seen)) : NULL;
+    int member_count = enumeration != NULL ?
+        (members != NULL && seen != NULL ?
+         enum_case_members(enumeration, members, member_capacity) : -1) : 0;
+    ZirStmt *output = NULL;
+    int count = 0, depth = 1, close = -1, default_arm = -1, ok = 0;
+    char label[ZIR_TEXT_MAX], line[ZIR_TEXT_MAX];
+    char source[ZIR_TEXT_MAX], temporary[ZIR_NAME_MAX];
+    char active[ZIR_NAME_MAX], matched_name[ZIR_NAME_MAX];
+    int length;
+    if(cases == NULL || through == NULL ||
+       (enumeration != NULL && member_count <= 0)) {
+        if_case_error(c, head->span, "out of memory lowering if-case", "");
+        goto done;
     }
     for(int i = index + 1; i < fn->stmt_count; i++) {
         ZirStmt *statement = &fn->stmts[i];
         if(statement->kind == ZIR_STMT_BLOCK_CLOSE) {
             if(--depth == 0) { close = i; break; }
         } else if(depth == 1 && statement->kind == ZIR_STMT_CASE) {
-            char label[ZIR_NAME_MAX], binding[ZIR_NAME_MAX];
-            int member = -1;
-            if(!match_label(statement->text, matched->name, jai_case,
-                            label, binding, sizeof(label))) {
-                match_error(c, statement->span,
-                    jai_case ?
-                      "enum case requires 'case .Member;' or 'case Enum.Member;'" :
-                      "variant case requires 'case Name:' or 'case Name(value):'",
-                    statement->text);
-                goto failed;
+            if(!scalar_case_label(statement, label, sizeof(label))) {
+                if_case_error(c, statement->span,
+                            "scalar case requires 'case expression;' or 'case;'",
+                            statement->text);
+                goto done;
             }
-            for(int m = 0; m < member_count; m++)
-                if(strcmp(label, members[m]) == 0) { member = m; break; }
-            if(member < 0 || seen[member]) {
-                match_error(c, statement->span, member < 0 ?
-                      "case is not a member of the matched type" :
-                      "duplicate match case", label);
-                goto failed;
+            if(enumeration != NULL) {
+                char member[ZIR_NAME_MAX];
+                if(!enum_case_member(enumeration, label, member,
+                                     sizeof(member))) {
+                    if_case_error(c, statement->span,
+                        "enum case requires 'case .Member;' or 'case Enum.Member;'",
+                        statement->text);
+                    goto done;
+                }
+                int selected = -1;
+                for(int m = 0; m < member_count; m++)
+                    if(!strcmp(member, members[m])) { selected = m; break; }
+                if(selected < 0 || seen[selected]) {
+                    if_case_error(c, statement->span,
+                        selected < 0 ? "case is not a member of the selected enum" :
+                                       "duplicate if-case member", member);
+                    goto done;
+                }
+                seen[selected] = 1;
             }
-            if(binding[0] && !payload_types[member][0]) {
-                match_error(c, statement->span,
-                    "case has no payload to bind", label);
-                goto failed;
+            if(default_arm >= 0) {
+                if_case_error(c, statement->span, "default case must be last", "");
+                goto done;
             }
-            seen[member] = 1;
-            cases[case_count] = i;
-            copy_text(bindings[case_count], ZIR_NAME_MAX, binding);
-            member_index[case_count++] = member;
-        } else if(depth == 1 && case_count == 0) {
-            match_error(c, statement->span, "match body must begin with a case", "");
-            goto failed;
+            if(label[0] == '\0') default_arm = count;
+            cases[count++] = i;
+        } else if(depth == 1 && count == 0) {
+            if_case_error(c, statement->span,
+                        "if-case body must begin with a case", "");
+            goto done;
         }
-        if(match_opens_block(statement->kind))
-            depth++;
+        if(if_case_opens_block(statement->kind)) depth++;
     }
-    if(close < 0 || case_count == 0) {
-        match_error(c, head->span, "unterminated or empty match", "");
-        goto failed;
+    if(close < 0 || count == 0) {
+        if_case_error(c, head->span, "unterminated or empty if-case", "");
+        goto done;
     }
     for(int m = 0; complete && m < member_count; m++)
         if(!seen[m]) {
-            match_error(c, head->span, "non-exhaustive match; missing case", members[m]);
-            goto failed;
+            if_case_error(c, head->span,
+                          "non-exhaustive if-case; missing case", members[m]);
+            goto done;
         }
-    char source[ZIR_TEXT_MAX];
+    int has_through = if_case_through(c, fn, cases, count,
+                                         close, through);
+    if(has_through < 0) goto done;
+    int all_return = has_through && (default_arm >= 0 || complete) &&
+        if_cases_return(fn, cases, count, close, through);
     copy_text(source, sizeof(source), head->text);
-    char *brace = strrchr(source, '{');
-    if(brace == NULL) {
-        match_error(c, head->span, "match requires a block", "");
-        goto failed;
+    char *equals = strstr(source, "==");
+    if(equals == NULL) {
+        if_case_error(c, head->span, "if-case requires a block", "");
+        goto done;
     }
-    *brace = 0;
-    trim_in_place(source);
-    const char *value = skip_ws(source + (jai_case ? 6 : 5));
+    *equals = '\0';
+    const char *value = skip_ws(source + 2);
+    if(complete) value = skip_ws(value + strlen("#complete"));
+    trim_in_place((char *)value);
     if(!*value) {
-        match_error(c, head->span, "match requires a value", "");
-        goto failed;
+        if_case_error(c, head->span, "if-case requires a value", "");
+        goto done;
     }
-    char temporary[ZIR_NAME_MAX];
-    int serial = index;
-    int collision;
+    int serial = index, collision;
     do {
-        snprintf(temporary, sizeof(temporary), "match_value_%d", serial++);
+        snprintf(temporary, sizeof(temporary), "case_value_%d", serial++);
         collision = strstr(fn->args, temporary) != NULL;
         for(int i = 0; i < fn->stmt_count; i++)
             collision |= strstr(fn->stmts[i].text, temporary) != NULL ||
                          strcmp(fn->stmts[i].name, temporary) == 0;
     } while(collision);
-    int capacity = fn->stmt_count + case_count * 2 + 3;
-    ZirStmt *output = calloc((size_t)capacity, sizeof(*output));
+    length = snprintf(active, sizeof(active), "%s_active", temporary);
+    if(length < 0 || (size_t)length >= sizeof(active)) goto too_long;
+    length = snprintf(matched_name, sizeof(matched_name),
+                      "%s_matched", temporary);
+    if(length < 0 || (size_t)length >= sizeof(matched_name)) goto too_long;
+    int capacity = fn->stmt_count + count * 4 + 8;
+    output = calloc((size_t)capacity, sizeof(*output));
     if(output == NULL) {
-        match_error(c, head->span, "out of memory lowering match", "");
-        goto failed;
+        if_case_error(c, head->span, "out of memory lowering if-case", "");
+        goto done;
     }
     int next = 0;
-    for(int i = 0; i < index; i++)
-        output[next++] = fn->stmts[i];
-    char line[ZIR_TEXT_MAX];
-    int length = snprintf(line, sizeof(line), "%s: %s = %s",
-                          temporary, matched->name, value);
-    if(length < 0 || (size_t)length >= sizeof(line))
-        goto too_long;
-    match_generated(&output[next++], ZIR_STMT_DECL, line, head->span);
-    for(int arm = 0; arm < case_count; arm++) {
-        ZirSourceSpan span = fn->stmts[cases[arm]].span;
-        int member = member_index[arm];
-        if(matched->is_variant)
-            length = snprintf(line, sizeof(line), "%s %s_Tag(%s) == %d {",
-                              arm ? "else if" : "if", matched->name,
-                              temporary, member);
-        else
-            length = snprintf(line, sizeof(line), "%s %s == cast(%s)%s {",
-                              arm ? "else if" : "if", temporary,
-                              matched->name, members[member]);
-        if(length < 0 || (size_t)length >= sizeof(line))
-            goto too_long;
-        match_generated(&output[next++], ZIR_STMT_IF, line, span);
-        if(bindings[arm][0]) {
-            length = snprintf(line, sizeof(line), "%s: %s = %s_%sValue(%s)",
-                              bindings[arm], payload_types[member], matched->name,
-                              members[member], temporary);
-            if(length < 0 || (size_t)length >= sizeof(line))
-                goto too_long;
-            match_generated(&output[next++], ZIR_STMT_DECL, line, span);
+    for(int i = 0; i < index; i++) output[next++] = fn->stmts[i];
+    const char *storage = !strcmp(checked_type, "integer") ? "s64" :
+                          !strcmp(checked_type, "real") ? "float64" :
+                          checked_type;
+    length = snprintf(line, sizeof(line), "%s: %s = %s",
+                      temporary, storage, value);
+    if(length < 0 || (size_t)length >= sizeof(line)) goto too_long;
+    if_case_generated(&output[next++], ZIR_STMT_DECL, line, head->span);
+    if(has_through) {
+        length = snprintf(line, sizeof(line), "%s: bool = false", active);
+        if(length < 0 || (size_t)length >= sizeof(line)) goto too_long;
+        if_case_generated(&output[next++], ZIR_STMT_DECL, line, head->span);
+        if(default_arm >= 0 || complete) {
+            length = snprintf(line, sizeof(line), "%s: bool = false",
+                              matched_name);
+            if(length < 0 || (size_t)length >= sizeof(line)) goto too_long;
+            if_case_generated(&output[next++], ZIR_STMT_DECL, line, head->span);
         }
-        int arm_end = arm + 1 < case_count ? cases[arm + 1] : close;
+    }
+    for(int arm = 0; arm < count; arm++) {
+        ZirSourceSpan span = fn->stmts[cases[arm]].span;
+        char comparison[ZIR_TEXT_MAX];
+        if(!scalar_case_label(&fn->stmts[cases[arm]], label,
+                              sizeof(label))) goto done;
+        if(enumeration != NULL) {
+            char member[ZIR_NAME_MAX];
+            if(!enum_case_member(enumeration, label, member,
+                                 sizeof(member))) goto done;
+            /* Enum references lower to integer literals during a later
+             * checker restart. Keep the generated comparison enum typed. */
+            length = snprintf(label, sizeof(label), "cast(%s) %s.%s",
+                              enumeration->name, enumeration->name, member);
+            if(length < 0 || (size_t)length >= sizeof(label)) goto too_long;
+        }
+        length = enumeration == NULL ?
+            snprintf(comparison, sizeof(comparison), "(%s)", label) :
+            snprintf(comparison, sizeof(comparison), "%s", label);
+        if(length < 0 || (size_t)length >= sizeof(comparison)) goto too_long;
+        if(label[0] == '\0')
+            length = has_through ?
+                snprintf(line, sizeof(line), "if %s || !%s {",
+                         active, matched_name) :
+                snprintf(line, sizeof(line), "else {");
+        else
+            length = has_through ?
+                snprintf(line, sizeof(line), "if %s || %s == %s {",
+                         active, temporary, comparison) :
+                snprintf(line, sizeof(line), "%s %s == %s {",
+                         arm ? "else if" : "if", temporary, comparison);
+        if(length < 0 || (size_t)length >= sizeof(line)) goto too_long;
+        if_case_generated(&output[next++], ZIR_STMT_IF, line, span);
+        if(has_through && (default_arm >= 0 || complete)) {
+            length = snprintf(line, sizeof(line), "%s = true", matched_name);
+            if(length < 0 || (size_t)length >= sizeof(line)) goto too_long;
+            if_case_generated(&output[next++], ZIR_STMT_ASSIGN, line, span);
+        }
+        int arm_end = arm + 1 < count ? cases[arm + 1] : close;
         for(int i = cases[arm] + 1; i < arm_end; i++)
-            output[next++] = fn->stmts[i];
-        match_generated(&output[next++], ZIR_STMT_BLOCK_CLOSE, "}", span);
+            if(!(through[arm] && i == arm_end - 1))
+                output[next++] = fn->stmts[i];
+        if(has_through) {
+            length = snprintf(line, sizeof(line), "%s = %s", active,
+                              through[arm] ? "true" : "false");
+            if(length < 0 || (size_t)length >= sizeof(line)) goto too_long;
+            if_case_generated(&output[next++], ZIR_STMT_ASSIGN, line, span);
+        }
+        if_case_generated(&output[next++], ZIR_STMT_BLOCK_CLOSE, "}", span);
     }
     if(complete) {
-        match_generated(&output[next++], ZIR_STMT_IF, "else {", head->span);
-        match_generated(&output[next++], ZIR_STMT_UNREACHABLE,
-                        "unreachable", head->span);
-        match_generated(&output[next++], ZIR_STMT_BLOCK_CLOSE, "}", head->span);
+        length = has_through ?
+            snprintf(line, sizeof(line), "if !%s {", matched_name) :
+            snprintf(line, sizeof(line), "else {");
+        if(length < 0 || (size_t)length >= sizeof(line)) goto too_long;
+        if_case_generated(&output[next++], ZIR_STMT_IF, line, head->span);
+        if_case_generated(&output[next++], ZIR_STMT_UNREACHABLE,
+                          "unreachable", head->span);
+        if_case_generated(&output[next++], ZIR_STMT_BLOCK_CLOSE, "}", head->span);
     }
+    if(all_return)
+        if_case_generated(&output[next++], ZIR_STMT_UNREACHABLE,
+                        "unreachable", head->span);
     for(int i = close + 1; i < fn->stmt_count; i++)
         output[next++] = fn->stmts[i];
     if(next > capacity) {
-        free(output);
-        match_error(c, head->span, "internal match lowering overflow", "");
-        goto failed;
+        if_case_error(c, head->span, "internal if-case lowering overflow", "");
+        goto done;
     }
     free(fn->stmts);
     fn->stmts = output;
     fn->stmt_count = fn->stmt_cap = next;
-    free(members); free(payload_types); free(bindings);
-    free(cases); free(member_index); free(seen);
-    return 1;
+    output = NULL;
+    ok = 1;
+    goto done;
 too_long:
-    free(output);
-    match_error(c, head->span, "match expression exceeds statement limit", "");
-failed:
-    free(members); free(payload_types); free(bindings);
-    free(cases); free(member_index); free(seen);
-    return 0;
+    if_case_error(c, head->span, "if-case expression exceeds statement limit", "");
+done:
+    free(output); free(cases); free(through); free(members); free(seen);
+    return ok;
 }
 
-static void
-try_error(Checker *c, ZirSourceSpan span, const char *message)
+static int
+validate_loop_targets(Checker *c, const ZirFunction *fn)
 {
-    c->errors++;
-    c->failed = 1;
-    Diagnostic(span, "check.try", "%s", message);
-}
-
-static const char *
-try_assignment_equals(const char *text)
-{
-    int depth = 0, quoted = 0, escaped = 0;
-    for(const char *p = text; *p; p++) {
-        if(quoted) {
-            if(escaped) escaped = 0;
-            else if(*p == '\\') escaped = 1;
-            else if(*p == quoted) quoted = 0;
-            continue;
+    int depth = 0, ok = 1;
+    int *scopes = calloc((size_t)fn->stmt_count + 1, sizeof(*scopes));
+    unsigned char *seen = calloc((size_t)fn->stmt_count + 1,
+                                 sizeof(*seen));
+    if(scopes == NULL || seen == NULL) {
+        free(scopes); free(seen);
+        error(c, fn->span, "out of memory checking loop targets", "");
+        c->failed = 1;
+        return 0;
+    }
+    for(int i = 0; i < fn->stmt_count; i++) {
+        const ZirStmt *st = &fn->stmts[i];
+        if(st->kind == ZIR_STMT_BLOCK_CLOSE) {
+            if(depth == 0) {
+                error(c, st->span, "unexpected block close", "");
+                ok = 0;
+                break;
+            }
+            depth--;
         }
-        if(*p == '"' || *p == '\'') { quoted = *p; continue; }
-        if(*p == '(' || *p == '[' || *p == '{') { depth++; continue; }
-        if(*p == ')' || *p == ']' || *p == '}') { depth--; continue; }
-        if(depth == 0 && *p == '=' && p[1] != '=' &&
-           (p == text || p[-1] != '='))
-            return p;
+        if(st->loop_id < 0 || st->target_id < 0 ||
+           (st->loop_id && st->kind != ZIR_STMT_WHILE) ||
+           (st->target_id && st->kind != ZIR_STMT_BREAK &&
+            st->kind != ZIR_STMT_CONTINUE)) {
+            error(c, st->span, "invalid loop control metadata", "");
+            ok = 0;
+            break;
+        }
+        if(st->kind == ZIR_STMT_BREAK || st->kind == ZIR_STMT_CONTINUE) {
+            int found = 0;
+            for(int scope = depth - 1; scope >= 0; scope--)
+                if(st->target_id ? scopes[scope] == st->target_id :
+                   scopes[scope] != 0) {
+                    found = 1;
+                    break;
+                }
+            if(!found) {
+                error(c, st->span, "loop control requires an enclosing target", st->text);
+                ok = 0;
+                break;
+            }
+        }
+        if(st->kind == ZIR_STMT_WHILE) {
+            if(st->loop_id > fn->stmt_count ||
+               (st->loop_id && seen[st->loop_id])) {
+                error(c, st->span, "duplicate or invalid loop target", st->text);
+                ok = 0;
+                break;
+            }
+            if(st->loop_id) seen[st->loop_id] = 1;
+            scopes[depth++] = st->loop_id ? st->loop_id : -1;
+        } else if(st->kind == ZIR_STMT_IF ||
+                  st->kind == ZIR_STMT_BLOCK_OPEN) {
+            scopes[depth++] = 0;
+        }
     }
-    return NULL;
-}
-
-static int
-try_result_shape(const ZirType *variant, char *ok, char *err,
-                 int *error_tag)
-{
-    if(variant == NULL || !variant->is_variant)
-        return 0;
-    size_t offset = 0;
-    ZirVariantCase item;
-    int count = 0, status, has_ok = 0, has_err = 0;
-    while((status = VariantNextCase(variant, &offset, &item)) == 1) {
-        if(!strcmp(item.name, "Ok") && item.type[0] && !has_ok) {
-            copy_text(ok, ZIR_NAME_MAX, item.type);
-            has_ok = 1;
-        } else if(!strcmp(item.name, "Err") && item.type[0] && !has_err) {
-            copy_text(err, ZIR_NAME_MAX, item.type);
-            if(error_tag != NULL)
-                *error_tag = count;
-            has_err = 1;
-        } else return 0;
-        count++;
+    if(ok && depth != 0) {
+        error(c, fn->span, "unclosed block in function", fn->name);
+        ok = 0;
     }
-    return status == 0 && count == 2 && has_ok && has_err;
-}
-
-static int
-lower_try(Checker *c, int index, const char *expression_result)
-{
-    ZirFunction *fn = c->fn;
-    ZirStmt *st = &fn->stmts[index];
-    char result_type[ZIR_NAME_MAX], ok[ZIR_NAME_MAX] = "";
-    char err[ZIR_NAME_MAX] = "", return_ok[ZIR_NAME_MAX] = "";
-    char return_err[ZIR_NAME_MAX] = "";
-    int error_tag = -1;
-    copy_text(result_type, sizeof(result_type), expression_result);
-    const ZirType *result = FindType(c->module, result_type, NULL);
-    const ZirType *returned = FindType(c->module, fn->return_type, NULL);
-    if(!try_result_shape(result, ok, err, &error_tag) ||
-       !try_result_shape(returned, return_ok, return_err, NULL) ||
-       !compatible(return_err, err)) {
-        try_error(c, st->span,
-                  "? requires Ok/Err variants with the same error payload type");
-        return 0;
-    }
-    const char *target_type = st->kind == ZIR_STMT_DECL ? st->type :
-        st->kind == ZIR_STMT_ASSIGN ? expression_type(c, st->lhs_root) : "";
-    if((target_type[0] && !compatible(target_type, ok)) ||
-       (st->kind == ZIR_STMT_ASSIGN &&
-        (strcmp(st->assignment_op, "=") || st->lhs_root < 0 ||
-         fn->exprs[st->lhs_root].kind != ZIR_EXPR_IDENT))) {
-        try_error(c, st->span, "? success payload does not match the destination");
-        return 0;
-    }
-    const char *equal = st->kind == ZIR_STMT_EXPR ? NULL :
-        try_assignment_equals(st->text);
-    const char *source = st->kind == ZIR_STMT_EXPR ? st->text :
-        equal == NULL ? "" : skip_ws(equal + 1);
-    if((st->kind != ZIR_STMT_DECL && st->kind != ZIR_STMT_ASSIGN &&
-        st->kind != ZIR_STMT_EXPR) || !*skip_ws(source) ||
-       (st->kind == ZIR_STMT_DECL && !st->name[0])) {
-        try_error(c, st->span,
-                  "? requires an initialized declaration, assignment, or expression statement");
-        return 0;
-    }
-    char temporary[ZIR_NAME_MAX];
-    int serial = index, collision;
-    do {
-        snprintf(temporary, sizeof(temporary), "try_value_%d", serial++);
-        collision = strstr(fn->args, temporary) != NULL;
-        for(int i = 0; i < fn->stmt_count; i++)
-            collision |= strstr(fn->stmts[i].text, temporary) != NULL ||
-                         strcmp(fn->stmts[i].name, temporary) == 0;
-    } while(collision);
-    ZirStmt *output = calloc((size_t)fn->stmt_count + 4, sizeof(*output));
-    if(output == NULL) {
-        try_error(c, st->span, "out of memory lowering ?");
-        return 0;
-    }
-    int next = 0, written;
-    char line[ZIR_TEXT_MAX];
-    for(int i = 0; i < index; i++) output[next++] = fn->stmts[i];
-    written = snprintf(line, sizeof(line), "%s: %s = %s",
-                       temporary, result_type, skip_ws(source));
-    if(written < 0 || (size_t)written >= sizeof(line)) goto too_long;
-    match_generated(&output[next++], ZIR_STMT_DECL, line, st->span);
-    written = snprintf(line, sizeof(line), "if %s_Tag(%s) == %d {",
-                       result_type, temporary, error_tag);
-    if(written < 0 || (size_t)written >= sizeof(line)) goto too_long;
-    match_generated(&output[next++], ZIR_STMT_IF, line, st->span);
-    written = snprintf(line, sizeof(line), "return %s_Err(%s_ErrValue(%s))",
-                       fn->return_type, result_type, temporary);
-    if(written < 0 || (size_t)written >= sizeof(line)) goto too_long;
-    match_generated(&output[next++], ZIR_STMT_RETURN, line, st->span);
-    match_generated(&output[next++], ZIR_STMT_BLOCK_CLOSE, "}", st->span);
-    if(st->kind == ZIR_STMT_DECL) {
-        written = snprintf(line, sizeof(line), "%s: %s = %s_OkValue(%s)",
-                           st->name, target_type[0] ? target_type : ok,
-                           result_type, temporary);
-    } else if(st->kind == ZIR_STMT_ASSIGN) {
-        size_t left_length = (size_t)(equal - st->text);
-        if(left_length >= sizeof(line)) goto too_long;
-        written = snprintf(line, sizeof(line), "%.*s= %s_OkValue(%s)",
-                           (int)left_length, st->text, result_type,
-                           temporary);
-    }
-    if(st->kind != ZIR_STMT_EXPR) {
-        if(written < 0 || (size_t)written >= sizeof(line)) goto too_long;
-        match_generated(&output[next++], st->kind, line, st->span);
-    }
-    for(int i = index + 1; i < fn->stmt_count; i++)
-        output[next++] = fn->stmts[i];
-    free(fn->stmts);
-    fn->stmts = output;
-    fn->stmt_count = fn->stmt_cap = next;
-    return 1;
-too_long:
-    free(output);
-    try_error(c, st->span, "? lowering exceeds statement limit");
-    return 0;
-}
-
-static int
-first_expression_try(const ZirFunction *fn, int index, int depth)
-{
-    if(index < 0 || depth > 128)
-        return -1;
-    const ZirExpr *e = &fn->exprs[index];
-    int found = first_expression_try(fn, e->left, depth + 1);
-    if(found >= 0) return found;
-    found = first_expression_try(fn, e->right, depth + 1);
-    if(found >= 0) return found;
-    found = first_expression_try(fn, e->third, depth + 1);
-    if(found >= 0) return found;
-    for(int child = e->first_child; child >= 0;
-        child = fn->exprs[child].next_sibling) {
-        found = first_expression_try(fn, child, depth + 1);
-        if(found >= 0) return found;
-    }
-    return e->kind == ZIR_EXPR_POSTFIX && !strcmp(e->op, "?") ? index : -1;
-}
-
-static int
-lower_lazy_bool_try(Checker *c, int statement_index)
-{
-    ZirFunction *fn = c->fn;
-    ZirStmt *st = &fn->stmts[statement_index];
-    ZirExpr *root = &fn->exprs[st->expr_root];
-    int loop_condition = st->kind == ZIR_STMT_WHILE &&
-        !strncmp(st->text, "while", 5);
-    if(st->kind != ZIR_STMT_DECL && st->kind != ZIR_STMT_RETURN &&
-       st->kind != ZIR_STMT_EXPR && !loop_condition &&
-       !(st->kind == ZIR_STMT_IF && !strncmp(st->text, "if ", 3)) &&
-       !(st->kind == ZIR_STMT_ASSIGN &&
-         !strcmp(st->assignment_op, "=") && st->lhs_root >= 0 &&
-         fn->exprs[st->lhs_root].kind == ZIR_EXPR_IDENT)) {
-        try_error(c, root->span,
-                  "? in a short-circuit expression requires a simple value statement");
-        return 0;
-    }
-    const char *source = st->text;
-    if(st->kind == ZIR_STMT_DECL || st->kind == ZIR_STMT_ASSIGN) {
-        const char *equal = try_assignment_equals(st->text);
-        source = equal == NULL ? NULL : equal + 1;
-    } else if(st->kind == ZIR_STMT_RETURN) {
-        source = st->text + 6;
-    } else if(st->kind == ZIR_STMT_IF) {
-        source = st->text + 2;
-    } else if(loop_condition) {
-        source = st->text + 5;
-    }
-    int relative = root->span.column - st->span.column;
-    size_t start = source == NULL || relative < 0 ? sizeof(st->text) :
-        (size_t)(source - st->text) + (size_t)relative;
-    size_t length = strlen(root->text);
-    if(start >= strlen(st->text) || length == 0 ||
-       start + length > strlen(st->text) ||
-       strncmp(st->text + start, root->text, length) != 0) {
-        try_error(c, root->span,
-                  "cannot locate short-circuit expression in source");
-        return 0;
-    }
-    char temporary[ZIR_NAME_MAX];
-    int serial = statement_index, collision;
-    do {
-        snprintf(temporary, sizeof(temporary), "lazy_value_%d", serial++);
-        collision = strstr(fn->args, temporary) != NULL;
-        for(int i = 0; i < fn->stmt_count; i++)
-            collision |= strstr(fn->stmts[i].text, temporary) != NULL ||
-                         strcmp(fn->stmts[i].name, temporary) == 0;
-    } while(collision);
-    char rewritten[ZIR_TEXT_MAX], line[ZIR_TEXT_MAX];
-    int written = snprintf(rewritten, sizeof(rewritten), "%.*s%s%s",
-                           (int)start, st->text, temporary,
-                           st->text + start + length);
-    if(written < 0 || (size_t)written >= sizeof(rewritten))
-        goto too_long;
-    ZirStmt *output = calloc((size_t)fn->stmt_count +
-                             (loop_condition ? 7 : 4),
-                             sizeof(*output));
-    if(output == NULL) {
-        try_error(c, root->span, "out of memory lowering short-circuit ?");
-        return 0;
-    }
-    int next = 0;
-    for(int i = 0; i < statement_index; i++) output[next++] = fn->stmts[i];
-    if(loop_condition)
-        match_generated(&output[next++], ZIR_STMT_WHILE,
-                        "while true {", st->span);
-    written = snprintf(line, sizeof(line), "%s: bool = %s",
-                       temporary, fn->exprs[root->left].text);
-    if(written < 0 || (size_t)written >= sizeof(line)) goto failed;
-    match_generated(&output[next++], ZIR_STMT_DECL, line, st->span);
-    written = snprintf(line, sizeof(line), "if %s%s {",
-                       !strcmp(root->op, "||") ? "!" : "", temporary);
-    if(written < 0 || (size_t)written >= sizeof(line)) goto failed;
-    match_generated(&output[next++], ZIR_STMT_IF, line, st->span);
-    written = snprintf(line, sizeof(line), "%s = %s",
-                       temporary, fn->exprs[root->right].text);
-    if(written < 0 || (size_t)written >= sizeof(line)) goto failed;
-    match_generated(&output[next++], ZIR_STMT_ASSIGN, line, st->span);
-    match_generated(&output[next++], ZIR_STMT_BLOCK_CLOSE, "}", st->span);
-    if(loop_condition) {
-        written = snprintf(line, sizeof(line), "if !%s {", temporary);
-        if(written < 0 || (size_t)written >= sizeof(line)) goto failed;
-        match_generated(&output[next++], ZIR_STMT_IF, line, st->span);
-        match_generated(&output[next++], ZIR_STMT_BREAK, "break", st->span);
-        match_generated(&output[next++], ZIR_STMT_BLOCK_CLOSE, "}", st->span);
-    } else {
-        output[next] = *st;
-        copy_text(output[next++].text, sizeof(output[0].text), rewritten);
-    }
-    for(int i = statement_index + 1; i < fn->stmt_count; i++)
-        output[next++] = fn->stmts[i];
-    free(fn->stmts);
-    fn->stmts = output;
-    fn->stmt_count = fn->stmt_cap = next;
-    return 1;
-failed:
-    free(output);
-too_long:
-    try_error(c, root->span,
-              "short-circuit ? lowering exceeds statement limit");
-    return 0;
-}
-
-static int
-lower_conditional_try(Checker *c, int statement_index)
-{
-    ZirFunction *fn = c->fn;
-    ZirStmt *st = &fn->stmts[statement_index];
-    ZirExpr *root = &fn->exprs[st->expr_root];
-    int loop_condition = st->kind == ZIR_STMT_WHILE &&
-        !strncmp(st->text, "while", 5);
-    char target_type[ZIR_NAME_MAX] = "";
-    if(st->kind == ZIR_STMT_DECL)
-        copy_text(target_type, sizeof(target_type), st->type);
-    else if(st->kind == ZIR_STMT_ASSIGN &&
-            !strcmp(st->assignment_op, "=") && st->lhs_root >= 0 &&
-            fn->exprs[st->lhs_root].kind == ZIR_EXPR_IDENT)
-        copy_text(target_type, sizeof(target_type),
-                  lookup(c, fn->exprs[st->lhs_root].name));
-    else if(st->kind == ZIR_STMT_IF && !strncmp(st->text, "if ", 3))
-        copy_text(target_type, sizeof(target_type), "bool");
-    else if(loop_condition)
-        copy_text(target_type, sizeof(target_type), "bool");
-    if(!target_type[0]) {
-        try_error(c, root->span,
-                  "? in a conditional expression requires a typed destination");
-        return 0;
-    }
-    const char *source = st->text;
-    if(st->kind == ZIR_STMT_DECL || st->kind == ZIR_STMT_ASSIGN) {
-        const char *equal = try_assignment_equals(st->text);
-        source = equal == NULL ? NULL : equal + 1;
-    } else if(st->kind == ZIR_STMT_IF) {
-        source = st->text + 2;
-    } else if(loop_condition) {
-        source = st->text + 5;
-    }
-    int relative = root->span.column - st->span.column;
-    size_t start = source == NULL || relative < 0 ? sizeof(st->text) :
-        (size_t)(source - st->text) + (size_t)relative;
-    size_t length = strlen(root->text);
-    if(start >= strlen(st->text) || length == 0 ||
-       start + length > strlen(st->text) ||
-       strncmp(st->text + start, root->text, length) != 0) {
-        try_error(c, root->span,
-                  "cannot locate conditional expression in source");
-        return 0;
-    }
-    char temporary[ZIR_NAME_MAX];
-    int serial = statement_index, collision;
-    do {
-        snprintf(temporary, sizeof(temporary), "select_value_%d", serial++);
-        collision = strstr(fn->args, temporary) != NULL;
-        for(int i = 0; i < fn->stmt_count; i++)
-            collision |= strstr(fn->stmts[i].text, temporary) != NULL ||
-                         strcmp(fn->stmts[i].name, temporary) == 0;
-    } while(collision);
-    char rewritten[ZIR_TEXT_MAX], line[ZIR_TEXT_MAX];
-    int written = snprintf(rewritten, sizeof(rewritten), "%.*s%s%s",
-                           (int)start, st->text, temporary,
-                           st->text + start + length);
-    if(written < 0 || (size_t)written >= sizeof(rewritten))
-        goto too_long;
-    ZirStmt *output = calloc((size_t)fn->stmt_count +
-                             (loop_condition ? 10 : 7),
-                             sizeof(*output));
-    if(output == NULL) {
-        try_error(c, root->span, "out of memory lowering conditional ?");
-        return 0;
-    }
-    int next = 0;
-    for(int i = 0; i < statement_index; i++) output[next++] = fn->stmts[i];
-    if(loop_condition)
-        match_generated(&output[next++], ZIR_STMT_WHILE,
-                        "while true {", st->span);
-    written = snprintf(line, sizeof(line), "%s: %s",
-                       temporary, target_type);
-    if(written < 0 || (size_t)written >= sizeof(line)) goto failed;
-    match_generated(&output[next++], ZIR_STMT_DECL, line, st->span);
-    written = snprintf(line, sizeof(line), "if %s {",
-                       fn->exprs[root->left].text);
-    if(written < 0 || (size_t)written >= sizeof(line)) goto failed;
-    match_generated(&output[next++], ZIR_STMT_IF, line, st->span);
-    written = snprintf(line, sizeof(line), "%s = %s",
-                       temporary, fn->exprs[root->right].text);
-    if(written < 0 || (size_t)written >= sizeof(line)) goto failed;
-    match_generated(&output[next++], ZIR_STMT_ASSIGN, line, st->span);
-    match_generated(&output[next++], ZIR_STMT_BLOCK_CLOSE, "}", st->span);
-    match_generated(&output[next++], ZIR_STMT_IF, "else {", st->span);
-    written = snprintf(line, sizeof(line), "%s = %s",
-                       temporary, fn->exprs[root->third].text);
-    if(written < 0 || (size_t)written >= sizeof(line)) goto failed;
-    match_generated(&output[next++], ZIR_STMT_ASSIGN, line, st->span);
-    match_generated(&output[next++], ZIR_STMT_BLOCK_CLOSE, "}", st->span);
-    if(loop_condition) {
-        written = snprintf(line, sizeof(line), "if !%s {", temporary);
-        if(written < 0 || (size_t)written >= sizeof(line)) goto failed;
-        match_generated(&output[next++], ZIR_STMT_IF, line, st->span);
-        match_generated(&output[next++], ZIR_STMT_BREAK, "break", st->span);
-        match_generated(&output[next++], ZIR_STMT_BLOCK_CLOSE, "}", st->span);
-    } else {
-        output[next] = *st;
-        copy_text(output[next++].text, sizeof(output[0].text), rewritten);
-    }
-    for(int i = statement_index + 1; i < fn->stmt_count; i++)
-        output[next++] = fn->stmts[i];
-    free(fn->stmts);
-    fn->stmts = output;
-    fn->stmt_count = fn->stmt_cap = next;
-    return 1;
-failed:
-    free(output);
-too_long:
-    try_error(c, root->span,
-              "conditional ? lowering exceeds statement limit");
-    return 0;
-}
-
-static int
-try_expression_order_safe(const ZirModule *module, const ZirFunction *fn,
-                          int root, int try_index, int depth)
-{
-    if(root < 0 || depth > 128)
-        return depth <= 128;
-    const ZirExpr *e = &fn->exprs[root];
-    const ZirExpr *attempt = &fn->exprs[try_index];
-    if(e->kind == ZIR_EXPR_CONDITIONAL ||
-       (e->kind == ZIR_EXPR_BINARY &&
-        (!strcmp(e->op, "&&") || !strcmp(e->op, "||"))))
-        return 0;
-    const ZirModule *callee_owner = NULL;
-    const ZirFunction *callee = NULL;
-    int pure_call = e->kind == ZIR_EXPR_CALL && e->name[0] &&
-        ResolveFunction(module, e->name, &callee_owner, &callee) == 1 &&
-        callee != NULL && callee->is_generated;
-    if(root != try_index &&
-       ((e->kind == ZIR_EXPR_CALL && !pure_call) ||
-        (e->kind == ZIR_EXPR_IDENT &&
-         strncmp(e->name, "try_value_", 10) != 0 &&
-         strcmp(e->name, "true") && strcmp(e->name, "false") &&
-         strcmp(e->name, "null")) ||
-        (e->kind == ZIR_EXPR_POSTFIX && strcmp(e->op, "?") != 0) ||
-        (e->kind == ZIR_EXPR_UNARY &&
-         (!strcmp(e->op, "++") || !strcmp(e->op, "--")))) &&
-       e->span.column + (int)strlen(e->text) <= attempt->span.column)
-        return 0;
-    if(!try_expression_order_safe(module, fn, e->left, try_index, depth + 1) ||
-       !try_expression_order_safe(module, fn, e->right, try_index, depth + 1) ||
-       !try_expression_order_safe(module, fn, e->third, try_index, depth + 1))
-        return 0;
-    for(int child = e->first_child; child >= 0;
-        child = fn->exprs[child].next_sibling)
-        if(!try_expression_order_safe(module, fn, child, try_index, depth + 1))
-            return 0;
-    return 1;
-}
-
-static int
-lower_expression_try(Checker *c, int statement_index, int try_index)
-{
-    ZirFunction *fn = c->fn;
-    ZirStmt *st = &fn->stmts[statement_index];
-    ZirExpr *attempt = &fn->exprs[try_index];
-    int loop_condition = st->kind == ZIR_STMT_WHILE &&
-        !strncmp(st->text, "while", 5);
-    char ok[ZIR_NAME_MAX] = "", err[ZIR_NAME_MAX] = "";
-    char return_ok[ZIR_NAME_MAX] = "", return_err[ZIR_NAME_MAX] = "";
-    int error_tag = -1;
-    if(st->kind != ZIR_STMT_DECL && st->kind != ZIR_STMT_ASSIGN &&
-       st->kind != ZIR_STMT_RETURN && st->kind != ZIR_STMT_EXPR &&
-       !loop_condition &&
-       !(st->kind == ZIR_STMT_IF &&
-         !strncmp(st->text, "if ", 3))) {
-        try_error(c, attempt->span, "? is not supported in this statement yet");
-        return 0;
-    }
-    if(!try_expression_order_safe(c->module, fn, st->expr_root,
-                                  try_index, 0)) {
-        try_error(c, attempt->span,
-                  "? requires left-to-right eager evaluation in this expression");
-        return 0;
-    }
-    int errors_before = c->errors;
-    char result_type[ZIR_NAME_MAX];
-    copy_text(result_type, sizeof(result_type),
-              expression_type(c, attempt->left));
-    if(c->errors != errors_before)
-        return 0;
-    const ZirType *result = FindType(c->module, result_type, NULL);
-    const ZirType *returned = FindType(c->module, fn->return_type, NULL);
-    if(!try_result_shape(result, ok, err, &error_tag) ||
-       !try_result_shape(returned, return_ok, return_err, NULL) ||
-       !compatible(return_err, err)) {
-        try_error(c, attempt->span,
-                  "? requires Ok/Err variants with the same error payload type");
-        return 0;
-    }
-    const char *source = st->text;
-    if(st->kind == ZIR_STMT_DECL || st->kind == ZIR_STMT_ASSIGN) {
-        const char *equal = try_assignment_equals(st->text);
-        source = equal == NULL ? NULL : equal + 1;
-    } else if(st->kind == ZIR_STMT_RETURN) {
-        source = st->text + 6;
-    } else if(st->kind == ZIR_STMT_IF) {
-        source = st->text + 2;
-    } else if(loop_condition) {
-        source = st->text + 5;
-    }
-    int relative = attempt->span.column - st->span.column;
-    size_t start = source == NULL || relative < 0 ? sizeof(st->text) :
-        (size_t)(source - st->text) + (size_t)relative;
-    size_t length = strlen(attempt->text);
-    if(start >= strlen(st->text) || length == 0 ||
-       start + length > strlen(st->text) ||
-       strncmp(st->text + start, attempt->text, length) != 0 ||
-       attempt->text[length - 1] != '?') {
-        try_error(c, attempt->span, "cannot locate ? expression in source");
-        return 0;
-    }
-    char temporary[ZIR_NAME_MAX];
-    int serial = statement_index, collision;
-    do {
-        snprintf(temporary, sizeof(temporary), "try_value_%d", serial++);
-        collision = strstr(fn->args, temporary) != NULL;
-        for(int i = 0; i < fn->stmt_count; i++)
-            collision |= strstr(fn->stmts[i].text, temporary) != NULL ||
-                         strcmp(fn->stmts[i].name, temporary) == 0;
-    } while(collision);
-    char replacement[ZIR_NAME_MAX * 2], rewritten[ZIR_TEXT_MAX];
-    int written = snprintf(replacement, sizeof(replacement),
-                           "%s_OkValue(%s)", result_type, temporary);
-    if(written < 0 || (size_t)written >= sizeof(replacement))
-        goto too_long;
-    written = snprintf(rewritten, sizeof(rewritten), "%.*s%s%s",
-                       (int)start, st->text, replacement,
-                       st->text + start + length);
-    if(written < 0 || (size_t)written >= sizeof(rewritten))
-        goto too_long;
-    ZirStmt *output = calloc((size_t)fn->stmt_count +
-                             (loop_condition ? 7 : 4), sizeof(*output));
-    if(output == NULL) {
-        try_error(c, attempt->span, "out of memory lowering ?");
-        return 0;
-    }
-    int next = 0;
-    char line[ZIR_TEXT_MAX];
-    for(int i = 0; i < statement_index; i++) output[next++] = fn->stmts[i];
-    if(loop_condition)
-        match_generated(&output[next++], ZIR_STMT_WHILE,
-                        "while true {", st->span);
-    written = snprintf(line, sizeof(line), "%s: %s = %s",
-                       temporary, result_type, fn->exprs[attempt->left].text);
-    if(written < 0 || (size_t)written >= sizeof(line)) goto failed;
-    match_generated(&output[next++], ZIR_STMT_DECL, line, st->span);
-    written = snprintf(line, sizeof(line), "if %s_Tag(%s) == %d {",
-                       result_type, temporary, error_tag);
-    if(written < 0 || (size_t)written >= sizeof(line)) goto failed;
-    match_generated(&output[next++], ZIR_STMT_IF, line, st->span);
-    written = snprintf(line, sizeof(line), "return %s_Err(%s_ErrValue(%s))",
-                       fn->return_type, result_type, temporary);
-    if(written < 0 || (size_t)written >= sizeof(line)) goto failed;
-    match_generated(&output[next++], ZIR_STMT_RETURN, line, st->span);
-    match_generated(&output[next++], ZIR_STMT_BLOCK_CLOSE, "}", st->span);
-    if(loop_condition) {
-        strip_block_brace(rewritten);
-        written = snprintf(line, sizeof(line), "if !(%s) {",
-                           skip_ws(rewritten + 5));
-        if(written < 0 || (size_t)written >= sizeof(line)) goto failed;
-        match_generated(&output[next++], ZIR_STMT_IF, line, st->span);
-        match_generated(&output[next++], ZIR_STMT_BREAK, "break", st->span);
-        match_generated(&output[next++], ZIR_STMT_BLOCK_CLOSE, "}", st->span);
-    } else {
-        output[next] = *st;
-        copy_text(output[next++].text, sizeof(output[0].text), rewritten);
-    }
-    for(int i = statement_index + 1; i < fn->stmt_count; i++)
-        output[next++] = fn->stmts[i];
-    free(fn->stmts);
-    fn->stmts = output;
-    fn->stmt_count = fn->stmt_cap = next;
-    return 1;
-failed:
-    free(output);
-too_long:
-    try_error(c, attempt->span, "? lowering exceeds statement limit");
-    return 0;
+    free(scopes); free(seen);
+    if(!ok) c->failed = 1;
+    return ok;
 }
 
 static int
 check_function(Checker *c, ZirFunction *fn)
 {
-    int strict = c->strict;
     int errors_before = c->errors;
     int has_slots;
     int has_arrays;
     char params[64][ZIR_TEXT_MAX];
     int n;
     c->fn = fn;
+    if(contains_vec(c->module, fn->return_type, 0))
+        error(c, fn->span, "Vec returns require move support", fn->name);
+    select_lookup_file(c->module, fn->span);
     const ZirType *return_slot = FindType(c->module, c->fn->return_type, NULL);
-    if(return_slot != NULL &&
-       (return_slot->is_variant_template || return_slot->is_record_template)) {
+    if(return_slot != NULL && return_slot->is_record_template) {
         Diagnostic(c->fn->span, "check.specialize",
                    "generic types require a concrete specialization: %s",
                    c->fn->return_type);
         return 0;
     }
-    if(return_slot != NULL && return_slot->is_slot) {
-        Diagnostic(c->fn->span, "check.slot_escape", "slot values cannot escape through returns");
-        return 0;
-    }
     /* Source expressions need imported types to disambiguate casts. Saved
      * IR already contains the checked graph: type-check that graph directly
      * so its statement text cannot redefine program meaning. */
-    if(!c->fn->from_ir) {
-        for(int i = 0; i < fn->stmt_count; i++) {
-            ZirStmt *statement = &fn->stmts[i];
-            if(statement->kind != ZIR_STMT_DECL &&
-               statement->kind != ZIR_STMT_ASSIGN &&
-               statement->kind != ZIR_STMT_EXPR)
-                continue;
-            size_t length = strlen(statement->text);
-            while(length && isspace((unsigned char)statement->text[length - 1]))
-                length--;
-            if(length && statement->text[length - 1] == '?') {
-                statement->is_try = 1;
-                statement->text[--length] = '\0';
-                while(length && isspace((unsigned char)statement->text[length - 1]))
-                    statement->text[--length] = '\0';
-            }
-        }
+    if(!c->fn->from_ir)
         StructureFunction(c->fn, c->module);
-    }
-    if(!resolve_block_calls(c)) {
-        return 0;
-    }
 restart:
-    c->count = 0; c->depth = 0; c->strict = strict;
-    has_slots = fn->is_closure;
+    c->count = 0; c->depth = 0;
+    has_slots = 0;
     has_arrays = fn->return_type[0] == '[';
     fn->uses_host = fn->is_extern && fn->extern_kind == ZIR_EXTERN_HOST;
     n = *skip_ws(c->fn->args) ? split_top_level(c->fn->args, params[0], 64, sizeof(params[0])) : 0;
@@ -2615,98 +3003,65 @@ restart:
         if(colon) {
             *colon++ = 0; trim_in_place(params[a]); trim_in_place(colon);
             const ZirType *parameter_type = FindType(c->module, colon, NULL);
-            if(parameter_type != NULL &&
-               (parameter_type->is_variant_template ||
-                parameter_type->is_record_template)) {
+            if(parameter_type != NULL && parameter_type->is_record_template) {
                 Diagnostic(c->fn->span, "check.specialize",
                            "generic types require a concrete specialization: %s",
                            colon);
                 return 0;
             }
-            has_slots |= parameter_type != NULL && parameter_type->is_slot;
+            has_slots |= parameter_type != NULL && parameter_type->is_procedure_type;
+            if(contains_vec(c->module, colon, 0))
+                error(c, fn->span, "Vec parameters require move support", params[a]);
             has_arrays |= ArrayValueType(colon) || SliceElementType(colon, NULL, 0);
             bind(c, params[a], colon, c->fn->span);
-        } else error(c, c->fn->span, "strict parameters require name: type", params[a]);
+        } else error(c, c->fn->span, "parameters require name: type", params[a]);
     }
     for(int i = 0; i < c->fn->stmt_count; i++) {
         ZirStmt *st = &c->fn->stmts[i];
+        c->current_stmt = st;
         const char *type;
         if(st->kind == ZIR_STMT_BLOCK_CLOSE) {
             while(c->count && c->bindings[c->count - 1].depth == c->depth) c->count--;
             if(c->depth) c->depth--;
         }
-        int errors_before_expression = c->errors;
         if(st->kind == ZIR_STMT_DECL)
             normalize_array(c->module, st->type, sizeof(st->type));
-        if(st->declared_block_call)
-            c->strict = 1;
         if(st->kind == ZIR_STMT_DECL)
             contextual_slot(c, st->expr_root, st->type);
         if(st->kind == ZIR_STMT_ASSIGN && st->lhs_root >= 0 &&
            c->fn->exprs[st->lhs_root].kind == ZIR_EXPR_IDENT)
             contextual_slot(c, st->expr_root, lookup(c, c->fn->exprs[st->lhs_root].name));
-        if(!fn->from_ir && st->expr_root >= 0) {
-            int attempt = first_expression_try(fn, st->expr_root, 0);
-            if(attempt >= 0) {
-                c->strict = 1;
-                ZirExpr *root = &fn->exprs[st->expr_root];
-                if(root->kind == ZIR_EXPR_BINARY &&
-                   (!strcmp(root->op, "&&") || !strcmp(root->op, "||"))) {
-                    if(!lower_lazy_bool_try(c, i))
-                        return 0;
-                    StructureFunction(fn, c->module);
-                    goto restart;
-                }
-                if(root->kind == ZIR_EXPR_CONDITIONAL) {
-                    if(!lower_conditional_try(c, i))
-                        return 0;
-                    StructureFunction(fn, c->module);
-                    goto restart;
-                }
-                if(!lower_expression_try(c, i, attempt))
-                    return 0;
-                StructureFunction(fn, c->module);
-                goto restart;
-            }
-        }
+        c->expected_type[0] = '\0';
+        if(st->kind == ZIR_STMT_DECL)
+            copy_text(c->expected_type, sizeof(c->expected_type), st->type);
+        else if(st->kind == ZIR_STMT_RETURN)
+            copy_text(c->expected_type, sizeof(c->expected_type), c->fn->return_type);
+        else if(st->kind == ZIR_STMT_ASSIGN && st->lhs_root >= 0)
+            copy_text(c->expected_type, sizeof(c->expected_type),
+                      expression_type(c, st->lhs_root));
         type = expression_type(c, st->expr_root);
-        if(st->is_try) {
-            c->strict = 1;
-            if(!lower_try(c, i, type))
+        c->expected_type[0] = '\0';
+        if(st->kind == ZIR_STMT_IF_CASE) {
+            const ZirType *enumeration = FindType(c->module, type, NULL);
+            int complete_case = starts_word(skip_ws(st->text + 2), "#complete");
+            if(fn->from_ir || c->errors != errors_before ||
+               !starts_word(st->text, "if") ||
+               strstr(st->text, "==") == NULL ||
+               (enumeration == NULL && !scalar_case_type(type)) ||
+               (enumeration != NULL && !enumeration->is_enum) ||
+               (enumeration == NULL && complete_case)) {
+                if_case_error(c, st->span,
+                              "if-case requires a checked enum or scalar value", type);
                 return 0;
+            }
+            if(!lower_if_case(c, i, type)) return 0;
             StructureFunction(fn, c->module);
             goto restart;
         }
-        if(st->kind == ZIR_STMT_MATCH) {
-            /* Match has no legacy text lowering, even in a non-strict build. */
-            c->strict = 1;
-            const ZirType *matched = FindType(c->module, type, NULL);
-            if(fn->from_ir || matched == NULL ||
-               (!matched->is_enum && !matched->is_variant) ||
-               c->errors != errors_before) {
-                match_error(c, st->span, "match requires a checked enum or variant value", type);
-                return 0;
-            }
-            if(matched->is_enum &&
-               strncmp(st->text, "match!", 6) != 0 &&
-               strncmp(st->text, "match?", 6) != 0) {
-                match_error(c, st->span,
-                    "enum cases use Jai if-case syntax: if #complete value == { ... }",
-                    "");
-                return 0;
-            }
-            if(!lower_match(c, i, matched))
-                return 0;
-            StructureFunction(fn, c->module);
-            goto restart;
-        }
-        if(st->kind == ZIR_STMT_BLOCK_CALL && st->expr_root >= 0 &&
-           *c->fn->exprs[st->expr_root].slot_type)
-            st->kind = ZIR_STMT_EXPR;
         if(st->kind == ZIR_STMT_DECL) {
             if(!*st->type) copy_text(st->type, sizeof(st->type),
-                !strcmp(type, "integer") ? "int" : !strcmp(type, "real") ? "double" : type);
-            else if(!compatible(st->type, type)) error(c, st->span, "initializer type mismatch", st->name);
+                !strcmp(type, "integer") ? "s64" : !strcmp(type, "real") ? "float64" : type);
+            else if(!compatible_checked(c, st->type, type)) error(c, st->span, "initializer type mismatch", st->name);
             if(!strcmp(st->type, "null"))
                 error(c, st->span, "null requires an explicit pointer type", st->name);
             if(st->type[0] == '[') {
@@ -2715,65 +3070,61 @@ restart:
                     error(c, st->span, problem, st->name);
             }
             const ZirType *local_type = FindType(c->module, st->type, NULL);
-            if(local_type != NULL &&
-               (local_type->is_variant_template ||
-                local_type->is_record_template))
+            if(local_type != NULL && local_type->is_record_template)
                 error(c, st->span,
                       "generic types require a concrete specialization",
                       st->type);
-            if(local_type != NULL && local_type->is_slot) {
+            if(local_type != NULL && local_type->is_procedure_type) {
                 has_slots = 1;
                 if(st->expr_root < 0) {
                     Diagnostic(st->span, "check.slot_initializer", "slot bindings require an initializer");
                     c->failed = 1;
                 }
             }
-            check_borrowed_string(c, st->type, st->expr_root);
+            if(st->expr_root >= 0 &&
+               contains_vec(c->module, st->type, 0))
+                error(c, st->span, "Vec values cannot be copied", st->name);
             bind(c, st->name, st->type, st->span);
         } else if(st->kind == ZIR_STMT_ASSIGN) {
             const char *lhs = expression_type(c, st->lhs_root);
+            if(contains_vec(c->module, lhs, 0))
+                error(c, st->span, "Vec values cannot be copied", st->text);
             const ZirType *destination = FindType(c->module, lhs, NULL);
             if(lhs[0] == '[' && strcmp(st->assignment_op, "="))
                 error(c, st->span, "array compound assignment is not supported", st->assignment_op);
-            if(destination != NULL && destination->is_slot) {
-                int local = c->count - 1;
-                const char *name = c->fn->exprs[st->lhs_root].name;
-                while(local >= 0 && strcmp(c->bindings[local].name, name))
-                    local--;
-                if(local < 0 || c->bindings[local].depth != c->depth) {
-                    Diagnostic(st->span, "check.slot_escape",
-                                  "slot assignment cannot escape its lexical block: %s", name);
-                    c->failed = 1;
-                }
-            }
-            if(destination != NULL && destination->is_enum && strcmp(st->assignment_op, "="))
+            if(destination != NULL && destination->is_enum &&
+               !destination->is_enum_flags && strcmp(st->assignment_op, "="))
                 error(c, st->span, "enum compound assignment requires an explicit numeric cast", st->assignment_op);
+            if(destination != NULL && destination->is_enum_flags &&
+               strcmp(st->assignment_op, "=") &&
+               strcmp(st->assignment_op, "|=") &&
+               strcmp(st->assignment_op, "&=") &&
+               strcmp(st->assignment_op, "^=") &&
+               strcmp(st->assignment_op, "+=") &&
+               strcmp(st->assignment_op, "-="))
+                error(c, st->span, "unsupported enum_flags compound assignment", st->assignment_op);
             if(text_type(lhs) && strcmp(st->assignment_op, "="))
                 error(c, st->span, "string compound assignment is not supported", st->assignment_op);
             if(!assignable(c, st->lhs_root)) error(c, st->span, "assignment requires an assignable destination", "");
-            if(readonly_text_destination(c->fn, st->lhs_root))
-                error(c, st->span, "string bytes and length are read-only", "");
-            if(!compatible(lhs, type)) error(c, st->span, "assignment type mismatch", st->text);
-            check_borrowed_string(c, lhs, st->expr_root);
+            if(readonly_text_destination(c, st->lhs_root))
+                error(c, st->span, "collection count and borrowed string bytes are read-only", "");
+            if(!compatible_checked(c, lhs, type)) error(c, st->span, "assignment type mismatch", st->text);
         } else if(st->kind == ZIR_STMT_RETURN) {
-            if(!compatible(c->fn->return_type, type)) error(c, st->span, "return type mismatch", c->fn->name);
-            check_borrowed_string(c, c->fn->return_type, st->expr_root);
+            if(!compatible_checked(c, c->fn->return_type, type)) error(c, st->span, "return type mismatch", c->fn->name);
             if((st->expr_root < 0) != !strcmp(c->fn->return_type, "void"))
                 error(c, st->span, "return value does not match function signature", c->fn->name);
         } else if(st->kind == ZIR_STMT_IF || st->kind == ZIR_STMT_WHILE) {
+            if(st->expr_root < 0 &&
+               (st->kind == ZIR_STMT_WHILE || !st->is_else ||
+                starts_word(skip_ws(st->text + 4), "if")))
+                error(c, st->span, "condition requires an expression", st->text);
             if(*type && strcmp(type, "bool")) error(c, st->span, "condition requires bool", type);
-        } else if(st->kind == ZIR_STMT_RAW || st->kind == ZIR_STMT_UNKNOWN ||
-                  st->kind == ZIR_STMT_FOR || st->kind == ZIR_STMT_GOTO ||
-                  st->kind == ZIR_STMT_LABEL || st->kind == ZIR_STMT_BLOCK_CALL) {
-            if(!module_uses_c(c))
-                error(c, st->span, "statement is not supported by strict checking", st->text);
+        } else if(st->kind == ZIR_STMT_UNKNOWN || st->kind == ZIR_STMT_FOR) {
+            error(c, st->span, "statement is not supported by language checking", st->text);
         }
         if(st->kind == ZIR_STMT_BLOCK_OPEN || st->kind == ZIR_STMT_IF ||
-           st->kind == ZIR_STMT_WHILE || st->kind == ZIR_STMT_FOR || st->kind == ZIR_STMT_SWITCH)
+           st->kind == ZIR_STMT_WHILE || st->kind == ZIR_STMT_FOR)
             c->depth++;
-        c->strict = strict;
-        if(st->declared_block_call && c->errors != errors_before_expression)
-            c->failed = 1;
     }
     for(int i = 0; i < fn->expr_count; i++) {
         const ZirExpr *call = &fn->exprs[i];
@@ -2798,6 +3149,8 @@ restart:
     if(!fn->is_extern && fn->return_type[0] == '[' &&
        !sequence_returns(fn, 0, fn->stmt_count))
         error(c, fn->span, "array or slice result requires a return on every path", fn->name);
+    if(!validate_loop_targets(c, fn))
+        return 0;
     c->fn->checked = c->errors == errors_before;
     for(int expression = 0; expression < c->fn->expr_count; expression++)
         has_slots |= c->fn->exprs[expression].is_function_value;
@@ -2813,11 +3166,63 @@ restart:
                       "array and slice values require a fully checked portable body: %s", fn->name);
         c->failed = 1;
     }
-    if(strict && c->fn->checked && !c->fn->is_extern && !CanEmitBody(c->module, c->fn)) {
+    if(c->fn->checked && !c->fn->is_extern && !CanEmitBody(c->module, c->fn)) {
         error(c,c->fn->span,"function is not supported by portable scalar emission",c->fn->name);
         c->fn->checked=0;
     }
     return !c->failed;
+}
+
+static int
+check_template_declaration(Checker *c, ZirFunction *fn)
+{
+    c->fn = fn;
+    select_lookup_file(c->module, fn->span);
+    if(!fn->from_ir)
+        StructureFunction(fn, c->module);
+    if(!fn->template_param[0] || fn->is_extern || fn->exported ||
+       strchr(fn->return_type, '$') != NULL) {
+        Diagnostic(fn->span, "check.template",
+                   "invalid polymorphic procedure declaration");
+        return 0;
+    }
+    char (*parameters)[ZIR_TEXT_MAX] = calloc(64, sizeof(*parameters));
+    if(parameters == NULL) return 0;
+    int count = *skip_ws(fn->args) ?
+        split_top_level(fn->args, parameters[0], 64,
+                        sizeof(parameters[0])) : 0;
+    int binders = 0, valid = count > 0;
+    for(int i = 0; i < count && valid; i++) {
+        char *colon = strchr(parameters[i], ':');
+        if(colon == NULL) { valid = 0; break; }
+        char *type = colon + 1;
+        trim_in_place(type);
+        if(type[0] == '$') {
+            if(strcmp(type + 1, fn->template_param)) valid = 0;
+            else binders++;
+        } else if(strchr(type, '$') != NULL)
+            valid = 0;
+    }
+    free(parameters);
+    if(!valid || binders == 0) {
+        Diagnostic(fn->span, "check.template",
+                   "polymorphic procedure requires a direct $Type parameter");
+        return 0;
+    }
+    for(int i = 0; i < fn->stmt_count; i++)
+        if(fn->stmts[i].kind == ZIR_STMT_UNKNOWN ||
+           fn->stmts[i].kind == ZIR_STMT_FOR) {
+            Diagnostic(fn->stmts[i].span, "check.template",
+                       "unsupported statement in polymorphic procedure");
+            return 0;
+        }
+    for(int i = 0; i < fn->expr_count; i++)
+        if(fn->exprs[i].kind == ZIR_EXPR_UNKNOWN) {
+            Diagnostic(fn->exprs[i].span, "check.template",
+                       "unsupported expression in polymorphic procedure");
+            return 0;
+        }
+    return validate_loop_targets(c, fn);
 }
 
 /* Resolve every declaration before checking bodies, so imported and forward
@@ -2850,10 +3255,8 @@ normalize_function_arrays(const ZirModule *module, ZirFunction *fn)
                           !ArrayValueType(type);
         if(type[0] == '[' && !host_buffer) {
             const char *problem = local_storage_error(module, type);
-            if(problem == NULL &&
-               (fn->is_closure ||
-                (fn->is_extern && (i < 0 ||
-                 !SliceElementType(type, NULL, 0)))))
+            if(problem == NULL && fn->is_extern &&
+               (i < 0 || !SliceElementType(type, NULL, 0)))
                 problem = "direct array signatures require an ordinary Ziran function";
             int bound = -1;
             if(problem == NULL && !SliceElementType(type, NULL, 0) &&
@@ -2882,22 +3285,46 @@ normalize_function_arrays(const ZirModule *module, ZirFunction *fn)
 int
 LinkImports(ZirProgram **programs, int count)
 {
-    /* Link only explicitly imported modules that are present in this build.
-     * Host headers remain unresolved; they are not a global type namespace. */
+    /* Every source import names a Ziran module in the current build. */
     for(int p = 0; p < count; p++) {
         for(int m = 0; m < programs[p]->module_count; m++) {
             ZirModule *module = &programs[p]->modules[m];
             for(int i = 0; i < module->import_count; i++) {
                 ZirImport *import = &module->imports[i];
                 import->resolved_module = NULL;
+                if(import->kind == ZIR_IMPORT_MODULE)
+                    for(int previous = 0; previous < i; previous++)
+                        if(module->imports[previous].kind == ZIR_IMPORT_MODULE &&
+                           strcmp(module->imports[previous].name,
+                                  import->name) == 0) {
+                            Diagnostic(import->span, "check.import",
+                                       "duplicate import alias: %s", import->name);
+                            return 0;
+                        }
                 if(import->kind == ZIR_IMPORT_EXTERN &&
                    SliceElementType(import->return_type, NULL, 0)) {
                     Diagnostic(import->span, "check.slice_signature",
                                   "host calls cannot return borrowed slices");
                     return 0;
                 }
-                if(import->kind != ZIR_IMPORT_HEADER || strchr(import->target, '.') != NULL)
+                if(import->kind != ZIR_IMPORT_OPEN &&
+                   import->kind != ZIR_IMPORT_MODULE)
                     continue;
+                if(import->target[0] == '\0' ||
+                   (!isalpha((unsigned char)import->target[0]) &&
+                    import->target[0] != '_')) {
+                    Diagnostic(import->span, "check.import",
+                               "invalid Jai module name: %s", import->target);
+                    return 0;
+                }
+                for(const unsigned char *cursor =
+                        (const unsigned char *)import->target;
+                    *cursor; cursor++)
+                    if(!isalnum(*cursor) && *cursor != '_') {
+                        Diagnostic(import->span, "check.import",
+                                   "invalid Jai module name: %s", import->target);
+                        return 0;
+                    }
                 for(int q = 0; q < count; q++) {
                     for(int n = 0; n < programs[q]->module_count; n++) {
                         const ZirModule *candidate = &programs[q]->modules[n];
@@ -2917,6 +3344,11 @@ LinkImports(ZirProgram **programs, int count)
                         }
                         import->resolved_module = candidate;
                     }
+                }
+                if(import->resolved_module == NULL) {
+                    Diagnostic(import->span, "check.import",
+                               "unresolved Jai module: %s", import->target);
+                    return 0;
                 }
             }
         }
@@ -2967,6 +3399,7 @@ rewrite_type_applications(ZirModule *module, const char *source,
                           ZirSourceSpan span, int recursion)
 {
     size_t used = 0;
+    select_lookup_file(module, span);
     if(recursion > 16) {
         Diagnostic(span, "check.type_application", "type application is nested too deeply");
         return 0;
@@ -3001,8 +3434,7 @@ rewrite_type_applications(ZirModule *module, const char *source,
                 base[length] = '\0';
                 generic = FindType(module, base, NULL);
             }
-            if(generic != NULL &&
-               (generic->is_record_template || generic->is_variant_template)) {
+            if(generic != NULL && generic->is_record_template) {
                 const char *closing = opening + 1;
                 int depth = 1;
                 while(*closing && depth) {
@@ -3055,8 +3487,12 @@ rewrite_type_applications(ZirModule *module, const char *source,
                     return 0;
                 }
                 if(instance == NULL) {
+                    int generic_public = generic->is_public;
+                    int generic_file_private = generic->is_file_private;
                     instance = ModuleAddType(module, name, span);
                     if(instance == NULL) return 0;
+                    instance->is_public = generic_public;
+                    instance->is_file_private = generic_file_private;
                     instance->is_type_instance = 1;
                     instance->is_synthetic_application = 1;
                     copy_text(instance->template_name,
@@ -3080,25 +3516,6 @@ rewrite_type_applications(ZirModule *module, const char *source,
         output[used++] = *cursor++;
     }
     output[used] = '\0';
-    return 1;
-}
-
-static int
-rewrite_variant_members(ZirModule *module, int index)
-{
-    ZirType *type = &module->types[index];
-    char source[sizeof(type->variant_cases)];
-    char expanded[ZIR_TEXT_MAX * 2];
-    copy_text(source, sizeof(source), type->variant_cases);
-    if(!rewrite_type_applications(module, source, expanded,
-            sizeof(expanded), type->span, 0)) return 0;
-    copy_text(module->types[index].variant_cases,
-              sizeof(module->types[index].variant_cases), expanded);
-    copy_text(source, sizeof(source), module->types[index].body);
-    if(!rewrite_type_applications(module, source, expanded,
-            sizeof(expanded), module->types[index].span, 0)) return 0;
-    copy_text(module->types[index].body,
-              sizeof(module->types[index].body), expanded);
     return 1;
 }
 
@@ -3143,9 +3560,7 @@ normalize_type_applications(ZirModule *module)
                 return 0;
             copy_text(module->types[t].template_args,
                       sizeof(module->types[t].template_args), canonical);
-        } else if(type->is_variant) {
-            if(!rewrite_variant_members(module, t)) return 0;
-        } else if(!type->is_variant_template && !type->is_record_template &&
+        } else if(!type->is_record_template &&
                   !type->is_enum && type->body[0]) {
             char body[sizeof(type->body)];
             copy_text(body, sizeof(body), type->body);
@@ -3164,7 +3579,7 @@ normalize_type_applications(ZirModule *module)
     }
     for(int f = 0; f < module->function_count; f++) {
         ZirFunction *fn = &module->functions[f];
-        if(fn->from_ir) continue;
+        if(fn->from_ir || fn->is_template) continue;
         if(!rewrite_function_type_applications(module, fn)) return 0;
     }
     return 1;
@@ -3181,8 +3596,7 @@ order_local_types(ZirModule *module)
         int moved = 0;
         for(int t = 0; t < count && !moved; t++) {
             const ZirType *owner = &module->types[t];
-            if(owner->is_enum || owner->is_record_template ||
-               owner->is_variant_template || owner->is_slot)
+            if(owner->is_enum || owner->is_record_template || owner->is_procedure_type)
                 continue;
             size_t offset = 0;
             ZirTypeField field;
@@ -3209,8 +3623,8 @@ order_local_types(ZirModule *module)
 
 /* Type spellings are validated after parsing and after generic expansion so
  * source and saved IR cannot disagree about which declarations are Jai. */
-static int
-jai_type_spelling(ZirSourceSpan span, const char *type)
+int
+JaiTypeSpelling(ZirSourceSpan span, const char *type)
 {
     const char *start = skip_ws(type);
     int brackets = 0, parens = 0;
@@ -3227,9 +3641,16 @@ jai_type_spelling(ZirSourceSpan span, const char *type)
         if(isalpha((unsigned char)*p) || *p == '_') {
             const char *word = p;
             while(isalnum((unsigned char)*p) || *p == '_') p++;
-            if((size_t)(p - word) == 5 && !strncmp(word, "const", 5)) {
+            if(!brackets && (size_t)(p - word) == 5 &&
+               !strncmp(word, "const", 5)) {
                 Diagnostic(span, "check.jai_syntax",
                            "const qualifier is not Jai syntax: %s", type);
+                return 0;
+            }
+            if(!brackets && (size_t)(p - word) == 4 &&
+               !strncmp(word, "char", 4)) {
+                Diagnostic(span, "check.jai_syntax",
+                           "non-Jai primitive type spelling: char");
                 return 0;
             }
             continue;
@@ -3265,7 +3686,7 @@ jai_parameter_types(ZirSourceSpan span, const char *args)
         split_top_level(args, parameters[0], 64, sizeof(parameters[0])) : 0;
     for(int i = 0; i < count; i++) {
         char *colon = strchr(parameters[i], ':');
-        if(colon != NULL && !jai_type_spelling(span, colon + 1))
+        if(colon != NULL && !JaiTypeSpelling(span, colon + 1))
             return 0;
     }
     return 1;
@@ -3281,54 +3702,789 @@ jai_module_types(const ZirModule *module)
         while(length > 0 && isspace((unsigned char)value[length - 1]))
             length--;
         if(length > 0 && value[length - 1] == '*' &&
-           !jai_type_spelling(definition->span, value)) return 0;
+           !JaiTypeSpelling(definition->span, value)) return 0;
     }
     for(int i = 0; i < module->global_count; i++)
-        if(!jai_type_spelling(module->globals[i].span,
+        if(!JaiTypeSpelling(module->globals[i].span,
                               module->globals[i].type)) return 0;
-    for(int i = 0; i < module->state_count; i++)
-        if(!jai_type_spelling(module->state_fields[i].span,
-                              module->state_fields[i].type)) return 0;
     for(int i = 0; i < module->import_count; i++) {
         const ZirImport *imp = &module->imports[i];
         if(imp->kind == ZIR_IMPORT_EXTERN &&
            (!jai_parameter_types(imp->span, imp->args) ||
-            !jai_type_spelling(imp->span, imp->return_type))) return 0;
+            !JaiTypeSpelling(imp->span, imp->return_type))) return 0;
     }
     for(int i = 0; i < module->type_count; i++) {
         const ZirType *record = &module->types[i];
-        if(record->is_slot) {
-            if(!jai_parameter_types(record->span, record->body)) return 0;
+        if(record->is_procedure_type) {
+            if(!jai_parameter_types(record->span, record->body) ||
+               !JaiTypeSpelling(record->span, record->procedure_return_type)) return 0;
             continue;
         }
-        if(record->is_enum || record->name[0] == '#') continue;
+        if(record->is_enum) {
+            if(!EnumMemberValue(record, NULL, NULL)) {
+                Diagnostic(record->span, "check.enum",
+                           "invalid enum value or value outside backing type: %s",
+                           record->name);
+                return 0;
+            }
+            continue;
+        }
         size_t offset = 0;
         ZirTypeField field;
         int status;
         while((status = TypeNextField(record, &offset, &field)) == 1)
-            if(!jai_type_spelling(record->span, field.type)) return 0;
+            if(!JaiTypeSpelling(record->span, field.type)) return 0;
         if(status < 0) continue; /* existing record diagnostics report this */
     }
     for(int i = 0; i < module->function_count; i++) {
         const ZirFunction *fn = &module->functions[i];
         if(!jai_parameter_types(fn->span, fn->args) ||
-           !jai_type_spelling(fn->span, fn->return_type)) return 0;
+           !JaiTypeSpelling(fn->span, fn->return_type)) return 0;
         for(int s = 0; s < fn->stmt_count; s++)
             if(fn->stmts[s].kind == ZIR_STMT_DECL &&
                fn->stmts[s].type[0] &&
-               !jai_type_spelling(fn->stmts[s].span,
+               !JaiTypeSpelling(fn->stmts[s].span,
                                    fn->stmts[s].type)) return 0;
     }
     return 1;
 }
 
+typedef struct PrivateFunctionName {
+    ZirFunction *function;
+    char internal[ZIR_NAME_MAX];
+} PrivateFunctionName;
+
+static int
+name_conflicts(const ZirModule *module, const PrivateFunctionName *renames,
+               int count, const char *name)
+{
+    for(int i = 0; i < module->function_count; i++)
+        if(strcmp(module->functions[i].name, name) == 0)
+            return 1;
+    for(int i = 0; i < module->global_count; i++)
+        if(strcmp(module->globals[i].name, name) == 0)
+            return 1;
+    for(int i = 0; i < module->define_count; i++)
+        if(strcmp(module->defines[i].name, name) == 0)
+            return 1;
+    for(int i = 0; i < module->type_count; i++)
+        if(strcmp(module->types[i].name, name) == 0)
+            return 1;
+    for(int i = 0; i < module->import_count; i++)
+        if(strcmp(module->imports[i].name, name) == 0)
+            return 1;
+    for(int i = 0; i < count; i++)
+        if(strcmp(renames[i].internal, name) == 0)
+            return 1;
+    return 0;
+}
+
+/* File-private declarations may share a source name in different loaded
+ * files. Give colliding procedures distinct checked IR names after source
+ * resolution, so native backends and the portable linker use one identity. */
+static int
+name_private_functions(ZirModule *module)
+{
+    PrivateFunctionName *renames = calloc((size_t)module->function_count + 1,
+                                          sizeof(*renames));
+    int count = 0;
+    if(renames == NULL)
+        return 0;
+    for(int f = 0; f < module->function_count; f++) {
+        ZirFunction *function = &module->functions[f];
+        if(!function->is_file_private)
+            continue;
+        int collision = 0;
+        for(int other = 0; other < module->function_count; other++) {
+            const ZirFunction *candidate = &module->functions[other];
+            if(other == f || strcmp(candidate->name, function->name) != 0)
+                continue;
+            if(strcmp(candidate->span.path, function->span.path) == 0) {
+                Diagnostic(function->span, "check.file_scope",
+                           "duplicate procedure in one file: %s",
+                           function->name);
+                free(renames);
+                return 0;
+            }
+            collision = 1;
+        }
+        if(!collision)
+            continue;
+        if(function->exported) {
+            Diagnostic(function->span, "check.file_scope",
+                       "colliding #program_export procedure: %s",
+                       function->name);
+            free(renames);
+            return 0;
+        }
+        renames[count].function = function;
+        for(int serial = f; ; serial++) {
+            snprintf(renames[count].internal,
+                     sizeof(renames[count].internal),
+                     "zir_file_function_%d", serial);
+            if(!name_conflicts(module, renames, count,
+                               renames[count].internal))
+                break;
+        }
+        count++;
+    }
+    if(count == 0) {
+        free(renames);
+        return 1;
+    }
+    for(int f = 0; f < module->function_count; f++) {
+        ZirFunction *caller = &module->functions[f];
+        for(int x = 0; x < caller->expr_count; x++) {
+            ZirExpr *expression = &caller->exprs[x];
+            const ZirModule *owner = NULL;
+            const ZirFunction *target = NULL;
+            if(!((expression->kind == ZIR_EXPR_CALL &&
+                  !expression->slot_type[0]) ||
+                 (expression->kind == ZIR_EXPR_IDENT &&
+                  expression->is_function_value)) ||
+               !expression->name[0] ||
+               ResolveFunctionAt(module, expression->name,
+                   caller->span.path, &owner, &target) != 1 ||
+               owner != module)
+                continue;
+            for(int i = 0; i < count; i++)
+                if(target == renames[i].function) {
+                    copy_text(expression->name, sizeof(expression->name),
+                              renames[i].internal);
+                    break;
+                }
+        }
+        caller->from_ir = 1;
+    }
+    for(int i = 0; i < count; i++)
+        copy_text(renames[i].function->name,
+                  sizeof(renames[i].function->name),
+                  renames[i].internal);
+    free(renames);
+    return 1;
+}
+
+typedef struct PrivateDefineName {
+    ZirDefine *definition;
+    char original[ZIR_NAME_MAX];
+    char internal[ZIR_NAME_MAX];
+} PrivateDefineName;
+
+static int
+rewrite_private_reference(char *source, size_t capacity,
+                          ZirSourceSpan span, const char *original,
+                          const char *internal)
+{
+    ZirLexer lexer;
+    ZirToken previous = {0};
+    ZirToken current, next;
+    size_t current_end, next_end, copied = 0, written = 0;
+    char *output = calloc(capacity, 1);
+    if(output == NULL) return 0;
+    LexerInit(&lexer, source, span.path);
+    current = LexerNext(&lexer);
+    current_end = lexer.pos;
+    next = LexerNext(&lexer);
+    next_end = lexer.pos;
+    while(current.kind != ZIR_TOKEN_EOF) {
+        if(current.kind == ZIR_TOKEN_IDENT &&
+           !strcmp(current.text, original) &&
+           strcmp(previous.text, ".") != 0 &&
+           strcmp(next.text, ":") != 0) {
+            size_t start = current_end - strlen(current.text);
+            size_t prefix = start - copied;
+            size_t replacement = strlen(internal);
+            if(written + prefix + replacement >= capacity) goto too_long;
+            memcpy(output + written, source + copied, prefix);
+            written += prefix;
+            memcpy(output + written, internal, replacement);
+            written += replacement;
+            copied = current_end;
+        }
+        previous = current;
+        current = next;
+        current_end = next_end;
+        next = LexerNext(&lexer);
+        next_end = lexer.pos;
+    }
+    size_t suffix = strlen(source + copied);
+    if(written + suffix >= capacity) goto too_long;
+    memcpy(output + written, source + copied, suffix + 1);
+    memcpy(source, output, written + suffix + 1);
+    free(output);
+    return 1;
+too_long:
+    Diagnostic(span, "check.file_scope",
+               "file-private reference exceeds text limit: %s", original);
+    free(output);
+    return 0;
+}
+
+static int
+name_private_defines(ZirModule *module)
+{
+    PrivateDefineName *renames = calloc((size_t)module->define_count + 1,
+                                        sizeof(*renames));
+    int count = 0;
+    if(renames == NULL) return 0;
+    for(int d = 0; d < module->define_count; d++) {
+        ZirDefine *definition = &module->defines[d];
+        if(!definition->is_file_private) continue;
+        int collision = 0;
+        for(int other = 0; other < module->define_count; other++) {
+            const ZirDefine *candidate = &module->defines[other];
+            if(other == d || strcmp(candidate->name, definition->name))
+                continue;
+            if(!strcmp(candidate->span.path, definition->span.path)) {
+                Diagnostic(definition->span, "check.file_scope",
+                           "duplicate constant in one file: %s",
+                           definition->name);
+                free(renames);
+                return 0;
+            }
+            collision = 1;
+        }
+        if(!collision) continue;
+        PrivateDefineName *rename = &renames[count];
+        rename->definition = definition;
+        copy_text(rename->original, sizeof(rename->original),
+                  definition->name);
+        for(int serial = d; ; serial++) {
+            int reserved = 0;
+            snprintf(rename->internal, sizeof(rename->internal),
+                     "zir_file_constant_%d", serial);
+            for(int i = 0; i < count; i++)
+                reserved |= !strcmp(renames[i].internal, rename->internal);
+            if(!reserved && !name_conflicts(module, NULL, 0,
+                                            rename->internal)) break;
+        }
+        count++;
+    }
+    for(int r = 0; r < count; r++) {
+        const PrivateDefineName *rename = &renames[r];
+        const char *path = rename->definition->span.path;
+        for(int g = 0; g < module->global_count; g++) {
+            ZirGlobal *global = &module->globals[g];
+            if(strcmp(global->span.path, path)) continue;
+            if(!rewrite_private_reference(global->type,
+                                          sizeof(global->type), global->span,
+                                          rename->original, rename->internal) ||
+               !rewrite_private_reference(global->init,
+                                          sizeof(global->init), global->span,
+                                          rename->original, rename->internal))
+                goto failed;
+        }
+        for(int d = 0; d < module->define_count; d++) {
+            ZirDefine *definition = &module->defines[d];
+            if(strcmp(definition->span.path, path)) continue;
+            if(!rewrite_private_reference(definition->value,
+                                          sizeof(definition->value),
+                                          definition->span, rename->original,
+                                          rename->internal)) goto failed;
+        }
+        for(int t = 0; t < module->type_count; t++) {
+            ZirType *type = &module->types[t];
+            if(strcmp(type->span.path, path)) continue;
+            if(!rewrite_private_reference(type->body, sizeof(type->body),
+                                          type->span, rename->original,
+                                          rename->internal) ||
+               !rewrite_private_reference(type->template_args,
+                                          sizeof(type->template_args),
+                                          type->span, rename->original,
+                                          rename->internal)) goto failed;
+        }
+    }
+    for(int r = 0; r < count; r++)
+        copy_text(renames[r].definition->name,
+                  sizeof(renames[r].definition->name),
+                  renames[r].internal);
+    free(renames);
+    return 1;
+failed:
+    free(renames);
+    return 0;
+}
+
+typedef struct PrivateGlobalName {
+    ZirGlobal *global;
+    char original[ZIR_NAME_MAX];
+    char internal[ZIR_NAME_MAX];
+} PrivateGlobalName;
+
+static int
+name_private_globals(ZirModule *module)
+{
+    PrivateGlobalName *renames = calloc((size_t)module->global_count + 1,
+                                        sizeof(*renames));
+    int count = 0;
+    if(renames == NULL) return 0;
+    for(int g = 0; g < module->global_count; g++) {
+        ZirGlobal *global = &module->globals[g];
+        if(!global->is_file_private) continue;
+        int collision = 0;
+        for(int other = 0; other < module->global_count; other++) {
+            const ZirGlobal *candidate = &module->globals[other];
+            if(other == g || strcmp(candidate->name, global->name))
+                continue;
+            if(!strcmp(candidate->span.path, global->span.path)) {
+                Diagnostic(global->span, "check.file_scope",
+                           "duplicate global in one file: %s", global->name);
+                free(renames);
+                return 0;
+            }
+            collision = 1;
+        }
+        if(!collision) continue;
+        PrivateGlobalName *rename = &renames[count];
+        rename->global = global;
+        copy_text(rename->original, sizeof(rename->original), global->name);
+        for(int serial = g; ; serial++) {
+            int reserved = 0;
+            snprintf(rename->internal, sizeof(rename->internal),
+                     "zir_file_global_%d", serial);
+            for(int i = 0; i < count; i++)
+                reserved |= !strcmp(renames[i].internal, rename->internal);
+            if(!reserved && !name_conflicts(module, NULL, 0,
+                                            rename->internal)) break;
+        }
+        count++;
+    }
+    for(int r = 0; r < count; r++) {
+        const PrivateGlobalName *rename = &renames[r];
+        const char *path = rename->global->span.path;
+        for(int g = 0; g < module->global_count; g++) {
+            ZirGlobal *global = &module->globals[g];
+            if(strcmp(global->span.path, path)) continue;
+            if(!rewrite_private_reference(global->init, sizeof(global->init),
+                                          global->span, rename->original,
+                                          rename->internal)) goto failed;
+        }
+        for(int f = 0; f < module->function_count; f++) {
+            ZirFunction *caller = &module->functions[f];
+            if(strcmp(caller->span.path, path)) continue;
+            for(int x = 0; x < caller->expr_count; x++) {
+                ZirExpr *expression = &caller->exprs[x];
+                if(expression->is_global_value &&
+                   !strcmp(expression->name, rename->original))
+                    copy_text(expression->name, sizeof(expression->name),
+                              rename->internal);
+            }
+        }
+    }
+    for(int r = 0; r < count; r++)
+        copy_text(renames[r].global->name, sizeof(renames[r].global->name),
+                  renames[r].internal);
+    if(count > 0)
+        for(int f = 0; f < module->function_count; f++)
+            module->functions[f].from_ir = 1;
+    free(renames);
+    return 1;
+failed:
+    free(renames);
+    return 0;
+}
+
+typedef struct PrivateTypeName {
+    ZirType *type;
+    char original[ZIR_NAME_MAX];
+    char internal[ZIR_NAME_MAX];
+} PrivateTypeName;
+
+static int
+template_parameter_shadows(const ZirType *type, const char *name)
+{
+    ZirLexer lexer;
+    ZirToken current, next;
+    LexerInit(&lexer, type->template_params, type->span.path);
+    current = LexerNext(&lexer);
+    next = LexerNext(&lexer);
+    while(current.kind != ZIR_TOKEN_EOF) {
+        if(current.kind == ZIR_TOKEN_IDENT &&
+           !strcmp(current.text, name) && !strcmp(next.text, ":"))
+            return 1;
+        current = next;
+        next = LexerNext(&lexer);
+    }
+    return 0;
+}
+
+static int
+name_private_types(ZirModule *module)
+{
+    PrivateTypeName *renames = calloc((size_t)module->type_count + 1,
+                                      sizeof(*renames));
+    int count = 0;
+    if(renames == NULL) return 0;
+    for(int t = 0; t < module->type_count; t++) {
+        ZirType *type = &module->types[t];
+        if(!type->is_file_private) continue;
+        int collision = 0;
+        for(int other = 0; other < module->type_count; other++) {
+            const ZirType *candidate = &module->types[other];
+            if(other == t || strcmp(candidate->name, type->name)) continue;
+            if(!strcmp(candidate->span.path, type->span.path)) {
+                Diagnostic(type->span, "check.file_scope",
+                           "duplicate type in one file: %s", type->name);
+                free(renames);
+                return 0;
+            }
+            collision = 1;
+        }
+        if(!collision) continue;
+        PrivateTypeName *rename = &renames[count];
+        rename->type = type;
+        copy_text(rename->original, sizeof(rename->original), type->name);
+        for(int serial = t; ; serial++) {
+            int reserved = 0;
+            snprintf(rename->internal, sizeof(rename->internal),
+                     "zir_file_type_%d", serial);
+            for(int i = 0; i < count; i++)
+                reserved |= !strcmp(renames[i].internal, rename->internal);
+            if(!reserved && !name_conflicts(module, NULL, 0,
+                                            rename->internal)) break;
+        }
+        count++;
+    }
+    for(int r = 0; r < count; r++) {
+        const PrivateTypeName *rename = &renames[r];
+        const char *path = rename->type->span.path;
+        for(int t = 0; t < module->type_count; t++) {
+            ZirType *type = &module->types[t];
+            if(strcmp(type->span.path, path)) continue;
+            if(!type->is_enum &&
+               !template_parameter_shadows(type, rename->original) &&
+               !rewrite_private_reference(type->body, sizeof(type->body),
+                                          type->span, rename->original,
+                                          rename->internal)) goto failed;
+            if(!rewrite_private_reference(type->template_name,
+                                          sizeof(type->template_name),
+                                          type->span, rename->original,
+                                          rename->internal) ||
+               !rewrite_private_reference(type->template_args,
+                                          sizeof(type->template_args),
+                                          type->span, rename->original,
+                                          rename->internal) ||
+               !rewrite_private_reference(type->procedure_return_type,
+                                          sizeof(type->procedure_return_type),
+                                          type->span, rename->original,
+                                          rename->internal)) goto failed;
+        }
+        for(int g = 0; g < module->global_count; g++) {
+            ZirGlobal *global = &module->globals[g];
+            if(strcmp(global->span.path, path)) continue;
+            if(!rewrite_private_reference(global->type, sizeof(global->type),
+                                          global->span, rename->original,
+                                          rename->internal) ||
+               !rewrite_private_reference(global->init, sizeof(global->init),
+                                          global->span, rename->original,
+                                          rename->internal)) goto failed;
+        }
+        for(int d = 0; d < module->define_count; d++) {
+            ZirDefine *definition = &module->defines[d];
+            if(strcmp(definition->span.path, path)) continue;
+            if(!rewrite_private_reference(definition->value,
+                                          sizeof(definition->value),
+                                          definition->span, rename->original,
+                                          rename->internal)) goto failed;
+        }
+        for(int i = 0; i < module->import_count; i++) {
+            ZirImport *import = &module->imports[i];
+            if(strcmp(import->span.path, path)) continue;
+            if(!rewrite_private_reference(import->signature,
+                                          sizeof(import->signature),
+                                          import->span, rename->original,
+                                          rename->internal) ||
+               !rewrite_private_reference(import->args, sizeof(import->args),
+                                          import->span, rename->original,
+                                          rename->internal) ||
+               !rewrite_private_reference(import->return_type,
+                                          sizeof(import->return_type),
+                                          import->span, rename->original,
+                                          rename->internal)) goto failed;
+        }
+        for(int f = 0; f < module->function_count; f++) {
+            ZirFunction *function = &module->functions[f];
+            if(strcmp(function->span.path, path)) continue;
+            if(!rewrite_private_reference(function->args,
+                                          sizeof(function->args), function->span,
+                                          rename->original, rename->internal) ||
+               !rewrite_private_reference(function->return_type,
+                                          sizeof(function->return_type),
+                                          function->span, rename->original,
+                                          rename->internal)) goto failed;
+            for(int s = 0; s < function->stmt_count; s++) {
+                ZirStmt *statement = &function->stmts[s];
+                if(!rewrite_private_reference(statement->type,
+                                              sizeof(statement->type),
+                                              statement->span, rename->original,
+                                              rename->internal)) goto failed;
+            }
+            for(int x = 0; x < function->expr_count; x++) {
+                ZirExpr *expression = &function->exprs[x];
+                if(!rewrite_private_reference(expression->type,
+                                              sizeof(expression->type),
+                                              expression->span,
+                                              rename->original,
+                                              rename->internal) ||
+                   !rewrite_private_reference(expression->slot_type,
+                                              sizeof(expression->slot_type),
+                                              expression->span,
+                                              rename->original,
+                                              rename->internal)) goto failed;
+                if(expression->kind == ZIR_EXPR_CAST ||
+                   expression->kind == ZIR_EXPR_COMPOUND ||
+                   expression->kind == ZIR_EXPR_SIZE_OF ||
+                   (expression->kind == ZIR_EXPR_CALL &&
+                    rename->type->is_record_template))
+                    if(!rewrite_private_reference(expression->name,
+                                                  sizeof(expression->name),
+                                                  expression->span,
+                                                  rename->original,
+                                                  rename->internal)) goto failed;
+            }
+        }
+    }
+    for(int r = 0; r < count; r++)
+        copy_text(renames[r].type->name, sizeof(renames[r].type->name),
+                  renames[r].internal);
+    if(count > 0)
+        for(int f = 0; f < module->function_count; f++)
+            module->functions[f].from_ir = 1;
+    free(renames);
+    return 1;
+failed:
+    free(renames);
+    return 0;
+}
+
+static int
+substitute_field(char *field, size_t capacity, const char *parameter,
+                 const char *concrete)
+{
+    char *copy = malloc(capacity);
+    if(copy == NULL) return 0;
+    memcpy(copy, field, capacity);
+    int ok = replace_template_type(field, capacity, copy,
+                                   parameter, concrete);
+    free(copy);
+    return ok;
+}
+
+static int
+instantiate_specializations(Checker *checker)
+{
+    for(int request_index = 0;
+        request_index < checker->specialization_count; request_index++) {
+        SpecializationRequest *request =
+            &checker->specializations[request_index];
+        ZirModule *template_owner = request->template_owner;
+        ZirModule *owner = request->instance_owner;
+        ZirFunction original = template_owner->functions[request->template_index];
+        ZirFunction *instance = ModuleAddFunction(owner, request->name,
+            original.args, original.return_type, 0, original.span);
+        if(instance == NULL) return 0;
+        *instance = original;
+        copy_text(instance->name, sizeof(instance->name), request->name);
+        copy_text(instance->specialization_type,
+                  sizeof(instance->specialization_type), request->type);
+        instance->is_template = 0;
+        instance->is_specialization = 1;
+        instance->is_public = 1;
+        instance->is_file_private = 0;
+        instance->exported = 0;
+        if(owner != template_owner)
+            instance->span = request->call_span;
+        instance->checked = 0;
+        instance->from_ir = 1;
+        instance->uses_host = 0;
+        instance->stmts = NULL;
+        instance->exprs = NULL;
+        instance->stmt_cap = instance->stmt_count;
+        instance->expr_cap = instance->expr_count;
+        if(instance->stmt_count > 0) {
+            instance->stmts = malloc((size_t)instance->stmt_count *
+                                     sizeof(*instance->stmts));
+            if(instance->stmts == NULL) return 0;
+            memcpy(instance->stmts, original.stmts,
+                   (size_t)instance->stmt_count * sizeof(*instance->stmts));
+        }
+        if(instance->expr_count > 0) {
+            instance->exprs = malloc((size_t)instance->expr_count *
+                                     sizeof(*instance->exprs));
+            if(instance->exprs == NULL) return 0;
+            memcpy(instance->exprs, original.exprs,
+                   (size_t)instance->expr_count * sizeof(*instance->exprs));
+        }
+        const char *parameter = original.template_param;
+        const char *concrete = request->type;
+        if(!substitute_field(instance->args, sizeof(instance->args),
+                             parameter, concrete) ||
+           !substitute_field(instance->default_args,
+                             sizeof(instance->default_args),
+                             parameter, concrete) ||
+           !substitute_field(instance->return_type,
+                             sizeof(instance->return_type),
+                             parameter, concrete)) return 0;
+        for(int s = 0; s < instance->stmt_count; s++)
+            if(!substitute_field(instance->stmts[s].type,
+                                 sizeof(instance->stmts[s].type),
+                                 parameter, concrete)) return 0;
+        for(int x = 0; x < instance->expr_count; x++) {
+            ZirExpr *expression = &instance->exprs[x];
+            if(!substitute_field(expression->type,
+                                 sizeof(expression->type),
+                                 parameter, concrete) ||
+               !substitute_field(expression->slot_type,
+                                 sizeof(expression->slot_type),
+                                 parameter, concrete)) return 0;
+            if(expression->kind == ZIR_EXPR_CAST ||
+               expression->kind == ZIR_EXPR_COMPOUND ||
+               expression->kind == ZIR_EXPR_SIZE_OF ||
+               expression->kind == ZIR_EXPR_CALL)
+                if(!substitute_field(expression->name,
+                                     sizeof(expression->name),
+                                     parameter, concrete)) return 0;
+            if(owner != template_owner &&
+               expression->kind == ZIR_EXPR_CALL &&
+               strchr(expression->name, '.') == NULL) {
+                const ZirModule *callee_owner = NULL;
+                const ZirFunction *callee = NULL;
+                if(ResolveFunctionAt(template_owner, expression->name,
+                                     original.span.path,
+                                     &callee_owner, &callee) == 1 &&
+                   callee_owner == template_owner && callee != NULL) {
+                    for(int import_index = 0;
+                        import_index < owner->import_count; import_index++) {
+                        const ZirImport *import = &owner->imports[import_index];
+                        if(import->kind != ZIR_IMPORT_MODULE ||
+                           import->resolved_module != template_owner ||
+                           !in_lookup_file(owner, import->is_file_private,
+                                           import->span)) continue;
+                        char qualified[ZIR_NAME_MAX];
+                        int written = snprintf(qualified, sizeof(qualified),
+                            "%s.%s", import->name, expression->name);
+                        if(written < 0 ||
+                           (size_t)written >= sizeof(qualified)) return 0;
+                        copy_text(expression->name,
+                                  sizeof(expression->name), qualified);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    checker->specialization_count = 0;
+    return 1;
+}
+
 int
-CheckPrograms(ZirProgram **programs, int count, int strict)
+CheckPrograms(ZirProgram **programs, int count)
 {
     Checker c = {0};
-    c.programs = programs; c.program_count = count; c.strict = strict;
+    c.programs = programs; c.program_count = count;
     if(!LinkImports(programs, count))
         return 0;
+    /* Select expressions that depend on imports and resolve #run constants
+     * together: either may refer to a result from the other. */
+    for(int pass = 0; pass < 128; pass++) {
+        int pending = 0, progress = 0;
+        for(int p = 0; p < count; p++)
+            for(int m = 0; m < programs[p]->module_count; m++)
+                progress += LowerLinkedCompileExpressions(
+                    &programs[p]->modules[m], 1);
+        for(int p = 0; p < count; p++)
+            for(int m = 0; m < programs[p]->module_count; m++) {
+                ZirModule *module = &programs[p]->modules[m];
+                for(int d = 0; d < module->define_count; d++) {
+                    ZirDefine *definition = &module->defines[d];
+                    if(!starts_word(definition->value, "#run")) continue;
+                    pending++;
+                    long value = 0;
+                    const char *expression = skip_ws(definition->value + 4);
+                    if(EvaluateCompileExpression(module, expression,
+                                                 definition->span, &value)) {
+                        snprintf(definition->value,
+                                 sizeof(definition->value), "%ld", value);
+                    } else {
+                        char literal[ZIR_TEXT_MAX];
+                        if(!EvaluateCompileLiteral(module, expression,
+                                                   definition->span, literal,
+                                                   sizeof(literal))) continue;
+                        copy_text(definition->value,
+                                  sizeof(definition->value), literal);
+                    }
+                    progress++;
+                }
+            }
+        if(progress == 0) {
+            if(pending == 0) break;
+            for(int p = 0; p < count; p++)
+                for(int m = 0; m < programs[p]->module_count; m++) {
+                    ZirModule *module = &programs[p]->modules[m];
+                    for(int d = 0; d < module->define_count; d++) {
+                        ZirDefine *definition = &module->defines[d];
+                        if(!starts_word(definition->value, "#run")) continue;
+                        Diagnostic(definition->span, "check.consteval",
+                                   "#run expression is not a constant: %s",
+                                   skip_ws(definition->value + 4));
+                        return 0;
+                    }
+                }
+        }
+        if(pass == 127) {
+            Diagnostic((ZirSourceSpan){0}, "check.consteval",
+                       "too many linked compile-time evaluation passes");
+            return 0;
+        }
+    }
+    for(int p = 0; p < count; p++)
+        for(int m = 0; m < programs[p]->module_count; m++)
+            LowerLinkedCompileExpressions(&programs[p]->modules[m], 0);
+    for(int p = 0; p < count; p++)
+        for(int m = 0; m < programs[p]->module_count; m++) {
+            ZirModule *module = &programs[p]->modules[m];
+            for(int a = 0; a < module->assert_count; a++) {
+                ZirAssert *assertion = &module->asserts[a];
+                long value = 0;
+                if(!EvaluateCompileExpression(module,
+                        assertion->condition, assertion->span, &value)) {
+                    char literal[ZIR_TEXT_MAX];
+                    if(!EvaluateCompileLiteral(module,
+                            assertion->condition, assertion->span,
+                            literal, sizeof(literal)) ||
+                       (strcmp(literal, "0") && strcmp(literal, "1"))) {
+                        Diagnostic(assertion->span, "check.assert",
+                                   "#assert requires a compile-time constant condition");
+                        return 0;
+                    }
+                    value = literal[0] == '1';
+                }
+                if(assertion->known && assertion->value != (value != 0)) {
+                    Diagnostic(assertion->span, "check.assert",
+                               "#assert result disagrees with its condition");
+                    return 0;
+                }
+                assertion->known = 1;
+                assertion->value = value != 0;
+                snprintf(assertion->condition,
+                         sizeof(assertion->condition), "%d", assertion->value);
+                if(!assertion->value) {
+                    Diagnostic(assertion->span, "check.assert",
+                               "#assert failed: %s", assertion->message);
+                    return 0;
+                }
+            }
+            for(int g = 0; g < module->global_count; g++)
+                if(module->globals[g].init[0] &&
+                   !check_file_private_expression(module,
+                       module->globals[g].init, module->globals[g].span))
+                    return 0;
+            for(int d = 0; d < module->define_count; d++)
+                if(!check_file_private_expression(module,
+                       module->defines[d].value,
+                       module->defines[d].span))
+                    return 0;
+        }
     /* A Jai constant may hold a type. Resolve call-shaped constants after
      * imports are linked so ordinary compile-time calls stay constants while
      * Generic(T) becomes a concrete type declaration. */
@@ -3337,6 +4493,7 @@ CheckPrograms(ZirProgram **programs, int count, int strict)
             ZirModule *module = &programs[p]->modules[m];
             for(int d = 0; d < module->define_count; ) {
                 ZirDefine *def = &module->defines[d];
+                select_lookup_file(module, def->span);
                 const char *value = skip_ws(def->value);
                 const char *cursor = value;
                 char base[ZIR_NAME_MAX];
@@ -3360,14 +4517,13 @@ CheckPrograms(ZirProgram **programs, int count, int strict)
                     d++; continue;
                 }
                 const ZirType *generic = FindType(module, base, NULL);
-                if(generic == NULL ||
-                   (!generic->is_variant_template &&
-                    !generic->is_record_template)) {
+                if(generic == NULL || !generic->is_record_template) {
                     d++; continue;
                 }
                 ZirType *instance = ModuleAddType(module, def->name, def->span);
                 if(instance == NULL) return 0;
                 instance->is_public = def->is_public;
+                instance->is_file_private = def->is_file_private;
                 instance->is_type_instance = 1;
                 copy_text(instance->template_name,
                           sizeof(instance->template_name), base);
@@ -3376,8 +4532,6 @@ CheckPrograms(ZirProgram **programs, int count, int strict)
                 memcpy(instance->template_args, start,
                        (size_t)(cursor - start));
                 instance->template_args[cursor - start] = '\0';
-                copy_text(instance->guard, sizeof(instance->guard),
-                          def->guard);
                 memmove(def, def + 1,
                         (size_t)(module->define_count - d - 1) * sizeof(*def));
                 module->define_count--;
@@ -3390,24 +4544,32 @@ CheckPrograms(ZirProgram **programs, int count, int strict)
     for(int p = 0; p < count; p++)
         for(int m = 0; m < programs[p]->module_count; m++) {
             ZirModule *module = &programs[p]->modules[m];
+            for(int g = 0; g < module->global_count; g++)
+                if(module->globals[g].init[0] &&
+                   contains_vec(module, module->globals[g].type, 0)) {
+                    Diagnostic(module->globals[g].span, "check.vec_copy",
+                               "Vec globals require default initialization");
+                    return 0;
+                }
+        }
+    for(int p = 0; p < count; p++)
+        for(int m = 0; m < programs[p]->module_count; m++) {
+            ZirModule *module = &programs[p]->modules[m];
             for(int t = 0; t < module->type_count; t++) {
                 ZirType *type = &module->types[t];
+                select_lookup_file(module, type->span);
                 if(type->is_type_instance) {
                     const ZirType *generic = FindType(module,
                         type->template_name, NULL);
-                    if(generic == NULL ||
-                       (!generic->is_variant_template &&
-                        !generic->is_record_template) ||
-                       !InstantiateGenericType(module, type, generic)) {
+                    if(generic == NULL || !generic->is_record_template ||
+                       !InstantiateGenericRecord(type, generic)) {
                         Diagnostic(type->span, "check.specialize",
                                    "invalid generic type specialization: %s",
                                    type->name);
                         return 0;
                     }
-                    if(type->is_variant &&
-                       !rewrite_variant_members(module, t)) return 0;
                     type = &module->types[t];
-                    if(!type->is_variant && type->body[0]) {
+                    if(type->body[0]) {
                         char body[sizeof(type->body)];
                         char expanded[sizeof(type->body)];
                         copy_text(body, sizeof(body), type->body);
@@ -3419,15 +4581,7 @@ CheckPrograms(ZirProgram **programs, int count, int strict)
                     }
                 }
                 type = &module->types[t];
-                if(type->is_variant || type->is_variant_template ||
-                   type->is_record_template)
-                    strict = 1;
             }
-            for(int f = 0; f < module->function_count; f++)
-                if(module->functions[f].is_generated &&
-                   !module->functions[f].from_ir &&
-                   !rewrite_function_type_applications(module,
-                        &module->functions[f])) return 0;
         }
     for(int p = 0; p < count; p++)
         for(int m = 0; m < programs[p]->module_count; m++)
@@ -3437,24 +4591,6 @@ CheckPrograms(ZirProgram **programs, int count, int strict)
         for(int m = 0; m < programs[p]->module_count; m++)
             if(!jai_module_types(&programs[p]->modules[m]))
                 return 0;
-    c.strict = strict;
-    for(int p = 0; p < count; p++)
-        for(int m = 0; m < programs[p]->module_count; m++) {
-            const ZirModule *module = &programs[p]->modules[m];
-            for(int f = 0; f < module->function_count; f++)
-                for(int previous = 0; previous < f; previous++)
-                    if((module->functions[f].is_generated ||
-                        module->functions[previous].is_generated) &&
-                       !strcmp(module->functions[f].name,
-                               module->functions[previous].name) &&
-                       !strcmp(module->functions[f].guard,
-                               module->functions[previous].guard)) {
-                        Diagnostic(module->functions[f].span, "check.variant_name",
-                            "variant operation collides with another function: %s",
-                            module->functions[f].name);
-                        return 0;
-                    }
-        }
     for(int p = 0; p < count; p++) {
         for(int m = 0; m < programs[p]->module_count; m++) {
             ZirModule *module = &programs[p]->modules[m];
@@ -3466,44 +4602,67 @@ CheckPrograms(ZirProgram **programs, int count, int strict)
     }
     for(int p = 0; p < count; p++)
         for(int m = 0; m < programs[p]->module_count; m++)
-            if(!check_type_declarations(&programs[p]->modules[m], strict) ||
+            if(!check_type_declarations(&programs[p]->modules[m]) ||
                !normalize_record_arrays(&programs[p]->modules[m]))
                 return 0;
     for(int p = 0; p < count; p++) for(int m = 0; m < programs[p]->module_count; m++) {
         c.module = &programs[p]->modules[m];
-        for(int i = 0; i < c.module->global_count + c.module->state_count; i++) {
-            const char *type = i < c.module->global_count ? c.module->globals[i].type :
-                c.module->state_fields[i - c.module->global_count].type;
-            const ZirType *slot = FindType(c.module, type, NULL);
-            if(strict || strstr(type, "[]") != NULL) {
-                ValidatedRecords checked = {0};
-                const char *error = storage_type_error(c.module, type, NULL, 0, &checked);
-                free(checked.items);
-                if(error != NULL && (slot == NULL || !slot->is_slot)) {
-                    ZirSourceSpan span = i < c.module->global_count ? c.module->globals[i].span :
-                        c.module->state_fields[i - c.module->global_count].span;
-                    Diagnostic(span, "check.storage", "%s: %s", error, type);
-                    free(c.bindings);
-                    return 0;
-                }
-            }
-            if(slot != NULL && slot->is_slot) {
-                ZirSourceSpan span = i < c.module->global_count ? c.module->globals[i].span :
-                    c.module->state_fields[i - c.module->global_count].span;
-                Diagnostic(span, "check.slot_escape", "slot values cannot be stored in globals or state");
+        for(int i = 0; i < c.module->global_count; i++) {
+            select_lookup_file(c.module, c.module->globals[i].span);
+            const char *type = c.module->globals[i].type;
+            ValidatedRecords checked = {0};
+            const char *error = storage_type_error(c.module, type, NULL, 0,
+                                                   &checked, NULL, 0);
+            free(checked.items);
+            if(error != NULL) {
+                ZirSourceSpan span = c.module->globals[i].span;
+                Diagnostic(span, "check.storage", "%s: %s", error, type);
                 free(c.bindings);
                 return 0;
             }
         }
         for(int f = 0; f < c.module->function_count; f++) {
-            if(c.module->functions[f].is_closure)
+            if(c.module->functions[f].is_template) {
+                if(!check_template_declaration(&c,
+                        &c.module->functions[f])) {
+                    free(c.bindings);
+                    free(c.specializations);
+                    return 0;
+                }
                 continue;
+            }
             if(!check_function(&c, &c.module->functions[f])) {
                 free(c.bindings);
+                free(c.specializations);
                 return 0;
             }
 
         }
+        c.module->lookup_path[0] = '\0';
+    }
+    for(;;) {
+        int pending = c.specialization_count;
+        if(pending == 0) break;
+        if(!instantiate_specializations(&c)) {
+            free(c.bindings);
+            free(c.specializations);
+            return 0;
+        }
+        for(int p = 0; p < count; p++)
+            for(int m = 0; m < programs[p]->module_count; m++) {
+                c.module = &programs[p]->modules[m];
+                for(int f = 0; f < c.module->function_count; f++) {
+                    ZirFunction *instance = &c.module->functions[f];
+                    if(!instance->is_specialization || instance->checked)
+                        continue;
+                    if(!check_function(&c, instance)) {
+                        free(c.bindings);
+                        free(c.specializations);
+                        return 0;
+                    }
+                }
+                c.module->lookup_path[0] = '\0';
+            }
     }
     /* Runtime implementations become host methods when they need host services.
      * Propagate through resolved calls, including mutually recursive modules. */
@@ -3533,5 +4692,15 @@ CheckPrograms(ZirProgram **programs, int count, int strict)
         }
     } while(changed);
     free(c.bindings);
-    return !c.failed && (!strict || c.errors == 0) && CheckSliceLifetimes(programs, count);
+    free(c.specializations);
+    if(c.failed || c.errors != 0 || !CheckSliceLifetimes(programs, count))
+        return 0;
+    for(int p = 0; p < count; p++)
+        for(int m = 0; m < programs[p]->module_count; m++)
+            if(!name_private_functions(&programs[p]->modules[m]) ||
+               !name_private_defines(&programs[p]->modules[m]) ||
+               !name_private_globals(&programs[p]->modules[m]) ||
+               !name_private_types(&programs[p]->modules[m]))
+                return 0;
+    return 1;
 }

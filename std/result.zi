@@ -1,4 +1,5 @@
-Result :: variant($T: Type, $E: Type) {
-    Ok: T
-    Err: E
+Result :: struct($T: Type, $E: Type) {
+    is_ok: bool;
+    value: T;
+    error: E;
 }

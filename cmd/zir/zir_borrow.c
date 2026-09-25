@@ -93,10 +93,11 @@ call_origin(BorrowCheck *check, const ZirExpr *expression)
     if(summary == NULL)
         return (Origin){0, 0, 1};
     Origin result = {0, summary->returned.depth, summary->returned.invalid};
-    int ordinal = 0;
     for(int child = expression->first_child; child >= 0;
-        child = check->current->fn->exprs[child].next_sibling, ordinal++) {
-        if(ordinal < 64 && (summary->returned.parameters & (UINT64_C(1) << ordinal)))
+        child = check->current->fn->exprs[child].next_sibling) {
+        int parameter = check->current->fn->exprs[child].argument_index;
+        if(parameter >= 0 && parameter < 64 &&
+           (summary->returned.parameters & (UINT64_C(1) << parameter)))
             result = merge(result, expression_origin(check, child));
     }
     return result;
@@ -143,7 +144,9 @@ check_ranges(BorrowCheck *check, int index)
     if(index < 0 || check->failed)
         return;
     const ZirExpr *expression = &check->current->fn->exprs[index];
-    if(expression->kind == ZIR_EXPR_SLICE && expression_origin(check, index).invalid)
+    if(expression->kind == ZIR_EXPR_SLICE &&
+       strcmp(check->current->fn->exprs[expression->left].type, "string") != 0 &&
+       expression_origin(check, index).invalid)
         reject(check, expression->span, "slice range requires live owned backing storage");
     check_ranges(check, expression->left);
     check_ranges(check, expression->right);
@@ -173,14 +176,10 @@ check_function(BorrowCheck *check, BorrowFunction *function)
     check->current = function;
     check->binding_count = 0;
     check->depth = 1;
-    check->bindings = calloc((size_t)fn->stmt_count + fn->capture_count + 65, sizeof(*check->bindings));
+    check->bindings = calloc((size_t)fn->stmt_count + 65, sizeof(*check->bindings));
     if(check->bindings == NULL) {
         reject(check, fn->span, "out of memory checking slice lifetimes");
         return;
-    }
-    for(int i = 0; i < fn->capture_count; i++) {
-        const ZirCapture *capture = &fn->captures[i];
-        add_binding(check, capture->name, capture->type, (Origin){0}, -1, 0, 1);
     }
     char parameters[64][ZIR_TEXT_MAX];
     int count = *skip_ws(fn->args) ?

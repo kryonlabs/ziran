@@ -43,7 +43,7 @@ for input in source saved; do
     "$host_test" "$work/$input.zib"
     for target in c cpp go; do
         output=$work/$input-$target
-        "$ziran" build --target="$target" --strict --root "$root" \
+        "$ziran" build --target="$target" --root "$root" \
             -o "$output" "$source"
         if test "$target" = c; then
             cat > "$output/main.c" <<'C'
@@ -113,16 +113,18 @@ Fill :: (values: []u8) -> s32 #foreign host_api;
 ZI
 for target in c cpp; do
     output=$work/foreign-only-$target
-    "$ziran" build --target="$target" --strict --root "$work" \
+    "$ziran" build --target="$target" --root "$work" \
         -o "$output" "$work/foreign_only.zi"
     if test "$target" = c; then
+        printf '#include "foreign_only.h"\n' > "$work/foreign_only_smoke.c"
         "${CC:-cc}" -std=c11 -I"$output" \
             -I"$(dirname "$ziran")/../../include" -c \
-            "$output/foreign_only.c" -o "$output/foreign_only.o"
+            "$work/foreign_only_smoke.c" -o "$output/foreign_only.o"
     else
+        printf '#include "foreign_only.hpp"\n' > "$work/foreign_only_smoke.cpp"
         "${CXX:-c++}" -std=c++17 -I"$output" \
             -I"$(dirname "$ziran")/../../include" -c \
-            "$output/foreign_only.cpp" -o "$output/foreign_only.o"
+            "$work/foreign_only_smoke.cpp" -o "$output/foreign_only.o"
     fi
 done
 
@@ -131,7 +133,7 @@ host_api :: #system_library "host_api";
 Borrow :: () -> []u8 #foreign host_api;
 #program_export
 Answer :: () -> s32 {
-    return Borrow().length
+    return Borrow().count
 }
 ZI
 if "$ziran" check --root "$work" "$work/bad_return.zi" \

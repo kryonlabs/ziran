@@ -128,6 +128,19 @@ if "$ziran" check --root "$work" "$work/old_private.zi" \
 fi
 grep -Fq '#private is not Jai syntax' "$work/old_private.err"
 
+cat > "$work/old_ternary.zi" <<'EOF'
+Answer :: () -> s32 {
+    return true ? 1 : 2
+}
+EOF
+if "$ziran" check --root "$work" "$work/old_ternary.zi" \
+    2> "$work/old_ternary.err"; then
+    echo 'C-style conditional expression was accepted' >&2
+    exit 1
+fi
+grep -Fq 'C-style conditional is not valid Jai syntax' \
+    "$work/old_ternary.err"
+
 cat > "$work/bad_pointer_field.zi" <<'EOF'
 Record :: struct {
     value: s32*
@@ -190,8 +203,8 @@ python3 - "$work/pointer-ir/pointer_global.zir" \
 from pathlib import Path
 import sys
 saved = Path(sys.argv[1]).read_bytes()
-assert saved.count(b"*i32") == 1
-Path(sys.argv[2]).write_bytes(saved.replace(b"*i32", b"i32*"))
+assert saved.count(b"*s32") == 1
+Path(sys.argv[2]).write_bytes(saved.replace(b"*s32", b"s32*"))
 PY
 if "$ziran" check --root "$work" "$work/pointer-ir/forged.zir" \
     2> "$work/forged_pointer.err"; then
@@ -293,8 +306,8 @@ for extension in zi zir; do
     out=$work/scope-c-$extension
     cpp_out=$work/scope-cpp-$extension
     # The fixture paths contain no spaces; split this two-file list deliberately.
-    "$ziran" build --target=c --strict --root "$work" -o "$out" $inputs
-    "$ziran" build --target=cpp --strict --root "$work" -o "$cpp_out" $inputs
+    "$ziran" build --target=c --root "$work" -o "$out" $inputs
+    "$ziran" build --target=cpp --root "$work" -o "$cpp_out" $inputs
     if grep -Fq 'Hidden(' "$out/scoped.h" ||
        grep -Fq 'increment' "$out/scoped.h"; then
         echo 'private scope leaked into generated header' >&2
@@ -348,8 +361,8 @@ for input in "$work/foreign_c.zi" "$work/foreign-ir/foreign_c.zir"; do
     kind=$(basename "$input")
     c_out=$work/foreign-c-$kind
     cpp_out=$work/foreign-cpp-$kind
-    "$ziran" build --target=c --strict --root "$work" -o "$c_out" "$input"
-    "$ziran" build --target=cpp --strict --root "$work" -o "$cpp_out" "$input"
+    "$ziran" build --target=c --root "$work" -o "$c_out" "$input"
+    "$ziran" build --target=cpp --root "$work" -o "$cpp_out" "$input"
     cat > "$c_out/main.c" <<'EOF'
 #include "foreign_c.h"
 int main(void) { return Answer() == 42 ? 0 : 1; }
@@ -371,11 +384,11 @@ for input in "$source" "$work/ir/language_contract.zir"; do
     c_out=$work/c-$kind
     cpp_out=$work/cpp-$kind
     go_out=$work/go-$kind
-    "$ziran" build --target=c --strict --root "$repo/tests/spec" \
+    "$ziran" build --target=c --root "$repo/tests/spec" \
         -o "$c_out" "$input"
-    "$ziran" build --target=cpp --strict --root "$repo/tests/spec" \
+    "$ziran" build --target=cpp --root "$repo/tests/spec" \
         -o "$cpp_out" "$input"
-    "$ziran" build --target=go --strict --pkg main \
+    "$ziran" build --target=go --pkg main \
         --root "$repo/tests/spec" -o "$go_out" "$input"
 
     cat > "$c_out/main.c" <<'EOF'

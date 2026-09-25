@@ -17,8 +17,22 @@
 #define ZIR_GO_TEXT_MAX 8192
 #define ZIR_GO_NAME_MAX 256
 #define ZIR_GO_EXTERN_PARAM_MAX 16
+
+static const char *
+enum_storage_type(const char *backing)
+{
+    static const struct { const char *name, *go_type; } types[] = {
+        {"s8", "int8"}, {"u8", "uint8"},
+        {"s16", "int16"}, {"u16", "uint16"},
+        {"s32", "int32"}, {"u32", "uint32"},
+        {"s64", "int64"}, {"u64", "uint64"}
+    };
+    for(size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++)
+        if(strcmp(backing, types[i].name) == 0)
+            return types[i].go_type;
+    return NULL;
+}
 static const ZirModule *type_scope;
-static char state_receiver[ZIR_NAME_MAX] = "st";
 
 typedef struct {
     char source[ZIR_GO_NAME_MAX];
@@ -46,54 +60,6 @@ mkdir_parent(const char *path)
     }
 }
 
-static void
-go_string(FILE *f, const char *s)
-{
-    fputc('"', f);
-    for(const unsigned char *p = (const unsigned char *)(s != NULL ? s : "");
-        *p != '\0'; p++) {
-        if(*p == '\\' || *p == '"')
-            fprintf(f, "\\%c", *p);
-        else if(*p == '\n')
-            fputs("\\n", f);
-        else if(*p == '\r')
-            fputs("\\r", f);
-        else if(*p == '\t')
-            fputs("\\t", f);
-        else if(*p < 0x20)
-            fprintf(f, "\\x%02x", *p);
-        else
-            fputc(*p, f);
-    }
-    fputc('"', f);
-}
-
-static int
-go_keyword(const char *name)
-{
-    static const char *const words[] = {
-        "break", "default", "func", "interface", "select",
-        "case", "defer", "go", "map", "struct",
-        "chan", "else", "goto", "package", "switch",
-        "const", "fallthrough", "if", "range", "type",
-        "continue", "for", "import", "return", "var", NULL
-    };
-
-    for(int i = 0; words[i] != NULL; i++)
-        if(strcmp(name, words[i]) == 0)
-            return 1;
-    return 0;
-}
-
-static void
-go_local_ident(const char *name, char *dst, size_t dst_size)
-{
-    if(go_keyword(name))
-        snprintf(dst, dst_size, "%s_", name);
-    else
-        snprintf(dst, dst_size, "%s", name);
-}
-
 static const char *
 go_local_name_for(const char *name)
 {
@@ -104,7 +70,7 @@ go_local_name_for(const char *name)
 }
 
 static void
-go_register_local_name(const char *name)
+go_register_local_name(const ZirFunction *fn, const char *name)
 {
     char mapped[ZIR_GO_NAME_MAX];
 
@@ -113,7 +79,7 @@ go_register_local_name(const char *name)
     for(int i = 0; i < zir_go_local_count; i++)
         if(strcmp(zir_go_locals[i].source, name) == 0)
             return;
-    go_local_ident(name, mapped, sizeof(mapped));
+    TargetBindingName(fn, ZIR_GO, name, mapped, sizeof(mapped));
     if(strcmp(mapped, name) == 0 || zir_go_local_count >= 256)
         return;
     snprintf(zir_go_locals[zir_go_local_count].source,
@@ -141,30 +107,22 @@ stem_from_source(const char *src, char *dst, size_t dst_size)
     dst[n] = '\0';
 }
 
-static int is_module_constant(const ZirModule *module, const char *name);
+static const ZirModule *module_constant_owner(const ZirModule *module,
+                                               const char *name);
 
-/* C-ish type -> Go type. Unknown shapes must be diagnosed by the caller. */
+/* Checked Ziran and generated Go scalar type -> Go type. */
 static int
 go_type(const char *type, char *dst, size_t dst_size)
 {
     struct {
-        const char *c;
+        const char *source;
         const char *go;
     } map[] = {
-        {"int", "int32"},   {"unsigned int", "uint32"},
-        {"unsigned", "uint32"}, {"uint", "uint32"},
-        {"long", "int64"},  {"unsigned long", "uint64"},
-        {"long long", "int64"}, {"unsigned long long", "uint64"},
-        {"short", "int16"}, {"unsigned short", "uint16"},
-        {"size_t", "int64"}, {"ssize_t", "int64"},
         {"float", "float32"}, {"double", "float64"},
-        {"bool", "bool"},   {"char*", "string"}, {"const char*", "string"},
-        {"char**", "[]string"}, {"const char**", "[]string"},
-        {"string", "string"},
-        {"char", "byte"}, {"unsigned char", "byte"}, {"byte", "byte"},
+        {"bool", "bool"}, {"string", "string"},
+        {"byte", "byte"},
         {"int8", "int8"}, {"int16", "int16"}, {"int32", "int32"},
         {"int64", "int64"}, {"float32", "float32"}, {"float64", "float64"},
-        {"void*", "*byte"}, {"const void*", "*byte"},
         {"void", ""},
         {NULL, NULL}
     };
@@ -185,19 +143,9 @@ go_type(const char *type, char *dst, size_t dst_size)
         n = strlen(t);
     }
     const char *scalar = ScalarType(t);
-    if(*scalar && (!strcmp(t,scalar) || strstr(t,"_t")) && TargetType(t,ZIR_GO)) {
+    if(*scalar && TargetType(t,ZIR_GO)) {
         snprintf(dst,dst_size,"%s",TargetType(t,ZIR_GO)); return 1;
     }
-    /* 'char *' / 'char  *' mean 'char*': drop spaces adjacent to '*' */
-    for(size_t k = 0; t[k] != '\0'; k++) {
-        if(t[k] == ' ' && t[k + 1] == '*') {
-            memmove(t + k, t + k + 1, strlen(t + k));
-            k = (size_t)-1;
-        }
-    }
-    /* strip a leading 'const ' */
-    if(strncmp(t, "const ", 6) == 0)
-        memmove(t, t + 6, strlen(t + 6) + 1);
     if(t[0] == '[') {
         char *close = strchr(t, ']');
         const char *base;
@@ -205,24 +153,16 @@ go_type(const char *type, char *dst, size_t dst_size)
         if(close != NULL) {
             char bound[ZIR_GO_NAME_MAX];
             snprintf(bound, sizeof(bound), "%.*s", (int)(close - t - 1), t + 1);
-            if(type_scope != NULL && is_module_constant(type_scope, bound)) {
+            if(type_scope != NULL &&
+               module_constant_owner(type_scope, bound) != NULL) {
                 char mapped[ZIR_GO_NAME_MAX];
-                camel_ident(bound, mapped, sizeof(mapped));
+                TargetDefineName(module_constant_owner(type_scope, bound),
+                                 ZIR_GO, bound, mapped, sizeof(mapped));
                 snprintf(bound, sizeof(bound), "%s", mapped);
             }
             base = close + 1;
             while(*base == ' ' || *base == '\t')
                 base++;
-            if(strcmp(base, "char") == 0) {
-                *close = '\0';
-                snprintf(dst, dst_size, "[%s]byte", bound);
-                return 1;
-            }
-            if(strcmp(base, "char*") == 0 || strcmp(base, "string") == 0) {
-                *close = '\0';
-                snprintf(dst, dst_size, "[%s]string", bound);
-                return 1;
-            }
             {
                 char gt[ZIR_GO_NAME_MAX];
 
@@ -244,53 +184,23 @@ go_type(const char *type, char *dst, size_t dst_size)
         }
         return 0;
     }
-    for(int i = 0; map[i].c != NULL; i++) {
-        if(strcmp(t, map[i].c) == 0) {
+    for(int i = 0; map[i].source != NULL; i++) {
+        if(strcmp(t, map[i].source) == 0) {
             snprintf(dst, dst_size, "%s", map[i].go);
             return 1;
         }
-    }
-    /* trailing '*': pointer to a mapped scalar or a module typedef */
-    n = strlen(t);
-    if(n > 1 && t[n - 1] == '*') {
-        char base[ZIR_GO_NAME_MAX];
-        char gt[ZIR_GO_NAME_MAX];
-
-        snprintf(base, sizeof(base), "%.*s", (int)(n - 1), t);
-        /* trailing spaces before the '*' */
-        {
-            size_t bn = strlen(base);
-
-            while(bn > 0 && base[bn - 1] == ' ')
-                base[--bn] = '\0';
-        }
-        if(go_type(base, gt, sizeof(gt)) && strcmp(gt, "string") != 0) {
-            snprintf(dst, dst_size, "*%s", gt);
-            return 1;
-        }
-        /* Native contracts and declared module types retain their names. */
-        {
-            int identish = base[0] != '\0';
-
-            for(char *c = base; *c != '\0'; c++)
-                if(!is_ident_char((unsigned char)*c))
-                    identish = 0;
-            if(identish && FindType(type_scope, base, NULL) != NULL) {
-                snprintf(dst, dst_size, "*%s", base);
-                return 1;
-            }
-        }
-        return 0;
     }
     /* A name alone is not evidence that a type exists. */
     {
         int identish = t[0] != '\0';
 
         for(char *c = t; *c != '\0'; c++)
-            if(!is_ident_char((unsigned char)*c))
+            if(!is_ident_char((unsigned char)*c) && *c != '.')
                 identish = 0;
-        if(identish && FindType(type_scope, t, NULL) != NULL) {
-            snprintf(dst, dst_size, "%s", t);
+        const ZirType *declared = identish && type_scope != NULL ?
+            FindType(type_scope, t, NULL) : NULL;
+        if(declared != NULL) {
+            snprintf(dst, dst_size, "%s", declared->name);
             return 1;
         }
     }
@@ -304,17 +214,6 @@ require_go_type(const char *type, char *dst, size_t size, ZirSourceSpan span)
         return;
     Diagnostic(span, "zir_go.type", "unsupported or unresolved Go type: %s", type);
     exit(1);
-}
-
-static int
-state_field_index(const ZirModule *m, const char *name, size_t len)
-{
-    for(int i = 0; i < m->state_count; i++) {
-        if(strlen(m->state_fields[i].name) == len &&
-           strncmp(m->state_fields[i].name, name, len) == 0)
-            return i;
-    }
-    return -1;
 }
 
 static int
@@ -332,7 +231,6 @@ typedef struct {
     char source[ZIR_GO_NAME_MAX];
     char go[ZIR_GO_NAME_MAX * 2];
     char guard[ZIR_GO_NAME_MAX];
-    int state_count;
     const ZirModule *module;
 } ZirGoGlobalFunction;
 
@@ -354,7 +252,8 @@ go_global_function_index(const ZirModule *module, const char *name, size_t len)
     if(ResolveFunction(module, ident, &owner, &function) != 1)
         return -1;
     for(int i = 0; i < g_function_count; i++) {
-        if(g_functions[i].module == owner && strcmp(g_functions[i].source, ident) == 0)
+        if(g_functions[i].module == owner &&
+           strcmp(g_functions[i].source, function->name) == 0)
             return i;
     }
     return -1;
@@ -378,7 +277,8 @@ go_build_global_functions(const ZirProgram *const *progs, int prog_count)
                 const ZirFunction *fn = &m->functions[fi];
                 char fname[ZIR_GO_NAME_MAX];
 
-                if(fn->is_extern || g_function_count >= ZIR_GO_GLOBAL_FUNCTION_MAX)
+                if(fn->is_extern || fn->is_template ||
+                   g_function_count >= ZIR_GO_GLOBAL_FUNCTION_MAX)
                     continue;
                 camel_ident(fn->name, fname, sizeof(fname));
                 snprintf(g_functions[g_function_count].source,
@@ -387,7 +287,6 @@ go_build_global_functions(const ZirProgram *const *progs, int prog_count)
                          sizeof(g_functions[0].guard), "%s", guard);
                 snprintf(g_functions[g_function_count].go,
                          sizeof(g_functions[0].go), "%s_%s", guard, fname);
-                g_functions[g_function_count].state_count = m->state_count;
                 g_functions[g_function_count].module = m;
                 g_function_count++;
             }
@@ -421,7 +320,7 @@ typedef struct {
 } ZirGoEnumMember;
 
 typedef struct {
-    char go_type[ZIR_GO_NAME_MAX];    /* "" for anonymous '#enum' blocks */
+    char go_type[ZIR_GO_NAME_MAX];
     char prefix[ZIR_GO_NAME_MAX];     /* enum-name prefix for Go const names */
     ZirGoEnumMember members[64];
     int count;
@@ -510,8 +409,8 @@ extern_go_name(const char *target, const char *source, char *dst, size_t dst_siz
 }
 
 /* A fully-qualified Go extern target uses an import path plus function name,
- * e.g. 'github.com/waozixyz/pass.Generate'. Short targets like
- * 'smoke.QueryJobs' intentionally keep the historical host-interface bridge. */
+ * e.g. 'github.com/waozixyz/pass.Generate'. Short targets use the declared
+ * host interface. */
 static int
 extern_direct_go_target(const char *target, char *import_path,
                         size_t import_path_size, char *alias,
@@ -638,16 +537,10 @@ parse_enum(const ZirType *t)
 
     if(g_enum_count >= 32)
         return;
-    if(strcmp(t->name, "#enum") == 0) {
-        e = &g_enums[g_enum_count++];
-        memset(e, 0, sizeof(*e));
-        e->prefix[0] = '\0';
-    } else {
-        e = &g_enums[g_enum_count++];
-        memset(e, 0, sizeof(*e));
-        camel_ident(t->name, e->go_type, sizeof(e->go_type));
-        camel_ident(t->name, e->prefix, sizeof(e->prefix));
-    }
+    e = &g_enums[g_enum_count++];
+    memset(e, 0, sizeof(*e));
+    camel_ident(t->name, e->go_type, sizeof(e->go_type));
+    camel_ident(t->name, e->prefix, sizeof(e->prefix));
     while(*p != '\0') {
         char line[ZIR_GO_TEXT_MAX];
         char *name, *val;
@@ -710,34 +603,11 @@ parse_enum(const ZirType *t)
     }
 }
 
-static int
-module_uses_identifier(const ZirModule *module, const char *name)
-{
-    size_t length = strlen(name);
-    for(int function = 0; function < module->function_count; function++) {
-        const ZirFunction *fn = &module->functions[function];
-        for(int statement = -1; statement < fn->stmt_count; statement++) {
-            const char *text = statement < 0 ? fn->args : fn->stmts[statement].text;
-            const char *found = text;
-            while((found = strstr(found, name)) != NULL) {
-                if((found == text || !is_ident_char(found[-1])) &&
-                   !is_ident_char(found[length]))
-                    return 1;
-                found += length;
-            }
-        }
-    }
-    return 0;
-}
-
 /* (Re)build the per-module context: extern bridge + enum constants. Must run
  * before any expression or statement is emitted for the module. */
 static void
 go_set_module(const ZirModule *m, const char *guard)
 {
-    copy_text(state_receiver, sizeof(state_receiver), "st");
-    for(int serial = 0; module_uses_identifier(m, state_receiver); serial++)
-        snprintf(state_receiver, sizeof(state_receiver), "module_state_%d", serial);
     g_mod = m;
     snprintf(g_guard, sizeof(g_guard), "%s", guard);
     g_extern_count = 0;
@@ -950,143 +820,6 @@ record_field_at(const ZirModule *module, const char *type, int index,
     return 0;
 }
 
-/* Array variables ('name: [N] T' state or local): references used in
- * slice-typed Go fields append '[:]' so one table/list definition can
- * feed both generated C arrays and generated Go slices. */
-static char zir_go_array_names[24][ZIR_GO_NAME_MAX];
-static int zir_go_array_count;
-
-static void go_trim_ws(char *s);
-
-static void
-go_register_arrays_module(const ZirModule *m)
-{
-    int i;
-
-    for(i = 0; i < m->state_count && zir_go_array_count < 24; i++) {
-        const ZirStateField *sf = &m->state_fields[i];
-
-        if(sf->type[0] == '[') {
-            snprintf(zir_go_array_names[zir_go_array_count], ZIR_NAME_MAX, "%s",
-                     sf->name);
-            zir_go_array_count++;
-        }
-    }
-}
-
-static void
-go_register_arrays_stmt(const char *text)
-{
-    const char *t = text;
-    const char *colon;
-    const char *eq;
-
-    while(*t == ' ' || *t == '\t')
-        t++;
-    colon = strchr(t, ':');
-    eq = colon != NULL ? strchr(colon, '=') : NULL;
-    if(colon == NULL || eq == NULL || zir_go_array_count >= 24)
-        return;
-    {
-        char decl_type[ZIR_NAME_MAX];
-        size_t tl = (size_t)(eq - colon - 1);
-
-        if(tl >= sizeof(decl_type))
-            tl = sizeof(decl_type) - 1;
-        memcpy(decl_type, colon + 1, tl);
-        decl_type[tl] = '\0';
-        go_trim_ws(decl_type);
-        if(decl_type[0] != '[')
-            return;
-    }
-    {
-        size_t nl = (size_t)(colon - t);
-
-        if(nl > 0 && nl < ZIR_NAME_MAX) {
-            memcpy(zir_go_array_names[zir_go_array_count], t, nl);
-            zir_go_array_names[zir_go_array_count][nl] = '\0';
-            zir_go_array_count++;
-        }
-    }
-}
-
-static void
-go_trim_ws(char *s)
-{
-    size_t n;
-
-    while(*s == ' ' || *s == '\t')
-        memmove(s, s + 1, strlen(s));
-    n = strlen(s);
-    while(n > 0 && (s[n - 1] == ' ' || s[n - 1] == '\t' ||
-                    s[n - 1] == '\r' || s[n - 1] == '\n'))
-        s[--n] = '\0';
-}
-
-static void
-go_register_arrays_args(const char *args)
-{
-    char parts[32][ZIR_GO_TEXT_MAX];
-    int n, i;
-
-    if(args[0] == '\0')
-        return;
-    n = split_top(args, parts, 32);
-    for(i = 0; i < n && zir_go_array_count < 24; i++) {
-        char *colon = strchr(parts[i], ':');
-        char *name = parts[i];
-        size_t al;
-        char atype[ZIR_GO_NAME_MAX];
-
-        if(colon == NULL)
-            continue;
-        snprintf(atype, sizeof(atype), "%s", colon + 1);
-        go_trim_ws(atype);
-        if(atype[0] != '[')
-            continue;
-        while(*name == ' ' || *name == '\t')
-            name++;
-        al = (size_t)(colon - name);
-        while(al > 0 && (name[al - 1] == ' ' || name[al - 1] == '\t'))
-            al--;
-        if(al == 0 || al >= ZIR_GO_NAME_MAX)
-            continue;
-        memcpy(zir_go_array_names[zir_go_array_count], name, al);
-        zir_go_array_names[zir_go_array_count][al] = '\0';
-        zir_go_array_count++;
-    }
-}
-
-static int
-go_is_array_name(const char *ident, size_t len)
-{
-    int i;
-
-    for(i = 0; i < zir_go_array_count; i++)
-        if(strlen(zir_go_array_names[i]) == len &&
-           strncmp(zir_go_array_names[i], ident, len) == 0)
-            return 1;
-    return 0;
-}
-
-static int
-go_array_element_type(const char *gt, char *elem, size_t elem_size)
-{
-    const char *close;
-    const char *base;
-
-    if(gt[0] != '[')
-        return 0;
-    close = strchr(gt, ']');
-    if(close == NULL)
-        return 0;
-    base = close + 1;
-    while(*base == ' ' || *base == '\t')
-        base++;
-    snprintf(elem, elem_size, "%s", base);
-    return elem[0] != '\0';
-}
-
 static void
 go_collapse_duplicate_slices(char *s)
 {
@@ -1094,69 +827,6 @@ go_collapse_duplicate_slices(char *s)
 
     while((p = strstr(s, "[:][:]")) != NULL)
         memmove(p + 3, p + 6, strlen(p + 6) + 1);
-}
-
-static int
-go_translate_array_literal(const ZirModule *m, const char *gt,
-                            const char *init, char *dst, size_t dst_size)
-{
-    char elem[ZIR_GO_NAME_MAX];
-    char raw[ZIR_GO_TEXT_MAX];
-    char parts[64][ZIR_GO_TEXT_MAX];
-    const char *q;
-    size_t rn = 0;
-    size_t dn = 0;
-    int depth = 1;
-    int count;
-
-    if(!go_array_element_type(gt, elem, sizeof(elem)))
-        return 0;
-    init = skip_ws(init);
-    if(*init != '{')
-        return 0;
-    q = init + 1;
-    while(*q != '\0' && depth > 0 && rn + 1 < sizeof(raw)) {
-        if(*q == '"') {
-            raw[rn++] = *q++;
-            while(*q != '\0' && *q != '"' && rn + 1 < sizeof(raw))
-                raw[rn++] = *q++;
-            if(*q == '"')
-                raw[rn++] = *q++;
-            continue;
-        }
-        if(*q == '{')
-            depth++;
-        else if(*q == '}') {
-            depth--;
-            if(depth == 0)
-                break;
-        }
-        raw[rn++] = *q++;
-    }
-    if(depth != 0)
-        return 0;
-    raw[rn] = '\0';
-    count = split_top(raw, parts, 64);
-    dn += (size_t)snprintf(dst + dn, dst_size - dn, "%s{", gt);
-    for(int i = 0; i < count; i++) {
-        const char *part = skip_ws(parts[i]);
-        char value[ZIR_GO_TEXT_MAX];
-
-        if(i > 0)
-            dn += (size_t)snprintf(dst + dn, dst_size - dn, ",");
-        if(*part == '{' && elem[0] != '[') {
-            char typed[ZIR_GO_TEXT_MAX];
-
-            snprintf(typed, sizeof(typed), "(%s)%s", elem, part);
-            tx_expr(m, typed, value, sizeof(value));
-        } else {
-            tx_expr(m, part, value, sizeof(value));
-        }
-        go_collapse_duplicate_slices(value);
-        dn += (size_t)snprintf(dst + dn, dst_size - dn, "%s", value);
-    }
-    snprintf(dst + dn, dst_size - dn, "}");
-    return 1;
 }
 
 static const char *
@@ -1283,10 +953,6 @@ tx_compound(const ZirModule *m, const char *p, char *dst, size_t *dn)
     {
         char gt[ZIR_GO_NAME_MAX];
 
-        if(strcmp(type, "char*") == 0 || strcmp(type, "const char*") == 0) {
-            /* string cast: drop it, translate the operand below */
-            return p;
-        }
         if(go_type(type, gt, sizeof(gt)) && gt[0] != '\0') {
             if(*dn + strlen(gt) + 1 < ZIR_GO_TEXT_MAX) {
                 memcpy(dst + *dn, gt, strlen(gt));
@@ -1299,8 +965,8 @@ tx_compound(const ZirModule *m, const char *p, char *dst, size_t *dn)
     }
 }
 
-static int
-is_module_constant(const ZirModule *module, const char *name)
+static const ZirModule *
+module_constant_owner(const ZirModule *module, const char *name)
 {
     for(int pass = 0; pass < 2; pass++) {
         int count = pass == 0 ? 1 : module->import_count;
@@ -1311,11 +977,29 @@ is_module_constant(const ZirModule *module, const char *name)
             for(int j = 0; j < scope->define_count; j++) {
                 if((pass == 0 || scope->defines[j].is_public) &&
                    !strcmp(scope->defines[j].name, name))
-                    return 1;
+                    return scope;
             }
         }
     }
-    return 0;
+    return NULL;
+}
+
+static const ZirModule *
+module_global_owner(const ZirModule *module, const char *name)
+{
+    for(int pass = 0; pass < 2; pass++) {
+        int count = pass == 0 ? 1 : module->import_count;
+        for(int i = 0; i < count; i++) {
+            const ZirModule *scope = pass == 0 ? module :
+                                     module->imports[i].resolved_module;
+            if(scope == NULL) continue;
+            for(int j = 0; j < scope->global_count; j++)
+                if((pass == 0 || !scope->globals[j].is_static) &&
+                   strcmp(scope->globals[j].name, name) == 0)
+                    return scope;
+        }
+    }
+    return NULL;
 }
 
 static void
@@ -1488,7 +1172,7 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
             const char *q = addr ? p + 1 : p;
             char ident[ZIR_GO_NAME_MAX];
             size_t il = 0;
-            int sfi, fni;
+            int fni;
 
             while(is_ident_char((unsigned char)*q) && il + 1 < sizeof(ident))
                 ident[il++] = *q++;
@@ -1497,20 +1181,47 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                 dst[dn++] = *p++;
                 continue;
             }
-            sfi = state_field_index(m, ident, il);
-            if(sfi >= 0) {
-                char camel_name[ZIR_GO_NAME_MAX];
-                camel_ident(m->state_fields[sfi].name, camel_name, sizeof(camel_name));
-                size_t needed = strlen(state_receiver) + strlen(camel_name) + 1 + (addr != 0);
-                if(needed >= dst_size - dn)
-                    break;
-                dn += (size_t)snprintf(dst + dn, dst_size - dn, "%s%s.%s",
-                                       addr ? "&" : "", state_receiver, camel_name);
-                p = q;
-                continue;
+            if(!addr && *q == '.' &&
+               (isalpha((unsigned char)q[1]) || q[1] == '_') &&
+               go_local_name_for(ident) == NULL) {
+                const ZirType *enumeration = FindType(m, ident, NULL);
+                const char *member = q + 1;
+                const char *end = member;
+                while(is_ident_char((unsigned char)*end)) end++;
+                size_t length = (size_t)(end - member);
+                if(enumeration != NULL && enumeration->is_enum &&
+                   length < ZIR_GO_NAME_MAX) {
+                    char source_name[ZIR_GO_NAME_MAX];
+                    char prefix[ZIR_GO_NAME_MAX];
+                    char mapped[ZIR_GO_NAME_MAX * 2];
+                    int64_t value;
+                    memcpy(source_name, member, length);
+                    source_name[length] = '\0';
+                    if(EnumMemberValue(enumeration, source_name, &value)) {
+                        camel_ident(enumeration->name, prefix,
+                                    sizeof(prefix));
+                        if(prefix[0] &&
+                           strncmp(source_name, prefix,
+                                   strlen(prefix)) == 0)
+                            camel_ident(source_name, mapped, sizeof(mapped));
+                        else
+                            snprintf(mapped, sizeof(mapped), "%s%s",
+                                     prefix, source_name);
+                        length = strlen(mapped);
+                        if(dn + length >= dst_size) {
+                            Diagnostic(enumeration->span, "zir_go.enum",
+                                       "enum member target name exceeds output limit");
+                            exit(1);
+                        }
+                        memcpy(dst + dn, mapped, length);
+                        dn += length;
+                        p = end;
+                        continue;
+                    }
+                }
             }
             /* '#foreign' bridge: direct Go import for fully-qualified targets,
-             * otherwise the historical host-interface method. The check
+             * otherwise the declared host-interface method. The check
              * precedes the module-function path because extern prototypes
              * also sit in the function table (bodyless). */
             {
@@ -1587,6 +1298,27 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                     continue;
                 }
             }
+            if(*q == '.') {
+                const char *member = q + 1;
+                const char *end = member;
+                while(is_ident_char((unsigned char)*end))
+                    end++;
+                if(end > member && *skip_ws(end) == '(' &&
+                   (size_t)(end - p) < ZIR_NAME_MAX) {
+                    int gfi = go_global_function_index(m, p,
+                                                       (size_t)(end - p));
+                    if(gfi >= 0) {
+                        size_t length = strlen(g_functions[gfi].go);
+                        if(dn + length + 2 < dst_size) {
+                            memcpy(dst + dn, g_functions[gfi].go, length);
+                            dn += length;
+                            dst[dn++] = '(';
+                        }
+                        p = skip_ws(end) + 1;
+                        continue;
+                    }
+                }
+            }
             fni = module_fn_index(m, ident, il);
             if(fni >= 0 && *skip_ws(q) == '(') {
                 char fname[ZIR_GO_NAME_MAX * 2];
@@ -1605,14 +1337,6 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                     dst[dn++] = '(';
                 }
                 p = skip_ws(q) + 1;
-                /* empty arg list? */
-                if(m->state_count > 0) {
-                    const char *separator = *skip_ws(p) == ')' ? "" : ", ";
-                    if(strlen(state_receiver) + strlen(separator) >= dst_size - dn)
-                        break;
-                    dn += (size_t)snprintf(dst + dn, dst_size - dn, "%s%s",
-                                           state_receiver, separator);
-                }
                 continue;
             }
             if(*skip_ws(q) == '(') {
@@ -1627,19 +1351,6 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                         dst[dn++] = '(';
                     }
                     p = skip_ws(q) + 1;
-                    if(*skip_ws(p) == ')') {
-                        if(g_functions[gfi].state_count > 0 &&
-                           dn + strlen(g_functions[gfi].guard) + 16 < dst_size) {
-                            dn += (size_t)snprintf(
-                                dst + dn, dst_size - dn, "%sStateValue",
-                                g_functions[gfi].guard);
-                        }
-                    } else if(g_functions[gfi].state_count > 0 &&
-                              dn + strlen(g_functions[gfi].guard) + 18 < dst_size) {
-                        dn += (size_t)snprintf(
-                            dst + dn, dst_size - dn, "%sStateValue, ",
-                            g_functions[gfi].guard);
-                    }
                     continue;
                 }
             }
@@ -1651,19 +1362,13 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                     char prefix[ZIR_GO_NAME_MAX] = "";
                     char member[ZIR_GO_NAME_MAX];
                     copy_text(member, sizeof(member), ident);
-                    if(strcmp(type->name, "#enum") != 0) {
-                        camel_ident(type->name, prefix, sizeof(prefix));
-                        /* The definition side (parse_enum) keeps members that
-                         * already carry the enum prefix flat; mirror that
-                         * here so references match the emitted constants. */
-                        if(!(prefix[0] != '\0' &&
-                             strncmp(member, prefix, strlen(prefix)) == 0))
-                            camel_ident(type->name, prefix, sizeof(prefix));
-                        else
-                            prefix[0] = '\0';
-                    } else {
-                        camel_ident(ident, member, sizeof(member));
-                    }
+                    camel_ident(type->name, prefix, sizeof(prefix));
+                    /* The definition side (parse_enum) keeps members that
+                     * already carry the enum prefix flat; mirror that
+                     * here so references match the emitted constants. */
+                    if(prefix[0] != '\0' &&
+                       strncmp(member, prefix, strlen(prefix)) == 0)
+                        prefix[0] = '\0';
                     dn += (size_t)snprintf(dst + dn, dst_size - dn, "%s%s", prefix, member);
                     p = q;
                     continue;
@@ -1681,35 +1386,6 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                     continue;
                 }
             }
-            if(go_is_array_name(ident, il)) {
-                if(q[0] == '[' && q[1] == ':' && q[2] == ']') {
-                    if(dn + il + 1 < dst_size) {
-                        memcpy(dst + dn, ident, il);
-                        dn += il;
-                    }
-                    p = q;
-                    continue;
-                }
-                if(addr) {
-                    /* &arr[i]: keep the address, the index suffix follows */
-                    if(dn + il + 2 < dst_size) {
-                        dst[dn++] = '&';
-                        memcpy(dst + dn, ident, il);
-                        dn += il;
-                    }
-                    p = q;
-                    continue;
-                }
-                if(dn + il + 4 < dst_size) {
-                    memcpy(dst + dn, ident, il);
-                    dn += il;
-                    dst[dn++] = '[';
-                    dst[dn++] = ':';
-                    dst[dn++] = ']';
-                }
-                p = q;
-                continue;
-            }
             /* plain identifier: verbatim */
             if(dn + il + 1 < dst_size) {
                 const char *local = go_local_name_for(ident);
@@ -1722,9 +1398,19 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                         memcpy(dst + dn, local, ll);
                         dn += ll;
                     }
-                } else if(is_module_constant(m, ident)) {
+                } else if(module_global_owner(m, ident) != NULL) {
                     char mapped[ZIR_GO_NAME_MAX];
-                    camel_ident(ident, mapped, sizeof(mapped));
+                    TargetGlobalName(module_global_owner(m, ident), ZIR_GO,
+                                     ident, mapped, sizeof(mapped));
+                    size_t length = strlen(mapped);
+                    if(dn + length + 1 < dst_size) {
+                        memcpy(dst + dn, mapped, length);
+                        dn += length;
+                    }
+                } else if(module_constant_owner(m, ident) != NULL) {
+                    char mapped[ZIR_GO_NAME_MAX];
+                    TargetDefineName(module_constant_owner(m, ident), ZIR_GO,
+                                     ident, mapped, sizeof(mapped));
                     size_t length = strlen(mapped);
                     if(dn + length + 1 < dst_size) {
                         memcpy(dst + dn, mapped, length);
@@ -1755,158 +1441,14 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
             p = q;
             continue;
         }
-        dst[dn++] = *p++;
+        dst[dn++] = *p == '~' ? '^' : *p;
+        p++;
     }
     dst[dn] = '\0';
     (void)out;
 }
 
 /* -------------------------------------------------------- module lowering */
-
-static void
-emit_indent(FILE *f, int n)
-{
-    for(int i = 0; i < n; i++)
-        fputc('\t', f);
-}
-
-/* Rewrite a C-style three-clause for header into Go:
- *   for int i = 0; i < n; i++   ->  for i := int32(0); i < n; i++
- * The header arrives raw (source names, semicolons intact, no 'for', no '{');
- * each clause is translated separately so tx_expr never sees the ';'. */
-static void
-lower_for_header(const ZirModule *m, char *head, size_t head_size)
-{
-    char initraw[ZIR_GO_TEXT_MAX], condraw[ZIR_GO_TEXT_MAX], stepraw[ZIR_GO_TEXT_MAX];
-    char cond[ZIR_GO_TEXT_MAX], step[ZIR_GO_TEXT_MAX], out[ZIR_GO_TEXT_MAX];
-    size_t seps[2];
-    int nsep = 0;
-    int depth = 0;
-
-    for(size_t i = 0; head[i] != '\0' && nsep < 2; i++) {
-        char ch = head[i];
-
-        if(ch == '(' || ch == '[' || ch == '{')
-            depth++;
-        else if(ch == ')' || ch == ']' || ch == '}')
-            depth--;
-        else if(ch == ';' && depth == 0)
-            seps[nsep++] = i;
-    }
-    if(nsep < 2) {
-        /* Go-style header (cond-only or infinite): translate verbatim */
-        if(head[0] != '\0') {
-            char tmp[ZIR_GO_TEXT_MAX];
-
-            tx_expr(m, head, tmp, sizeof(tmp));
-            snprintf(head, head_size, "%s", tmp);
-        }
-        return;
-    }
-    {
-        size_t len = strlen(head);
-
-        snprintf(initraw, sizeof(initraw), "%.*s", (int)seps[0], head);
-        snprintf(condraw, sizeof(condraw), "%.*s", (int)(seps[1] - seps[0] - 1),
-                 head + seps[0] + 1);
-        snprintf(stepraw, sizeof(stepraw), "%.*s",
-                 (int)(len - seps[1] - 1), head + seps[1] + 1);
-    }
-    {
-        char *c = condraw, *s2 = stepraw;
-
-        while(*c == ' ' || *c == '\t')
-            c++;
-        snprintf(condraw, sizeof(condraw), "%s", c);
-        while(*s2 == ' ' || *s2 == '\t')
-            s2++;
-        snprintf(stepraw, sizeof(stepraw), "%s", s2);
-    }
-    tx_expr(m, condraw, cond, sizeof(cond));
-    tx_expr(m, stepraw, step, sizeof(step));
-    /* init: 'T name = expr' -> 'name := GoT(expr)'; 'name = expr' stays. */
-    {
-        char trimmed[ZIR_GO_TEXT_MAX];
-        char *src2 = trimmed;
-        char *eq;
-
-        snprintf(trimmed, sizeof(trimmed), "%s", initraw);
-        while(*src2 == ' ' || *src2 == '\t')
-            src2++;
-        eq = strchr(src2, '=');
-        if(eq != NULL && eq > src2 && eq[-1] != '=' && eq[-1] != '!' &&
-           eq[-1] != '<' && eq[-1] != '>') {
-            char *name_end = eq;
-            char *name_start;
-
-            while(name_end > src2 &&
-                  (name_end[-1] == ' ' || name_end[-1] == '\t'))
-                name_end--;
-            name_start = name_end;
-            while(name_start > src2 && is_ident_char((unsigned char)name_start[-1]))
-                name_start--;
-            if(name_start < name_end) {
-                char before[ZIR_GO_NAME_MAX];
-                size_t bl = (size_t)(name_start - src2);
-                char name[ZIR_GO_NAME_MAX];
-                size_t nl = (size_t)(name_end - name_start);
-                char *valraw = eq + 1;
-                char val[ZIR_GO_TEXT_MAX];
-
-                while(*valraw == ' ' || *valraw == '\t')
-                    valraw++;
-                if(bl >= sizeof(before))
-                    bl = sizeof(before) - 1;
-                memcpy(before, src2, bl);
-                before[bl] = '\0';
-                if(nl >= sizeof(name))
-                    nl = sizeof(name) - 1;
-                memcpy(name, name_start, nl);
-                name[nl] = '\0';
-                tx_expr(m, valraw, val, sizeof(val));
-                /* one C type identifier before the name? */
-                {
-                    char ctype[ZIR_GO_NAME_MAX];
-                    size_t cn = strlen(before);
-                    int wordstart = -1;
-                    int words = 0;
-
-                    while(cn > 0 && (before[cn - 1] == ' ' ||
-                                     before[cn - 1] == '\t'))
-                        cn--;
-                    for(size_t k = 0; k < cn; k++) {
-                        if(is_ident_char((unsigned char)before[k])) {
-                            if(wordstart < 0)
-                                wordstart = (int)k;
-                        } else if(wordstart >= 0) {
-                            words++;
-                            wordstart = -1;
-                        }
-                    }
-                    if(wordstart >= 0)
-                        words++;
-                    if(words == 1 && wordstart == 0) {
-                        char gt[ZIR_GO_NAME_MAX];
-
-                        snprintf(ctype, sizeof(ctype), "%.*s", (int)cn,
-                                 before);
-                        if(go_type(ctype, gt, sizeof(gt)) && gt[0] != '\0')
-                            snprintf(out, sizeof(out), "%s := %s(%s)", name,
-                                     gt, val);
-                        else
-                            snprintf(out, sizeof(out), "%s := %s", name, val);
-                        goto init_done;
-                    }
-                }
-                snprintf(out, sizeof(out), "%s = %s", name, val);
-                goto init_done;
-            }
-        }
-        snprintf(out, sizeof(out), "%s", initraw);
-    }
-init_done:
-    snprintf(head, head_size, "%s; %s; %s", out, cond, step);
-}
 
 static void
 resolve_body_symbol(void *context, const char *text, char *out, size_t size)
@@ -1918,7 +1460,7 @@ resolve_body_symbol(void *context, const char *text, char *out, size_t size)
         return;
     for(int i = 0; i < module->global_count; i++) {
         if(!strcmp(text, module->globals[i].name)) {
-            camel_ident(text, out, size);
+            TargetGlobalName(module, ZIR_GO, text, out, size);
             return;
         }
     }
@@ -1931,13 +1473,11 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
 {
     char fname[ZIR_GO_NAME_MAX * 2];
     char ret[ZIR_GO_NAME_MAX];
-    int indent = 1;
-    int saved_array_count = zir_go_array_count;
     int saved_local_count = zir_go_local_count;
 
     zir_go_local_count = 0;
     camel_ident(fn->name, fname, sizeof(fname));
-    /* signature: (st *State, <converted args>) */
+    /* signature: converted arguments */
     {
         char parts[32][ZIR_GO_TEXT_MAX];
         int n, i;
@@ -1945,32 +1485,31 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
 
         fputs("func ", f);
         fprintf(f, "%s_%s(", guard, fname);
-        if(m->state_count > 0) {
-            fprintf(f, "%s *%sState", state_receiver, guard);
-            emitted = 1;
-        }
         if(fn->args[0] != '\0') {
             n = split_top(fn->args, parts, 32);
             for(i = 0; i < n; i++) {
                 char *colon = strchr(parts[i], ':');
                 char aname[ZIR_GO_NAME_MAX], atype[ZIR_GO_NAME_MAX];
                 char gt[ZIR_GO_NAME_MAX];
+                const char *name_start;
                 size_t al;
 
                 if(colon == NULL) {
                     Diagnostic(fn->span, "zir_go.parameter", "parameters require name: type: %s", parts[i]);
                     exit(1);
                 }
-                al = (size_t)(colon - parts[i]);
-                while(al > 0 && parts[i][al - 1] == ' ')
+                name_start = skip_ws(parts[i]);
+                al = (size_t)(colon - name_start);
+                while(al > 0 && isspace((unsigned char)name_start[al - 1]))
                     al--;
-                memcpy(aname, parts[i], al);
+                memcpy(aname, name_start, al);
                 aname[al] = '\0';
                 snprintf(atype, sizeof(atype), "%s", colon + 1);
-                go_register_local_name(aname);
+                go_register_local_name(fn, aname);
                 {
                     char mapped[ZIR_GO_NAME_MAX];
-                    go_local_ident(aname, mapped, sizeof(mapped));
+                    TargetBindingName(fn, ZIR_GO, aname, mapped,
+                                      sizeof(mapped));
                     snprintf(aname, sizeof(aname), "%s", mapped);
                 }
                 require_go_type(atype, gt, sizeof(gt), fn->span);
@@ -1984,336 +1523,13 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
             fprintf(f, " %s", ret);
         fprintf(f, " {\n");
     }
-    if(EmitBody(f,m,fn,ZIR_GO,resolve_body_symbol,(void *)m,NULL)) {
-        fprintf(f,"}\n\n");
-        zir_go_array_count=saved_array_count;
-        zir_go_local_count=saved_local_count;
-        return;
-    }
-    go_register_arrays_args(fn->args);
-    for(int j = 0; j < fn->stmt_count; j++) {
-        const ZirStmt *st = &fn->stmts[j];
-        char raw[ZIR_GO_TEXT_MAX];
-        char rw[ZIR_GO_TEXT_MAX];
-
-        /* Strip the block-open brace BEFORE translating: tx_expr treats a
-         * trailing '{' as a braced group and would invent a matching '}',
-         * and it drops the ';' separators C-style for headers need. */
-        snprintf(raw, sizeof(raw), "%s", st->text);
-        if(st->kind == ZIR_STMT_IF || st->kind == ZIR_STMT_WHILE ||
-           st->kind == ZIR_STMT_FOR || st->kind == ZIR_STMT_SWITCH)
-            strip_block_brace(raw);
-        tx_expr(m, raw, rw, sizeof(rw));
-        switch(st->kind) {
-        case ZIR_STMT_BLOCK_OPEN:
-            emit_indent(f, indent++);
-            fprintf(f, "{\n");
-            if(indent < 1)
-                indent = 1;
-            break;
-        case ZIR_STMT_BLOCK_CLOSE:
-            /* '} else {' must share one line in Go: when the next statement
-             * is an else/else-if line, let it emit the merged close. */
-            if(j + 1 < fn->stmt_count &&
-               fn->stmts[j + 1].kind == ZIR_STMT_IF) {
-                char peek[ZIR_GO_TEXT_MAX];
-
-                snprintf(peek, sizeof(peek), "%s", fn->stmts[j + 1].text);
-                strip_block_brace(peek);
-                if(strncmp(peek, "else", 4) == 0 &&
-                   (peek[4] == '\0' || peek[4] == ' '))
-                    break;
-            }
-            if(--indent < 1)
-                indent = 1;
-            emit_indent(f, indent);
-            fprintf(f, "}\n");
-            break;
-        case ZIR_STMT_IF: {
-            char cond[ZIR_GO_TEXT_MAX];
-            int chained = 0;
-
-            snprintf(cond, sizeof(cond), "%s", rw);
-            strip_block_brace(cond);
-            /* 'guard cond' lowers to a plain if: the body is the exit path
-             * and must return by itself (the C backend fires defers and returns; on the
-             * Go path defer runs at function exit anyway). */
-            if(strncmp(cond, "guard ", 6) == 0)
-                memmove(cond, cond + 6, strlen(cond + 6) + 1);
-            if(strncmp(cond, "else", 4) == 0 &&
-               (cond[4] == '\0' || cond[4] == ' '))
-                chained = 1;
-            emit_indent(f, indent);
-            if(strncmp(cond, "else if ", 8) == 0)
-                fprintf(f, "} else if %s {\n", cond + 8);
-            else if(chained)
-                fprintf(f, "} else {\n");
-            else if(strncmp(cond, "if ", 3) == 0)
-                fprintf(f, "if %s {\n", cond + 3);
-            else
-                fprintf(f, "if %s {\n", cond);
-            /* an else branch reuses the level its BLOCK_CLOSE skipped */
-            if(!chained)
-                indent++;
-            break;
-        }
-        case ZIR_STMT_WHILE: {
-            char cond[ZIR_GO_TEXT_MAX];
-
-            snprintf(cond, sizeof(cond), "%s", rw);
-            strip_block_brace(cond);
-            if(strncmp(cond, "while ", 6) == 0)
-                memmove(cond, cond + 6, strlen(cond + 6) + 1);
-            emit_indent(f, indent);
-            fprintf(f, "for %s {\n", cond);
-            indent++;
-            break;
-        }
-        case ZIR_STMT_FOR: {
-            char head[ZIR_GO_TEXT_MAX];
-
-            snprintf(head, sizeof(head), "%s", raw);
-            if(strncmp(head, "for ", 4) == 0)
-                memmove(head, head + 4, strlen(head + 4) + 1);
-            lower_for_header(m, head, sizeof(head));
-            emit_indent(f, indent);
-            if(head[0] != '\0')
-                fprintf(f, "for %s {\n", head);
-            else
-                fprintf(f, "for {\n");
-            indent++;
-            break;
-        }
-        case ZIR_STMT_SWITCH: {
-            char head[ZIR_GO_TEXT_MAX];
-
-            snprintf(head, sizeof(head), "%s", rw);
-            strip_block_brace(head);
-            emit_indent(f, indent);
-            if(strncmp(head, "switch", 6) == 0 &&
-                (head[6] == '\0' || head[6] == ' '))
-                fprintf(f, "%s {\n", head);
-            else
-                fprintf(f, "switch %s {\n", head);
-            indent++;
-            break;
-        }
-        case ZIR_STMT_CASE: {
-            char head[ZIR_GO_TEXT_MAX];
-            int had_brace = 0;
-            size_t hl;
-
-            snprintf(head, sizeof(head), "%s", st->text);
-            hl = strlen(head);
-            while(hl > 0 && (head[hl - 1] == ' ' || head[hl - 1] == '\t' ||
-                             head[hl - 1] == '\r'))
-                head[--hl] = '\0';
-            if(hl > 0 && head[hl - 1] == '{') {
-                had_brace = 1;
-                head[--hl] = '\0';
-                while(hl > 0 && (head[hl - 1] == ' ' || head[hl - 1] == '\t'))
-                    head[--hl] = '\0';
-            }
-            /* ensure the trailing ':' survived expression translation */
-            if(hl > 0 && head[hl - 1] != ':') {
-                /* a same-line body ('case 1: foo()') keeps the statement;
-                 * split it so the label stands alone */
-                char *colon;
-
-                {
-                    char tmp[ZIR_GO_TEXT_MAX];
-
-                    tx_expr(m, head, tmp, sizeof(tmp));
-                    snprintf(head, sizeof(head), "%s", tmp);
-                }
-                colon = strchr(head, ':');
-                if(colon != NULL && colon[1] != '\0') {
-                    char rest[ZIR_GO_TEXT_MAX];
-
-                    snprintf(rest, sizeof(rest), "%s", colon + 1);
-                    colon[1] = '\0';
-                    emit_indent(f, indent > 1 ? indent - 1 : 1);
-                    fprintf(f, "%s\n", head);
-                    emit_indent(f, indent);
-                    fprintf(f, "%s\n", rest);
-                    if(had_brace) {
-                        emit_indent(f, indent);
-                        fprintf(f, "{\n");
-                        indent++;
-                    }
-                    break;
-                }
-                snprintf(head + hl, sizeof(head) - hl, ":");
-            } else {
-                char tmp[ZIR_GO_TEXT_MAX];
-
-                tx_expr(m, head, tmp, sizeof(tmp));
-                snprintf(head, sizeof(head), "%s", tmp);
-            }
-            emit_indent(f, indent > 1 ? indent - 1 : 1);
-            fprintf(f, "%s\n", head);
-            if(had_brace) {
-                emit_indent(f, indent);
-                fprintf(f, "{\n");
-                indent++;
-            }
-            break;
-        }
-        case ZIR_STMT_DECL: {
-            char *colon = strchr(rw, ':');
-            char *assign;
-
-            go_register_arrays_stmt(st->text);
-            emit_indent(f, indent);
-            if(colon != NULL && colon[1] != '=') {
-                char aname[ZIR_GO_NAME_MAX], gt[ZIR_GO_NAME_MAX];
-                char tbuf[ZIR_GO_TEXT_MAX];
-                size_t al = (size_t)(colon - rw);
-
-                while(al > 0 && rw[al - 1] == ' ')
-                    al--;
-                memcpy(aname, rw, al);
-                aname[al] = '\0';
-                go_register_local_name(aname);
-                {
-                    char mapped[ZIR_GO_NAME_MAX];
-                    go_local_ident(aname, mapped, sizeof(mapped));
-                    snprintf(aname, sizeof(aname), "%s", mapped);
-                }
-                assign = strstr(colon, "= ");
-                /* the declared type ends where the initializer begins */
-                snprintf(tbuf, sizeof(tbuf), "%s", colon + 1);
-                if(assign != NULL)
-                    tbuf[assign - (colon + 1)] = '\0';
-                require_go_type(tbuf, gt, sizeof(gt), st->span);
-                if(assign != NULL) {
-                    const char *init = skip_ws(assign + 2);
-                    const char *source_assign = strstr(st->text, "= ");
-                    char translated[ZIR_GO_TEXT_MAX];
-
-                    /* Go composite literals carry their type: 'var x = T{...}'.
-                     * Re-enter the source compound-literal path so designated
-                     * fields on props records become Go field names. */
-                    if(*init == '{' && source_assign != NULL &&
-                       gt[0] != '[') {
-                        char typed[ZIR_GO_TEXT_MAX];
-                        char source_type[ZIR_GO_TEXT_MAX];
-
-                        /* Use the same conversions as an explicit compound
-                         * literal, starting from source rather than already
-                         * translated Go expressions. */
-                        snprintf(source_type, sizeof(source_type), "%s", tbuf);
-                        go_trim_ws(source_type);
-                        snprintf(typed, sizeof(typed), "(%s)%s", source_type,
-                                 skip_ws(source_assign + 2));
-                        tx_expr(m, typed, translated, sizeof(translated));
-                        fprintf(f, "var %s = %s\n", aname, translated);
-                    } else if(*init == '{' &&
-                       go_translate_array_literal(m, gt, init, translated,
-                                                   sizeof(translated)))
-                        fprintf(f, "var %s = %s\n", aname, translated);
-                    else if(*init == '{')
-                        fprintf(f, "var %s = %s%s\n", aname, gt, init);
-                    else
-                        fprintf(f, "var %s %s = %s\n", aname, gt, assign + 2);
-                } else
-                    fprintf(f, "var %s %s\n", aname, gt);
-            } else if(colon != NULL) { /* ':=' */
-                fprintf(f, "%s\n", rw);
-            } else {
-                Diagnostic(st->span, "zir_go.declaration", "unsupported declaration: %s", st->text);
-                exit(1);
-            }
-            break;
-        }
-        case ZIR_STMT_BLOCK_CALL:
-            Diagnostic(st->span, "zir_go.block_call",
-                          "unlowered block call: %s", st->callee);
-            exit(1);
-        case ZIR_STMT_RETURN:
-        {
-            const char *value = skip_ws(rw);
-
-            if(strncmp(value, "return", 6) == 0 &&
-               !is_ident_char((unsigned char)value[6]))
-                value = skip_ws(value + 6);
-            emit_indent(f, indent);
-            if(value[0] != '\0')
-                fprintf(f, "return %s\n", value);
-            else
-                fprintf(f, "return\n");
-            break;
-        }
-        case ZIR_STMT_UNREACHABLE:
-            emit_indent(f, indent);
-            fprintf(f, "panic(\"unreachable\")\n");
-            break;
-        case ZIR_STMT_BREAK:
-        case ZIR_STMT_CONTINUE:
-            emit_indent(f, indent);
-            fprintf(f, "%s\n", StmtKindName(st->kind));
-            break;
-        case ZIR_STMT_DEFER:
-            fprintf(stderr, "internal error: cleanup was not lowered\n");
-            exit(1);
-        case ZIR_STMT_LABEL:
-        case ZIR_STMT_GOTO:
-            /* 'name:' and 'goto name' are valid Go; forward jumps over
-             * declarations are a Go compile error, not a silent miscompile */
-            emit_indent(f, indent);
-            fprintf(f, "%s\n", rw);
-            break;
-        case ZIR_STMT_ASSIGN:
-        case ZIR_STMT_EXPR:
-            if(rw[0] != '\0') {
-                emit_indent(f, indent);
-                fprintf(f, "%s\n", rw);
-            }
-            break;
-        case ZIR_STMT_UNUSED: {
-            const char *value = skip_ws(rw);
-            if(strncmp(value, "unused", 6) == 0 && !is_ident_char((unsigned char)value[6]))
-                value = skip_ws(value + 6);
-            emit_indent(f, indent);
-            fprintf(f, "_ = %s\n", value);
-            break;
-        }
-        default:
-            Diagnostic(st->span, "zir_go.statement", "unsupported %s statement: %s",
-                          StmtKindName(st->kind), st->text);
-            exit(1);
-        }
+    if(!EmitBody(f, m, fn, ZIR_GO, resolve_body_symbol, (void *)m, NULL)) {
+        Diagnostic(fn->span, "zir_go.body",
+                   "function has no checked typed body: %s", fn->name);
+        exit(1);
     }
     fprintf(f, "}\n\n");
-    zir_go_array_count = saved_array_count;
     zir_go_local_count = saved_local_count;
-}
-
-static int
-go_validate_asserts(const ZirModule *m)
-{
-    for(int i = 0; i < m->assert_count; i++) {
-        const ZirAssert *a = &m->asserts[i];
-
-        if(a->guard[0] != '\0') {
-            fprintf(stderr,
-                    "zi2go: %s:%d: guarded #assert is not supported by the Go backend: %s\n",
-                    a->span.path, a->span.line, a->message);
-            return 0;
-        }
-        if(!a->known) {
-            fprintf(stderr,
-                    "zi2go: %s:%d: unresolved #assert is not supported by the Go backend: %s\n",
-                    a->span.path, a->span.line, a->condition);
-            return 0;
-        }
-        if(!a->value) {
-            fprintf(stderr, "zi2go: %s:%d: #assert failed: %s\n",
-                    a->span.path, a->span.line, a->message);
-            return 0;
-        }
-    }
-    return 1;
 }
 
 
@@ -2344,14 +1560,10 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                     return 1;
                 }
             }
-            if(!go_validate_asserts(m))
-                return 1;
             if(seen_count < 64)
                 snprintf(seen_stems[seen_count++], sizeof(seen_stems[0]),
                          "%s", stem);
             camel_ident(stem, guard, sizeof(guard));
-            zir_go_array_count = 0;
-            go_register_arrays_module(m);
             snprintf(path, sizeof(path), "%s/%s.go", out_dir, stem);
             mkdir_parent(path);
             f = tmpfile();
@@ -2388,7 +1600,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
             for(int i = 0; i < m->import_count; i++) {
                 const ZirImport *imp = &m->imports[i];
 
-                if(imp->kind == ZIR_IMPORT_HEADER)
+                if(imp->kind == ZIR_IMPORT_OPEN)
                     fprintf(f, "// #import %s\n", imp->target);
                 /* ZIR_IMPORT_EXTERN lowers either to direct Go imports above
                  * or to the Host interface below. */
@@ -2448,16 +1660,20 @@ go_lower(const ZirProgram *const *progs, int prog_count,
 
             for(int i = 0; i < m->type_count; i++) {
                 const ZirType *t = &m->types[i];
-                if(t->is_extern || t->is_variant_template ||
-                   t->is_record_template)
-                    continue;
-
-                if(!t->is_enum && t->name[0] == '#') {
-                    Diagnostic(t->span, "zir_go.type", "C typedef has no portable Go representation: %s", t->body);
+                if(t->is_union) {
+                    Diagnostic(t->span, "zir_go.union",
+                               "union storage is not supported by the Go target");
                     exit(1);
                 }
+                if(t->is_extern || t->is_record_template)
+                    continue;
 
-                if(t->is_slot) {
+                if(t->is_procedure_type) {
+                    if(t->is_c_call) {
+                        Diagnostic(t->span, "zir_go.type",
+                                   "#c_call procedure types require the native C or C++ target");
+                        exit(1);
+                    }
                     EmitSlotType(f, t, ZIR_GO, resolve_slot_type, NULL);
                     continue;
                 }
@@ -2469,8 +1685,13 @@ go_lower(const ZirProgram *const *progs, int prog_count,
 
                         if(e == NULL)
                             continue;
-                        if(e->go_type[0] != '\0')
-                            fprintf(f, "type %s int32\n\n", e->go_type);
+                        const char *backing = enum_storage_type(t->enum_backing);
+                        if(backing == NULL) {
+                            Diagnostic(t->span, "zir_go.enum",
+                                       "invalid enum backing type");
+                            exit(1);
+                        }
+                        fprintf(f, "type %s %s\n\n", e->go_type, backing);
                         fprintf(f, "const (\n");
                         for(int mI = 0; mI < e->count; mI++) {
                             ZirGoEnumMember *mem = &e->members[mI];
@@ -2500,7 +1721,17 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                         while((status = TypeNextField(t, &offset, &field)) == 1) {
                             char fname[ZIR_GO_NAME_MAX], gt[ZIR_GO_NAME_MAX];
                             go_field_ident(field.name, fname, sizeof(fname));
-                            require_go_type(field.type, gt, sizeof(gt), t->span);
+                            if(!strcmp(field.name, "data") &&
+                               VecElementType(m, t->name, NULL, 0)) {
+                                char item[ZIR_NAME_MAX];
+                                VecElementType(m, t->name, item, sizeof(item));
+                                char mapped[ZIR_GO_NAME_MAX];
+                                require_go_type(item, mapped, sizeof(mapped),
+                                                t->span);
+                                snprintf(gt, sizeof(gt), "[]%s", mapped);
+                            } else
+                                require_go_type(field.type, gt, sizeof(gt),
+                                                t->span);
                             fprintf(f, "\t%s %s\n", fname, gt);
                         }
                         if(status < 0) {
@@ -2517,7 +1748,8 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 char cname[ZIR_GO_NAME_MAX];
                 char cval[ZIR_GO_TEXT_MAX];
 
-                camel_ident(m->defines[i].name, cname, sizeof(cname));
+                TargetDefineName(m, ZIR_GO, m->defines[i].name,
+                                 cname, sizeof(cname));
                 tx_expr(m, m->defines[i].value, cval, sizeof(cval));
                 fprintf(f, "const %s = %s\n", cname, cval);
             }
@@ -2526,7 +1758,8 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 const ZirGlobal *g = &m->globals[i];
                 char gname[ZIR_GO_NAME_MAX], gt[ZIR_GO_NAME_MAX], ginit[ZIR_GO_TEXT_MAX];
 
-                camel_ident(g->name, gname, sizeof(gname));
+                TargetGlobalName(m, ZIR_GO, g->name, gname,
+                                 sizeof(gname));
                 require_go_type(g->type, gt, sizeof(gt), g->span);
                 if(!ScalarLiteral(g->type,g->init,ZIR_GO,g->span,ginit,sizeof(ginit)))
                     tx_expr(m, g->init, ginit, sizeof(ginit));
@@ -2538,48 +1771,10 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 } else
                     fprintf(f, "var %s %s\n", gname, gt);
             }
-            /* state struct + instance */
-            if(m->state_count > 0) {
-                fprintf(f, "type %sState struct {\n", guard);
-                for(int i = 0; i < m->state_count; i++) {
-                    const ZirStateField *sf = &m->state_fields[i];
-                    char fname[ZIR_GO_NAME_MAX], gt[ZIR_GO_NAME_MAX];
-
-                    camel_ident(sf->name, fname, sizeof(fname));
-                    require_go_type(sf->type, gt, sizeof(gt), sf->span);
-                    fprintf(f, "\t%s %s\n", fname, gt);
-                }
-                fprintf(f, "}\n\n");
-                fprintf(f, "var %sStateValue = &%sState{\n", guard, guard);
-                for(int i = 0; i < m->state_count; i++) {
-                    const ZirStateField *sf = &m->state_fields[i];
-                    char fname[ZIR_GO_NAME_MAX], finit[ZIR_GO_TEXT_MAX];
-                    char gt[ZIR_GO_NAME_MAX];
-
-                    camel_ident(sf->name, fname, sizeof(fname));
-                    require_go_type(sf->type, gt, sizeof(gt), sf->span);
-                    if(!ScalarLiteral(sf->type,sf->init,ZIR_GO,sf->span,finit,sizeof(finit)))
-                        tx_expr(m, sf->init, finit, sizeof(finit));
-                    if(finit[0] != '\0' &&
-                       !(sf->type[0] == '[' && strstr(sf->type, "char") != NULL &&
-                         strcmp(finit, "\"\"") == 0)) {
-                        if(sf->type[0] == '[' && strstr(sf->type, "char") != NULL &&
-                           finit[0] == '"')
-                            fprintf(f,
-                                    "\t%s: func() %s { var v %s; copy(v[:], %s); return v }(),\n",
-                                    fname, gt, gt, finit);
-                        else if(finit[0] == '{')
-                            fprintf(f, "\t%s: %s%s,\n", fname, gt, finit);
-                        else
-                            fprintf(f, "\t%s: %s,\n", fname, finit);
-                    }
-                }
-                fprintf(f, "}\n\n");
-            }
             /* functions ('#foreign' prototypes have no body: they lower to
              * Host interface methods, not Go functions) */
             for(int i = 0; i < m->function_count; i++) {
-                if(m->functions[i].is_extern || m->functions[i].is_closure)
+                if(m->functions[i].is_extern || m->functions[i].is_template)
                     continue;
                 lower_function(f, m, &m->functions[i], guard);
             }

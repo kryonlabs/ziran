@@ -38,7 +38,7 @@ host_call(void *context, const char *module, const char *function,
         assert(args[0].fields[5].value.integer == 1);
         assert(args[1].elements[0].length == 3);
         assert(memcmp(args[1].elements[0].data, "arg", 3) == 0);
-        fields[0] = (VmHostField){"handle", integer_value("i32", 7)};
+        fields[0] = (VmHostField){"handle", integer_value("s32", 7)};
         fields[1] = (VmHostField){"error", string_value("")};
         result->kind = VM_HOST_RECORD;
         result->fields = fields;
@@ -53,7 +53,7 @@ host_call(void *context, const char *module, const char *function,
         result->field_count = 3;
     } else if(strcmp(function, "WaitHost") == 0) {
         assert(count == 1 && args[0].integer == 7);
-        fields[0] = (VmHostField){"code", integer_value("i32", 0)};
+        fields[0] = (VmHostField){"code", integer_value("s32", 0)};
         fields[1] = (VmHostField){"stderr", string_value("")};
         fields[2] = (VmHostField){"error", string_value("")};
         result->kind = VM_HOST_RECORD;

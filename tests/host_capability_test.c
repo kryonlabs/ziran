@@ -14,7 +14,7 @@ host_call(void *context, const char *module, const char *function,
     (*calls)++;
     if(strcmp(function, "AddTenHost") == 0 &&
        args[0].kind == VM_HOST_INTEGER &&
-       strcmp(args[0].type, "i32") == 0) {
+       strcmp(args[0].type, "s32") == 0) {
         result->kind = VM_HOST_INTEGER;
         result->integer = args[0].integer + 10;
         return 1;
@@ -29,7 +29,7 @@ host_call(void *context, const char *module, const char *function,
     }
     if(strcmp(function, "DoubleHost") == 0 &&
        args[0].kind == VM_HOST_REAL &&
-       strcmp(args[0].type, "float") == 0) {
+       strcmp(args[0].type, "float32") == 0) {
         result->kind = VM_HOST_REAL;
         result->real = args[0].real * 2.0;
         return 1;

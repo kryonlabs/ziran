@@ -9,7 +9,7 @@ cat > "$work/host_api.zi" <<'EOF'
 host_api :: #system_library "host_api";
 AddTenHost :: (value: s32) -> s32 #foreign host_api;
 ByteCountHost :: (value: string) -> s32 #foreign host_api;
-DoubleHost :: (value: float) -> float #foreign host_api;
+DoubleHost :: (value: float32) -> float32 #foreign host_api;
 EchoHost :: (value: u32) -> u32 #foreign host_api;
 UnusedHost :: () -> s32 #foreign host_api;
 #program_export
@@ -21,7 +21,7 @@ ByteCount :: (value: string) -> s32 {
     return ByteCountHost(value)
 }
 #program_export
-Double :: (value: float) -> float {
+Double :: (value: float32) -> float32 {
     return DoubleHost(value)
 }
 #program_export
@@ -67,7 +67,7 @@ python3 - "$work/source.zib" "$work/tampered.zib" <<'PY'
 from pathlib import Path
 import sys
 data = bytearray(Path(sys.argv[1]).read_bytes())
-assert data[:8] == b'ZIB\0\x07\0\0\0'
+assert data[:8] == b'ZIB\0\x10\0\0\0'
 assert b'AddTenHost' in data
 data[data.index(b'AddTenHost')] = ord('X')
 Path(sys.argv[2]).write_bytes(data)

@@ -1,10 +1,10 @@
 #include "zir.h"
 #include "zir_parse.h"
 #include "zir_check.h"
-#include "zir_laws.h"
 #include "zir_serial.h"
 #include "zir_diagnostic.h"
 #include "zir_load.h"
+#include "zir_bundle.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +14,23 @@
 static void
 usage(void)
 {
-    fprintf(stderr, "usage: zi2zir [--diagnostics=text|json] [--module-path DIR] --root DIR -o DIR file.zi|file.zir ...\n");
+    fprintf(stderr, "usage: zi2zir [--diagnostics=text|json] [--entry module:function] [--module-path DIR] --root DIR -o DIR file.zi|file.zir ...\n");
+}
+
+static int
+split_entry(const char *text, char *module, char *function)
+{
+    const char *separator = text ? strrchr(text, ':') : NULL;
+    size_t length;
+    if(separator == NULL || separator == text || separator[1] == 0)
+        return 0;
+    length = (size_t)(separator - text);
+    if(length >= ZIR_NAME_MAX || strlen(separator + 1) >= ZIR_NAME_MAX)
+        return 0;
+    memcpy(module, text, length);
+    module[length] = 0;
+    strcpy(function, separator + 1);
+    return 1;
 }
 
 static int
@@ -67,10 +83,14 @@ main(int argc, char **argv)
 {
     const char *root = NULL;
     const char *out_dir = NULL;
+    const char *entry = NULL;
+    char entry_module[ZIR_NAME_MAX], entry_function[ZIR_NAME_MAX];
     int check_only = 0;
     int first_file = 0;
     int result = 1;
     ProgramSet set = {0};
+    ZirProgram merged = {0};
+    ZirProgram *linked = NULL;
     const char *module_paths[64];
     int module_path_count = 0;
     int count;
@@ -87,6 +107,8 @@ main(int argc, char **argv)
             module_paths[module_path_count++] = argv[++i];
         } else if(strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             out_dir = argv[++i];
+        } else if(strcmp(argv[i], "--entry") == 0 && i + 1 < argc) {
+            entry = argv[++i];
         } else if(strcmp(argv[i], "--check-only") == 0) {
             check_only = 1;
         } else if(argv[i][0] == '-') {
@@ -97,7 +119,9 @@ main(int argc, char **argv)
             break;
         }
     }
-    if(root == NULL || (!check_only && out_dir == NULL) || first_file == 0) {
+    if(root == NULL || (!check_only && out_dir == NULL) || first_file == 0 ||
+       (entry != NULL && (check_only ||
+                          !split_entry(entry, entry_module, entry_function)))) {
         usage();
         return 1;
     }
@@ -105,19 +129,46 @@ main(int argc, char **argv)
                      (const char *const *)(argv + first_file), argc - first_file))
         goto done;
     count = set.count;
-    if(!CheckCanonicalPrograms(set.programs, count, 1,
-                               (const char *const *)set.paths) ||
-       !CheckLaws(set.programs, count))
+    if(!CheckCanonicalPrograms(set.programs, count,
+                               (const char *const *)set.paths))
         goto done;
     if(!check_only) {
-        for(int i = 0; i < count; i++) {
-            if(set.programs[i]->module_count < 1 ||
-               !write_program(set.programs[i], out_dir))
+        if(entry != NULL) {
+            for(int i = 0; i < count; i++)
+                merged.module_count += set.programs[i]->module_count;
+            merged.modules = calloc((size_t)merged.module_count,
+                                    sizeof(*merged.modules));
+            if(merged.modules == NULL)
                 goto done;
+            int position = 0;
+            for(int i = 0; i < count; i++)
+                for(int m = 0; m < set.programs[i]->module_count; m++)
+                    merged.modules[position++] = set.programs[i]->modules[m];
+            ZirProgram *merged_ptr = &merged;
+            if(!LinkImports(&merged_ptr, 1))
+                goto done;
+            linked = NativeLink(&merged, entry_module, entry_function);
+            if(linked == NULL)
+                goto done;
+            for(int i = 0; i < linked->module_count; i++) {
+                ZirProgram view = {0};
+                view.modules = &linked->modules[i];
+                view.module_count = 1;
+                if(!write_program(&view, out_dir))
+                    goto done;
+            }
+        } else {
+            for(int i = 0; i < count; i++) {
+                if(set.programs[i]->module_count < 1 ||
+                   !write_program(set.programs[i], out_dir))
+                    goto done;
+            }
         }
     }
     result = 0;
 done:
+    ProgramFree(linked);
+    free(merged.modules);
     ProgramsFree(&set);
     return result;
 }

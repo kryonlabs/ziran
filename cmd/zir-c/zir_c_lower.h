@@ -18,7 +18,7 @@ typedef struct ZirCModuleSyms {
  * cross-module calls; pass NULL/0 to resolve same-module only. */
 void c_lower(const ZirProgram *program, const char *root,
                const char *out_dir, const ZirCModuleSyms *restab,
-               int restab_count);
+               int restab_count, int linked);
 
 /* Build the symbol table entry for one program into out. */
 void c_build_syms(const ZirProgram *program, ZirCModuleSyms *out);

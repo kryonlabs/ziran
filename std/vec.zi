@@ -1,0 +1,7 @@
+// Owned growable storage. Operations on Vec values are compiler primitives;
+// the data pointer is private to those operations.
+Vec :: struct($T: Type) {
+    data: *T;
+    count: s64;
+    capacity: s64;
+}

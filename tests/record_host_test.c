@@ -35,9 +35,9 @@ host_call(void *context, const char *module, const char *function,
     calls++;
 
     point_fields[0] = (VmHostField){"x", {.kind = VM_HOST_INTEGER,
-        .type = "i32", .integer = 41}};
+        .type = "s32", .integer = 41}};
     point_fields[1] = (VmHostField){"y", {.kind = VM_HOST_INTEGER,
-        .type = "i32", .integer = 1}};
+        .type = "s32", .integer = 1}};
     if(malformed == 2)
         point_fields[0].value.type = "u32";
     packet_fields[0] = (VmHostField){malformed == 1 ? "wrong" : "point",

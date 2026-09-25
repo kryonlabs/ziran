@@ -72,8 +72,68 @@ for file in "$@"; do
         }
         return trim(out)
     }
+    function string_marker(s,    i,c,q,esc,rest,marker) {
+        q = ""; esc = 0
+        for(i = 1; i <= length(s); i++) {
+            c = substr(s, i, 1)
+            if(block_comment) {
+                if(c == "/" && substr(s, i + 1, 1) == "*") {
+                    block_comment++; i++
+                } else if(c == "*" && substr(s, i + 1, 1) == "/") {
+                    block_comment--; i++
+                }
+                continue
+            }
+            if(q != "") {
+                if(esc) esc = 0
+                else if(c == "\\") esc = 1
+                else if(c == q) q = ""
+                continue
+            }
+            if(c == "\"" || c == "'\''") { q = c; continue }
+            if(c == "/" && substr(s, i + 1, 1) == "/") break
+            if(c == "/" && substr(s, i + 1, 1) == "*") {
+                block_comment++; i++; continue
+            }
+            if(c == "#" && substr(s, i, 7) == "#string" &&
+               (i == 1 || substr(s, i - 1, 1) !~ /[[:alnum:]_]/)) {
+                rest = substr(s, i + 7)
+                if(rest !~ /^[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t\r]*$/)
+                    continue
+                sub(/^[ \t]+/, "", rest)
+                marker = rest
+                sub(/[ \t\r]+$/, "", marker)
+                return marker
+            }
+        }
+        return ""
+    }
+    function track_structure(line,    opens,closes,delta) {
+        paren_depth += count_char(line, "(") - count_char(line, ")")
+        if(paren_depth < 0) paren_depth = 0
+        opens = count_char(line, "{")
+        closes = count_char(line, "}")
+        delta = opens - closes
+        if(substr(line, 1, 1) == "}") delta++
+        indent += delta
+        if(indent < 0) indent = 0
+    }
     {
         raw = $0
+        if(raw_delimiter != "") {
+            print raw
+            n = length(raw_delimiter)
+            nextc = substr(raw, n + 1, 1)
+            if(substr(raw, 1, n) == raw_delimiter &&
+               nextc !~ /[[:alnum:]_]/) {
+                suffix = substr(raw, n + 1)
+                raw_delimiter = string_marker(suffix)
+                if(substr(suffix, 1, 1) == "}" && indent > 0) indent--
+                track_structure(suffix)
+            }
+            next
+        }
+        marker = string_marker(raw)
         line = fmt_spacing(trim(raw))
         if(line == "") {
             print ""
@@ -86,17 +146,8 @@ for file in "$@"; do
         for(i = 0; i < indent + continuation; i++)
             printf "    "
         print line
-        paren_depth += count_char(line, "(") - count_char(line, ")")
-        if(paren_depth < 0)
-            paren_depth = 0
-        opens = count_char(line, "{")
-        closes = count_char(line, "}")
-        delta = opens - closes
-        if(leading_close)
-            delta++
-        indent += delta
-        if(indent < 0)
-            indent = 0
+        track_structure(line)
+        if(marker != "") raw_delimiter = marker
     }' "$file" > "$tmp"
     if [ "$check" -eq 1 ]; then
         if ! cmp -s "$file" "$tmp"; then

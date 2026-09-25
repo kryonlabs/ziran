@@ -8,6 +8,7 @@
 #include "zir_text.h"
 #include "zir_emit.h"
 #include "zir_check.h"
+#include "zir_diagnostic.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -17,6 +18,21 @@
 
 #define LOWER_NAME_MAX 128
 #define LOWER_TEXT_MAX 4096
+
+static const char *
+enum_storage_type(const char *backing)
+{
+    static const struct { const char *name, *c_type; } types[] = {
+        {"s8", "int8_t"}, {"u8", "uint8_t"},
+        {"s16", "int16_t"}, {"u16", "uint16_t"},
+        {"s32", "int32_t"}, {"u32", "uint32_t"},
+        {"s64", "int64_t"}, {"u64", "uint64_t"}
+    };
+    for(size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++)
+        if(strcmp(backing, types[i].name) == 0)
+            return types[i].c_type;
+    return NULL;
+}
 
 static void
 mkdir_parent(const char *path)
@@ -236,7 +252,19 @@ rewrite_body2(const ZirModule *m, const ZirCModuleSyms *restab,
     const char *p;
 
     for(p = src; *p != '\0' && n + 6 < dst_size; p++) {
-        if(strncmp(p, "null", 4) == 0 &&
+        if(*p == '"' || *p == '\'') {
+            char quote = *p;
+            dst[n++] = *p++;
+            while(*p && n + 2 < dst_size) {
+                char ch = *p++;
+                dst[n++] = ch;
+                if(ch == '\\' && *p)
+                    dst[n++] = *p++;
+                else if(ch == quote)
+                    break;
+            }
+            p--;
+        } else if(strncmp(p, "null", 4) == 0 &&
            (p == src || !isalnum((unsigned char)p[-1])) &&
            !isalnum((unsigned char)p[4]) && p[4] != '_') {
             dst[n++] = 'N';
@@ -249,55 +277,38 @@ rewrite_body2(const ZirModule *m, const ZirCModuleSyms *restab,
 
             while(isalnum((unsigned char)*e) || *e == '_')
                 e++;
-            /* Fixed-width cast "(i32)", "(i64)", "(u8)", "(f32)", ... maps to
-             * the C integer/float type just like a declaration does. */
-            if(p > src) {
-                /* Cast context "(const u8*)", "(u8*)", "(i32)": a scalar
-                 * name wrapped by parens, optionally with a "const "
-                 * qualifier and a trailing star. Only the scalar token is
-                 * rewritten; the parens/const/star copy through verbatim. */
-                int cast_like = 0;
-                const char *fwd = e;
-
-                while(*fwd == ' ' || *fwd == '\t' || *fwd == '*')
-                    fwd++;
-                if(*fwd == ')') {
-                    const char *back = p;
-                    int steps = 0;
-
-                    while(back > src && steps < 16) {
-                        back--;
-                        steps++;
-                        if(*back == '(') {
-                            cast_like = 1;
-                            break;
-                        }
-                        if(*back == ')' || *back == ',' || *back == ';' ||
-                           *back == '=' || *back == '{' || *back == '}')
-                            break;
-                    }
-                }
-                if(cast_like) {
-                    char id[32];
-                    size_t ilen = (size_t)(e - p);
-                    if(ilen < sizeof(id)) {
-                        const char *scalar, *mapped;
-                        memcpy(id, p, ilen);
-                        id[ilen] = '\0';
-                        scalar = ScalarType(id);
-                        if(*scalar && !strcmp(scalar, id)) {
-                            mapped = TargetType(id, ZIR_C);
-                            if(mapped != NULL) {
-                                size_t mlen = strlen(mapped);
-                                if(n + mlen < dst_size) {
-                                    memcpy(dst + n, mapped, mlen);
-                                    n += mlen;
-                                }
-                                p = e - 1;
-                                continue;
-                            }
-                        }
-                    }
+            if(*e == '.' &&
+               (isalpha((unsigned char)e[1]) || e[1] == '_') &&
+               !name_is_shadowed(shadow, p, (size_t)(e - p))) {
+                const char *member = e + 1;
+                const char *end = member;
+                while(isalnum((unsigned char)*end) || *end == '_') end++;
+                for(int t = 0; t < m->type_count; t++) {
+                    const ZirType *enumeration = &m->types[t];
+                    char member_name[ZIR_NAME_MAX];
+                    int64_t value;
+                    size_t length = (size_t)(end - member);
+                    if(!enumeration->is_enum ||
+                       strlen(enumeration->name) != (size_t)(e - p) ||
+                       strncmp(enumeration->name, p, (size_t)(e - p)) ||
+                       length >= sizeof(member_name)) continue;
+                    memcpy(member_name, member, length);
+                    member_name[length] = '\0';
+                    if(!EnumMemberValue(enumeration, member_name, &value))
+                        continue;
+                    char mapped[LOWER_TEXT_MAX];
+                    int prefixed = strncmp(member_name, enumeration->name,
+                                           strlen(enumeration->name)) == 0;
+                    int written = prefixed ?
+                        snprintf(mapped, sizeof(mapped), "%s", member_name) :
+                        snprintf(mapped, sizeof(mapped), "%s_%s",
+                                 enumeration->name, member_name);
+                    if(written < 0 || (size_t)written >= sizeof(mapped) ||
+                       n + (size_t)written >= dst_size) return 0;
+                    memcpy(dst + n, mapped, (size_t)written);
+                    n += (size_t)written;
+                    p = end - 1;
+                    goto next_character;
                 }
             }
             if(*e == '.' && e[1] != '\0' &&
@@ -394,12 +405,52 @@ rewrite_body2(const ZirModule *m, const ZirCModuleSyms *restab,
                     continue;
                 }
             }
+            if(!name_is_shadowed(shadow, p, (size_t)(e - p)) &&
+               !(p > src && p[-1] == '.') &&
+               !(p > src + 1 && p[-1] == '>' && p[-2] == '-')) {
+                int resolved_top = 0;
+                for(int i = 0; i < m->global_count; i++) {
+                    if(strlen(m->globals[i].name) != (size_t)(e - p) ||
+                       strncmp(m->globals[i].name, p, (size_t)(e - p)))
+                        continue;
+                    char mapped[LOWER_NAME_MAX];
+                    TargetGlobalName(m, ZIR_C, m->globals[i].name,
+                                     mapped, sizeof(mapped));
+                    size_t length = strlen(mapped);
+                    if(n + length < dst_size) {
+                        memcpy(dst + n, mapped, length);
+                        n += length;
+                        p = e - 1;
+                        resolved_top = 1;
+                        break;
+                    }
+                }
+                if(resolved_top) continue;
+                for(int i = 0; i < m->define_count; i++) {
+                    if(strlen(m->defines[i].name) != (size_t)(e - p) ||
+                       strncmp(m->defines[i].name, p, (size_t)(e - p)))
+                        continue;
+                    char mapped[LOWER_NAME_MAX];
+                    TargetDefineName(m, ZIR_C, m->defines[i].name,
+                                     mapped, sizeof(mapped));
+                    size_t length = strlen(mapped);
+                    if(n + length < dst_size) {
+                        memcpy(dst + n, mapped, length);
+                        n += length;
+                        p = e - 1;
+                        resolved_top = 1;
+                        break;
+                    }
+                }
+                if(resolved_top) continue;
+            }
             while(p < e && n + 1 < dst_size)
                 dst[n++] = *p++;
             p--;   /* compensate for the loop's p++ */
         } else {
             dst[n++] = *p;
         }
+next_character:;
     }
     dst[n] = '\0';
     return *p == '\0';
@@ -450,8 +501,7 @@ is_module_alias(const ZirModule *m, const char *alias, size_t alias_len)
     return 0;
 }
 
-/* Strip leading `alias.` module qualifiers from a type when the alias is an
- * import in this module (legacy strip_module_alias behavior). */
+/* Strip leading `alias.` module qualifiers from types imported by this module. */
 static void
 strip_alias_type(const ZirModule *m, const char *type,
                  char *dst, size_t dst_size)
@@ -471,33 +521,6 @@ strip_alias_type(const ZirModule *m, const char *type,
         snprintf(dst, dst_size, "%s*", base);
         return;
     }
-    /* const-qualified type (e.g. "const u8") maps its base and keeps "const ". */
-    if(strncmp(type, "const ", 6) == 0 && type[6] != '\0') {
-        char inner[LOWER_NAME_MAX * 2];
-        strip_alias_type(m, type + 6, inner, sizeof(inner));
-        snprintf(dst, dst_size, "const %s", inner);
-        return;
-    }
-    /* trailing-star pointer (e.g. "u8*", "state.Foo*") maps its base and
-     * re-appends the star; the leading-star form is handled above. */
-    {
-        size_t tlen = strlen(type);
-        if(tlen > 1 && type[tlen - 1] == '*') {
-            char base[LOWER_NAME_MAX * 2];
-            char trimmed[LOWER_NAME_MAX * 2];
-            size_t blen = tlen - 1;
-            while(blen > 0 && (type[blen - 1] == ' ' || type[blen - 1] == '\t'))
-                blen--;
-            if(blen >= sizeof(trimmed))
-                blen = sizeof(trimmed) - 1;
-            memcpy(trimmed, type, blen);
-            trimmed[blen] = '\0';
-            strip_alias_type(m, trimmed, base, sizeof(base));
-            snprintf(dst, dst_size, "%s*", base);
-            return;
-        }
-    }
-
     if(dot != NULL) {
         size_t alen = (size_t)(dot - type);
 
@@ -509,10 +532,10 @@ strip_alias_type(const ZirModule *m, const char *type,
     snprintf(dst, dst_size, "%s", type);
 }
 
-/* Convert .zi args "viewport: Rectangle, st: state.IdeState*" to C
- * "Rectangle viewport, IdeState* st" (alias-qualified types stripped). */
+/* Convert Jai parameters to C and strip imported type qualifiers. */
 static void
-convert_args(const ZirModule *m, const char *args, char *dst, size_t dst_size)
+convert_args(const ZirModule *m, const ZirFunction *fn,
+             const char *args, char *dst, size_t dst_size)
 {
     size_t n = 0;
 
@@ -552,15 +575,24 @@ convert_args(const ZirModule *m, const char *args, char *dst, size_t dst_size)
                 if(colon != NULL) {
                     char name[LOWER_NAME_MAX];
                     char type[LOWER_NAME_MAX];
-                    size_t nl = (size_t)(colon - part);
+                    const char *name_start = skip_ws(part);
+                    size_t nl = (size_t)(colon - name_start);
                     const char *ty = colon + 1;
 
                     while(*ty == ' ' || *ty == '\t')
                         ty++;
+                    while(nl > 0 && isspace((unsigned char)name_start[nl - 1]))
+                        nl--;
                     if(nl >= sizeof(name))
                         nl = sizeof(name) - 1;
-                    memcpy(name, part, nl);
+                    memcpy(name, name_start, nl);
                     name[nl] = '\0';
+                    {
+                        char binding[LOWER_NAME_MAX];
+                        TargetBindingName(fn, ZIR_C, name, binding,
+                                          sizeof(binding));
+                        copy_text(name, sizeof(name), binding);
+                    }
                     strip_alias_type(m, ty, type, sizeof(type));
                     {
                         /* 'name: [N] Type' parameters must emit C array
@@ -581,15 +613,6 @@ convert_args(const ZirModule *m, const char *args, char *dst, size_t dst_size)
                                               psuffix);
                     }
                     first = 0;
-                } else if(part[0] != '\0') {
-                    /* C-style parameter text (no 'name: Type' colon):
-                     * emit as-is ('InbeApp *app'). */
-                    if(!first && n + 2 < dst_size)
-                        dst[n++] = ',';
-                    if(!first && n + 1 < dst_size)
-                        dst[n++] = ' ';
-                    n += (size_t)snprintf(dst + n, dst_size - n, "%s", part);
-                    first = 0;
                 }
                 if(*p == '\0')
                     break;
@@ -602,124 +625,13 @@ convert_args(const ZirModule *m, const char *args, char *dst, size_t dst_size)
         snprintf(dst, dst_size, "void");
 }
 
-/* ---- statement lowering ---- */
-
-static void
-emit_indent(FILE *c, int indent)
-{
-    for(int i = 0; i < indent; i++)
-        fputs("    ", c);
-}
-
-/* Split "a, b := e1, e2" / "a, b = e1, e2" into names + exprs. Returns the
- * count of names, or 0 if not a multi-assign. */
-static int
-split_multi(const char *t, char names[][LOWER_NAME_MAX], int name_cap,
-            char exprs[][LOWER_TEXT_MAX], int expr_cap)
-{
-    const char *colon = strstr(t, ":=");
-    const char *eq = NULL;
-    const char *lhs_end;
-    const char *rhs;
-    int nn = 0;
-    int ne = 0;
-
-    if(colon != NULL) {
-        lhs_end = colon;
-        rhs = colon + 2;
-    } else {
-        eq = strstr(t, " = ");
-        if(eq == NULL)
-            return 0;
-        lhs_end = eq;
-        rhs = eq + 3;
-    }
-    /* split lhs on commas */
-    {
-        const char *start = t;
-        const char *p = t;
-        int depth = 0;
-
-        while(p <= lhs_end) {
-            if(*p == '(' || *p == '[')
-                depth++;
-            else if(*p == ')' || *p == ']')
-                depth--;
-            if((*p == ',' && depth == 0) || p == lhs_end) {
-                size_t len = (size_t)(p - start);
-
-                if(nn < name_cap && len > 0 && len < LOWER_NAME_MAX) {
-                    memcpy(names[nn], start, len);
-                    names[nn][len] = '\0';
-                    nn++;
-                }
-                start = p + 1;
-            }
-            p++;
-        }
-    }
-    if(nn < 2)
-        return 0;
-    /* split rhs on top-level commas */
-    {
-        const char *start = rhs;
-        const char *p = rhs;
-        int depth = 0;
-
-        while(1) {
-            if(*p == '(' || *p == '[' || *p == '{')
-                depth++;
-            else if(*p == ')' || *p == ']' || *p == '}')
-                depth--;
-            if((*p == ',' && depth == 0) || *p == '\0') {
-                size_t len = (size_t)(p - start);
-
-                if(ne < expr_cap && len < LOWER_TEXT_MAX) {
-                    memcpy(exprs[ne], start, len);
-                    exprs[ne][len] = '\0';
-                    ne++;
-                }
-                if(*p == '\0')
-                    break;
-                start = p + 1;
-            }
-            p++;
-        }
-    }
-    if(ne == 0)
-        return 0;
-    return nn;
-}
-
-/* >0 while a multi-line array initializer is open: item statements join
- * with ',' and the brace closes with '};' */
-static int zir_c_in_array_init;
-
-/* Rewriting a statement exceeded an internal fixed buffer; a silently cut
- * statement would change program meaning, so fail loudly instead. */
+/* Native bodies are emitted from checked expressions and statements. */
 static void
 c_rewrite_overflow(const char *path, int line)
 {
     fprintf(stderr, "zi2c: %s:%d: statement too long to lower (buffer limit)\n",
             path != NULL ? path : "?", line);
     exit(1);
-}
-
-static void
-emit_call_wrap(FILE *c, const ZirModule *m, const ZirCModuleSyms *restab,
-               int restab_count, int line, const char *text,
-               const char *shadow)
-{
-    char rw[LOWER_TEXT_MAX];
-
-    if(!rewrite_body2(m, restab, restab_count, text, rw, sizeof(rw), shadow))
-        c_rewrite_overflow(m->source_path, line);
-    if(zir_c_in_array_init) {
-        /* Initializer items are expressions with their own separators. */
-        fprintf(c, "    %s\n", rw);
-        return;
-    }
-    fprintf(c, "    %s;\n", rw);
 }
 
 typedef struct BodySymbols {
@@ -732,427 +644,30 @@ static void
 resolve_body_symbol(void *context, const char *text, char *out, size_t size)
 {
     BodySymbols *symbols = context;
+    for(int i = 0; i < symbols->module->global_count; i++)
+        if(strcmp(symbols->module->globals[i].name, text) == 0) {
+            TargetGlobalName(symbols->module, ZIR_C, text, out, size);
+            return;
+        }
+    for(int i = 0; i < symbols->module->define_count; i++)
+        if(strcmp(symbols->module->defines[i].name, text) == 0) {
+            TargetDefineName(symbols->module, ZIR_C, text, out, size);
+            return;
+        }
     rewrite_body2(symbols->module, symbols->symbols, symbols->count, text, out, size, "");
 }
 
-/* Cleanup is expanded by the shared ZIR pass before target emission. */
 static void
-lower_body(FILE *c, const ZirModule *m, const ZirCModuleSyms *restab, int restab_count, const ZirFunction *fn)
+lower_body(FILE *out, const ZirModule *module, const ZirCModuleSyms *symbols,
+           int symbol_count, const ZirFunction *function)
 {
-    BodySymbols symbols = {m, restab, restab_count};
-    if(EmitBody(c, m, fn, ZIR_C, resolve_body_symbol, &symbols, NULL)) return;
-    int indent = 1;
-    int j;
-    char shadow[LOWER_TEXT_MAX];   /* param + local names shadow functions */
-
-    shadow[0] = '\0';
-    {
-        /* parameter names from 'a: T, b: T' (colon-less C-style parts
-         * end at the last space before ',' / end). */
-        const char *p = fn->args;
-
-        while(p != NULL && *p != '\0') {
-            const char *e = p;
-
-            while(*e != '\0' && *e != ',')
-                e++;
-            {
-                const char *colon = NULL;
-                const char *q;
-
-                for(q = p; q < e; q++)
-                    if(*q == ':')
-                        colon = q;
-                if(colon == NULL) {
-                    /* C-style 'InbeApp *app': name = trailing ident */
-                    q = e;
-                    while(q > p && *(q - 1) == ' ')
-                        q--;
-                    while(q > p && (isalnum((unsigned char)*(q - 1)) ||
-                                    *(q - 1) == '_'))
-                        q--;
-                    colon = q;
-                }
-                if(colon > p) {
-                    size_t nl = (size_t)(colon - p);
-
-                    if(strlen(shadow) + nl + 2 >= sizeof(shadow))
-                        c_rewrite_overflow(m->source_path, fn->span.line);
-                    {
-                        if(shadow[0] != '\0')
-                            strcat(shadow, " ");
-                        strncat(shadow, p, nl);
-                    }
-                }
-            }
-            p = *e == ',' ? e + 1 : NULL;
-        }
+    BodySymbols context = {module, symbols, symbol_count};
+    if(!EmitBody(out, module, function, ZIR_C,
+                 resolve_body_symbol, &context, NULL)) {
+        Diagnostic(function->span, "zir_c.body",
+                   "function has no checked typed body: %s", function->name);
+        exit(1);
     }
-    for(j = 0; j < fn->stmt_count; j++) {
-        const ZirStmt *st = &fn->stmts[j];
-        char rw[LOWER_TEXT_MAX];
-
-        if(!rewrite_body2(m, restab, restab_count, st->text, rw, sizeof(rw),
-                          shadow))
-            c_rewrite_overflow(m->source_path, st->span.line);
-        switch(st->kind) {
-        case ZIR_STMT_BLOCK_CLOSE: {
-            int skip_close = 0;
-
-            if(zir_c_in_array_init) {
-                /* close the initializer, not a block */
-                emit_indent(c, indent);
-                fprintf(c, "};\n");
-                zir_c_in_array_init = 0;
-                break;
-            }
-
-            /* An else / else-if statement emits its own leading '}', so the
-             * block close right before it is suppressed. */
-            if(j + 1 < fn->stmt_count &&
-               fn->stmts[j + 1].kind == ZIR_STMT_IF &&
-               strncmp(fn->stmts[j + 1].text, "else", 4) == 0)
-                skip_close = 1;
-            indent--;
-            if(indent < 1)
-                indent = 1;
-            if(!skip_close) {
-                emit_indent(c, indent);
-                fprintf(c, "}\n");
-            }
-
-            break;
-        }
-        case ZIR_STMT_IF: {
-            char cond[LOWER_TEXT_MAX];
-
-            snprintf(cond, sizeof(cond), "%s", rw);
-            strip_block_brace(cond);
-            if(strncmp(cond, "guard ", 6) == 0) {
-                /* 'guard cond' exits when the condition is true. */
-                memmove(cond, cond + 6, strlen(cond + 6) + 1);
-                emit_indent(c, indent);
-                fprintf(c, "if(%s) {\n", cond);
-                emit_indent(c, indent + 1);
-                fprintf(c, "return;\n");
-                emit_indent(c, indent);
-                fprintf(c, "}\n");
-                break;
-            }
-            if(strncmp(cond, "else if ", 8) == 0) {
-                memmove(cond, cond + 8, strlen(cond + 8) + 1);
-                emit_indent(c, indent);
-                fprintf(c, "} else if(%s) {\n", cond);
-            } else if(strncmp(cond, "else", 4) == 0 && cond[4] == '\0') {
-                emit_indent(c, indent);
-                fprintf(c, "} else {\n");
-            } else if(strncmp(cond, "if ", 3) == 0) {
-                memmove(cond, cond + 3, strlen(cond + 3) + 1);
-                emit_indent(c, indent);
-                fprintf(c, "if(%s) {\n", cond);
-            } else {
-                emit_indent(c, indent);
-                fprintf(c, "if(%s) {\n", cond);
-            }
-            indent++;
-            break;
-        }
-        case ZIR_STMT_WHILE: {
-            char cond[LOWER_TEXT_MAX];
-
-            snprintf(cond, sizeof(cond), "%s", rw);
-            strip_block_brace(cond);
-            if(strncmp(cond, "while ", 6) == 0)
-                memmove(cond, cond + 6, strlen(cond + 6) + 1);
-            emit_indent(c, indent);
-            fprintf(c, "while(%s) {\n", cond);
-            indent++;
-            break;
-        }
-        case ZIR_STMT_FOR:
-        case ZIR_STMT_SWITCH: {
-            char head[LOWER_TEXT_MAX];
-            const char *kw = (st->kind == ZIR_STMT_FOR) ? "for" : "switch";
-
-            snprintf(head, sizeof(head), "%s", rw);
-            strip_block_brace(head);
-            if(strncmp(head, kw, strlen(kw)) == 0 && head[strlen(kw)] == ' ')
-                memmove(head, head + strlen(kw) + 1,
-                        strlen(head + strlen(kw) + 1) + 1);
-            emit_indent(c, indent);
-            fprintf(c, "%s(%s) {\n", kw, head);
-            indent++;
-            break;
-        }
-        case ZIR_STMT_CASE: {
-            char *colon;
-            emit_indent(c, indent - 1 > 0 ? indent - 1 : 1);
-            /* A same-line body ("case X: return y") is one KRY statement, but
-             * the body is a C statement that still needs its terminator. */
-            colon = strchr(rw, ':');
-            if(colon != NULL && colon[1] != '\0') {
-                size_t rw_len = strlen(rw);
-                if(rw[rw_len - 1] != ';' && rw[rw_len - 1] != '{')
-                    fprintf(c, "%s;\n", rw);
-                else
-                    fprintf(c, "%s\n", rw);
-            } else {
-                fprintf(c, "%s\n", rw);
-            }
-            break;
-        }
-        case ZIR_STMT_RETURN:
-            emit_indent(c, indent);
-            fprintf(c, "%s;\n", rw);
-            break;
-        case ZIR_STMT_UNREACHABLE:
-            emit_indent(c, indent);
-            fprintf(c, "abort();\n");
-            break;
-        case ZIR_STMT_BREAK:
-        case ZIR_STMT_CONTINUE:
-            emit_indent(c, indent);
-            fprintf(c, "%s;\n", rw);
-            break;
-        case ZIR_STMT_GOTO:
-            emit_indent(c, indent);
-            fprintf(c, "%s;\n", rw);
-            break;
-        case ZIR_STMT_LABEL:
-            fprintf(c, "%s\n", rw);   /* no indent for labels */
-            break;
-        case ZIR_STMT_DEFER:
-            fprintf(stderr, "internal error: cleanup was not lowered\n");
-            exit(1);
-        case ZIR_STMT_UNUSED: {
-            const char *u = rw;
-
-            while(*u == ' ')
-                u++;
-            if(strncmp(u, "unused ", 7) == 0)
-                u += 7;
-            emit_indent(c, indent);
-            fprintf(c, "(void)%s;\n", u);
-            break;
-        }
-        case ZIR_STMT_DECL: {
-            /* x := e  |  x, y := e1, e2  |  x: T = e  |  x: T */
-            char names[8][LOWER_NAME_MAX];
-            char exprs[8][LOWER_TEXT_MAX];
-            int n = split_multi(rw, names, 8, exprs, 8);
-
-            /* declared names shadow functions from here on */
-            {
-                int k;
-
-                for(k = 0; k < (n >= 2 ? n : 1); k++) {
-                    const char *nm = n >= 2 ? names[k] : rw;
-
-                    if(n < 2) {
-                        /* single decl: name is rw up to ':=' / ':' */
-                        const char *c2 = strstr(rw, ":=");
-
-                        if(c2 == NULL)
-                            c2 = strchr(rw, ':');
-                        if(c2 != NULL) {
-                            size_t nl = (size_t)(c2 - rw);
-
-                            if(nl > 0) {
-                                if(strlen(shadow) + nl + 2 >= sizeof(shadow))
-                                    c_rewrite_overflow(m->source_path,
-                                                        st->span.line);
-                                if(shadow[0] != '\0')
-                                    strcat(shadow, " ");
-                                strncat(shadow, rw, nl);
-                            }
-                        }
-                    } else if(nm[0] != '\0') {
-                        if(strlen(shadow) + strlen(nm) + 2 >= sizeof(shadow))
-                            c_rewrite_overflow(m->source_path, st->span.line);
-                        if(shadow[0] != '\0')
-                            strcat(shadow, " ");
-                        strcat(shadow, nm);
-                    }
-                }
-            }
-
-            if(n >= 2) {
-                /* multi: temps first, then assignments */
-                for(int k = 0; k < n; k++) {
-                    emit_indent(c, indent);
-                    fprintf(c, "__auto_type __zi_assign_%d_%d = %s;\n",
-                            st->span.line, k, exprs[k % (n > 0 ? n : 1)]);
-                }
-                for(int k = 0; k < n; k++) {
-                    emit_indent(c, indent);
-                    fprintf(c, "%s = __zi_assign_%d_%d;\n",
-                            names[k], st->span.line, k);
-                }
-            } else {
-                const char *colon2 = strstr(rw, ":=");
-                const char *typed = strchr(rw, ':');
-
-                if(colon2 != NULL) {
-                    char name[LOWER_NAME_MAX];
-                    size_t nl = (size_t)(colon2 - rw);
-                    const char *expr = colon2 + 2;
-
-                    while(*expr == ' ')
-                        expr++;
-                    while(nl > 0 && (rw[nl - 1] == ' ' || rw[nl - 1] == '\t'))
-                        nl--;
-                    if(nl >= sizeof(name))
-                        nl = sizeof(name) - 1;
-                    memcpy(name, rw, nl);
-                    name[nl] = '\0';
-                    emit_indent(c, indent);
-                    fprintf(c, "__auto_type %s = %s;\n", name, expr);
-                } else if(typed != NULL) {
-                    char name[LOWER_NAME_MAX];
-                    char type[LOWER_NAME_MAX];
-                    size_t nl = (size_t)(typed - rw);
-                    const char *ty = typed + 1;
-                    const char *eq2 = strstr(typed, " = ");
-
-                    while(*ty == ' ' || *ty == '\t')
-                        ty++;
-                    while(nl > 0 && (rw[nl - 1] == ' ' || rw[nl - 1] == '\t'))
-                        nl--;
-                    if(nl >= sizeof(name))
-                        nl = sizeof(name) - 1;
-                    memcpy(name, rw, nl);
-                    name[nl] = '\0';
-                    if(eq2 != NULL) {
-                        size_t tl = (size_t)(eq2 - ty);
-                        const char *init = eq2 + 3;
-                        char base[LOWER_NAME_MAX];
-                        char suffix[LOWER_NAME_MAX];
-
-                        if(tl >= sizeof(type))
-                            tl = sizeof(type) - 1;
-                        memcpy(type, ty, tl);
-                        type[tl] = '\0';
-                        split_array_type(type, base, sizeof(base),
-                                         suffix, sizeof(suffix));
-                        {
-                            char tmpb[LOWER_NAME_MAX];
-
-                            strip_alias_type(m, base, tmpb, sizeof(tmpb));
-                            snprintf(base, sizeof(base), "%s", tmpb);
-                        }
-                        emit_indent(c, indent);
-                        if(init[0] == '{' && init[1] == '\0') {
-                            fprintf(c, "%s %s%s = {\n", base, name, suffix);
-                            zir_c_in_array_init = 1;
-                        } else {
-                            fprintf(c, "%s %s%s = %s;\n", base, name, suffix,
-                                    init);
-                        }
-                    } else {
-                        char base[LOWER_NAME_MAX];
-                        char suffix[LOWER_NAME_MAX];
-
-                        snprintf(type, sizeof(type), "%s", ty);
-                        /* strip trailing brace if typed on block opener */
-                        {
-                            char *br = strchr(type, '{');
-                            if(br != NULL)
-                                *br = '\0';
-                        }
-                        split_array_type(type, base, sizeof(base),
-                                         suffix, sizeof(suffix));
-                        {
-                            char tmpb[LOWER_NAME_MAX];
-
-                            strip_alias_type(m, base, tmpb, sizeof(tmpb));
-                            snprintf(base, sizeof(base), "%s", tmpb);
-                        }
-                        emit_indent(c, indent);
-                        fprintf(c, "%s %s%s = {0};\n", base, name, suffix);
-                    }
-                } else {
-                    emit_indent(c, indent);
-                    fprintf(c, "%s;\n", rw);
-                }
-            }
-            break;
-        }
-        case ZIR_STMT_ASSIGN: {
-            char names[8][LOWER_NAME_MAX];
-            char exprs[8][LOWER_TEXT_MAX];
-            int n = split_multi(rw, names, 8, exprs, 8);
-
-            if(n >= 2) {
-                for(int k = 0; k < n; k++) {
-                    emit_indent(c, indent);
-                    fprintf(c, "__auto_type __zi_assign_%d_%d = %s;\n",
-                            st->span.line, k, exprs[k]);
-                }
-                for(int k = 0; k < n; k++) {
-                    emit_indent(c, indent);
-                    fprintf(c, "%s = __zi_assign_%d_%d;\n",
-                            names[k], st->span.line, k);
-                }
-            } else {
-                emit_indent(c, indent);
-                fprintf(c, "%s;\n", rw);
-            }
-            break;
-        }
-        case ZIR_STMT_EXPR:
-            if(strchr(rw, '(') != NULL)
-                emit_call_wrap(c, m, restab, restab_count, st->span.line,
-                               st->text, shadow);
-            else {
-                emit_indent(c, indent);
-                fprintf(c, "%s;\n", rw);
-            }
-            break;
-        case ZIR_STMT_BLOCK_CALL:
-            emit_call_wrap(c, m, restab, restab_count, st->span.line,
-                           st->text, shadow);
-            break;
-        default:
-            if(rw[0] != '\0') {
-                if(st->kind == ZIR_STMT_RAW) {
-                    char esc[ZIR_PATH_MAX * 2];
-
-                    escape_c_string(m->source_path, esc, sizeof(esc));
-                    emit_indent(c, indent);
-                    fprintf(c, "/* kry: raw-c %s:%d */\n", esc, st->span.line);
-                }
-                emit_indent(c, indent);
-                fprintf(c, "%s\n", rw);
-            }
-            break;
-        }
-    }
-}
-
-/* '#if' regions stamp their captures with the expanded C preprocessor
- * condition; emit each guarded item wrapped in '#if cond / #endif'. */
-static void
-emit_guard_open(FILE *out, const char *guard)
-{
-    if(guard[0] != '\0')
-        fprintf(out, "#if %s\n", guard);
-}
-
-static void
-emit_guard_close(FILE *out, const char *guard)
-{
-    if(guard[0] != '\0')
-        fprintf(out, "#endif\n");
-}
-
-static void
-emit_compile_assert(FILE *out, const ZirAssert *assertion)
-{
-    emit_guard_open(out, assertion->guard);
-    fprintf(out, "#if !(%s)\n", assertion->condition);
-    fprintf(out, "#error %s\n", assertion->message);
-    fprintf(out, "#endif\n");
-    emit_guard_close(out, assertion->guard);
 }
 
 static int
@@ -1250,7 +765,7 @@ emit_extern_prototype(FILE *c, const ZirModule *m, const ZirImport *imp)
     extract_extern_signature(imp, ret, sizeof(ret), cargs, sizeof(cargs));
     strip_alias_type(m, ret, return_type, sizeof(return_type));
     copy_text(ret, sizeof(ret), return_type);
-    convert_args(m, cargs, conv, sizeof(conv));
+    convert_args(m, NULL, cargs, conv, sizeof(conv));
     if(c_extern_symbol(imp, symbol, sizeof(symbol))) {
         cname = symbol;
         fprintf(c, "%s %s(%s);\n", ret[0] ? ret : "void", cname, conv);
@@ -1272,7 +787,8 @@ emit_extern_prototype(FILE *c, const ZirModule *m, const ZirImport *imp)
 }
 
 static void
-lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count, const char *out_dir)
+lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
+             int restab_count, const char *out_dir, int linked)
 {
     char stem[512];
     char guard[600];
@@ -1293,7 +809,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
     if(h == NULL)
         return;
     fprintf(h, "/* Generated by zi2c from %s. */\n", m->source_path);
-    fprintf(h, "#ifndef %s\n#define %s\n\n#include <stdint.h>\n#include <stdbool.h>\n", guard, guard);
+    fprintf(h, "#ifndef %s\n#define %s\n\n#include <stdint.h>\n#include <stddef.h>\n#include <stdbool.h>\n", guard, guard);
     fputs("#include \"zir_bounds.h\"\n", h);
     if(ModuleUsesSlices(m))
         fputs("#include \"zir_slice.h\"\n", h);
@@ -1303,21 +819,8 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
 
         if(!imp->required)
             continue;   /* private-scope imports go to the .c only */
-        if(imp->kind == ZIR_IMPORT_HEADER) {
-            const char *dot = strrchr(imp->target, '.');
-            const char *slash = strrchr(imp->target, '/');
-            int has_ext = dot != NULL && (slash == NULL || dot > slash);
-
-            /* Angled includes stay angled; extension-less targets get
-             * the .h of their generated header. */
-            emit_guard_open(h, imp->guard);
-            if(strchr(imp->signature, '<') != NULL)
-                fprintf(h, "#include <%s>\n", imp->target);
-            else if(has_ext)
-                fprintf(h, "#include \"%s\"\n", imp->target);
-            else
-                fprintf(h, "#include \"%s.h\"\n", imp->target);
-            emit_guard_close(h, imp->guard);
+        if(imp->kind == ZIR_IMPORT_OPEN) {
+            fprintf(h, "#include \"%s.h\"\n", imp->target);
         } else if(imp->kind == ZIR_IMPORT_MODULE)
             fprintf(h, "#include \"%s.h\"\n", imp->target);
     }
@@ -1329,75 +832,62 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
      * through the generated header -- a .c-only emission starves those. */
     for(i = 0; i < m->define_count; i++) {
         const ZirDefine *d = &m->defines[i];
+        char name[LOWER_NAME_MAX], value[LOWER_TEXT_MAX];
 
+        TargetDefineName(m, ZIR_C, d->name, name, sizeof(name));
+        if(!rewrite_body2(m, NULL, 0, d->value, value, sizeof(value), NULL))
+            c_rewrite_overflow(m->source_path, d->span.line);
         if(!d->is_public) fprintf(h, "#ifdef %s_PRIVATE\n", guard);
-        emit_guard_open(h, d->guard);
-        fprintf(h, "#define %s %s\n", d->name, d->value);
-        emit_guard_close(h, d->guard);
+        fprintf(h, "#define %s %s\n", name, value);
         if(!d->is_public) fputs("#endif\n", h);
     }
-    /* Typedefs and enums first (structs + globals reference them). */
+    for(i = 0; i < m->type_count; i++) {
+        const ZirType *slot = &m->types[i];
+        if(!slot->is_procedure_type || !slot->is_c_call)
+            continue;
+        EmitSlotType(h, slot, ZIR_C, NULL, NULL);
+    }
+    /* Stored procedure values may appear in record fields. Forward record
+     * names before defining the procedure descriptors they contain. */
     for(i = 0; i < m->type_count; i++) {
         const ZirType *ty = &m->types[i];
-
-        if(strcmp(ty->name, "#typedef") == 0) {
+        if(!ty->is_extern && !ty->is_record_template &&
+           !ty->is_procedure_type && !ty->is_enum) {
             if(!ty->is_public) fprintf(h, "#ifdef %s_PRIVATE\n", guard);
-            emit_guard_open(h, ty->guard);
-            fprintf(h, "\ntypedef %s;\n", ty->body);
-            emit_guard_close(h, ty->guard);
+            fprintf(h, "typedef %s %s %s;\n",
+                    ty->is_union ? "union" : "struct", ty->name, ty->name);
             if(!ty->is_public) fputs("#endif\n", h);
         }
-    }
-    for(i = 0; i < m->type_count; i++) {
-        const ZirType *ty = &m->types[i];
-
-        if(strcmp(ty->name, "#enum") != 0)
-            continue;
-        /* #enum { A, B } — newline-separated members need commas in C. */
-        if(!ty->is_public) fprintf(h, "#ifdef %s_PRIVATE\n", guard);
-        emit_guard_open(h, ty->guard);
-        fprintf(h, "\nenum {\n");
-        {
-            const char *line = ty->body;
-
-            while(line != NULL && *line != '\0') {
-                const char *nl = strchr(line, '\n');
-                size_t len = nl ? (size_t)(nl - line) : strlen(line);
-
-                if(len > 0) {
-                    char raw[LOWER_TEXT_MAX];
-
-                    if(len >= sizeof(raw))
-                        len = sizeof(raw) - 1;
-                    memcpy(raw, line, len);
-                    raw[len] = '\0';
-                    /* strip trailing comma if present, then add one */
-                    while(len > 0 && (raw[len - 1] == ' ' || raw[len - 1] == ','))
-                        raw[--len] = '\0';
-                    if(raw[0] != '\0')
-                        fprintf(h, "    %s,\n", raw);
-                }
-                line = nl ? nl + 1 : NULL;
-            }
-        }
-        fprintf(h, "};\n");
-        emit_guard_close(h, ty->guard);
-        if(!ty->is_public) fputs("#endif\n", h);
-    }
-    for(i = 0; i < m->type_count; i++) {
-        const ZirType *ty = &m->types[i];
-
-        if(ty->is_extern || ty->is_variant_template ||
-           ty->is_record_template ||
-           strcmp(ty->name, "#enum") == 0 ||
-           strcmp(ty->name, "#typedef") == 0)
-            continue;
-        if(ty->is_slot)
-            continue;
-        if(!ty->is_public) fprintf(h, "#ifdef %s_PRIVATE\n", guard);
-        emit_guard_open(h, ty->guard);
         if(ty->is_enum) {
-            fprintf(h, "\ntypedef int32_t %s;\nenum {\n", ty->name);
+            const char *backing = enum_storage_type(ty->enum_backing);
+            if(backing == NULL) {
+                Diagnostic(ty->span, "zir_c.enum", "invalid enum backing type");
+                exit(1);
+            }
+            fprintf(h, "typedef %s %s;\n", backing, ty->name);
+        }
+    }
+    for(i = 0; i < m->type_count; i++) {
+        const ZirType *slot = &m->types[i];
+        if(!slot->is_procedure_type || slot->is_c_call)
+            continue;
+        EmitSlotType(h, slot, ZIR_C, NULL, NULL);
+    }
+    for(i = 0; i < m->type_count; i++) {
+        const ZirType *ty = &m->types[i];
+
+        if(ty->is_extern || ty->is_record_template)
+            continue;
+        if(ty->is_procedure_type)
+            continue;
+        if(!ty->is_public) fprintf(h, "#ifdef %s_PRIVATE\n", guard);
+        if(ty->is_enum) {
+            const char *backing = enum_storage_type(ty->enum_backing);
+            if(backing == NULL) {
+                Diagnostic(ty->span, "zir_c.enum", "invalid enum backing type");
+                exit(1);
+            }
+            fprintf(h, "\nenum {\n");
             {
                 const char *line = ty->body;
 
@@ -1415,18 +905,34 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
                         while(len > 0 && (raw[len - 1] == ' ' ||
                                           raw[len - 1] == ','))
                             raw[--len] = '\0';
-                        if(raw[0] != '\0')
-                            fprintf(h, "    %s,\n", raw);
+                        if(raw[0] != '\0') {
+                            size_t member_length = 0;
+                            while(isalnum((unsigned char)raw[member_length]) ||
+                                  raw[member_length] == '_')
+                                member_length++;
+                            if(member_length == 0) {
+                                Diagnostic(ty->span, "zir_c.enum",
+                                           "invalid enum member declaration");
+                                exit(1);
+                            }
+                            int prefixed = member_length >= strlen(ty->name) &&
+                                strncmp(raw, ty->name, strlen(ty->name)) == 0;
+                            fprintf(h, "    %s%s%.*s%s,\n",
+                                    prefixed ? "" : ty->name,
+                                    prefixed ? "" : "_",
+                                    (int)member_length, raw,
+                                    raw + member_length);
+                        }
                     }
                     line = nl ? nl + 1 : NULL;
                 }
             }
             fprintf(h, "};\n");
-            emit_guard_close(h, ty->guard);
             if(!ty->is_public) fputs("#endif\n", h);
             continue;
         }
-        fprintf(h, "\ntypedef struct %s {\n", ty->name);
+        fprintf(h, "\n%s %s {\n", ty->is_union ? "union" : "struct",
+                ty->name);
         /* Each body line is a field decl: 'name: [N] Type' / 'name: Type'. */
         {
             const char *line = ty->body;
@@ -1436,6 +942,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
                 size_t len = nl ? (size_t)(nl - line) : strlen(line);
                 char raw[LOWER_TEXT_MAX];
                 char name[LOWER_NAME_MAX];
+                char mapped[LOWER_NAME_MAX];
                 char type[LOWER_TEXT_MAX];
                 char base[LOWER_TEXT_MAX];
                 char suffix[LOWER_NAME_MAX];
@@ -1456,6 +963,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
                         nl2 = sizeof(name) - 1;
                     memcpy(name, raw, nl2);
                     name[nl2] = '\0';
+                    TargetFieldName(ty, ZIR_C, name, mapped, sizeof(mapped));
                     snprintf(type, sizeof(type), "%s", ty2);
                     split_array_type(type, base, sizeof(base),
                                      suffix, sizeof(suffix));
@@ -1466,33 +974,26 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
                         snprintf(base, sizeof(base), "%s", tmpb);
                         rewrite_self_pointer_type(ty->name, base, sizeof(base));
                     }
-                    fprintf(h, "    %s %s%s;\n", base, name, suffix);
+                    fprintf(h, "    %s %s%s;\n", base, mapped, suffix);
                 }
                 line = nl ? nl + 1 : NULL;
             }
         }
-        fprintf(h, "} %s;\n", ty->name);
-        emit_guard_close(h, ty->guard);
+        fprintf(h, "};\n");
         if(!ty->is_public) fputs("#endif\n", h);
     }
-    for(i = 0; i < m->type_count; i++) {
-        const ZirType *slot = &m->types[i];
-        if(!slot->is_slot)
-            continue;
-        emit_guard_open(h, slot->guard);
-        EmitSlotType(h, slot, ZIR_C, NULL, NULL);
-        emit_guard_close(h, slot->guard);
-    }
-    /* #global variables have external linkage: declare extern in the header,
+    /* Public file-scope variables have external linkage: declare extern in the header,
      * after every named type they reference. Private-scope globals stay
      * in the .c. */
     for(i = 0; i < m->global_count; i++) {
         const ZirGlobal *g = &m->globals[i];
         char base[LOWER_TEXT_MAX];
         char suffix[LOWER_NAME_MAX];
+        char name[LOWER_NAME_MAX];
 
         if(g->is_static)
             continue;
+        TargetGlobalName(m, ZIR_C, g->name, name, sizeof(name));
         split_array_type(g->type, base, sizeof(base), suffix, sizeof(suffix));
         {
             char tmpb[LOWER_TEXT_MAX];
@@ -1507,9 +1008,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
                 snprintf(suffix, sizeof(suffix), "%s", tmps);
             }
         }
-        emit_guard_open(h, g->guard);
-        fprintf(h, "extern %s %s%s;\n", base, g->name, suffix);
-        emit_guard_close(h, g->guard);
+        fprintf(h, "extern %s %s%s;\n", base, name, suffix);
     }
     /* A public extern declaration is part of the generated module interface. */
     for(i = 0; i < m->import_count; i++) {
@@ -1518,33 +1017,32 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
         if(imp->kind != ZIR_IMPORT_EXTERN || !imp->is_public ||
            imp->signature[0] == '\0')
             continue;
-        emit_guard_open(h, imp->guard);
         emit_extern_prototype(h, m, imp);
-        emit_guard_close(h, imp->guard);
     }
     for(i = 0; i < m->function_count; i++) {
         const ZirFunction *fn = &m->functions[i];
-        if(fn->is_closure)
-            continue;
         char cname[LOWER_NAME_MAX];
         char cargs[LOWER_TEXT_MAX];
         char cret[LOWER_NAME_MAX];
 
-        if(!fn->is_public)
+        if(fn->is_template || !fn->is_public)
             continue;   /* private functions are file-static */
         function_c_name(m, fn, cname, sizeof(cname));
         char abi_args[ZIR_TEXT_MAX];
         ArrayAbiArgs(fn, abi_args, sizeof(abi_args));
-        convert_args(m, abi_args, cargs, sizeof(cargs));
+        convert_args(m, fn, abi_args, cargs, sizeof(cargs));
         strip_alias_type(m, ArrayElementType(fn->return_type, NULL, 0, NULL) ? "void" : fn->return_type,
                          cret, sizeof(cret));
-        emit_guard_open(h, fn->guard);
         fprintf(h, "%s %s(%s);\n",
                 cret[0] ? cret : "void", cname, cargs);
-        emit_guard_close(h, fn->guard);
     }
     fprintf(h, "\n#ifdef __cplusplus\n}\n#endif\n\n#endif /* %s */\n", guard);
     fclose(h);
+
+    /* Type-only modules have a header but no translation unit to compile. */
+    if(linked && m->function_count == 0 && m->global_count == 0 &&
+       m->assert_count == 0)
+        return;
 
     /* --- source --- */
     c = fopen(cpath, "wb");
@@ -1553,40 +1051,26 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
     fprintf(c, "/* Generated by zi2c from %s. */\n", m->source_path);
     fprintf(c, "#define %s_PRIVATE 1\n#include \"%s.h\"\n#undef %s_PRIVATE\n",
             guard, stem, guard);
-    fprintf(c, "#include <stdio.h>\n#include <stdlib.h>\n");
+    if(ModuleUsesVecOperations(m))
+        fputs("#include \"zir_vec.h\"\n", c);
     EmitNumbers(c, m, ZIR_C);
     /* Private-scope imports include here (implementation-only). */
     for(i = 0; i < m->import_count; i++) {
         const ZirImport *imp = &m->imports[i];
-        const char *dot;
-        const char *slash;
-        int has_ext;
-
-        if(imp->required || imp->kind != ZIR_IMPORT_HEADER)
+        if(imp->required || imp->kind != ZIR_IMPORT_OPEN)
             continue;
-        dot = strrchr(imp->target, '.');
-        slash = strrchr(imp->target, '/');
-        has_ext = dot != NULL && (slash == NULL || dot > slash);
-        emit_guard_open(c, imp->guard);
-        if(strchr(imp->signature, '<') != NULL)
-            fprintf(c, "#include <%s>\n", imp->target);
-        else if(has_ext)
-            fprintf(c, "#include \"%s\"\n", imp->target);
-        else
-            fprintf(c, "#include \"%s.h\"\n", imp->target);
-        emit_guard_close(c, imp->guard);
+        fprintf(c, "#include \"%s.h\"\n", imp->target);
     }
-    fprintf(c, "\n#define ZIRAN_PRIVATE_UNUSED __attribute__((unused))\n");
     /* Module constants lowered to C preprocessor constants. */
     for(i = 0; i < m->define_count; i++) {
         const ZirDefine *d = &m->defines[i];
+        char name[LOWER_NAME_MAX], value[LOWER_TEXT_MAX];
 
-        emit_guard_open(c, d->guard);
-        fprintf(c, "#define %s %s\n", d->name, d->value);
-        emit_guard_close(c, d->guard);
+        TargetDefineName(m, ZIR_C, d->name, name, sizeof(name));
+        if(!rewrite_body2(m, NULL, 0, d->value, value, sizeof(value), NULL))
+            c_rewrite_overflow(m->source_path, d->span.line);
+        fprintf(c, "#define %s %s\n", name, value);
     }
-    for(i = 0; i < m->assert_count; i++)
-        emit_compile_assert(c, &m->asserts[i]);
     /* #foreign imports: emit C prototypes parsed from the raw signature
      * ('name :: (args) -> Ret #foreign library;'). */
     for(i = 0; i < m->import_count; i++) {
@@ -1601,30 +1085,28 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
      * definitions may reference them before their definition. */
     for(i = 0; i < m->function_count; i++) {
         const ZirFunction *fn = &m->functions[i];
-        if(fn->is_closure)
-            continue;
         char cname[LOWER_NAME_MAX];
         char cargs[LOWER_TEXT_MAX];
         char cret[LOWER_NAME_MAX];
 
-        if(fn->is_public || fn->is_extern)
+        if(fn->is_template || fn->is_public || fn->is_extern)
             continue;
         function_c_name(m, fn, cname, sizeof(cname));
         char abi_args[ZIR_TEXT_MAX];
         ArrayAbiArgs(fn, abi_args, sizeof(abi_args));
-        convert_args(m, abi_args, cargs, sizeof(cargs));
+        convert_args(m, fn, abi_args, cargs, sizeof(cargs));
         strip_alias_type(m, ArrayElementType(fn->return_type, NULL, 0, NULL) ? "void" : fn->return_type,
                          cret, sizeof(cret));
-        emit_guard_open(c, fn->guard);
-        fprintf(c, "static ZIRAN_PRIVATE_UNUSED %s %s(%s);\n",
+        fprintf(c, "static %s %s(%s);\n",
                 cret[0] ? cret : "void", cname, cargs);
-        emit_guard_close(c, fn->guard);
     }
     for(i = 0; i < m->global_count; i++) {
         const ZirGlobal *g = &m->globals[i];
         char base[LOWER_TEXT_MAX];
         char suffix[LOWER_NAME_MAX];
+        char name[LOWER_NAME_MAX];
 
+        TargetGlobalName(m, ZIR_C, g->name, name, sizeof(name));
         split_array_type(g->type, base, sizeof(base), suffix, sizeof(suffix));
         {
             char tmpb[LOWER_TEXT_MAX];
@@ -1649,70 +1131,50 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab, int restab_count,
             if(!ScalarLiteral(g->type, g->init, ZIR_C, g->span, initw, sizeof(initw)))
                 if(!rewrite_body2(m, NULL, 0, g->init, initw, sizeof(initw), NULL))
                     c_rewrite_overflow(m->source_path, g->span.line);
-            emit_guard_open(c, g->guard);
             fprintf(c, "%s%s %s%s = %s;\n", g->is_static ? "static " : "",
-                    base, g->name, suffix,
+                    base, name, suffix,
                     initw[0] ? initw : "{0}");
-            emit_guard_close(c, g->guard);
         }
-    }
-    for(i = 0; i < m->state_count; i++) {
-        const ZirStateField *f = &m->state_fields[i];
-        char base[LOWER_NAME_MAX];
-        char suffix[LOWER_NAME_MAX];
-
-        split_array_type(f->type, base, sizeof(base), suffix, sizeof(suffix));
-        char mapped[LOWER_NAME_MAX], init[LOWER_TEXT_MAX];
-        strip_alias_type(m,base,mapped,sizeof(mapped));
-        if(!ScalarLiteral(f->type,f->init[0]?f->init:"0",ZIR_C,f->span,init,sizeof(init)))
-            snprintf(init,sizeof(init),"%s",f->init[0]?f->init:"{0}");
-        emit_guard_open(c, f->guard);
-        fprintf(c, "static %s %s%s = %s;\n", mapped, f->name, suffix, init);
-        emit_guard_close(c, f->guard);
     }
     for(i = 0; i < m->function_count; i++) {
         const ZirFunction *fn = &m->functions[i];
-        if(fn->is_closure)
-            continue;
         char cname[LOWER_NAME_MAX];
         char cargs[LOWER_TEXT_MAX];
         char cret[LOWER_NAME_MAX];
 
+        if(fn->is_template) continue;
         function_c_name(m, fn, cname, sizeof(cname));
         char abi_args[ZIR_TEXT_MAX];
         ArrayAbiArgs(fn, abi_args, sizeof(abi_args));
-        convert_args(m, abi_args, cargs, sizeof(cargs));
+        convert_args(m, fn, abi_args, cargs, sizeof(cargs));
         strip_alias_type(m, ArrayElementType(fn->return_type, NULL, 0, NULL) ? "void" : fn->return_type,
                          cret, sizeof(cret));
         if(fn->is_extern) {
             /* extern: prototype only, no body */
             fprintf(c, "\n");
-            emit_guard_open(c, fn->guard);
             fprintf(c, "%s %s(%s);\n",
                     cret[0] ? cret : "void", cname, cargs);
-            emit_guard_close(c, fn->guard);
             continue;
         }
         fprintf(c, "\n");
-        emit_guard_open(c, fn->guard);
         BodySymbols symbols = {m, restab, restab_count};
         EmitSlotWrappers(c, m, fn, ZIR_C, resolve_body_symbol, &symbols);
         if(fn->is_public)
             fprintf(c, "%s\n%s(%s)\n{\n", cret[0] ? cret : "void",
                     cname, cargs);
         else
-            fprintf(c, "static ZIRAN_PRIVATE_UNUSED %s\n%s(%s)\n{\n",
+            fprintf(c, "static %s\n%s(%s)\n{\n",
                     cret[0] ? cret : "void", cname, cargs);
         lower_body(c, m, restab, restab_count, fn);
         fprintf(c, "}\n");
-        emit_guard_close(c, fn->guard);
     }
     fclose(c);
     c_plan9_rewrite_file(cpath);
 }
 
 void
-c_lower(const ZirProgram *program, const char *root, const char *out_dir, const ZirCModuleSyms *restab, int restab_count)
+c_lower(const ZirProgram *program, const char *root, const char *out_dir,
+        const ZirCModuleSyms *restab, int restab_count, int linked)
 {
     int i;
 
@@ -1720,7 +1182,8 @@ c_lower(const ZirProgram *program, const char *root, const char *out_dir, const 
     if(program == NULL)
         return;
     for(i = 0; i < program->module_count; i++)
-        lower_module(&program->modules[i], restab, restab_count, out_dir);
+        lower_module(&program->modules[i], restab, restab_count, out_dir,
+                     linked);
 }
 
 void
@@ -1760,6 +1223,7 @@ c_build_syms(const ZirProgram *program, ZirCModuleSyms *out)
 
         for(j = 0; j < m->function_count && out->fn_count < 256; j++) {
             const ZirFunction *fn = &m->functions[j];
+            if(fn->is_template) continue;
 
             snprintf(out->fns[out->fn_count].source,
                      sizeof(out->fns[0].source), "%s", fn->name);

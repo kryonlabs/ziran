@@ -1,15 +1,15 @@
 #include "zir_bundle.h"
 #include "zir_check.h"
 #include "zir_diagnostic.h"
-#include "zir_laws.h"
 #include "zir_serial.h"
+#include "zir_text.h"
 
 #include <ctype.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-enum { ZIB_VERSION = 7, ZIB_MAX_IR_BYTES = 256 * 1024 * 1024,
+enum { ZIB_VERSION = 16, ZIB_MAX_IR_BYTES = 256 * 1024 * 1024,
        ZIB_MAX_CAPABILITIES = 4096 };
 
 typedef struct CapabilityName {
@@ -18,12 +18,23 @@ typedef struct CapabilityName {
 } CapabilityName;
 
 static int
+module_name_order(const void *left, const void *right)
+{
+    const ZirModule *a = left;
+    const ZirModule *b = right;
+    return strcmp(a->name, b->name);
+}
+
+static int
 count_capabilities(const ZirProgram *program)
 {
     int count = 0;
     for(int m = 0; m < program->module_count; m++)
         for(int i = 0; i < program->modules[m].import_count; i++)
-            count += program->modules[m].imports[i].kind == ZIR_IMPORT_EXTERN;
+            count += program->modules[m].imports[i].kind == ZIR_IMPORT_EXTERN &&
+                     (program->modules[m].imports[i].extern_kind != ZIR_EXTERN_HOST ||
+                      strncmp(program->modules[m].imports[i].target,
+                              "ziran:", 6) != 0);
     return count;
 }
 
@@ -93,7 +104,6 @@ copy_function(ZirFunction *target, const ZirFunction *source)
     *target = *source;
     target->stmts = NULL;
     target->exprs = NULL;
-    target->captures = NULL;
     if(source->stmt_count > 0) {
         target->stmts = malloc((size_t)source->stmt_count * sizeof(*target->stmts));
         if(target->stmts == NULL)
@@ -108,15 +118,504 @@ copy_function(ZirFunction *target, const ZirFunction *source)
         memcpy(target->exprs, source->exprs,
                (size_t)source->expr_count * sizeof(*target->exprs));
     }
-    if(source->capture_count > 0) {
-        target->captures = malloc((size_t)source->capture_count *
-                                  sizeof(*target->captures));
-        if(target->captures == NULL)
-            return 0;
-        memcpy(target->captures, source->captures,
-               (size_t)source->capture_count * sizeof(*target->captures));
+    return 1;
+}
+
+/* The entry linker works on a private checked graph. Its source may also be
+ * used for a different entry, so pruning must never change that graph. */
+static ZirProgram *
+copy_program(const ZirProgram *source)
+{
+    ZirProgram *result = ProgramNew();
+    if(result == NULL)
+        return NULL;
+    result->modules = calloc((size_t)(source->module_count ?
+                             source->module_count : 1), sizeof(*result->modules));
+    if(result->modules == NULL)
+        goto failed;
+    result->module_count = result->module_cap = source->module_count;
+    for(int m = 0; m < source->module_count; m++) {
+        const ZirModule *from = &source->modules[m];
+        ZirModule *to = &result->modules[m];
+        *to = *from;
+        to->globals = NULL; to->global_count = to->global_cap = 0;
+        to->defines = NULL; to->define_count = to->define_cap = 0;
+        to->asserts = NULL; to->assert_count = to->assert_cap = 0;
+        to->types = NULL; to->type_count = to->type_cap = 0;
+        to->imports = NULL; to->import_count = to->import_cap = 0;
+        to->functions = NULL; to->function_count = to->function_cap = 0;
+#define COPY_DECLARATIONS(member, count, capacity) do { \
+        if(from->count > 0) { \
+            to->member = malloc((size_t)from->count * sizeof(*to->member)); \
+            if(to->member == NULL) goto failed; \
+            memcpy(to->member, from->member, \
+                   (size_t)from->count * sizeof(*to->member)); \
+            to->count = to->capacity = from->count; \
+        } \
+    } while(0)
+        COPY_DECLARATIONS(globals, global_count, global_cap);
+        COPY_DECLARATIONS(defines, define_count, define_cap);
+        COPY_DECLARATIONS(asserts, assert_count, assert_cap);
+        COPY_DECLARATIONS(types, type_count, type_cap);
+        COPY_DECLARATIONS(imports, import_count, import_cap);
+#undef COPY_DECLARATIONS
+        if(from->function_count > 0) {
+            to->functions = calloc((size_t)from->function_count,
+                                   sizeof(*to->functions));
+            if(to->functions == NULL)
+                goto failed;
+            to->function_count = to->function_cap = from->function_count;
+            for(int f = 0; f < from->function_count; f++)
+                if(!copy_function(&to->functions[f], &from->functions[f]))
+                    goto failed;
+        }
+    }
+    if(!LinkImports(&result, 1))
+        goto failed;
+    return result;
+failed:
+    ProgramFree(result);
+    return NULL;
+}
+
+/* A known result here also means evaluating the expression has no effect.
+ * In particular, `false && Call()` is known; `Call() && false` is not. */
+static int
+constant_bool(const ZirFunction *fn, int index, int depth)
+{
+    if(index < 0 || index >= fn->expr_count || depth > 64)
+        return -1;
+    const ZirExpr *expr = &fn->exprs[index];
+    if(expr->kind == ZIR_EXPR_IDENT) {
+        if(!strcmp(expr->name, "true")) return 1;
+        if(!strcmp(expr->name, "false")) return 0;
+    }
+    if(expr->kind == ZIR_EXPR_UNARY && !strcmp(expr->op, "!")) {
+        int value = constant_bool(fn, expr->right, depth + 1);
+        return value < 0 ? -1 : !value;
+    }
+    if(expr->kind == ZIR_EXPR_BINARY &&
+       (!strcmp(expr->op, "&&") || !strcmp(expr->op, "||"))) {
+        int left = constant_bool(fn, expr->left, depth + 1);
+        if(left < 0) return -1;
+        if(!strcmp(expr->op, "&&") && !left) return 0;
+        if(!strcmp(expr->op, "||") && left) return 1;
+        return constant_bool(fn, expr->right, depth + 1);
+    }
+    if(expr->kind == ZIR_EXPR_CONDITIONAL) {
+        int condition = constant_bool(fn, expr->left, depth + 1);
+        if(condition >= 0)
+            return constant_bool(fn, condition ? expr->right : expr->third,
+                                 depth + 1);
+    }
+    return -1;
+}
+
+static int
+statement_close(const ZirFunction *fn, int begin, int end)
+{
+    int depth = 1;
+    for(int i = begin + 1; i < end; i++) {
+        ZirStmtKind kind = fn->stmts[i].kind;
+        if(kind == ZIR_STMT_IF || kind == ZIR_STMT_WHILE ||
+           kind == ZIR_STMT_BLOCK_OPEN)
+            depth++;
+        else if(kind == ZIR_STMT_BLOCK_CLOSE && --depth == 0)
+            return i;
+    }
+    return -1;
+}
+
+static int
+append_statement(ZirFunction *to, const ZirStmt *statement)
+{
+    if(to->stmt_count >= to->stmt_cap)
+        return 0;
+    to->stmts[to->stmt_count++] = *statement;
+    return 1;
+}
+
+static int
+copy_live_sequence(const ZirFunction *from, ZirFunction *to,
+                   int begin, int end, int depth, int *stops)
+{
+    if(depth > 64)
+        return 0;
+    *stops = 0;
+    for(int i = begin; i < end; i++) {
+        const ZirStmt *statement = &from->stmts[i];
+        if(statement->kind == ZIR_STMT_IF && !statement->is_else) {
+            int branch = i, unknown = 0, chosen = 0;
+            int all_branches_stop = 1;
+            do {
+                const ZirStmt *head = &from->stmts[branch];
+                int close = statement_close(from, branch, end);
+                if(close < 0) return 0;
+                int known = head->expr_root < 0 ? 1 :
+                    constant_bool(from, head->expr_root, 0);
+                if(!chosen && known != 0) {
+                    int branch_stops = 0;
+                    ZirStmt live = *head;
+                    if(known == 1 && !unknown) {
+                        live.kind = ZIR_STMT_BLOCK_OPEN;
+                        live.expr_root = -1;
+                        live.is_else = 0;
+                    } else {
+                        live.is_else = unknown;
+                        if(known == 1) live.expr_root = -1;
+                    }
+                    if(!append_statement(to, &live) ||
+                       !copy_live_sequence(from, to, branch + 1, close,
+                                           depth + 1, &branch_stops) ||
+                       !append_statement(to, &from->stmts[close]))
+                        return 0;
+                    all_branches_stop &= branch_stops;
+                    if(known == 1) chosen = 1;
+                    else unknown = 1;
+                }
+                branch = close + 1;
+            } while(branch < end && from->stmts[branch].kind == ZIR_STMT_IF &&
+                    from->stmts[branch].is_else);
+            i = branch - 1;
+            if(chosen && all_branches_stop) {
+                *stops = 1;
+                break;
+            }
+        } else if(statement->kind == ZIR_STMT_WHILE ||
+                  statement->kind == ZIR_STMT_BLOCK_OPEN) {
+            int close = statement_close(from, i, end);
+            if(close < 0) return 0;
+            if(statement->kind != ZIR_STMT_WHILE ||
+               constant_bool(from, statement->expr_root, 0) != 0) {
+                int body_stops = 0;
+                if(!append_statement(to, statement) ||
+                   !copy_live_sequence(from, to, i + 1, close, depth + 1,
+                                       &body_stops) ||
+                   !append_statement(to, &from->stmts[close]))
+                    return 0;
+                if(statement->kind == ZIR_STMT_BLOCK_OPEN && body_stops) {
+                    *stops = 1;
+                    break;
+                }
+            }
+            i = close;
+        } else {
+            if(!append_statement(to, statement)) return 0;
+            if(statement->kind == ZIR_STMT_RETURN ||
+               statement->kind == ZIR_STMT_UNREACHABLE ||
+               statement->kind == ZIR_STMT_BREAK ||
+               statement->kind == ZIR_STMT_CONTINUE) {
+                *stops = 1;
+                break;
+            }
+        }
     }
     return 1;
+}
+
+static int
+copy_live_expression(const ZirFunction *from, ZirFunction *to,
+                     int *mapping, int source, int depth)
+{
+    if(source < 0) return -1;
+    if(source >= from->expr_count || depth > 128) return -2;
+    if(mapping[source] >= 0) return mapping[source];
+    const ZirExpr *expr = &from->exprs[source];
+    if(expr->kind == ZIR_EXPR_CONDITIONAL) {
+        int known = constant_bool(from, expr->left, 0);
+        if(known >= 0) {
+            int selected = known ? expr->right : expr->third;
+            int result = copy_live_expression(from, to, mapping, selected,
+                                              depth + 1);
+            mapping[source] = result;
+            return result;
+        }
+    }
+    if(expr->kind == ZIR_EXPR_BINARY &&
+       (!strcmp(expr->op, "&&") || !strcmp(expr->op, "||"))) {
+        int left = constant_bool(from, expr->left, 0);
+        if(left >= 0) {
+            if((!strcmp(expr->op, "&&") && left) ||
+               (!strcmp(expr->op, "||") && !left)) {
+                int result = copy_live_expression(from, to, mapping,
+                                                  expr->right, depth + 1);
+                mapping[source] = result;
+                return result;
+            }
+            /* A short circuit has no run-time evaluation. */
+            int result = to->expr_count++;
+            if(result >= to->expr_cap) return -2;
+            to->exprs[result] = *expr;
+            to->exprs[result].kind = ZIR_EXPR_IDENT;
+            copy_text(to->exprs[result].name,
+                      sizeof(to->exprs[result].name), left ? "true" : "false");
+            to->exprs[result].left = to->exprs[result].right =
+                to->exprs[result].third = to->exprs[result].first_child =
+                to->exprs[result].next_sibling = -1;
+            mapping[source] = result;
+            return result;
+        }
+    }
+    int children[] = {expr->left, expr->right, expr->third};
+    int copied_children[3];
+    for(int i = 0; i < 3; i++) {
+        copied_children[i] = copy_live_expression(from, to, mapping,
+                                                  children[i], depth + 1);
+        if(copied_children[i] < -1) return -2;
+    }
+    int first_child = -1, last_child = -1;
+    for(int child = expr->first_child; child >= 0;
+        child = from->exprs[child].next_sibling) {
+        int copied = copy_live_expression(from, to, mapping, child, depth + 1);
+        if(copied < 0) return -2;
+        if(first_child < 0) first_child = copied;
+        if(last_child >= 0) to->exprs[last_child].next_sibling = copied;
+        to->exprs[copied].next_sibling = -1;
+        last_child = copied;
+    }
+    int result = to->expr_count++;
+    if(result >= to->expr_cap) return -2;
+    to->exprs[result] = *expr;
+    mapping[source] = result;
+    to->exprs[result].left = copied_children[0];
+    to->exprs[result].right = copied_children[1];
+    to->exprs[result].third = copied_children[2];
+    to->exprs[result].first_child = first_child;
+    to->exprs[result].next_sibling = -1;
+    return result;
+}
+
+static int
+prune_function(ZirFunction *fn)
+{
+    ZirFunction original = *fn;
+    ZirFunction output = original;
+    output.stmts = calloc((size_t)(original.stmt_count ? original.stmt_count : 1),
+                          sizeof(*output.stmts));
+    output.exprs = calloc((size_t)(original.expr_count ? original.expr_count : 1),
+                          sizeof(*output.exprs));
+    int *mapping = malloc((size_t)(original.expr_count ? original.expr_count : 1) *
+                          sizeof(*mapping));
+    if(output.stmts == NULL || output.exprs == NULL || mapping == NULL) {
+        free(output.stmts); free(output.exprs); free(mapping);
+        return 0;
+    }
+    output.stmt_count = output.expr_count = 0;
+    output.stmt_cap = original.stmt_count;
+    output.expr_cap = original.expr_count;
+    for(int i = 0; i < original.expr_count; i++) mapping[i] = -1;
+    int stops = 0;
+    int ok = copy_live_sequence(&original, &output, 0, original.stmt_count,
+                                0, &stops);
+    for(int s = 0; ok && s < output.stmt_count; s++) {
+        ZirStmt *statement = &output.stmts[s];
+        statement->expr_root = copy_live_expression(&original, &output,
+            mapping, statement->expr_root, 0);
+        statement->lhs_root = copy_live_expression(&original, &output,
+            mapping, statement->lhs_root, 0);
+        ok = statement->expr_root >= -1 && statement->lhs_root >= -1;
+    }
+    free(mapping);
+    if(!ok) {
+        free(output.stmts); free(output.exprs);
+        return 0;
+    }
+    free(original.stmts); free(original.exprs);
+    *fn = output;
+    return 1;
+}
+
+typedef struct FieldUse {
+    ZirType *type;
+    unsigned char *fields;
+    int count;
+} FieldUse;
+
+static FieldUse *
+find_field_use(FieldUse *uses, int count, const ZirType *type)
+{
+    if(type == NULL)
+        return NULL;
+    for(int i = 0; i < count; i++)
+        if(uses[i].type == type)
+            return &uses[i];
+    return NULL;
+}
+
+static int
+vec_operation(const char *name)
+{
+    return !strcmp(name, "VecPush") || !strcmp(name, "VecClear") ||
+           !strcmp(name, "VecFree") || !strcmp(name, "VecSwap");
+}
+
+static const char *
+record_name(const char *type)
+{
+    while(*type == '*' || *type == ' ')
+        type++;
+    return type;
+}
+
+static void
+mark_all_fields(const ZirModule *module, const char *name,
+                FieldUse *uses, int use_count)
+{
+    char element[ZIR_NAME_MAX];
+    const ZirModule *owner = NULL;
+    if(ArrayElementType(name, element, sizeof(element), NULL) ||
+       SliceElementType(name, element, sizeof(element))) {
+        mark_all_fields(module, element, uses, use_count);
+        return;
+    }
+    const ZirType *type = FindType(module, record_name(name), &owner);
+    FieldUse *use = find_field_use(uses, use_count, type);
+    if(use == NULL)
+        return;
+    size_t offset = 0;
+    ZirTypeField field;
+    int index = 0;
+    while(TypeNextField(type, &offset, &field) == 1 && index < use->count) {
+        if(!use->fields[index]) {
+            use->fields[index] = 1;
+            mark_all_fields(owner, field.type, uses, use_count);
+        }
+        index++;
+    }
+}
+
+static void
+mark_member_field(const ZirModule *module, const char *record_type,
+                  const char *field_name, FieldUse *uses, int use_count)
+{
+    const ZirType *type = FindType(module, record_name(record_type), NULL);
+    FieldUse *use = find_field_use(uses, use_count, type);
+    if(use == NULL)
+        return;
+    size_t offset = 0;
+    ZirTypeField field;
+    int index = 0;
+    while(TypeNextField(type, &offset, &field) == 1 && index < use->count) {
+        if(strcmp(field.name, field_name) == 0) {
+            use->fields[index] = 1;
+            return;
+        }
+        index++;
+    }
+}
+
+static void
+mark_signature_fields(const ZirModule *module, const char *args,
+                      const char *result, FieldUse *uses, int use_count)
+{
+    mark_all_fields(module, result, uses, use_count);
+    if(args == NULL || args[0] == '\0')
+        return;
+    char (*parts)[ZIR_TEXT_MAX] = calloc(64, sizeof(*parts));
+    if(parts == NULL)
+        return;
+    int count = split_top_level(args, parts[0], 64, sizeof(parts[0]));
+    for(int i = 0; i < count; i++) {
+        const char *colon = strchr(parts[i], ':');
+        if(colon != NULL)
+            mark_all_fields(module, colon + 1, uses, use_count);
+    }
+    free(parts);
+}
+
+/* Entry links are closed programs. A field unused by their checked graph
+ * need not occupy every element of a large retained array. Host signatures
+ * and the entry ABI keep their complete layouts. */
+static int
+prune_record_fields(ZirProgram *program, const char *entry_module,
+                    const char *entry_function)
+{
+    int use_count = 0;
+    for(int m = 0; m < program->module_count; m++)
+        use_count += program->modules[m].type_count;
+    FieldUse *uses = calloc((size_t)(use_count ? use_count : 1), sizeof(*uses));
+    if(uses == NULL)
+        return 0;
+    int next = 0;
+    for(int m = 0; m < program->module_count; m++) {
+        ZirModule *module = &program->modules[m];
+        for(int t = 0; t < module->type_count; t++) {
+            ZirType *type = &module->types[t];
+            FieldUse *use = &uses[next++];
+            if(type->is_enum || type->is_union || type->is_procedure_type ||
+               type->is_extern || type->is_record_template)
+                continue;
+            use->type = type;
+            size_t offset = 0;
+            ZirTypeField field;
+            while(TypeNextField(type, &offset, &field) == 1)
+                use->count++;
+            if(use->count > 0) {
+                use->fields = calloc((size_t)use->count, 1);
+                if(use->fields == NULL)
+                    goto failed;
+            }
+        }
+    }
+    for(int m = 0; m < program->module_count; m++) {
+        ZirModule *module = &program->modules[m];
+        for(int t = 0; t < module->type_count; t++)
+            if(VecElementType(module, module->types[t].name, NULL, 0))
+                mark_all_fields(module, module->types[t].name,
+                                uses, use_count);
+        for(int i = 0; i < module->import_count; i++)
+            if(module->imports[i].kind == ZIR_IMPORT_EXTERN)
+                mark_signature_fields(module, module->imports[i].args,
+                    module->imports[i].return_type, uses, use_count);
+        for(int f = 0; f < module->function_count; f++) {
+            ZirFunction *fn = &module->functions[f];
+            if(strcmp(module->name, entry_module) == 0 &&
+               strcmp(fn->name, entry_function) == 0)
+                mark_signature_fields(module, fn->args, fn->return_type,
+                                      uses, use_count);
+            for(int e = 0; e < fn->expr_count; e++) {
+                ZirExpr *expr = &fn->exprs[e];
+                if((expr->kind == ZIR_EXPR_MEMBER ||
+                    expr->kind == ZIR_EXPR_POINTER_MEMBER) &&
+                   expr->left >= 0 && expr->left < fn->expr_count)
+                    mark_member_field(module, fn->exprs[expr->left].type,
+                                      expr->name, uses, use_count);
+                else if(expr->kind == ZIR_EXPR_COMPOUND)
+                    mark_all_fields(module, expr->name, uses, use_count);
+            }
+        }
+    }
+    for(int i = 0; i < use_count; i++) {
+        FieldUse *use = &uses[i];
+        if(use->type == NULL || use->count == 0)
+            continue;
+        char body[sizeof(use->type->body)] = "";
+        size_t length = 0, offset = 0;
+        ZirTypeField field;
+        int index = 0;
+        while(TypeNextField(use->type, &offset, &field) == 1) {
+            if(use->fields[index]) {
+                int written = snprintf(body + length, sizeof(body) - length,
+                                       "%s: %s\n", field.name, field.type);
+                if(written < 0 || (size_t)written >= sizeof(body) - length)
+                    goto failed;
+                length += (size_t)written;
+            }
+            index++;
+        }
+        if(length == 0)
+            strcpy(body, "_unused: u8\n");
+        strcpy(use->type->body, body);
+    }
+    for(int i = 0; i < use_count; i++)
+        free(uses[i].fields);
+    free(uses);
+    return 1;
+failed:
+    for(int i = 0; i < use_count; i++)
+        free(uses[i].fields);
+    free(uses);
+    return 0;
 }
 
 static int
@@ -144,6 +643,9 @@ mark_type(const ZirProgram *program, const ZirModule *scope,
           const char *name, unsigned char **keep_types, int *changed)
 {
     char element[ZIR_NAME_MAX];
+    while(*name == '*') name++;
+    if(SliceElementType(name, element, sizeof(element)))
+        return mark_type(program, scope, element, keep_types, changed);
     if(ArrayElementType(name, element, sizeof(element), NULL))
         return mark_type(program, scope, element, keep_types, changed);
     const ZirModule *owner = NULL;
@@ -167,6 +669,8 @@ mark_parameters(const ZirProgram *program, const ZirModule *module,
             cursor++;
         char type[ZIR_NAME_MAX];
         size_t length = 0;
+        while(*cursor == '*' && length + 1 < sizeof(type))
+            type[length++] = *cursor++;
         if(*cursor == '[') {
             do {
                 if(length + 1 >= sizeof(type))
@@ -207,11 +711,61 @@ mentions_identifier(const char *text, const char *name)
 }
 
 static int
+global_is_used(const ZirModule *module, const unsigned char *keep,
+               const ZirGlobal *global)
+{
+    for(int f = 0; f < module->function_count; f++) {
+        if(!keep[f])
+            continue;
+        const ZirFunction *function = &module->functions[f];
+        for(int e = 0; e < function->expr_count; e++)
+            if(function->exprs[e].kind == ZIR_EXPR_IDENT &&
+               strcmp(function->exprs[e].name, global->name) == 0)
+                return 1;
+    }
+    return 0;
+}
+
+static int
+uses_constant_name(const ZirModule *module, const unsigned char *keep,
+                   const unsigned char *keep_types,
+                   const unsigned char *keep_defines, const char *name)
+{
+    for(int f = 0; f < module->function_count; f++) {
+        if(!keep[f])
+            continue;
+        for(int s = 0; s < module->functions[f].stmt_count; s++)
+            if(mentions_identifier(module->functions[f].stmts[s].text, name))
+                return 1;
+        for(int e = 0; e < module->functions[f].expr_count; e++)
+            if(mentions_identifier(module->functions[f].exprs[e].text, name))
+                return 1;
+    }
+    for(int t = 0; t < module->type_count; t++)
+        if(keep_types[t] &&
+           mentions_identifier(module->types[t].body, name))
+            return 1;
+    for(int g = 0; g < module->global_count; g++)
+        if(global_is_used(module, keep, &module->globals[g]) &&
+           (mentions_identifier(module->globals[g].type, name) ||
+            mentions_identifier(module->globals[g].init, name)))
+            return 1;
+    for(int d = 0; d < module->define_count; d++)
+        if(keep_defines[d] &&
+           mentions_identifier(module->defines[d].value, name))
+            return 1;
+    return 0;
+}
+
+static int
 uses_imported_constant(const ZirModule *module, const unsigned char *keep,
+                       const unsigned char *keep_types,
+                       const unsigned char *keep_defines,
+                       const unsigned char *dependency_defines,
                        const ZirModule *dependency)
 {
     for(int d = 0; d < dependency->define_count; d++) {
-        if(!dependency->defines[d].is_public)
+        if(!dependency_defines[d] || !dependency->defines[d].is_public)
             continue;
         const char *name = dependency->defines[d].name;
         for(int f = 0; f < module->function_count; f++)
@@ -220,8 +774,13 @@ uses_imported_constant(const ZirModule *module, const unsigned char *keep,
                     if(mentions_identifier(module->functions[f].stmts[s].text,
                                            name))
                         return 1;
+        for(int t = 0; t < module->type_count; t++)
+            if(keep_types[t] &&
+               mentions_identifier(module->types[t].body, name))
+                return 1;
         for(int local = 0; local < module->define_count; local++)
-            if(mentions_identifier(module->defines[local].value, name))
+            if(keep_defines[local] &&
+               mentions_identifier(module->defines[local].value, name))
                 return 1;
     }
     return 0;
@@ -230,6 +789,7 @@ uses_imported_constant(const ZirModule *module, const unsigned char *keep,
 static int
 import_is_used(const ZirProgram *program, const ZirModule *module,
                const unsigned char *keep, unsigned char **keep_types,
+               unsigned char **keep_defines,
                const ZirImport *import)
 {
     if(import->kind == ZIR_IMPORT_EXTERN) {
@@ -242,11 +802,17 @@ import_is_used(const ZirProgram *program, const ZirModule *module,
                         return 1;
         return 0;
     }
-    if(import->kind != ZIR_IMPORT_HEADER ||
+    if((import->kind != ZIR_IMPORT_OPEN &&
+        import->kind != ZIR_IMPORT_MODULE) ||
        import->resolved_module == NULL)
         return 0;
-    if(uses_imported_constant(module, keep, import->resolved_module))
-        return 1;
+    for(int m = 0; m < program->module_count; m++)
+        if(import->resolved_module == &program->modules[m] &&
+           uses_imported_constant(module, keep,
+               keep_types[module - program->modules],
+               keep_defines[module - program->modules],
+               keep_defines[m], import->resolved_module))
+            return 1;
     for(int f = 0; f < module->function_count; f++) {
         if(!keep[f])
             continue;
@@ -275,12 +841,13 @@ import_is_used(const ZirProgram *program, const ZirModule *module,
     return 0;
 }
 
-ZirProgram *
-BundleLink(const ZirProgram *program, const char *entry_module,
-           const char *entry_function)
+static ZirProgram *
+link_checked_entry(const ZirProgram *program, const char *entry_module,
+           const char *entry_function, int native)
 {
     unsigned char **keep = NULL;
     unsigned char **keep_types = NULL;
+    unsigned char **keep_defines = NULL;
     unsigned char *keep_modules = NULL;
     ZirProgram *linked = NULL;
     int entry_m = -1, entry_f = -1;
@@ -290,8 +857,10 @@ BundleLink(const ZirProgram *program, const char *entry_module,
         return NULL;
     keep = calloc((size_t)program->module_count, sizeof(*keep));
     keep_types = calloc((size_t)program->module_count, sizeof(*keep_types));
+    keep_defines = calloc((size_t)program->module_count, sizeof(*keep_defines));
     keep_modules = calloc((size_t)program->module_count, 1);
-    if(keep == NULL || keep_types == NULL || keep_modules == NULL)
+    if(keep == NULL || keep_types == NULL || keep_defines == NULL ||
+       keep_modules == NULL)
         goto failed;
     for(int m = 0; m < program->module_count; m++) {
         const ZirModule *module = &program->modules[m];
@@ -305,7 +874,9 @@ BundleLink(const ZirProgram *program, const char *entry_module,
                                   module->function_count : 1), 1);
         keep_types[m] = calloc((size_t)(module->type_count > 0 ?
                                         module->type_count : 1), 1);
-        if(keep[m] == NULL || keep_types[m] == NULL)
+        keep_defines[m] = calloc((size_t)(module->define_count > 0 ?
+                                          module->define_count : 1), 1);
+        if(keep[m] == NULL || keep_types[m] == NULL || keep_defines[m] == NULL)
             goto failed;
         if(strcmp(module->name, entry_module) != 0)
             continue;
@@ -346,6 +917,9 @@ BundleLink(const ZirProgram *program, const char *entry_module,
                     if(expression->kind == ZIR_EXPR_CALL &&
                        expression->slot_type[0] != '\0')
                         continue;
+                    if(expression->kind == ZIR_EXPR_CALL &&
+                       vec_operation(expression->name))
+                        continue;
                     if(ResolveFunction(module, expression->name,
                                        &owner, &callee) != 1 ||
                        owner == NULL || callee == NULL) {
@@ -353,10 +927,65 @@ BundleLink(const ZirProgram *program, const char *entry_module,
                         for(int i = 0; i < module->import_count; i++)
                             if(module->imports[i].kind == ZIR_IMPORT_EXTERN &&
                                strcmp(module->imports[i].name,
-                                      expression->name) == 0)
+                                      expression->name) == 0) {
                                 external = 1;
-                        if(external)
+                                const ZirImport *import = &module->imports[i];
+                                if(import->extern_kind == ZIR_EXTERN_HOST &&
+                                   strncmp(import->target, "ziran:", 6) == 0) {
+                                    int found = 0;
+                                    for(int candidate = 0;
+                                        candidate < program->module_count;
+                                        candidate++) {
+                                        const ZirModule *provider =
+                                            &program->modules[candidate];
+                                        if(strcmp(provider->name,
+                                                  import->target + 6) != 0)
+                                            continue;
+                                        for(int export = 0;
+                                            export < provider->function_count;
+                                            export++) {
+                                            const ZirFunction *implementation =
+                                                &provider->functions[export];
+                                            if(strcmp(implementation->name,
+                                                      import->extern_symbol) == 0 &&
+                                               implementation->exported &&
+                                               !implementation->is_extern) {
+                                                found++;
+                                                if(!keep[candidate][export]) {
+                                                    keep[candidate][export] = 1;
+                                                    changed = 1;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if(found != 1) {
+                                        Diagnostic(import->span, "zib.bind",
+                                                   "bound Ziran host provider is missing or ambiguous: %s",
+                                                   import->name);
+                                        goto failed;
+                                    }
+                                }
+                            }
+                        if(external) {
+                            if(native)
+                                for(int candidate = 0;
+                                    candidate < program->module_count;
+                                    candidate++)
+                                    for(int export = 0; export <
+                                        program->modules[candidate].function_count;
+                                        export++) {
+                                        const ZirFunction *implementation =
+                                            &program->modules[candidate].functions[export];
+                                        if(implementation->exported &&
+                                           strcmp(implementation->name,
+                                                  expression->name) == 0 &&
+                                           !keep[candidate][export]) {
+                                            keep[candidate][export] = 1;
+                                            changed = 1;
+                                        }
+                                    }
                             continue;
+                        }
                         Diagnostic(expression->span, "zib.call",
                                    "unresolved portable call: %s",
                                    expression->name);
@@ -399,11 +1028,6 @@ BundleLink(const ZirProgram *program, const char *entry_module,
                    !mark_parameters(program, module, function,
                                     keep_types, &changed))
                     goto failed;
-                for(int c = 0; c < function->capture_count; c++)
-                    if(!mark_type(program, module,
-                                  function->captures[c].type,
-                                  keep_types, &changed))
-                        goto failed;
                 for(int s = 0; s < function->stmt_count; s++)
                     if(!mark_type(program, module, function->stmts[s].type,
                                   keep_types, &changed))
@@ -433,7 +1057,7 @@ BundleLink(const ZirProgram *program, const char *entry_module,
             for(int t = 0; t < module->type_count; t++) {
                 if(!keep_types[m][t])
                     continue;
-                if(module->types[t].is_slot) {
+                if(module->types[t].is_procedure_type) {
                     ZirFunction signature = {0};
                     if(strlen(module->types[t].body) >= sizeof(signature.args))
                         goto failed;
@@ -458,10 +1082,42 @@ BundleLink(const ZirProgram *program, const char *entry_module,
             }
         }
     }
+    /* Constants are source expressions in saved IR. Keep only constants
+     * referenced by retained declarations, then follow their dependencies. */
+    for(int changed = 1; changed;) {
+        changed = 0;
+        for(int d = 0; d < program->module_count; d++) {
+            const ZirModule *dependency = &program->modules[d];
+            for(int value = 0; value < dependency->define_count; value++) {
+                if(keep_defines[d][value])
+                    continue;
+                const ZirDefine *constant = &dependency->defines[value];
+                int used = 0;
+                for(int m = 0; m < program->module_count && !used; m++) {
+                    const ZirModule *consumer = &program->modules[m];
+                    int visible = m == d;
+                    if(!visible && constant->is_public)
+                        for(int i = 0; i < consumer->import_count; i++)
+                            if(consumer->imports[i].resolved_module == dependency) {
+                                visible = 1;
+                                break;
+                            }
+                    if(visible)
+                        used = uses_constant_name(consumer, keep[m],
+                            keep_types[m], keep_defines[m], constant->name);
+                }
+                if(used) {
+                    keep_defines[d][value] = 1;
+                    changed = 1;
+                }
+            }
+        }
+    }
     for(int m = 0; m < program->module_count; m++)
         keep_modules[m] =
             memchr(keep[m], 1, (size_t)program->modules[m].function_count) != NULL ||
-            memchr(keep_types[m], 1, (size_t)program->modules[m].type_count) != NULL;
+            memchr(keep_types[m], 1, (size_t)program->modules[m].type_count) != NULL ||
+            memchr(keep_defines[m], 1, (size_t)program->modules[m].define_count) != NULL;
     /* Checked statement text may still use imported constants in array
      * bounds. Carry constants-only modules through the same import closure. */
     for(int changed = 1; changed;) {
@@ -472,9 +1128,13 @@ BundleLink(const ZirProgram *program, const char *entry_module,
             const ZirModule *module = &program->modules[m];
             for(int i = 0; i < module->import_count; i++) {
                 const ZirModule *dependency = module->imports[i].resolved_module;
-                if(module->imports[i].kind != ZIR_IMPORT_HEADER ||
+                if((module->imports[i].kind != ZIR_IMPORT_OPEN &&
+                    module->imports[i].kind != ZIR_IMPORT_MODULE) ||
                    dependency == NULL ||
-                   !uses_imported_constant(module, keep[m], dependency))
+                   !uses_imported_constant(module, keep[m], keep_types[m],
+                                           keep_defines[m],
+                                           keep_defines[dependency - program->modules],
+                                           dependency))
                     continue;
                 for(int d = 0; d < program->module_count; d++)
                     if(dependency == &program->modules[d] && !keep_modules[d]) {
@@ -498,16 +1158,26 @@ BundleLink(const ZirProgram *program, const char *entry_module,
         const ZirModule *source = &program->modules[m];
         ZirModule *target;
         int kept_functions = 0, kept_types = 0, kept_imports = 0;
+        int kept_defines = 0;
         for(int f = 0; f < source->function_count; f++)
             kept_functions += keep[m][f] != 0;
-        for(int t = 0; t < source->type_count; t++)
-            kept_types += keep_types[m][t] != 0;
+        for(int t = 0; t < source->type_count; t++) {
+            if(!keep_types[m][t])
+                continue;
+            if(source->types[t].is_union) {
+                Diagnostic(source->types[t].span, "zib.union",
+                           "portable union storage is not supported");
+                goto failed;
+            }
+            kept_types++;
+        }
+        for(int d = 0; d < source->define_count; d++)
+            kept_defines += keep_defines[m][d] != 0;
         if(!keep_modules[m])
             continue;
         target = &linked->modules[out++];
         *target = *source;
         target->globals = NULL; target->global_count = target->global_cap = 0;
-        target->state_fields = NULL; target->state_count = target->state_cap = 0;
         target->defines = NULL; target->define_count = target->define_cap = 0;
         target->asserts = NULL; target->assert_count = target->assert_cap = 0;
         target->types = NULL; target->type_count = target->type_cap = 0;
@@ -516,33 +1186,21 @@ BundleLink(const ZirProgram *program, const char *entry_module,
         target->function_count = target->function_cap = 0;
         /* Statement text is reparsed when a bundle is loaded. Keep constants
          * so symbolic array declarations retain their checked meaning. */
-        if(source->define_count > 0) {
-            target->defines = malloc((size_t)source->define_count *
+        if(kept_defines > 0) {
+            target->defines = malloc((size_t)kept_defines *
                                      sizeof(*target->defines));
             if(target->defines == NULL)
                 goto failed;
-            memcpy(target->defines, source->defines,
-                   (size_t)source->define_count * sizeof(*target->defines));
-            target->define_count = target->define_cap = source->define_count;
+            for(int d = 0; d < source->define_count; d++)
+                if(keep_defines[m][d])
+                    target->defines[target->define_count++] = source->defines[d];
+            target->define_cap = kept_defines;
         }
         /* Keep module globals read or written by retained functions. Globals
          * used only by discarded functions must not add bundle state or
          * unsupported initializer requirements. */
         for(int g = 0; g < source->global_count; g++) {
-            int used = 0;
-            for(int f = 0; f < source->function_count && !used; f++) {
-                if(!keep[m][f])
-                    continue;
-                const ZirFunction *function = &source->functions[f];
-                for(int e = 0; e < function->expr_count; e++)
-                    if(function->exprs[e].kind == ZIR_EXPR_IDENT &&
-                       strcmp(function->exprs[e].name,
-                              source->globals[g].name) == 0) {
-                        used = 1;
-                        break;
-                    }
-            }
-            if(!used)
+            if(!global_is_used(source, keep[m], &source->globals[g]))
                 continue;
             ZirGlobal *next = realloc(target->globals,
                 (size_t)(target->global_count + 1) * sizeof(*next));
@@ -576,7 +1234,8 @@ BundleLink(const ZirProgram *program, const char *entry_module,
         }
         for(int i = 0; i < source->import_count; i++)
             kept_imports += import_is_used(program, source, keep[m],
-                                           keep_types, &source->imports[i]);
+                                           keep_types, keep_defines,
+                                           &source->imports[i]);
         if(kept_imports > 0) {
             target->imports = calloc((size_t)kept_imports,
                                      sizeof(*target->imports));
@@ -586,18 +1245,27 @@ BundleLink(const ZirProgram *program, const char *entry_module,
             int next_import = 0;
             for(int i = 0; i < source->import_count; i++)
                 if(import_is_used(program, source, keep[m], keep_types,
+                                  keep_defines,
                                   &source->imports[i]))
                     target->imports[next_import++] = source->imports[i];
         }
     }
-    if(!LinkImports(&linked, 1))
+    /* Parse-time imports can load dependencies before their caller, while
+     * saved IR loads the caller first. Give both paths one module order. */
+    qsort(linked->modules, (size_t)linked->module_count,
+          sizeof(*linked->modules), module_name_order);
+    if(!LinkImports(&linked, 1) ||
+       !prune_record_fields(linked, entry_module, entry_function))
         goto failed;
     for(int m = 0; m < program->module_count; m++)
         free(keep[m]);
     for(int m = 0; m < program->module_count; m++)
         free(keep_types[m]);
+    for(int m = 0; m < program->module_count; m++)
+        free(keep_defines[m]);
     free(keep);
     free(keep_types);
+    free(keep_defines);
     free(keep_modules);
     return linked;
 failed:
@@ -607,11 +1275,51 @@ failed:
     if(keep_types != NULL)
         for(int m = 0; m < program->module_count; m++)
             free(keep_types[m]);
+    if(keep_defines != NULL)
+        for(int m = 0; m < program->module_count; m++)
+            free(keep_defines[m]);
     free(keep);
     free(keep_types);
+    free(keep_defines);
     free(keep_modules);
     ProgramFree(linked);
     return NULL;
+}
+
+ZirProgram *
+BundleLink(const ZirProgram *program, const char *entry_module,
+           const char *entry_function)
+{
+    ZirProgram *optimized = copy_program(program);
+    if(optimized == NULL) return NULL;
+    for(int m = 0; m < optimized->module_count; m++)
+        for(int f = 0; f < optimized->modules[m].function_count; f++)
+            if(!prune_function(&optimized->modules[m].functions[f])) {
+                ProgramFree(optimized);
+                return NULL;
+            }
+    ZirProgram *linked = link_checked_entry(optimized, entry_module,
+                                            entry_function, 0);
+    ProgramFree(optimized);
+    return linked;
+}
+
+ZirProgram *
+NativeLink(const ZirProgram *program, const char *entry_module,
+           const char *entry_function)
+{
+    ZirProgram *optimized = copy_program(program);
+    if(optimized == NULL) return NULL;
+    for(int m = 0; m < optimized->module_count; m++)
+        for(int f = 0; f < optimized->modules[m].function_count; f++)
+            if(!prune_function(&optimized->modules[m].functions[f])) {
+                ProgramFree(optimized);
+                return NULL;
+            }
+    ZirProgram *linked = link_checked_entry(optimized, entry_module,
+                                            entry_function, 1);
+    ProgramFree(optimized);
+    return linked;
 }
 
 int
@@ -642,7 +1350,10 @@ BundleWrite(FILE *out, const ZirProgram *program,
              write_u32(out, (uint32_t)capabilities);
         for(int m = 0; ok && m < program->module_count; m++)
             for(int i = 0; ok && i < program->modules[m].import_count; i++)
-                if(program->modules[m].imports[i].kind == ZIR_IMPORT_EXTERN)
+                if(program->modules[m].imports[i].kind == ZIR_IMPORT_EXTERN &&
+                   (program->modules[m].imports[i].extern_kind != ZIR_EXTERN_HOST ||
+                    strncmp(program->modules[m].imports[i].target,
+                            "ziran:", 6) != 0))
                     ok = write_name(out, program->modules[m].name) &&
                          write_name(out, program->modules[m].imports[i].name);
         ok = ok && write_u32(out, (uint32_t)length) &&
@@ -710,7 +1421,10 @@ BundleRead(FILE *in, const char *path,
     uint32_t next_capability = 0;
     for(int m = 0; m < program->module_count; m++)
         for(int i = 0; i < program->modules[m].import_count; i++)
-            if(program->modules[m].imports[i].kind == ZIR_IMPORT_EXTERN) {
+            if(program->modules[m].imports[i].kind == ZIR_IMPORT_EXTERN &&
+               (program->modules[m].imports[i].extern_kind != ZIR_EXTERN_HOST ||
+                strncmp(program->modules[m].imports[i].target,
+                        "ziran:", 6) != 0)) {
                 if(strcmp(capabilities[next_capability].module,
                           program->modules[m].name) != 0 ||
                    strcmp(capabilities[next_capability].function,
@@ -720,8 +1434,7 @@ BundleRead(FILE *in, const char *path,
                 }
                 next_capability++;
             }
-    if(!CheckCanonicalPrograms(&program, 1, 1, NULL) ||
-       !CheckLaws(&program, 1)) {
+    if(!CheckCanonicalPrograms(&program, 1, NULL)) {
         problem = "embedded ZIR failed semantic checking";
         goto failed;
     }

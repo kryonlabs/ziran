@@ -2,7 +2,9 @@
 #include "zir_check.h"
 #include "zir_diagnostic.h"
 #include "zir_parse.h"
+#include "zir_text.h"
 
+#include <ctype.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -34,27 +36,21 @@ typedef struct Reader {
 #define SPAN_FIELD(type, name) \
     {offsetof(type, name), sizeof(((type *)0)->name), FIELD_SPAN}
 #define FIELD_COUNT(fields) (sizeof(fields) / sizeof((fields)[0]))
-#define ZIR_FORMAT_VERSION 10u
+#define ZIR_FORMAT_VERSION 28u
 
-static const Field state_fields[] = {
-    STRING_FIELD(ZirStateField, name), STRING_FIELD(ZirStateField, type),
-    STRING_FIELD(ZirStateField, init), STRING_FIELD(ZirStateField, guard),
-    SPAN_FIELD(ZirStateField, span)
-};
 static const Field import_fields[] = {
     INTEGER_FIELD(ZirImport, kind), INTEGER_FIELD(ZirImport, extern_kind),
-    INTEGER_FIELD(ZirImport, is_public), STRING_FIELD(ZirImport, name),
+    INTEGER_FIELD(ZirImport, is_public),
+    INTEGER_FIELD(ZirImport, is_file_private), STRING_FIELD(ZirImport, name),
     STRING_FIELD(ZirImport, target), STRING_FIELD(ZirImport, extern_symbol),
     STRING_FIELD(ZirImport, signature), STRING_FIELD(ZirImport, args),
     STRING_FIELD(ZirImport, return_type), INTEGER_FIELD(ZirImport, required),
-    STRING_FIELD(ZirImport, guard), SPAN_FIELD(ZirImport, span)
+    SPAN_FIELD(ZirImport, span)
 };
 static const Field statement_fields[] = {
     INTEGER_FIELD(ZirStmt, kind), STRING_FIELD(ZirStmt, text),
-    STRING_FIELD(ZirStmt, callee), STRING_FIELD(ZirStmt, args),
-    INTEGER_FIELD(ZirStmt, declared_block_call),
     INTEGER_FIELD(ZirStmt, is_else),
-    INTEGER_FIELD(ZirStmt, is_guard),
+    INTEGER_FIELD(ZirStmt, loop_id), INTEGER_FIELD(ZirStmt, target_id),
     INTEGER_FIELD(ZirStmt, expr_root),
     INTEGER_FIELD(ZirStmt, lhs_root), STRING_FIELD(ZirStmt, name),
     STRING_FIELD(ZirStmt, type), STRING_FIELD(ZirStmt, assignment_op),
@@ -62,55 +58,126 @@ static const Field statement_fields[] = {
 };
 static const Field expression_fields[] = {
     INTEGER_FIELD(ZirExpr, kind), INTEGER_FIELD(ZirExpr, is_function_value),
+    INTEGER_FIELD(ZirExpr, is_this),
     STRING_FIELD(ZirExpr, slot_type), STRING_FIELD(ZirExpr, text),
-    STRING_FIELD(ZirExpr, name), STRING_FIELD(ZirExpr, op),
+    STRING_FIELD(ZirExpr, name), STRING_FIELD(ZirExpr, argument_name),
+    INTEGER_FIELD(ZirExpr, argument_index), STRING_FIELD(ZirExpr, op),
     INTEGER_FIELD(ZirExpr, left), INTEGER_FIELD(ZirExpr, right),
     INTEGER_FIELD(ZirExpr, first_child), INTEGER_FIELD(ZirExpr, next_sibling),
     INTEGER_FIELD(ZirExpr, third), STRING_FIELD(ZirExpr, type),
     SPAN_FIELD(ZirExpr, span)
 };
-static const Field capture_fields[] = {
-    STRING_FIELD(ZirCapture, name),
-    STRING_FIELD(ZirCapture, type)
-};
 static const Field function_fields[] = {
     STRING_FIELD(ZirFunction, name), STRING_FIELD(ZirFunction, args),
+    STRING_FIELD(ZirFunction, default_args),
     STRING_FIELD(ZirFunction, return_type), INTEGER_FIELD(ZirFunction, exported),
     INTEGER_FIELD(ZirFunction, is_extern), INTEGER_FIELD(ZirFunction, extern_kind),
-    INTEGER_FIELD(ZirFunction, is_closure),
-    INTEGER_FIELD(ZirFunction, is_public), INTEGER_FIELD(ZirFunction, checked),
-    INTEGER_FIELD(ZirFunction, is_generated),
+    INTEGER_FIELD(ZirFunction, is_public),
+    INTEGER_FIELD(ZirFunction, is_file_private),
+    INTEGER_FIELD(ZirFunction, is_template),
+    INTEGER_FIELD(ZirFunction, is_specialization),
+    STRING_FIELD(ZirFunction, template_param),
+    STRING_FIELD(ZirFunction, specialization_type),
+    INTEGER_FIELD(ZirFunction, checked),
     INTEGER_FIELD(ZirFunction, uses_host), STRING_FIELD(ZirFunction, extern_target),
-    STRING_FIELD(ZirFunction, extern_symbol), STRING_FIELD(ZirFunction, guard),
-    SPAN_FIELD(ZirFunction, span)
+    STRING_FIELD(ZirFunction, extern_symbol), SPAN_FIELD(ZirFunction, span)
 };
 static const Field global_fields[] = {
     STRING_FIELD(ZirGlobal, name), STRING_FIELD(ZirGlobal, type),
     STRING_FIELD(ZirGlobal, init), INTEGER_FIELD(ZirGlobal, is_static),
-    STRING_FIELD(ZirGlobal, guard), SPAN_FIELD(ZirGlobal, span)
+    INTEGER_FIELD(ZirGlobal, is_file_private), SPAN_FIELD(ZirGlobal, span)
 };
 static const Field define_fields[] = {
     STRING_FIELD(ZirDefine, name), STRING_FIELD(ZirDefine, value),
     INTEGER_FIELD(ZirDefine, is_public),
-    STRING_FIELD(ZirDefine, guard), SPAN_FIELD(ZirDefine, span)
+    INTEGER_FIELD(ZirDefine, is_file_private), SPAN_FIELD(ZirDefine, span)
 };
 static const Field assert_fields[] = {
     STRING_FIELD(ZirAssert, condition), STRING_FIELD(ZirAssert, message),
     INTEGER_FIELD(ZirAssert, known), INTEGER_FIELD(ZirAssert, value),
-    STRING_FIELD(ZirAssert, guard), SPAN_FIELD(ZirAssert, span)
+    SPAN_FIELD(ZirAssert, span)
 };
 static const Field type_fields[] = {
     STRING_FIELD(ZirType, name), STRING_FIELD(ZirType, body),
-    STRING_FIELD(ZirType, variant_cases),
     STRING_FIELD(ZirType, template_params),
-    INTEGER_FIELD(ZirType, is_slot), INTEGER_FIELD(ZirType, is_public),
+    INTEGER_FIELD(ZirType, is_procedure_type),
+    INTEGER_FIELD(ZirType, is_c_call),
+    STRING_FIELD(ZirType, procedure_return_type),
+    INTEGER_FIELD(ZirType, is_public),
+    INTEGER_FIELD(ZirType, is_file_private),
     INTEGER_FIELD(ZirType, is_enum),
-    INTEGER_FIELD(ZirType, is_variant),
-    INTEGER_FIELD(ZirType, is_variant_template),
+    INTEGER_FIELD(ZirType, is_union),
+    INTEGER_FIELD(ZirType, is_enum_flags),
+    INTEGER_FIELD(ZirType, is_enum_specified),
+    STRING_FIELD(ZirType, enum_backing),
     INTEGER_FIELD(ZirType, is_record_template),
-    INTEGER_FIELD(ZirType, is_extern), STRING_FIELD(ZirType, guard),
-    SPAN_FIELD(ZirType, span)
+    INTEGER_FIELD(ZirType, is_owned_vec),
+    INTEGER_FIELD(ZirType, is_extern), SPAN_FIELD(ZirType, span)
 };
+
+static int
+enum_backing_valid(const char *backing)
+{
+    static const char *const allowed[] = {
+        "s8", "u8", "s16", "u16", "s32", "u32", "s64", "u64"
+    };
+    for(size_t i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++)
+        if(strcmp(backing, allowed[i]) == 0)
+            return 1;
+    return 0;
+}
+
+static int
+specified_enum_body_valid(const char *body)
+{
+    int members = 0;
+    while(*body) {
+        while(*body == ',' || isspace((unsigned char)*body)) body++;
+        if(!*body) break;
+        if(!isalpha((unsigned char)*body) && *body != '_') return 0;
+        do body++;
+        while(isalnum((unsigned char)*body) || *body == '_');
+        while(*body == ' ' || *body == '\t') body++;
+        if(*body++ != '=') return 0;
+        while(*body && *body != '\n' && *body != ',') body++;
+        members++;
+    }
+    return members > 0;
+}
+
+static int
+default_signature_valid(const ZirFunction *function)
+{
+    if(!function->default_args[0]) return 1;
+    char (*parts)[ZIR_TEXT_MAX] = calloc(64, sizeof(*parts));
+    if(parts == NULL) return 0;
+    int count = split_top_level(function->default_args, parts[0], 64,
+                                sizeof(parts[0]));
+    char normalized[ZIR_TEXT_MAX] = "";
+    size_t used = 0;
+    int defaults = 0;
+    int valid = count > 0;
+    for(int i = 0; valid && i < count; i++) {
+        char *assignment = top_level_assignment(parts[i]);
+        if(assignment != NULL) {
+            if(!*skip_ws(assignment + 1)) { valid = 0; break; }
+            *assignment = '\0';
+            trim_in_place(parts[i]);
+            defaults++;
+        }
+        int written = snprintf(normalized + used, sizeof(normalized) - used,
+                               "%s%s", i ? ", " : "", parts[i]);
+        if(written < 0 || (size_t)written >= sizeof(normalized) - used) {
+            valid = 0;
+            break;
+        }
+        used += (size_t)written;
+    }
+    valid = valid && defaults > 0 &&
+            strcmp(normalized, function->args) == 0;
+    free(parts);
+    return valid;
+}
 static const Field module_fields[] = {
     STRING_FIELD(ZirModule, name), STRING_FIELD(ZirModule, source_path),
     SPAN_FIELD(ZirModule, span)
@@ -305,13 +372,7 @@ write_function(FILE *out, const ZirFunction *function)
 {
     if(!write_fields(out, function, function_fields, FIELD_COUNT(function_fields)))
         return 0;
-    /* A generated operation is a cache of the variant declaration, never
-     * authoritative code in a saved module. Keep its slot to preserve stable
-     * function order and regenerate its body when reading. */
-    if(function->is_generated)
-        return write_u32(out, 0) && write_u32(out, 0) && write_u32(out, 0);
-    return WRITE_ARRAY(out, function, captures, capture_count, capture_fields) &&
-           WRITE_ARRAY(out, function, stmts, stmt_count, statement_fields) &&
+    return WRITE_ARRAY(out, function, stmts, stmt_count, statement_fields) &&
            WRITE_ARRAY(out, function, exprs, expr_count, expression_fields);
 }
 
@@ -320,7 +381,6 @@ read_function(Reader *reader, ZirFunction *function)
 {
     if(!read_fields(reader, function, function_fields, FIELD_COUNT(function_fields)))
         return 0;
-    READ_ARRAY(reader, function, captures, capture_count, capture_fields);
     READ_ARRAY(reader, function, stmts, stmt_count, statement_fields);
     READ_ARRAY(reader, function, exprs, expr_count, expression_fields);
     function->stmt_cap = function->stmt_count;
@@ -337,7 +397,6 @@ write_module(FILE *out, const ZirModule *module)
        !WRITE_ARRAY(out, module, defines, define_count, define_fields) ||
        !WRITE_ARRAY(out, module, asserts, assert_count, assert_fields) ||
        !WRITE_ARRAY(out, module, types, type_count, type_fields) ||
-       !WRITE_ARRAY(out, module, state_fields, state_count, state_fields) ||
        !WRITE_ARRAY(out, module, imports, import_count, import_fields) ||
        !write_u32(out, (uint32_t)module->function_count))
         return 0;
@@ -357,7 +416,6 @@ read_module(Reader *reader, ZirModule *module)
     READ_ARRAY(reader, module, defines, define_count, define_fields);
     READ_ARRAY(reader, module, asserts, assert_count, assert_fields);
     READ_ARRAY(reader, module, types, type_count, type_fields);
-    READ_ARRAY(reader, module, state_fields, state_count, state_fields);
     READ_ARRAY(reader, module, imports, import_count, import_fields);
     if(!read_u32(reader, &count))
         return 0;
@@ -379,7 +437,6 @@ read_module(Reader *reader, ZirModule *module)
     module->define_cap = module->define_count;
     module->assert_cap = module->assert_count;
     module->type_cap = module->type_count;
-    module->state_cap = module->state_count;
     module->import_cap = module->import_count;
     return 1;
 }
@@ -398,54 +455,98 @@ validate_program(const ZirProgram *program)
         if(!module->name[0] || !module->source_path[0])
             return 0;
         for(int i = 0; i < module->import_count; i++)
-            if(module->imports[i].kind < ZIR_IMPORT_HEADER ||
-               module->imports[i].kind > ZIR_IMPORT_HOST ||
-               module->imports[i].kind == 4) /* retired web intrinsic */
+            if(module->imports[i].kind < ZIR_IMPORT_OPEN ||
+               module->imports[i].kind > ZIR_IMPORT_EXTERN ||
+               strncmp(module->imports[i].signature, "c-header:", 9) == 0 ||
+               (module->imports[i].is_file_private != 0 &&
+                module->imports[i].is_file_private != 1) ||
+               (module->imports[i].is_file_private &&
+                module->imports[i].is_public))
+                return 0;
+        for(int g = 0; g < module->global_count; g++)
+            if((module->globals[g].is_file_private != 0 &&
+                module->globals[g].is_file_private != 1) ||
+               (module->globals[g].is_file_private &&
+                !module->globals[g].is_static))
+                return 0;
+        for(int d = 0; d < module->define_count; d++)
+            if((module->defines[d].is_file_private != 0 &&
+                module->defines[d].is_file_private != 1) ||
+               (module->defines[d].is_file_private &&
+                module->defines[d].is_public))
                 return 0;
         for(int t = 0; t < module->type_count; t++) {
             const ZirType *type = &module->types[t];
-            if((type->is_variant != 0 && type->is_variant != 1) ||
-               (type->is_variant_template != 0 &&
-                type->is_variant_template != 1) ||
+            if((type->is_file_private != 0 && type->is_file_private != 1) ||
+               (type->is_file_private && type->is_public) ||
+               (type->is_procedure_type &&
+                !type->procedure_return_type[0]) ||
+               (type->is_c_call != 0 && type->is_c_call != 1) ||
+               (type->is_c_call && !type->is_procedure_type) ||
+               (!type->is_procedure_type &&
+                type->procedure_return_type[0]) ||
+               type->name[0] == '#' ||
+               (type->is_union != 0 && type->is_union != 1) ||
+               (type->is_union &&
+                (type->is_enum || type->is_procedure_type || type->is_extern ||
+                 type->is_owned_vec)) ||
+               (type->is_enum_flags != 0 && type->is_enum_flags != 1) ||
+               (type->is_enum_specified != 0 &&
+                type->is_enum_specified != 1) ||
+               (type->is_enum && !enum_backing_valid(type->enum_backing)) ||
+               (!type->is_enum &&
+                (type->is_enum_flags || type->is_enum_specified ||
+                 type->enum_backing[0])) ||
+               (type->is_enum_specified &&
+                !specified_enum_body_valid(type->body)) ||
                (type->is_record_template != 0 &&
                 type->is_record_template != 1) ||
+               (type->is_owned_vec != 0 && type->is_owned_vec != 1) ||
+               (type->is_owned_vec &&
+                !VecElementType(module, type->name, NULL, 0)) ||
                type->is_type_instance || type->template_name[0] ||
                type->template_args[0] ||
-               (type->is_variant &&
-                (type->is_variant_template || type->is_record_template ||
-                 type->template_params[0] ||
-                 type->is_enum || type->is_slot || type->is_extern ||
-                 !type->variant_cases[0])) ||
-               (type->is_variant_template &&
-                (type->is_record_template || type->is_enum || type->is_slot ||
-                 type->is_extern ||
-                 !type->template_params[0] || !type->variant_cases[0] ||
-                 type->body[0])) ||
                (type->is_record_template &&
-                (type->is_enum || type->is_slot || type->is_extern ||
-                 !type->template_params[0] || !type->body[0] ||
-                 type->variant_cases[0])) ||
-               (!type->is_variant && !type->is_variant_template &&
-                type->variant_cases[0]) ||
-               (!type->is_variant_template && !type->is_record_template &&
+                (type->is_enum || type->is_procedure_type || type->is_extern ||
+                 !type->template_params[0] || !type->body[0])) ||
+               (!type->is_record_template &&
                 type->template_params[0]))
                 return 0;
         }
         for(int f = 0; f < module->function_count; f++) {
             const ZirFunction *function = &module->functions[f];
             if(!function->name[0] ||
-               (function->is_generated != 0 && function->is_generated != 1))
+               !default_signature_valid(function) ||
+               (function->is_file_private != 0 &&
+                function->is_file_private != 1) ||
+               (function->is_file_private && function->is_public) ||
+               (function->is_template != 0 && function->is_template != 1) ||
+               (function->is_specialization != 0 &&
+                function->is_specialization != 1) ||
+               (function->is_template &&
+                (function->is_specialization || function->is_extern ||
+                 function->exported || !function->template_param[0] ||
+                 function->specialization_type[0])) ||
+               (function->is_specialization &&
+                (function->is_extern || !function->template_param[0] ||
+                 !function->specialization_type[0] ||
+                 strchr(function->specialization_type, '$') != NULL)) ||
+               (!function->is_template && !function->is_specialization &&
+                (function->template_param[0] ||
+                 function->specialization_type[0])))
                 return 0;
             for(int s = 0; s < function->stmt_count; s++) {
                 const ZirStmt *statement = &function->stmts[s];
                 if(statement->kind <= ZIR_STMT_UNKNOWN ||
-                   statement->kind > ZIR_STMT_MATCH ||
-                   statement->kind == ZIR_STMT_MATCH ||
+                   statement->kind > ZIR_STMT_IF_CASE ||
+                   statement->kind == ZIR_STMT_IF_CASE ||
                    (statement->is_else != 0 && statement->is_else != 1) ||
-                   (statement->is_guard != 0 && statement->is_guard != 1) ||
                    (statement->is_else && statement->kind != ZIR_STMT_IF) ||
-                   (statement->is_guard && statement->kind != ZIR_STMT_IF) ||
-                   (statement->is_else && statement->is_guard) ||
+                   statement->loop_id < 0 || statement->target_id < 0 ||
+                   (statement->loop_id && statement->kind != ZIR_STMT_WHILE) ||
+                   (statement->target_id &&
+                    statement->kind != ZIR_STMT_BREAK &&
+                    statement->kind != ZIR_STMT_CONTINUE) ||
                    !reference_valid(statement->expr_root, function->expr_count) ||
                    !reference_valid(statement->lhs_root, function->expr_count))
                     return 0;
@@ -454,6 +555,10 @@ validate_program(const ZirProgram *program)
                 const ZirExpr *expression = &function->exprs[e];
                 if(expression->kind <= ZIR_EXPR_UNKNOWN ||
                    expression->kind > ZIR_EXPR_SLICE ||
+                   (expression->is_this != 0 && expression->is_this != 1) ||
+                   (expression->is_this &&
+                    expression->kind != ZIR_EXPR_IDENT &&
+                    expression->kind != ZIR_EXPR_CALL) ||
                    !reference_valid(expression->left, function->expr_count) ||
                    !reference_valid(expression->right, function->expr_count) ||
                    !reference_valid(expression->first_child, function->expr_count) ||
@@ -461,6 +566,8 @@ validate_program(const ZirProgram *program)
                    !reference_valid(expression->third, function->expr_count) ||
                    expression->left >= e || expression->right >= e ||
                    expression->first_child >= e || expression->third >= e ||
+                   expression->argument_index < -1 ||
+                   expression->argument_index >= 64 ||
                    (expression->next_sibling >= 0 &&
                     expression->next_sibling <= e))
                     return 0;
@@ -538,11 +645,6 @@ ProgramRead(FILE *in, const char *path)
         reader.problem = "invalid checked IR structure";
         goto failed;
     }
-    for(int m = 0; m < program->module_count; m++)
-        if(!RegenerateVariantOperations(&program->modules[m])) {
-            reader.problem = "invalid generated variant operation";
-            goto failed;
-        }
     return program;
 failed:
     Diagnostic(Span(path, 1, 1), "zir.invalid", "%s",
@@ -583,7 +685,7 @@ ProgramLoad(const char *path, const char *root)
 }
 
 int
-CheckCanonicalPrograms(ZirProgram **programs, int count, int strict,
+CheckCanonicalPrograms(ZirProgram **programs, int count,
                        const char *const *input_paths)
 {
     FILE *before = NULL;
@@ -592,6 +694,7 @@ CheckCanonicalPrograms(ZirProgram **programs, int count, int strict,
     int saved_count = 0;
     int first_saved = -1;
     int valid = 0;
+    int **original_counts = NULL;
     for(int i = 0; i < count; i++) {
         if(input_paths == NULL || PathIsIR(input_paths[i])) {
             if(first_saved < 0)
@@ -600,10 +703,19 @@ CheckCanonicalPrograms(ZirProgram **programs, int count, int strict,
         }
     }
     if(saved_count == 0)
-        return CheckPrograms(programs, count, strict);
-    /* Saved IR is an executable typed artifact. Never let a native build's
-     * legacy source mode reinterpret its diagnostic statement text. */
-    strict = 1;
+        return CheckPrograms(programs, count);
+    original_counts = calloc((size_t)count, sizeof(*original_counts));
+    if(original_counts == NULL) goto failed;
+    for(int i = 0; i < count; i++) {
+        if(input_paths != NULL && !PathIsIR(input_paths[i])) continue;
+        int modules = programs[i]->module_count;
+        original_counts[i] = malloc((size_t)modules * sizeof(int));
+        if(original_counts[i] == NULL) goto failed;
+        for(int m = 0; m < modules; m++)
+            original_counts[i][m] = programs[i]->modules[m].function_count;
+    }
+    /* Saved IR is an executable typed artifact. Require checked statement
+     * and expression graphs before target emission. */
     before = tmpfile();
     after = tmpfile();
     if(before == NULL || after == NULL)
@@ -612,12 +724,23 @@ CheckCanonicalPrograms(ZirProgram **programs, int count, int strict,
         if((input_paths == NULL || PathIsIR(input_paths[i])) &&
            !ProgramWrite(programs[i], before))
             goto failed;
-    if(!CheckPrograms(programs, count, strict))
+    if(!CheckPrograms(programs, count))
         goto done;
-    for(int i = 0; i < count; i++)
-        if((input_paths == NULL || PathIsIR(input_paths[i])) &&
-           !ProgramWrite(programs[i], after))
-            goto failed;
+    for(int i = 0; i < count; i++) {
+        if(original_counts[i] == NULL) continue;
+        int modules = programs[i]->module_count;
+        int *checked_counts = malloc((size_t)modules * sizeof(int));
+        if(checked_counts == NULL) goto failed;
+        for(int m = 0; m < modules; m++) {
+            checked_counts[m] = programs[i]->modules[m].function_count;
+            programs[i]->modules[m].function_count = original_counts[i][m];
+        }
+        int written = ProgramWrite(programs[i], after);
+        for(int m = 0; m < modules; m++)
+            programs[i]->modules[m].function_count = checked_counts[m];
+        free(checked_counts);
+        if(!written) goto failed;
+    }
     if(fseek(before, 0, SEEK_SET) || fseek(after, 0, SEEK_SET))
         goto failed;
     for(;;) {
@@ -643,6 +766,10 @@ failed:
                     input_paths[first_saved] : "<bundle>", 1, 1),
                "zir.validation", "cannot validate saved IR");
 done:
+    if(original_counts != NULL) {
+        for(int i = 0; i < count; i++) free(original_counts[i]);
+        free(original_counts);
+    }
     if(before != NULL)
         fclose(before);
     if(after != NULL)

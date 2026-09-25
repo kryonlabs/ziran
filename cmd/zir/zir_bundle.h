@@ -3,8 +3,11 @@
 
 #include "zir.h"
 
-/* Experimental portable bundle version 7. The reader owns the returned IR. */
+/* Experimental portable bundle version 13. The reader owns the returned IR. */
 ZirProgram *BundleLink(const ZirProgram *program, const char *entry_module,
+                       const char *entry_function);
+/* Native entry pruning also retains exported implementations of host effects. */
+ZirProgram *NativeLink(const ZirProgram *program, const char *entry_module,
                        const char *entry_function);
 int BundleWrite(FILE *out, const ZirProgram *program,
                    const char *entry_module, const char *entry_function);

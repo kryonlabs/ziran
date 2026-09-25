@@ -1,4 +1,4 @@
-Option :: variant($T: Type) {
-    None
-    Some: T
+Option :: struct($T: Type) {
+    has_value: bool;
+    value: T;
 }

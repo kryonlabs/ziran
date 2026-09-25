@@ -21,16 +21,14 @@ or Go is compiler output, not Kryon source.
 
 ## Language boundary
 
-Modules, records, functions, imports, typed block calls, and callable slots
-are general language features. A block call resolves against a visible
-function signature and record/slot types. Its semantics do not depend on the
-callee's spelling. `Button`, `Text`, and `Image` mean nothing until imported or
-declared. Kryon's intended `Image(ImageProps)` surface is an ordinary library
-API, including when used for semantic images; its full rendering implementation
-is still being migrated.
-For a typed record call, `Function result: { ... }` binds the call's non-void
-return value to `result`; `Function: { ... }` discards it. Both use the same
-ordinary function declaration.
+Modules, records, functions, imports, and procedure values are general
+language features. Calls resolve against visible function signatures and
+record types. Their semantics do not depend on the callee's spelling.
+`Button`, `Text`, and `Image` mean nothing until imported or declared.
+Kryon's intended `Image(ImageProps)` surface is an ordinary library API,
+including when used for semantic images; its full rendering implementation
+is still being migrated. A record argument uses `Function(Props.{value = 42})`;
+`result: Result = Function(Props.{value = 42})` binds a non-void return value.
 
 Ziran has no `#ui` function modifier, app/route syntax, widget fallback,
 `#style` directive, DOM fields in its IR, or renderer-specific type checks.

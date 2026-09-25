@@ -1,6 +1,6 @@
 
-# Fixed-capacity array fields and borrowed string byte access are portable
-# strict expressions: every backend must lower them identically.
+// Fixed-capacity array fields and borrowed string byte access are portable
+// strict expressions: every backend must lower them identically.
 
 ContractBytes :: struct {
     data: [4]u32
@@ -11,7 +11,7 @@ ContractBytes :: struct {
 ContractSumBytes :: (text: string) -> s32 {
     total: s32 = 0
     index: s32 = 0
-    while index < text.length {
+    while index < (cast(s32)text.count) {
         total = total + cast(s32)text[index]
         index = index + 1
     }

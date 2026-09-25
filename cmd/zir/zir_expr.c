@@ -15,7 +15,10 @@ typedef struct ExprParser {
     ZirSourceSpan span;
     const char *source;
     size_t begin;
-    int failed, depth, internal_array_literal;
+    const char *expected_type;
+    int stmt_index;
+    int expand_defaults;
+    int failed, depth;
 } ExprParser;
 
 static void
@@ -72,18 +75,167 @@ node(ExprParser *p, ZirExprKind kind, size_t start, const char *name,
 static int
 type_name(const ExprParser *p, const char *s)
 {
-    static const char *const names[] = {
-        "void", "bool", "char", "int", "float", "double", "short", "long",
-        "signed", "unsigned", "const", "volatile", "size_t", "ptrdiff_t",
-        "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t",
-        "uint32_t", "uint64_t", "intptr_t", "uintptr_t", "i8", "i16", "i32",
-        "i64", "u8", "u16", "u32", "u64", "isize", "usize", "f32", "f64", "string", NULL
-    };
-    for(int i = 0; names[i]; i++) if(!strcmp(s, names[i])) return 1;
+    if(*ScalarType(s)) return 1;
     return p->module != NULL && FindType(p->module, s, NULL) != NULL;
 }
 
 static int expression(ExprParser *p, int minimum);
+static int parse_expr(ZirFunction *fn, const ZirModule *module,
+                      const char *text, ZirSourceSpan span,
+                      const char *expected_type, int stmt_index,
+                      int expand_defaults);
+
+static int default_expansion_depth;
+
+static int
+call_name_shadowed(const ExprParser *p, const char *name)
+{
+    if(p->stmt_index < 0 || strchr(name, '.') != NULL)
+        return 0;
+    char (*parameters)[ZIR_TEXT_MAX] = calloc(64, sizeof(*parameters));
+    if(parameters == NULL) return 1;
+    int count = *skip_ws(p->fn->args) ?
+        split_top_level(p->fn->args, parameters[0], 64,
+                        sizeof(parameters[0])) : 0;
+    for(int i = 0; i < count; i++) {
+        char *colon = strchr(parameters[i], ':');
+        if(colon == NULL) continue;
+        *colon = '\0';
+        if(!strcmp(trim(parameters[i]), name)) {
+            free(parameters);
+            return 1;
+        }
+    }
+    free(parameters);
+    int depth = 0;
+    int binding_depths[128];
+    int bindings = 0;
+    for(int i = 0; i < p->stmt_index; i++) {
+        const ZirStmt *statement = &p->fn->stmts[i];
+        if(statement->kind == ZIR_STMT_BLOCK_CLOSE) {
+            while(bindings > 0 && binding_depths[bindings - 1] == depth)
+                bindings--;
+            if(depth > 0) depth--;
+        }
+        if(statement->kind == ZIR_STMT_DECL &&
+           !strcmp(statement->name, name) &&
+           bindings < (int)(sizeof(binding_depths) / sizeof(binding_depths[0])))
+            binding_depths[bindings++] = depth;
+        if(statement->kind == ZIR_STMT_BLOCK_OPEN ||
+           statement->kind == ZIR_STMT_IF ||
+           statement->kind == ZIR_STMT_WHILE ||
+           statement->kind == ZIR_STMT_FOR)
+            depth++;
+    }
+    return bindings > 0;
+}
+
+static void
+append_default_arguments(ExprParser *p, int callee,
+                         const char *name, int *first, int *last)
+{
+    char qualified[ZIR_NAME_MAX];
+    const char *target = name;
+    if(!*target && callee >= 0 &&
+       p->fn->exprs[callee].kind == ZIR_EXPR_MEMBER) {
+        const ZirExpr *member = &p->fn->exprs[callee];
+        if(member->left < 0 ||
+           p->fn->exprs[member->left].kind != ZIR_EXPR_IDENT)
+            return;
+        if(snprintf(qualified, sizeof(qualified), "%s.%s",
+                    p->fn->exprs[member->left].name, member->name) >=
+           (int)sizeof(qualified)) return;
+        target = qualified;
+    }
+    if(!*target || call_name_shadowed(p, target) ||
+       default_expansion_depth >= 32 || p->module == NULL)
+        return;
+    const ZirModule *owner = NULL;
+    const ZirFunction *function = NULL;
+    if(ResolveFunctionAt(p->module, target, p->span.path,
+                         &owner, &function) != 1 ||
+       function == NULL || !function->default_args[0])
+        return;
+    char (*parameters)[ZIR_TEXT_MAX] = calloc(64, sizeof(*parameters));
+    char (*defaults)[ZIR_TEXT_MAX] = calloc(64, sizeof(*defaults));
+    if(parameters == NULL || defaults == NULL) {
+        free(parameters); free(defaults);
+        p->failed = 1;
+        return;
+    }
+    int count = split_top_level(function->args, parameters[0], 64,
+                                sizeof(parameters[0]));
+    int default_count = split_top_level(function->default_args, defaults[0],
+                                        64, sizeof(defaults[0]));
+    unsigned char used[64] = {0};
+    if(count != default_count) goto done;
+    for(int child = *first; child >= 0;
+        child = p->fn->exprs[child].next_sibling) {
+        const char *named = p->fn->exprs[child].argument_name;
+        int index = -1;
+        if(*named) {
+            for(int i = 0; i < count; i++) {
+                char *colon = strchr(parameters[i], ':');
+                if(colon == NULL) continue;
+                *colon = '\0';
+                int matches = !strcmp(trim(parameters[i]), named);
+                *colon = ':';
+                if(matches) { index = i; break; }
+            }
+        } else {
+            for(int i = 0; i < count; i++)
+                if(!used[i]) { index = i; break; }
+        }
+        if(index < 0 || used[index]) goto done;
+        used[index] = 1;
+    }
+    for(int i = 0; i < count; i++) {
+        if(used[i]) continue;
+        char *assignment = top_level_assignment(defaults[i]);
+        if(assignment == NULL) continue;
+        char *colon = strchr(parameters[i], ':');
+        if(colon == NULL) continue;
+        *colon = '\0';
+        char *parameter_name = trim(parameters[i]);
+        const char *value = skip_ws(assignment + 1);
+        char helper_name[ZIR_NAME_MAX];
+        char helper_call[ZIR_NAME_MAX * 2];
+        FunctionDefaultHelperName(function, i, helper_name,
+                                  sizeof(helper_name));
+        int has_helper = !function->is_template;
+        if(!has_helper && owner != NULL)
+            for(int f = 0; f < owner->function_count; f++)
+                if(!strcmp(owner->functions[f].name, helper_name)) {
+                    has_helper = 1;
+                    break;
+                }
+        if(has_helper) {
+            const char *dot = strchr(target, '.');
+            int written = dot == NULL ?
+                snprintf(helper_call, sizeof(helper_call), "%s()", helper_name) :
+                snprintf(helper_call, sizeof(helper_call), "%.*s.%s()",
+                         (int)(dot - target), target, helper_name);
+            if(written < 0 || (size_t)written >= sizeof(helper_call)) {
+                p->failed = 1;
+                break;
+            }
+            value = helper_call;
+        }
+        default_expansion_depth++;
+        int child = parse_expr(p->fn, p->module, value, p->span,
+                               NULL, p->stmt_index, p->expand_defaults);
+        default_expansion_depth--;
+        if(child < 0) { p->failed = 1; break; }
+        copy_text(p->fn->exprs[child].argument_name,
+                  sizeof(p->fn->exprs[child].argument_name), parameter_name);
+        if(*last >= 0) p->fn->exprs[*last].next_sibling = child;
+        else *first = child;
+        *last = child;
+        used[i] = 1;
+    }
+done:
+    free(parameters); free(defaults);
+}
 
 static int
 jai_char_byte(const char *text, int *value)
@@ -117,14 +269,15 @@ jai_char_byte(const char *text, int *value)
 }
 
 static int
-record_initializer(ExprParser *p, size_t start, const char *type)
+record_initializer(ExprParser *p, size_t start, const char *type,
+                   const char *open, const char *close)
 {
     int first = -1;
     int last = -1;
     int ordinal = 0;
     const ZirType *record = p->module ? FindType(p->module, type, NULL) : NULL;
-    expect(p, "{");
-    while(!p->failed && !is(p, "}") && p->token.kind != ZIR_TOKEN_EOF) {
+    expect(p, open);
+    while(!p->failed && !is(p, close) && p->token.kind != ZIR_TOKEN_EOF) {
         size_t field_start = p->begin;
         char name[ZIR_NAME_MAX] = "";
         int named = take(p, ".");
@@ -161,7 +314,7 @@ record_initializer(ExprParser *p, size_t start, const char *type)
                 p->depth--;
                 return -1;
             }
-            value = record_initializer(p, p->begin, field_type);
+            value = record_initializer(p, p->begin, field_type, "{", "}");
             p->depth--;
         } else {
             value = expression(p, 1);
@@ -183,7 +336,7 @@ record_initializer(ExprParser *p, size_t start, const char *type)
         if(!take(p, ","))
             break;
     }
-    expect(p, "}");
+    expect(p, close);
     int result = node(p, ZIR_EXPR_COMPOUND, start, type, "", -1, -1);
     if(result >= 0)
         p->fn->exprs[result].first_child = first;
@@ -197,7 +350,16 @@ prefix(ExprParser *p)
     ZirToken tok = p->token;
     int result = -1;
     if(++p->depth > 128) { p->failed = 1; p->depth--; return -1; }
-    if(take(p, "#char")) {
+    if(take(p, "#this")) {
+        if(p->fn->name[0] == '\0') {
+            Diagnostic(p->span, "parse.this",
+                       "#this requires a procedure or type scope");
+            exit(1);
+        }
+        result = node(p, ZIR_EXPR_IDENT, start, p->fn->name, "", -1, -1);
+        if(result >= 0)
+            p->fn->exprs[result].is_this = 1;
+    } else if(take(p, "#char")) {
         int value;
         if(p->token.kind != ZIR_TOKEN_STRING ||
            !jai_char_byte(p->token.text, &value)) {
@@ -210,30 +372,43 @@ prefix(ExprParser *p)
         if(result >= 0)
             snprintf(p->fn->exprs[result].text,
                      sizeof(p->fn->exprs[result].text), "%d", value);
-    } else if(take(p, "ifx")) {
+    } else if(is(p, "ifx") || is(p, "#ifx")) {
+        char op[8];
+        copy_text(op, sizeof(op), p->token.text);
+        next(p);
         int condition = expression(p, 2);
         take(p, "then");
         int selected = expression(p, 1);
+        take(p, ";");
         expect(p, "else");
         int alternative = expression(p, 1);
-        result = node(p, ZIR_EXPR_CONDITIONAL, start, "", "ifx",
+        result = node(p, ZIR_EXPR_CONDITIONAL, start, "", op,
                       condition, selected);
         if(result >= 0)
             p->fn->exprs[result].third = alternative;
-    } else if(take(p, "sizeof")) {
-        int right;
-        if(take(p, "(")) {
-            if(type_name(p, p->token.text)) {
-                size_t ts = p->begin;
-                while(p->token.kind != ZIR_TOKEN_EOF && !is(p, ")")) next(p);
-                right = node(p, ZIR_EXPR_IDENT, ts, "", "", -1, -1);
-                expect(p, ")");
-            } else {
-                right = expression(p, 1);
-                expect(p, ")");
-            }
-        } else right = prefix(p);
-        result = node(p, ZIR_EXPR_SIZEOF, start, "", "", -1, right);
+    } else if(is(p, "sizeof")) {
+        Diagnostic(p->span, "parse.jai_syntax",
+                   "sizeof is not Jai syntax; use size_of(Type)");
+        exit(1);
+    } else if(take(p, "size_of")) {
+        char type[ZIR_NAME_MAX];
+        size_t begin, length;
+        int nested = 0;
+        expect(p, "(");
+        begin = p->begin;
+        while(p->token.kind != ZIR_TOKEN_EOF) {
+            if(is(p, ")") && nested == 0) break;
+            if(is(p, "(")) nested++;
+            if(is(p, ")")) nested--;
+            next(p);
+        }
+        length = p->begin - begin;
+        if(length >= sizeof(type)) { p->failed = 1; length = 0; }
+        memcpy(type, p->source + begin, length);
+        type[length] = '\0';
+        trim_in_place(type);
+        expect(p, ")");
+        result = node(p, ZIR_EXPR_SIZE_OF, start, type, "", -1, -1);
     } else if(take(p, "cast")) {
         char type[ZIR_NAME_MAX];
         size_t ts, length;
@@ -250,11 +425,18 @@ prefix(ExprParser *p)
         expect(p, ")");
         int right = prefix(p);
         result = node(p, ZIR_EXPR_CAST, start, type, "", -1, right);
+    } else if(is(p, "++") || is(p, "--")) {
+        Diagnostic(p->span, "parse.jai_syntax",
+                   "Jai has no increment or decrement operators; use += 1 or -= 1");
+        exit(1);
+    } else if(is(p, "<<")) {
+        Diagnostic(p->span, "parse.jai_syntax",
+                   "prefix << dereference is not Jai syntax; use pointer.*");
+        exit(1);
     } else if(is(p, "+") || is(p, "-") || is(p, "!") || is(p, "~") ||
-              is(p, "*") || is(p, "<<") || is(p, "++") || is(p, "--")) {
+              is(p, "*")) {
         int right;
-        const char *op = !strcmp(tok.text, "*") ? "&" :
-                         !strcmp(tok.text, "<<") ? "*" : tok.text;
+        const char *op = !strcmp(tok.text, "*") ? "&" : tok.text;
         next(p);
         right = prefix(p);
         result = node(p, ZIR_EXPR_UNARY, start, "", op, -1, right);
@@ -263,18 +445,7 @@ prefix(ExprParser *p)
                    "C-style address-of is not valid Jai syntax; use *value");
         exit(1);
     } else if(take(p, "(")) {
-        if(is(p, "[") && p->internal_array_literal) {
-            char type[ZIR_NAME_MAX];
-            size_t ts = p->begin;
-            while(p->token.kind != ZIR_TOKEN_EOF && !is(p, ")")) next(p);
-            size_t length = p->begin - ts;
-            if(length >= sizeof(type)) { p->failed = 1; length = 0; }
-            memcpy(type, p->source + ts, length);
-            type[length] = 0;
-            trim_in_place(type);
-            expect(p, ")");
-            result = record_initializer(p, start, type);
-        } else if(type_name(p, p->token.text) || is(p, "[")) {
+        if(type_name(p, p->token.text) || is(p, "[")) {
             Diagnostic(p->span, "parse.jai_syntax",
                        "C-style cast or literal is not valid Jai syntax; use cast(Type) value or Type.{...}");
             exit(1);
@@ -286,6 +457,23 @@ prefix(ExprParser *p)
                            "C-style literal is not valid Jai syntax; use Type.{...}");
                 exit(1);
             }
+        }
+    } else if(take(p, ".")) {
+        char name[ZIR_NAME_MAX];
+        if(is(p, "{")) {
+            result = record_initializer(p, start, "", "{", "}");
+        } else if(is(p, "[") && p->expected_type != NULL &&
+                  ArrayElementType(p->expected_type, NULL, 0, NULL)) {
+            result = record_initializer(p, start, p->expected_type, "[", "]");
+        } else if(p->token.kind != ZIR_TOKEN_IDENT) {
+            p->failed = 1;
+        } else {
+            int length = snprintf(name, sizeof(name), ".%s", p->token.text);
+            if(length < 0 || (size_t)length >= sizeof(name))
+                p->failed = 1;
+            next(p);
+            if(!p->failed)
+                result = node(p, ZIR_EXPR_IDENT, start, name, "", -1, -1);
         }
     } else {
         ZirExprKind kind;
@@ -309,7 +497,7 @@ prefix(ExprParser *p)
                     FindType(p->module, tok.text, NULL) : NULL;
                 if(record == NULL || record->is_enum) p->failed = 1;
                 next(p);
-                result = record_initializer(p, start, tok.text);
+                result = record_initializer(p, start, tok.text, "{", "}");
             }
         }
         if(result < 0 && !p->failed)
@@ -336,6 +524,10 @@ prefix(ExprParser *p)
         } else if(is(p, ".")) {
             char name[ZIR_NAME_MAX];
             next(p);
+            if(take(p, "*")) {
+                result = node(p, ZIR_EXPR_UNARY, start, "", "*", -1, result);
+                continue;
+            }
             if(p->token.kind != ZIR_TOKEN_IDENT) p->failed = 1;
             copy_text(name, sizeof(name), p->token.text);
             next(p);
@@ -347,24 +539,44 @@ prefix(ExprParser *p)
             if(callee >= 0 && p->fn->exprs[callee].kind == ZIR_EXPR_IDENT)
                 copy_text(name, sizeof(name), p->fn->exprs[callee].name);
             if(!is(p, ")")) do {
+                char argument_name[ZIR_NAME_MAX] = "";
+                if(p->token.kind == ZIR_TOKEN_IDENT) {
+                    ZirLexer lookahead = p->lexer;
+                    ZirToken following = LexerNext(&lookahead);
+                    if(!strcmp(following.text, "=")) {
+                        copy_text(argument_name, sizeof(argument_name),
+                                  p->token.text);
+                        next(p);
+                        expect(p, "=");
+                    }
+                }
                 int child = expression(p, 1);
                 if(child < 0) { p->failed = 1; break; }
+                copy_text(p->fn->exprs[child].argument_name,
+                          sizeof(p->fn->exprs[child].argument_name),
+                          argument_name);
                 if(last >= 0) p->fn->exprs[last].next_sibling = child;
                 else first = child;
                 last = child;
             } while(take(p, ","));
             expect(p, ")");
+            if(!p->failed && p->expand_defaults)
+                append_default_arguments(p, callee, name, &first, &last);
             result = node(p, ZIR_EXPR_CALL, start, name, "", name[0] ? -1 : callee, -1);
-            if(result >= 0) p->fn->exprs[result].first_child = first;
+            if(result >= 0) {
+                p->fn->exprs[result].first_child = first;
+                if(callee >= 0 && p->fn->exprs[callee].is_this)
+                    p->fn->exprs[result].is_this = 1;
+            }
         } else if(is(p, "++") || is(p, "--")) {
-            char op[8]; copy_text(op, sizeof(op), p->token.text); next(p);
-            result = node(p, ZIR_EXPR_POSTFIX, start, "", op, result, -1);
+            Diagnostic(p->span, "parse.jai_syntax",
+                       "Jai has no increment or decrement operators; use += 1 or -= 1");
+            exit(1);
         } else if(is(p, "?") && p->begin > 0 &&
                   !isspace((unsigned char)p->source[p->begin - 1])) {
-            /* An adjacent '?' unwraps a Result. Spaced '?' remains the
-             * conditional operator and keeps existing source unambiguous. */
-            next(p);
-            result = node(p, ZIR_EXPR_POSTFIX, start, "", "?", result, -1);
+            Diagnostic(p->span, "parse.jai_syntax",
+                       "postfix ? is not Jai syntax; handle the result explicitly");
+            exit(1);
         } else break;
     }
     p->depth--;
@@ -412,13 +624,16 @@ expression(ExprParser *p, int minimum)
 
 static int
 parse_expr(ZirFunction *fn, const ZirModule *module, const char *text,
-           ZirSourceSpan span, int internal_array_literal)
+           ZirSourceSpan span, const char *expected_type, int stmt_index,
+           int expand_defaults)
 {
     ExprParser p = {0};
     int initial = fn->expr_count, result;
     if(!*skip_ws(text)) return -1;
     p.fn = fn; p.module = module; p.span = span; p.source = text;
-    p.internal_array_literal = internal_array_literal;
+    p.expected_type = expected_type;
+    p.stmt_index = stmt_index;
+    p.expand_defaults = expand_defaults;
     LexerInit(&p.lexer, text, span.path);
     next(&p);
     result = expression(&p, 1);
@@ -435,7 +650,14 @@ int
 ParseExpr(ZirFunction *fn, const ZirModule *module, const char *text,
           ZirSourceSpan span)
 {
-    return parse_expr(fn, module, text, span, 0);
+    return parse_expr(fn, module, text, span, NULL, -1, 1);
+}
+
+int
+ParseExprNoDefaults(ZirFunction *fn, const ZirModule *module,
+                    const char *text, ZirSourceSpan span)
+{
+    return parse_expr(fn, module, text, span, NULL, -1, 0);
 }
 
 void
@@ -451,9 +673,6 @@ StructureFunction(ZirFunction *fn, const ZirModule *module)
         st->is_else = st->kind == ZIR_STMT_IF &&
                       strncmp(text, "else", 4) == 0 &&
                       (text[4] == 0 || isspace((unsigned char)text[4]));
-        st->is_guard = st->kind == ZIR_STMT_IF &&
-                       strncmp(text, "guard", 5) == 0 &&
-                       (text[5] == 0 || isspace((unsigned char)text[5]));
         if(st->kind == ZIR_STMT_DECL) {
             char *colon = strchr(text, ':');
             if(colon) {
@@ -487,15 +706,27 @@ StructureFunction(ZirFunction *fn, const ZirModule *module)
                     value = text + lexer.pos;
                     copy_text(st->assignment_op, sizeof(st->assignment_op), tok.text);
                     text[lexer.pos - strlen(tok.text)] = 0;
-                    st->lhs_root = ParseExpr(fn, module, text, st->span);
+                    st->lhs_root = parse_expr(fn, module, text, st->span,
+                                              NULL, i, 1);
                     break;
                 }
             } while(tok.kind != ZIR_TOKEN_EOF);
         } else if(st->kind == ZIR_STMT_RETURN) value = text + 6;
         else if(st->kind == ZIR_STMT_UNUSED) value = text + 6;
-        else if(st->kind == ZIR_STMT_EXPR || st->kind == ZIR_STMT_BLOCK_CALL) value = text;
-        else if(st->kind == ZIR_STMT_WHILE || st->kind == ZIR_STMT_IF ||
-                st->kind == ZIR_STMT_SWITCH || st->kind == ZIR_STMT_MATCH) {
+        else if(st->kind == ZIR_STMT_EXPR) value = text;
+        else if(st->kind == ZIR_STMT_IF_CASE) {
+            char *condition = (char *)skip_ws(text + 2);
+            if(strncmp(condition, "#complete", 9) == 0 &&
+               isspace((unsigned char)condition[9]))
+                condition = (char *)skip_ws(condition + 9);
+            char *equals = strstr(condition, "==");
+            if(equals != NULL) {
+                *equals = '\0';
+                trim_in_place(condition);
+            }
+            value = condition;
+        }
+        else if(st->kind == ZIR_STMT_WHILE || st->kind == ZIR_STMT_IF) {
             strip_block_brace(text);
             value = text;
             if(!strncmp(value, "else", 4)) value = (char *)skip_ws(value + 4);
@@ -508,31 +739,8 @@ StructureFunction(ZirFunction *fn, const ZirModule *module)
                            "C-style array literal is not valid Jai syntax; use .[...]");
                 exit(1);
             }
-            if(st->kind == ZIR_STMT_DECL && st->type[0] == '[' &&
-               skip_ws(value)[0] == '.' && skip_ws(value)[1] == '[') {
-                char initializer[ZIR_TEXT_MAX];
-                const char *contents = skip_ws(value) + 2;
-                size_t content_length = strlen(contents);
-                while(content_length && isspace((unsigned char)contents[content_length - 1]))
-                    content_length--;
-                if(content_length && contents[content_length - 1] == ';')
-                    content_length--;
-                while(content_length && isspace((unsigned char)contents[content_length - 1]))
-                    content_length--;
-                if(!content_length || contents[content_length - 1] != ']') {
-                    Diagnostic(st->span, "parse.array", "invalid Jai array literal");
-                    exit(1);
-                }
-                int length = snprintf(initializer, sizeof(initializer),
-                    "(%s){%.*s}", st->type, (int)(content_length - 1), contents);
-                if(length < 0 || (size_t)length >= sizeof(initializer)) {
-                    Diagnostic(st->span, "parse.array", "array initializer exceeds expression limit");
-                    exit(1);
-                }
-                st->expr_root = parse_expr(fn, module, initializer, st->span, 1);
-            } else {
-                st->expr_root = ParseExpr(fn, module, value, st->span);
-            }
+            st->expr_root = parse_expr(fn, module, value, st->span,
+                st->kind == ZIR_STMT_DECL ? st->type : NULL, i, 1);
         }
     }
 }

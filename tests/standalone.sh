@@ -37,7 +37,7 @@ python3 - "$work/ir/hello.zir" <<'PY'
 from pathlib import Path
 import sys
 data = Path(sys.argv[1]).read_bytes()
-assert data[:8] == b'ZIR\0\x0a\0\0\0', data[:8]
+assert data[:8] == b'ZIR\0\x1c\0\0\0', data[:8]
 PY
 "$ziran" build --target=c --root "$work" -o "$work/c" "$work/hello.zi"
 test -s "$work/c/hello.c"
@@ -57,7 +57,7 @@ ${CC:-cc} -Iinclude -I"$work/c" "$work/c/hello.c" "$work/main.c" -o "$work/hello
 ${CC:-cc} -Iinclude -I"$work/c-ir" "$work/c-ir/hello.c" "$work/main.c" \
     -o "$work/hello-from-ir"
 "$work/hello-from-ir"
-"$ziran" build --target=cpp --strict --root "$work" -o "$work/cpp" \
+"$ziran" build --target=cpp --root "$work" -o "$work/cpp" \
     "$work/hello.zi"
 grep -Fxq '#ifndef ZI_HELLO_H' "$work/cpp/hello.hpp"
 cat > "$work/cpp/main.cpp" <<'EOF'
@@ -67,24 +67,24 @@ EOF
 ${CXX:-c++} -Iinclude -I"$work/cpp" "$work/cpp/hello.cpp" \
     "$work/cpp/main.cpp" -o "$work/hello-cpp"
 "$work/hello-cpp"
-"$ziran" build --target=cpp --strict --root "$work" -o "$work/cpp-ir" \
+"$ziran" build --target=cpp --root "$work" -o "$work/cpp-ir" \
     "$work/ir/hello.zir"
 cp "$work/cpp/main.cpp" "$work/cpp-ir/main.cpp"
 ${CXX:-c++} -Iinclude -I"$work/cpp-ir" "$work/cpp-ir/hello.cpp" \
     "$work/cpp-ir/main.cpp" -o "$work/hello-cpp-ir"
 "$work/hello-cpp-ir"
-"$ziran" build --target=go --strict --pkg main --root "$work" -o "$work/go" "$work/hello.zi"
+"$ziran" build --target=go --pkg main --root "$work" -o "$work/go" "$work/hello.zi"
 test -s "$work/go/hello.go"
 cat > "$work/go/main.go" <<'EOF'
 package main
 func main() { if Hello_Answer() != 42 { panic("wrong result") } }
 EOF
 GO111MODULE=off go run "$work/go/hello.go" "$work/go/main.go"
-"$ziran" build --target=go --strict --pkg main --root "$work" \
+"$ziran" build --target=go --pkg main --root "$work" \
     -o "$work/go-ir" "$work/ir/hello.zir"
 cp "$work/go/main.go" "$work/go-ir/main.go"
 GO111MODULE=off go run "$work/go-ir/hello.go" "$work/go-ir/main.go"
-"$ziran" build --target=go --strict --root "$work" \
+"$ziran" build --target=go --root "$work" \
     -o "$work/go-default-package" "$work/hello.zi"
 grep -Fxq 'package ziran' "$work/go-default-package/hello.go"
 
@@ -131,8 +131,8 @@ Answer :: () -> s32 {
     field.text_size = 5
     table: TableViewProps
     table.copy_text = "hello"
-    if modal.text.length != 5 || field.text.length != field.text_size ||
-        table.copy_text.length != 5 { return 0 }
+    if modal.text.count != 5 || cast(s32)field.text.count != field.text_size ||
+        table.copy_text.count != 5 { return 0 }
     tree_calls = 0
     BeginTree()
     EndTree()
@@ -147,7 +147,7 @@ EOF
     "$work/ordinary_names.zi"
 for input in "$work/ordinary_names.zi" "$work/ordinary-ir/ordinary_names.zir"; do
     output="$work/ordinary-go-$(basename "$input")"
-    "$ziran" build --target=go --strict --pkg main --root "$work" \
+    "$ziran" build --target=go --pkg main --root "$work" \
         -o "$output" "$input"
     if grep -Fq 'github.com/waozixyz/kryon' "$output/ordinary_names.go"; then
         echo 'ordinary names pulled in the Kryon Go runtime' >&2
@@ -162,7 +162,7 @@ done
 for input in "$work/ordinary_names.zi" "$work/ordinary-ir/ordinary_names.zir"; do
     for target in c cpp; do
         output="$work/ordinary-$target-$(basename "$input")"
-        "$ziran" build --target="$target" --strict --root "$work" \
+        "$ziran" build --target="$target" --root "$work" \
             -o "$output" "$input"
         if rg -q 'ui_inspect_props.generated.h|__kryonContextClick' "$output"; then
             echo 'ordinary module received a Kryon compiler dependency' >&2
@@ -180,7 +180,7 @@ done
 cat > "$work/pointer_record.zi" <<'EOF'
 Props :: struct {
     values: *s32
-    label: *char
+    label: *u8
 }
 #program_export
 Answer :: () -> s32 {
@@ -191,10 +191,10 @@ EOF
     "$work/pointer_record.zi"
 for input in "$work/pointer_record.zi" "$work/pointer-ir/pointer_record.zir"; do
     output="$work/pointer-cpp-$(basename "$input")"
-    "$ziran" build --target=cpp --strict --root "$work" \
+    "$ziran" build --target=cpp --root "$work" \
         -o "$output" "$input"
     grep -Fq 'int32_t* values;' "$output/pointer_record.hpp"
-    grep -Fq 'char* label;' "$output/pointer_record.hpp"
+    grep -Fq 'uint8_t* label;' "$output/pointer_record.hpp"
     cat > "$output/main.cpp" <<'CPP'
 #include "pointer_record.hpp"
 int main() { return Answer() == 42 ? 0 : 1; }
@@ -232,7 +232,7 @@ for input in source ir; do
         extension=zir
         input_dir=$work/ffi-ir
     fi
-    "$ziran" build --target=go --strict --pkg main --root "$work" \
+    "$ziran" build --target=go --pkg main --root "$work" \
         -o "$work/ffi-go-$input" "$input_dir/ffi_direct.$extension" \
         "$input_dir/ffi_host.$extension"
     if grep -Fq 'github.com/waozixyz/kryon' \
@@ -274,7 +274,7 @@ Answer :: () -> s32 {
     return Button(41)
 }
 EOF
-"$ziran" build --target=c --strict --root "$work" -o "$work/modules" \
+"$ziran" build --target=c --root "$work" -o "$work/modules" \
     "$work/library.zi" "$work/app.zi"
 cat > "$work/modules/main.c" <<'EOF'
 #include "app.h"
@@ -293,7 +293,7 @@ test "$("$ziran" run "$work/app.zib")" = 42
     "$work/modules-ir/library.zir" "$work/modules-ir/app.zir"
 cmp "$work/app.zib" "$work/app-from-ir.zib"
 test "$("$ziran" run "$work/app-from-ir.zib")" = 42
-"$ziran" build --target=c --strict --root "$work" -o "$work/mixed-modules" \
+"$ziran" build --target=c --root "$work" -o "$work/mixed-modules" \
     "$work/library.zi" "$work/modules-ir/app.zir"
 cp "$work/modules/main.c" "$work/mixed-modules/main.c"
 ${CC:-cc} -Iinclude -I"$work/mixed-modules" \
@@ -335,7 +335,7 @@ Answer :: () -> s32 {
     }
 }
 EOF
-"$ziran" build --target=c --strict --root "$work" -o "$work/flow-c" \
+"$ziran" build --target=c --root "$work" -o "$work/flow-c" \
     "$work/flow.zi"
 cat > "$work/flow-c/main.c" <<'EOF'
 #include "flow.h"
@@ -344,7 +344,7 @@ EOF
 ${CC:-cc} -Iinclude -I"$work/flow-c" "$work/flow-c/flow.c" \
     "$work/flow-c/main.c" -o "$work/flow-c/app"
 "$work/flow-c/app"
-"$ziran" build --target=cpp --strict --root "$work" -o "$work/flow-cpp" \
+"$ziran" build --target=cpp --root "$work" -o "$work/flow-cpp" \
     "$work/flow.zi"
 cat > "$work/flow-cpp/main.cpp" <<'EOF'
 #include "flow.hpp"
@@ -353,7 +353,7 @@ EOF
 ${CXX:-c++} -Iinclude -I"$work/flow-cpp" "$work/flow-cpp/flow.cpp" \
     "$work/flow-cpp/main.cpp" -o "$work/flow-cpp/app"
 "$work/flow-cpp/app"
-"$ziran" build --target=go --strict --pkg main --root "$work" \
+"$ziran" build --target=go --pkg main --root "$work" \
     -o "$work/flow-go" "$work/flow.zi"
 cat > "$work/flow-go/main.go" <<'EOF'
 package main
@@ -370,25 +370,32 @@ cmp "$work/flow.zib" "$work/flow-from-ir.zib"
 test "$("$ziran" run "$work/flow-from-ir.zib")" = 42
 cat > "$work/reals.zi" <<'EOF'
 #program_export
-Scale :: (value: float) -> float {
+Scale :: (value: float32) -> float32 {
     return value * 2.0
 }
 #program_export
 Half :: (value: float64) -> float64 {
     return value / 2.0
 }
+Never :: () -> s32 {
+    unreachable
+}
 #program_export
 Answer :: () -> s32 {
-    scaled: float = Scale(1.25)
+    scaled: float32 = Scale(1.25)
     half: float64 = Half(7.0)
     if scaled != 2.5 || half != 3.5 { return 0 }
     if cast(s32)(scaled + 0.5) != 3 { return 0 }
     positive: bool = ifx scaled > 2.0 then true else false
     if !positive || 1.0 / 2.0 != 0.5 { return 0 }
+    selected: s32 = ifx positive 42 else Never()
+    if selected != 42 { return 0 }
+    zero: s32 = ifx false then Never() else 0
+    if zero != 0 { return 0 }
     return 42
 }
 EOF
-"$ziran" build --target=c --strict --root "$work" -o "$work/reals-c" \
+"$ziran" build --target=c --root "$work" -o "$work/reals-c" \
     "$work/reals.zi"
 cat > "$work/reals-c/main.c" <<'EOF'
 #include "reals.h"
@@ -397,7 +404,7 @@ EOF
 ${CC:-cc} -Iinclude -I"$work/reals-c" "$work/reals-c/reals.c" \
     "$work/reals-c/main.c" -o "$work/reals-c/app"
 "$work/reals-c/app"
-"$ziran" build --target=cpp --strict --root "$work" -o "$work/reals-cpp" \
+"$ziran" build --target=cpp --root "$work" -o "$work/reals-cpp" \
     "$work/reals.zi"
 cat > "$work/reals-cpp/main.cpp" <<'EOF'
 #include "reals.hpp"
@@ -406,7 +413,7 @@ EOF
 ${CXX:-c++} -Iinclude -I"$work/reals-cpp" "$work/reals-cpp/reals.cpp" \
     "$work/reals-cpp/main.cpp" -o "$work/reals-cpp/app"
 "$work/reals-cpp/app"
-"$ziran" build --target=go --strict --pkg main --root "$work" \
+"$ziran" build --target=go --pkg main --root "$work" \
     -o "$work/reals-go" "$work/reals.zi"
 cat > "$work/reals-go/main.go" <<'EOF'
 package main
@@ -430,7 +437,7 @@ UnusedRecord :: (props: Props) -> s32 {
     return props.value
 }
 #program_export
-Scale :: (value: float) -> float {
+Scale :: (value: float32) -> float32 {
     return value * 1.5
 }
 EOF
@@ -524,9 +531,9 @@ cmp "$work/record.zib" "$work/record-from-ir.zib"
 test "$("$ziran" run "$work/record-from-ir.zib")" = 42
 cat > "$work/modes.zi" <<'EOF'
 Mode :: enum {
-    Off = -1
-    On
-    Later = On + 4
+    Off :: -1;
+    On;
+    Later :: On + 4;
 }
 Settings :: struct {
     mode: Mode
@@ -563,9 +570,9 @@ cmp "$work/modes.zib" "$work/modes-from-ir.zib"
 test "$("$ziran" run "$work/modes-from-ir.zib")" = 42
 cat > "$work/direct_enum.zi" <<'EOF'
 Step :: enum {
-    First = 3
-    Second
-    Last = Second + 4
+    First :: 3;
+    Second;
+    Last :: Second + 4;
 }
 #program_export
 Answer :: () -> s32 {
@@ -605,7 +612,7 @@ test "$("$ziran" run "$work/unsigned-bits.zib")" = 42
     "$work/unsigned-bits-ir/unsigned_bits.zir"
 cmp "$work/unsigned-bits.zib" "$work/unsigned-bits-from-ir.zib"
 test "$("$ziran" run "$work/unsigned-bits-from-ir.zib")" = 42
-"$ziran" build --target=c --strict --root "$work" \
+"$ziran" build --target=c --root "$work" \
     -o "$work/unsigned-bits-c" "$work/unsigned_bits.zi"
 cat > "$work/unsigned-bits-c/main.c" <<'EOF'
 #include "unsigned_bits.h"
@@ -615,7 +622,7 @@ ${CC:-cc} -Iinclude -I"$work/unsigned-bits-c" \
     "$work/unsigned-bits-c/unsigned_bits.c" \
     "$work/unsigned-bits-c/main.c" -o "$work/unsigned-bits-c/app"
 "$work/unsigned-bits-c/app"
-"$ziran" build --target=cpp --strict --root "$work" \
+"$ziran" build --target=cpp --root "$work" \
     -o "$work/unsigned-bits-cpp" "$work/unsigned_bits.zi"
 cat > "$work/unsigned-bits-cpp/main.cpp" <<'EOF'
 #include "unsigned_bits.hpp"
@@ -625,7 +632,7 @@ ${CXX:-c++} -Iinclude -I"$work/unsigned-bits-cpp" \
     "$work/unsigned-bits-cpp/unsigned_bits.cpp" \
     "$work/unsigned-bits-cpp/main.cpp" -o "$work/unsigned-bits-cpp/app"
 "$work/unsigned-bits-cpp/app"
-"$ziran" build --target=go --strict --pkg main --root "$work" \
+"$ziran" build --target=go --pkg main --root "$work" \
     -o "$work/unsigned-bits-go" "$work/unsigned_bits.zi"
 cat > "$work/unsigned-bits-go/main.go" <<'EOF'
 package main
@@ -668,7 +675,7 @@ for input in source ir; do
         extension=zir
         input_dir=$work/u64-ir
     fi
-    "$ziran" build --target=c --strict --root "$work" \
+    "$ziran" build --target=c --root "$work" \
         -o "$work/u64-c-$input" "$input_dir/u64_boundary.$extension"
     cat > "$work/u64-c-$input/main.c" <<'C'
 #include "u64_boundary.h"
@@ -678,7 +685,7 @@ C
         "$work/u64-c-$input/u64_boundary.c" \
         "$work/u64-c-$input/main.c" -o "$work/u64-c-$input/app"
     "$work/u64-c-$input/app"
-    "$ziran" build --target=cpp --strict --root "$work" \
+    "$ziran" build --target=cpp --root "$work" \
         -o "$work/u64-cpp-$input" "$input_dir/u64_boundary.$extension"
     cat > "$work/u64-cpp-$input/main.cpp" <<'CPP'
 #include "u64_boundary.hpp"
@@ -688,7 +695,7 @@ CPP
         "$work/u64-cpp-$input/u64_boundary.cpp" \
         "$work/u64-cpp-$input/main.cpp" -o "$work/u64-cpp-$input/app"
     "$work/u64-cpp-$input/app"
-    "$ziran" build --target=go --strict --pkg main --root "$work" \
+    "$ziran" build --target=go --pkg main --root "$work" \
         -o "$work/u64-go-$input" "$input_dir/u64_boundary.$extension"
     cat > "$work/u64-go-$input/main.go" <<'GO'
 package main
@@ -709,10 +716,10 @@ Path(sys.argv[2]).write_bytes(data.replace(b'else if value == 12',
 PY
 for target in c cpp go; do
     if test "$target" = go; then
-        "$ziran" build --target=go --strict --pkg main --root "$work" \
+        "$ziran" build --target=go --pkg main --root "$work" \
             -o "$work/changed-text-go" "$work/changed-text.zir"
     else
-        "$ziran" build "--target=$target" --strict --root "$work" \
+        "$ziran" build "--target=$target" --root "$work" \
             -o "$work/changed-text-$target" "$work/changed-text.zir"
     fi
 done
@@ -755,10 +762,10 @@ Path(sys.argv[2]).write_bytes(data)
 PY
 for target in c cpp go; do
     if test "$target" = go; then
-        "$ziran" build --target=go --strict --pkg main --root "$work" \
+        "$ziran" build --target=go --pkg main --root "$work" \
             -o "$work/inconsistent-go" "$work/inconsistent-flow.zir"
     else
-        "$ziran" build "--target=$target" --strict --root "$work" \
+        "$ziran" build "--target=$target" --root "$work" \
             -o "$work/inconsistent-$target" "$work/inconsistent-flow.zir"
     fi
 done
@@ -791,7 +798,7 @@ python3 - "$work/app.zib" "$work/bad-bundle.zib" "$work/old-bundle.zib" <<'PY'
 from pathlib import Path
 import sys
 data = Path(sys.argv[1]).read_bytes()
-assert data[:8] == b'ZIB\0\x07\0\0\0', data[:8]
+assert data[:8] == b'ZIB\0\x10\0\0\0', data[:8]
 Path(sys.argv[2]).write_bytes(data[:17])
 old = bytearray(data)
 old[4] = 1
@@ -836,16 +843,12 @@ cat > "$work/blockapp.zi" <<'EOF'
 #import "blocklib"
 #program_export
 Answer :: () -> s32 {
-    Button: {
-        value = 1
-    }
-    Button chosen: {
-        value = 41
-    }
+    Button(Props.{value = 1})
+    chosen: s32 = Button(Props.{value = 41})
     return chosen
 }
 EOF
-"$ziran" build --target=c --strict --root "$work" -o "$work/blocks" \
+"$ziran" build --target=c --root "$work" -o "$work/blocks" \
     "$work/blocklib.zi" "$work/blockapp.zi"
 grep -Eq 'Button\(value_[0-9]+\)' "$work/blocks/blockapp.c"
 cat > "$work/blocks/main.c" <<'EOF'
@@ -855,7 +858,7 @@ EOF
 ${CC:-cc} -Iinclude -I"$work/blocks" "$work/blocks/blocklib.c" \
     "$work/blocks/blockapp.c" "$work/blocks/main.c" -o "$work/blocks/app"
 "$work/blocks/app"
-"$ziran" build --target=go --strict --pkg main --root "$work" \
+"$ziran" build --target=go --pkg main --root "$work" \
     -o "$work/blocks-go" "$work/blocklib.zi" "$work/blockapp.zi"
 grep -Fq 'Blocklib_Button(' "$work/blocks-go/blockapp.go"
 if grep -Fq 'github.com/waozixyz/kryon/go/kryon' \
@@ -872,7 +875,7 @@ GO111MODULE=off go run "$work/blocks-go/blocklib.go" \
 
 "$ziran" ir --root "$work" -o "$work/blocks-ir" \
     "$work/blocklib.zi" "$work/blockapp.zi"
-"$ziran" build --target=c --strict --root "$work" -o "$work/blocks-from-ir" \
+"$ziran" build --target=c --root "$work" -o "$work/blocks-from-ir" \
     "$work/blocks-ir/blocklib.zir" "$work/blocks-ir/blockapp.zir"
 cp "$work/blocks/main.c" "$work/blocks-from-ir/main.c"
 ${CC:-cc} -Iinclude -I"$work/blocks-from-ir" \
@@ -902,17 +905,17 @@ Main :: () {
 EOF
 if "$ziran" check --root "$work" "$work/void_block.zi" \
     2> "$work/void_block.err"; then
-    echo 'named void block unexpectedly passed' >&2
+    echo 'named block call unexpectedly passed' >&2
     exit 1
 fi
-grep -Fq 'named block call requires a return value' "$work/void_block.err"
-"$ziran" build --target=go --strict --pkg main --root "$work" \
+grep -Fq 'block calls are not Jai syntax' "$work/void_block.err"
+"$ziran" build --target=go --pkg main --root "$work" \
     -o "$work/blocks-go-ir" "$work/blocks-ir/blocklib.zir" \
     "$work/blocks-ir/blockapp.zir"
 cp "$work/blocks-go/main.go" "$work/blocks-go-ir/main.go"
 GO111MODULE=off go run "$work/blocks-go-ir/blocklib.go" \
     "$work/blocks-go-ir/blockapp.go" "$work/blocks-go-ir/main.go"
-"$ziran" build --target=cpp --strict --root "$work" -o "$work/blocks-cpp" \
+"$ziran" build --target=cpp --root "$work" -o "$work/blocks-cpp" \
     "$work/blocklib.zi" "$work/blockapp.zi"
 cat > "$work/blocks-cpp/main.cpp" <<'EOF'
 #include "blockapp.hpp"
@@ -922,7 +925,7 @@ ${CXX:-c++} -Iinclude -I"$work/blocks-cpp" \
     "$work/blocks-cpp/blocklib.cpp" "$work/blocks-cpp/blockapp.cpp" \
     "$work/blocks-cpp/main.cpp" -o "$work/blocks-cpp/app"
 "$work/blocks-cpp/app"
-"$ziran" build --target=cpp --strict --root "$work" -o "$work/blocks-cpp-ir" \
+"$ziran" build --target=cpp --root "$work" -o "$work/blocks-cpp-ir" \
     "$work/blocks-ir/blocklib.zir" "$work/blocks-ir/blockapp.zir"
 cp "$work/blocks-cpp/main.cpp" "$work/blocks-cpp-ir/main.cpp"
 ${CXX:-c++} -Iinclude -I"$work/blocks-cpp-ir" \
@@ -986,7 +989,7 @@ if "$ziran" check --root "$work" "$work/extern_ui_mode.zi" \
     echo '#ui extern unexpectedly passed in Ziran' >&2
     exit 1
 fi
-grep -Fq 'unknown function modifier: #ui' "$work/extern_ui_mode.err"
+grep -Fq 'unknown directive: #ui' "$work/extern_ui_mode.err"
 
 cat > "$work/unknown_directive.zi" <<'EOF'
 #style defaults
@@ -1058,4 +1061,4 @@ if "$ziran" check --root "$work" "$work/unknown_block.zi" \
     echo 'unknown block call unexpectedly passed' >&2
     exit 1
 fi
-grep -Fq 'unknown block-call declaration: Missing' "$work/unknown_block.err"
+grep -Fq 'block calls are not Jai syntax' "$work/unknown_block.err"
