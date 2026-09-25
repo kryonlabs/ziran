@@ -400,8 +400,16 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   Go. Callers must choose UTF-8 codepoint boundaries when slicing text.
   `make check` compares source and saved-IR bundles with C, C++, and Go on a
   string program and rejects out-of-range indexing.
-- Portable bundles retain referenced module globals with default values,
-  including records and fixed arrays. The VM reads and writes them across
+- Portable bundles retain referenced module globals, including records and
+  fixed arrays. Explicit initializers run before the first statement of
+  every `BundleRun`: integer and boolean literals, compile-time constant
+  expressions over defines, float literals, string literals, and flat
+  `Type.{.field = value}` record literals fold into the global's slot, with
+  mutable initialized globals across calls and byte-identical source and
+  saved-IR bundles; C, C++, and Go emit the same initializers natively
+  (designated initializers in C, positional in C++, struct literals in Go).
+  Initializers that call procedures or contain nested record literals stay
+  rejected. The VM reads and writes them across
   imported function calls, and reclaims replaced values without losing
   globals reached by a caller. Source and saved `.zir`, `.zib`, C, C++, and Go
   tests cover value isolation and repeated mutation. Each `BundleRun` starts
@@ -565,9 +573,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   statement-text fallback. Source, saved-IR, and mixed builds rerun the checker
   across all modules. Remaining target-specific declaration and import
   lowering still needs a typed representation.
-- Extend the `.zib` linker and verifier beyond the current subset: remaining
-  control flow, enum initializer expressions, unresolved array bounds,
-  record slice parameters,
+- Extend the `.zib` linker and verifier beyond the current subset:
   state, and all checked expressions. Extend host capabilities to portable handles, arrays, and
   equivalent behavior
   for all supported language features. The current bundle embeds checked

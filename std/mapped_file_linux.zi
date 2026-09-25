@@ -1,0 +1,59 @@
+#import "file_linux"
+#import "byte_text_linux"
+
+// Private writable mapping: mutation never changes the source file. This
+// makes the borrowed []u8 view compatible with Ziran's mutable byte slices.
+#scope_file
+libc :: #system_library "libc";
+MapRaw :: (address: *void, length: u64, protection: s32, flags: s32,
+    fd: s32, offset: s64) -> *u8 #foreign libc "mmap";
+UnmapRaw :: (address: *u8, length: u64) -> s32 #foreign libc "munmap";
+
+#scope_export
+MappedFile :: struct {
+    data: *u8
+    length: u64
+    valid: bool
+}
+
+#program_export
+MapPrivate :: (path: string) -> MappedFile {
+    result: MappedFile
+    file: FileHandle = OpenRead(path)
+    if !file.valid { return result }
+    size: s64 = FileSize(file)
+    if size < 0 {
+        CloseFile(file)
+        return result
+    }
+    if size == 0 {
+        result.valid = CloseFile(file)
+        return result
+    }
+    mapped: *u8 = MapRaw(null, cast(u64)size, 3, 2, file.fd, 0)
+    closed: bool = CloseFile(file)
+    if cast(u64)mapped == cast(u64)0xffffffffffffffff {
+        return result
+    }
+    if !closed {
+        UnmapRaw(mapped, cast(u64)size)
+        return result
+    }
+    result.data = mapped
+    result.length = cast(u64)size
+    result.valid = true
+    return result
+}
+
+#program_export
+MappedBytes :: (file: MappedFile) -> []u8 {
+    if !file.valid { return BytesFromPointer(null, 0) }
+    return BytesFromPointer(file.data, file.length)
+}
+
+#program_export
+UnmapFile :: (file: MappedFile) -> bool {
+    if !file.valid { return false }
+    if file.length == 0 { return true }
+    return UnmapRaw(file.data, file.length) == 0
+}

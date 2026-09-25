@@ -154,6 +154,10 @@ bundle and through native C, C++, and Go mocks.
 Native Linux C builds can import `std/file_linux.zi` for positional byte I/O,
 `std/binary_linux.zi` for little-endian numbers, `std/date_time_linux.zi` for
 Unix time, and `std/byte_text_linux.zi` for borrowed byte-to-text views.
+`std/byte_text_linux.zi` also borrows caller-owned C strings and byte buffers;
+the caller must keep their memory alive. `std/mapped_file_linux.zi` maps a file
+privately for bounded byte parsing without copying it. Its borrowed slice is
+valid only until `UnmapFile`, and writes to that slice do not change the file.
 `std/process_capture_linux.zi` captures a child process without a shell;
 `std/net_http_linux.zi` uses it to send JSON over HTTPS through `curl`.
 These native adapters keep libc calls out of applications and require glibc

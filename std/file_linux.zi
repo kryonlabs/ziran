@@ -2,6 +2,7 @@
 
 // Positional file I/O for native Linux targets. A caller-owned byte slice
 // makes the buffer lifetime and exact archive encoding explicit.
+#scope_file
 libc :: #system_library "libc";
 OpenRaw :: (path: *u8, flags: s32, mode: s32) -> s32 #foreign libc "open";
 CloseRaw :: (fd: s32) -> s32 #foreign libc "close";
@@ -10,11 +11,13 @@ ReadAtRaw :: (fd: s32, output: *u8, count: u64, offset: s64) -> s64 #foreign lib
 WriteAtRaw :: (fd: s32, input: *u8, count: u64, offset: s64) -> s64 #foreign libc "pwrite";
 MakeDirectoryRaw :: (path: *u8, mode: s32) -> s32 #foreign libc "mkdir";
 
+#scope_export
 FileHandle :: struct {
     fd: s32
     valid: bool
 }
 
+#scope_file
 OpenWithFlags :: (path: string, flags: s32) -> FileHandle {
     result: FileHandle
     name: [4096]u8
@@ -24,6 +27,7 @@ OpenWithFlags :: (path: string, flags: s32) -> FileHandle {
     return result
 }
 
+#scope_export
 #program_export
 OpenRead :: (path: string) -> FileHandle {
     return OpenWithFlags(path, 0)

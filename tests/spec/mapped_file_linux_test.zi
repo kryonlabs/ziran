@@ -1,0 +1,25 @@
+#import "mapped_file_linux"
+#import "byte_text_linux"
+#import "file_linux"
+
+#program_export
+SelfTest :: (path: *u8) -> s32 {
+    name: string = TextFromCString(path)
+    file: MappedFile = MapPrivate(name)
+    if !file.valid || file.length != 5 { return 1 }
+    {
+        bytes: []u8 = MappedBytes(file)
+        if bytes.count != 5 || bytes[0] != cast(u8)104 ||
+           bytes[4] != cast(u8)111 { return 2 }
+        bytes[0] = cast(u8)72
+    }
+    if !UnmapFile(file) { return 3 }
+    original: FileHandle = OpenRead(name)
+    if !original.valid { return 4 }
+    bytes: [5]u8
+    count: s64 = ReadAt(original, bytes[:], 0)
+    if !CloseFile(original) || count != 5 || bytes[0] != cast(u8)104 {
+        return 5
+    }
+    return 0
+}

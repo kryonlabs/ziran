@@ -1439,6 +1439,70 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 require_go_type(g->type, gt, sizeof(gt), g->span);
                 if(!ScalarLiteral(g->type,g->init,ZIR_GO,g->span,ginit,sizeof(ginit)))
                     tx_expr(m, g->init, ginit, sizeof(ginit));
+                {
+                    const ZirType *record = FindType(m, g->type, NULL);
+                    const char *dot;
+                    if(record != NULL && !record->is_enum &&
+                       !record->is_procedure_type &&
+                       (dot = strchr(g->init, '.')) != NULL &&
+                       dot[1] == '{') {
+                        char mapped_type[ZIR_GO_NAME_MAX];
+                        char body[ZIR_GO_TEXT_MAX];
+                        const char *cursor;
+                        size_t used = 0;
+                        require_go_type(g->type, mapped_type,
+                                        sizeof(mapped_type), g->span);
+                        used = (size_t)snprintf(body, sizeof(body), "%s{",
+                                                mapped_type);
+                        cursor = dot + 2;
+                        while(*cursor && *cursor != '}') {
+                            const char *entry = cursor;
+                            const char *end;
+                            char value[ZIR_GO_TEXT_MAX];
+                            char rewritten[ZIR_GO_TEXT_MAX];
+                            while(*entry == '.' || *entry == ' ')
+                                entry++;
+                            end = entry;
+                            while(*end && *end != ',' && *end != '}')
+                                end++;
+                            {
+                                const char *eq = strchr(entry, '=');
+                                size_t length = eq != NULL ?
+                                    (size_t)(end - eq - 1) : 0;
+                                eq++;
+                                while(length > 0 && (*eq == ' ' ||
+                                       eq[length - 1] == ' ' ||
+                                       eq[length - 1] == '}')) {
+                                    eq++;
+                                    length--;
+                                }
+                                if(length == 0 || length >= sizeof(value)) {
+                                    body[0] = '\0';
+                                    break;
+                                }
+                                memcpy(value, eq, length);
+                                value[length] = '\0';
+                                tx_expr(m, value, rewritten,
+                                        sizeof(rewritten));
+                                if(used > strlen(mapped_type) + 1 &&
+                                    used + 2 < sizeof(body)) {
+                                    body[used++] = ',';
+                                    body[used++] = ' ';
+                                }
+                                used += (size_t)snprintf(body + used,
+                                        sizeof(body) - used, "%s",
+                                        rewritten[0] ? rewritten : value);
+                            }
+                            cursor = *end == ',' ? end + 1 : end;
+                        }
+                        if(body[0] != '\0' &&
+                           used + 1 < sizeof(body)) {
+                            body[used++] = '}';
+                            body[used] = '\0';
+                            snprintf(ginit, sizeof(ginit), "%s", body);
+                        }
+                    }
+                }
                 if(ginit[0] != '\0') {
                     if(ginit[0] == '{')
                         fprintf(f, "var %s = %s%s\n", gname, gt, ginit);

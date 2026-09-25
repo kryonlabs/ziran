@@ -745,6 +745,106 @@ emit_extern_prototype(FILE *c, const ZirModule *m, const ZirImport *imp)
     }
 }
 
+
+/* `Type.{.a = 1}` becomes a C99/C++ compound literal so an initialized
+ * file-scope record still compiles as a static initializer. */
+static void
+lower_record_literal_init(const ZirModule *m, const ZirGlobal *g,
+                          char *out, size_t size)
+{
+    const char *init = skip_ws(g->init);
+    const ZirType *record = FindType(m, g->type, NULL);
+    const char *dot = NULL;
+    size_t type_length = 0;
+    char type[ZIR_NAME_MAX];
+    if(init[0] == '\0')
+        return;
+    dot = strchr(init, '.');
+    if(dot != NULL)
+        type_length = (size_t)(dot - init);
+    if(record == NULL || dot == NULL || dot[1] != '{' ||
+       type_length == 0 || type_length >= sizeof(type)) {
+        copy_text(out, size, init);
+        return;
+    }
+    memcpy(type, init, type_length);
+    type[type_length] = '\0';
+    if(FindType(m, type, NULL) != record) {
+        copy_text(out, size, init);
+        return;
+    }
+    copy_text(out, size, "{");
+    {
+        const char *cursor = dot + 1;
+        while(*cursor && *cursor != '}') {
+            const char *entry_start = cursor;
+            const char *entry_end = entry_start;
+            char name[ZIR_NAME_MAX];
+            char value[LOWER_TEXT_MAX];
+            size_t name_length = 0;
+            const char *comma;
+            int depth = 0;
+            while(*entry_start == '.' || *entry_start == '{' ||
+                  *entry_start == ' ')
+                entry_start++;
+            entry_end = entry_start;
+            while((isalnum((unsigned char)*entry_end) ||
+                   *entry_end == '_'))
+                entry_end++;
+            name_length = (size_t)(entry_end - entry_start);
+            if(name_length == 0 || name_length >= sizeof(name))
+                break;
+            memcpy(name, entry_start, name_length);
+            name[name_length] = '\0';
+            comma = entry_end;
+            while(*comma && (depth || *comma != ',')) {
+                if(*comma == '(' || *comma == '[' || *comma == '{')
+                    depth++;
+                else if(*comma == ')' || *comma == ']' || *comma == '}')
+                    depth--;
+                comma++;
+            }
+            int last_entry = *comma == '\0';
+            {
+                size_t value_length = (size_t)(comma - entry_end);
+                const char *value_start = entry_end;
+                while(value_length > 0 &&
+                      (*value_start == ' ' || *value_start == '\t' ||
+                       *value_start == '=' )) {
+                    value_start++;
+                    value_length--;
+                }
+                while(value_length > 0 &&
+                      (value_start[value_length - 1] == ' ' ||
+                       value_start[value_length - 1] == '\t' ||
+                       value_start[value_length - 1] == '}'))
+                    value_length--;
+                if(value_length >= sizeof(value))
+                    break;
+                memcpy(value, value_start, value_length);
+                value[value_length] = '\0';
+                {
+                    char rewritten[LOWER_TEXT_MAX];
+                    char designated[LOWER_NAME_MAX + 8];
+                    const char *field = value;
+                    if(!rewrite_body2(m, NULL, 0, value, rewritten,
+                                      sizeof(rewritten)))
+                        rewritten[0] = '\0';
+                    (void)field;
+                    snprintf(designated, sizeof(designated), ".%s = %s",
+                             name, rewritten[0] ? rewritten : value);
+                    if(strlen(out) > 1)
+                        strncat(out, ", ", size - strlen(out) - 1);
+                    strncat(out, designated, size - strlen(out) - 1);
+                }
+            }
+            cursor = comma + 1;
+            if(last_entry)
+                break;
+        }
+    }
+    strncat(out, "}", size - strlen(out) - 1);
+}
 static void
 lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
              int restab_count, const char *out_dir, int linked)
@@ -1091,9 +1191,14 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
             char initw[LOWER_TEXT_MAX];
 
             /* initializers carry 'null' and module-local function refs */
-            if(!ScalarLiteral(g->type, g->init, ZIR_C, g->span, initw, sizeof(initw)))
-                if(!rewrite_body2(m, NULL, 0, g->init, initw, sizeof(initw)))
+            if(!ScalarLiteral(g->type, g->init, ZIR_C, g->span, initw, sizeof(initw))) {
+                char recordw[LOWER_TEXT_MAX];
+                lower_record_literal_init(m, g, recordw, sizeof(recordw));
+                if(recordw[0] == '{')
+                    snprintf(initw, sizeof(initw), "%s", recordw);
+                else if(!rewrite_body2(m, NULL, 0, g->init, initw, sizeof(initw)))
                     c_rewrite_overflow(m->source_path, g->span.line);
+            }
             fprintf(c, "%s%s %s%s = %s;\n", g->is_static ? "static " : "",
                     base, name, suffix,
                     initw[0] ? initw : "{0}");

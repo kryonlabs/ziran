@@ -1,12 +1,14 @@
 // Borrow UTF-8 bytes as a Ziran string on glibc Linux C targets.
 // The caller must keep the byte storage alive while the string is in use.
-libc :: #system_library "libc";
 TextDescriptor :: struct {
     data: *u8
     length: u64
 }
-CopyTextDescriptor :: (destination: *string, source: *TextDescriptor,
-    count: u64) -> *string #foreign libc "__mempcpy";
+
+ByteDescriptor :: struct {
+    data: *u8
+    length: s64
+}
 
 #program_export
 TextFromBytes :: (buffer: []u8) -> string {
@@ -15,6 +17,35 @@ TextFromBytes :: (buffer: []u8) -> string {
     descriptor.data = *buffer[0]
     descriptor.length = cast(u64)buffer.count
     result: string = ""
-    CopyTextDescriptor(*result, *descriptor, size_of(TextDescriptor))
+    result_view: *TextDescriptor = cast(*TextDescriptor)(*result)
+    result_view.* = descriptor
+    return result
+}
+
+// Borrow native storage at a foreign-function boundary. The caller must keep
+// it allocated and writable throughout the slice's use.
+#program_export
+BytesFromPointer :: (data: *u8, count: u64) -> []u8 {
+    result: []u8
+    if data == null || count > cast(u64)9223372036854775807 { return result }
+    descriptor: *ByteDescriptor = cast(*ByteDescriptor)(*result)
+    descriptor.data = data
+    descriptor.length = cast(s64)count
+    return result
+}
+
+// The returned string borrows the C buffer and retains its lifetime.
+#program_export
+TextFromCString :: (value: *u8) -> string {
+    if value == null { return "" }
+    length: u64 = 0
+    while value[length] != cast(u8)0 {
+        if length >= cast(u64)9223372036854775807 { return "" }
+        length += 1
+    }
+    result: string = ""
+    descriptor: *TextDescriptor = cast(*TextDescriptor)(*result)
+    descriptor.data = value
+    descriptor.length = length
     return result
 }

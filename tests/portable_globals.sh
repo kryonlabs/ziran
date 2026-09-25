@@ -18,6 +18,26 @@ Store :: struct {
 }
 current: Store;
 unused: s32 = 7;
+base :: 5
+limit: s64 = 7;
+scale: s32 = 3;
+factor: s32 = base + 2;
+ratio: float32 = 2.5;
+name: string = "ziran";
+flag: bool = true;
+origin: Cell = Cell.{.value = 9};
+
+#program_export
+InitChecks :: () -> s32 {
+    if limit != 7 { return 0 }
+    if scale != 3 { return 0 }
+    if factor != 7 { return 0 }
+    if ratio != 2.5 { return 0 }
+    if flag != true { return 0 }
+    if name.count != 5 { return 0 }
+    if origin.value != 9 { return 0 }
+    return 1
+}
 
 #program_export
 Install :: (next: Store) {
@@ -47,6 +67,7 @@ cat > "$work/app.zi" <<'ZI'
 
 #program_export
 Answer :: () -> s32 {
+    if InitChecks() != 1 { return -1 }
     source: Store
     source.cells[0].value = 41
     Install(source)
@@ -117,7 +138,8 @@ CPP
 done
 
 cat > "$work/invalid.zi" <<'ZI'
-initial: s32 = 7;
+initial: s32 = compute();
+compute :: () -> s32 { return 3 }
 #program_export
 Answer :: () -> s32 {
     return initial
@@ -127,7 +149,7 @@ if "$ziran" bundle --root "$work" --entry invalid:Answer \
     -o "$work/invalid.zib" "$work/invalid.zi" >"$work/error" 2>&1; then
     exit 1
 fi
-grep -q 'portable globals need a value type and default initialization' \
+grep -q 'portable global initializers need a scalar, string, or record literal value' \
     "$work/error"
 
 cat > "$work/session.zi" <<'ZI'
