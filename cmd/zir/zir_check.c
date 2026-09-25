@@ -50,6 +50,7 @@ typedef struct Checker {
     int using_rewritten;
     int assign_destination;
     int destination_was_moved;
+    int conversions_applied;
     char vec_slice_type[ZIR_NAME_MAX];
     struct {
         int at;
@@ -2836,6 +2837,7 @@ expression_type(Checker *c, int index)
                     const char *converted = try_conversion(c, child,
                                                            skip_ws(colon + 1),
                                                            c->fn->exprs[child].span);
+                    e = &c->fn->exprs[index];
                     if(converted != NULL)
                         arg_type = converted;
                     else
@@ -4060,10 +4062,11 @@ try_conversion(Checker *c, int index, const char *to, ZirSourceSpan span)
     }
     if(conversion == NULL)
         return NULL;
-    fprintf(stderr, "DBG convert [%s] from [%s] to [%s] via %s\n",
-            c->fn->exprs[index].text, from, to, conversion->name);
+    c->conversions_applied = 1;
     (void)owner;
     {
+        int chain_next = c->fn->exprs[index].next_sibling;
+        int saved_argument = c->fn->exprs[index].argument_index;
         ZirExpr *copy_slot = FunctionAddExpr(c->fn, c->fn->exprs[index].kind,
                                              c->fn->exprs[index].name,
                                              c->fn->exprs[index].span);
@@ -4077,17 +4080,99 @@ try_conversion(Checker *c, int index, const char *to, ZirSourceSpan span)
         saved = c->fn->exprs[index];
         *copy_slot = saved;
         copy_slot->next_sibling = -1;
+        copy_slot->argument_index = 0;
         copy_index = (int)(copy_slot - c->fn->exprs);
         call = &c->fn->exprs[index];
         memset(call, 0, sizeof(*call));
         call->kind = ZIR_EXPR_CALL;
         copy_text(call->name, sizeof(call->name), conversion->name);
-        call->argument_index = -1;
+        call->argument_index = saved_argument;
         call->first_child = copy_index;
+        call->left = -1;
+        call->right = -1;
+        call->third = -1;
+        call->next_sibling = chain_next;
         call->span = saved.span;
         copy_text(call->type, sizeof(call->type), conversion->return_type);
         return call->type;
     }
+}
+
+/* Rewritten #as calls append their argument after the call node, but the IR
+ * layout requires every child to precede its parent and sibling chains to
+ * ascend. Re-emit each statement tree in postorder with remapped links. */
+static int
+rebuild_postorder(ZirFunction *fn, int index, ZirExpr *out, int *count,
+                  int *remap)
+{
+    int self;
+    ZirExpr *node;
+    if(index < 0 || index >= fn->expr_count)
+        return 1;
+    if(remap[index] >= 0)
+        return 1;
+    node = &fn->exprs[index];
+    {
+        int left = node->left, right = node->right, third = node->third;
+        int child = node->first_child;
+        if(!rebuild_postorder(fn, left, out, count, remap) ||
+           !rebuild_postorder(fn, right, out, count, remap) ||
+           !rebuild_postorder(fn, third, out, count, remap))
+            return 0;
+        while(child >= 0) {
+            int next = fn->exprs[child].next_sibling;
+            if(!rebuild_postorder(fn, child, out, count, remap))
+                return 0;
+            child = next;
+        }
+    }
+    self = *count;
+    out[self] = fn->exprs[index];
+    remap[index] = self;
+    node = &out[self];
+    node->left = node->left >= 0 ? remap[node->left] : -1;
+    node->right = node->right >= 0 ? remap[node->right] : -1;
+    node->third = node->third >= 0 ? remap[node->third] : -1;
+    node->first_child = node->first_child >= 0 ? remap[node->first_child] : -1;
+    node->next_sibling = -1;
+    (*count)++;
+    return 1;
+}
+
+static int
+rebuild_conversion_layout(ZirFunction *fn)
+{
+    ZirExpr *out = calloc((size_t)fn->expr_count, sizeof(*out));
+    int *remap = calloc((size_t)fn->expr_count, sizeof(*remap));
+    int count = 0;
+    if(out == NULL || remap == NULL) {
+        free(out);
+        free(remap);
+        return 0;
+    }
+    for(int i = 0; i < fn->expr_count; i++)
+        remap[i] = -1;
+    for(int s = 0; s < fn->stmt_count; s++) {
+        ZirStmt *st = &fn->stmts[s];
+        if(!rebuild_postorder(fn, st->expr_root, out, &count, remap) ||
+           !rebuild_postorder(fn, st->lhs_root, out, &count, remap)) {
+            free(out);
+            free(remap);
+            return 0;
+        }
+    }
+    for(int s = 0; s < fn->stmt_count; s++) {
+        ZirStmt *st = &fn->stmts[s];
+        if(st->expr_root >= 0)
+            st->expr_root = remap[st->expr_root];
+        if(st->lhs_root >= 0)
+            st->lhs_root = remap[st->lhs_root];
+    }
+    memcpy(fn->exprs, out, (size_t)count * sizeof(*out));
+    fn->expr_count = count;
+    free(out);
+    free(remap);
+    return 1;
 }
 
 static int
@@ -4501,6 +4586,12 @@ restart:
     if(!fn->is_extern && fn->return_type[0] == '[' &&
        !sequence_returns(fn, 0, fn->stmt_count))
         error(c, fn->span, "array or slice result requires a return on every path", fn->name);
+    if(c->conversions_applied &&
+       !rebuild_conversion_layout(fn)) {
+        error(c, fn->span, "cannot reorder #as conversion graph", fn->name);
+        return 0;
+    }
+    c->conversions_applied = 0;
     if(!validate_loop_targets(c, fn))
         return 0;
     if(c->using_rewritten && !order_using_expressions(fn)) {

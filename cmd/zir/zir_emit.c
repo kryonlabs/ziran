@@ -508,26 +508,12 @@ portable_type(const ZirModule *module, const char *type)
 }
 
 static int
-supported_expression(const ZirModule *module, const ZirFunction *fn, int index);
-
-static void
-log_reject(const ZirFunction *fn, int index, const char *why)
-{
-    if(index >= 0 && index < fn->expr_count)
-        fprintf(stderr, "DBG reject %s in %s: kind %d name [%s] type [%s] text [%.40s] first_child %d left %d right %d\n",
-                why, fn->name, fn->exprs[index].kind, fn->exprs[index].name,
-                fn->exprs[index].type, fn->exprs[index].text,
-                fn->exprs[index].first_child, fn->exprs[index].left,
-                fn->exprs[index].right);
-}
-
-static int
 supported_expression(const ZirModule *module, const ZirFunction *fn, int index)
 {
     const ZirExpr *e;
     if(index < 0) return 1;
     e = &fn->exprs[index];
-    if(!portable_type(module, e->type)) { log_reject(fn, index, "type"); return 0; }
+    if(!portable_type(module, e->type)) return 0;
     switch(e->kind) {
     case ZIR_EXPR_COMPOUND:
         if(!record_type(module, e->name) && !ArrayElementType(e->name, NULL, 0, NULL)) return 0;

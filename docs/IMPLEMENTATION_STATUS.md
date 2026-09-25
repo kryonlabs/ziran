@@ -22,8 +22,13 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   a hidden or unmapped name stays unresolved. `using Alias :: #import
   "Module";` re-exports the module's public procedures, types, and constants
   into unqualified scope beside the alias: local declarations shadow the
-  re-export, and two using-imports exposing one name are ambiguous. `#as`
-  remains a gap.
+  re-export, and two using-imports exposing one name are ambiguous.
+  `Name :: #as (source: Type) -> Result;` declares a checked conversion that
+  the checker applies implicitly at initializers, assignments, returns, and
+  call arguments when the types are otherwise incompatible: the expression
+  is rewritten into an ordinary call, the graph is re-laid out for saved IR,
+  and two applicable conversions are ambiguous. Literals that already widen
+  natively never trigger a conversion.
 - Jai-style `#program_export` on its own line or inline exports a procedure's
   native symbol. A quoted linker name works in C/C++; Go reports that override
   as unsupported. File-scope variables use `name: Type` declarations.

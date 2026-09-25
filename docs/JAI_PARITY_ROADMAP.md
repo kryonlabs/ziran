@@ -101,8 +101,8 @@ the compile-time evaluator there, with `tests/compile_if_syntax.sh`,
 constants beside the alias with local shadowing and ambiguity diagnostics.
 `using,only(...)`/`except(...)`/`map(...)` modifiers now
 filter and rename promoted fields and enum members with hidden names staying
-unresolved. `#as` has no complete checked representation; define its
-conversion and storage rules before changing the parser. In particular, `#as` affects
+unresolved. `#as (source: Type) -> Result` conversions apply implicitly at
+every coercion site through a checked call rewrite shared by all targets. In particular, `#as` affects
 conversions, so a text substitution in a backend is insufficient. Model
 namespace import and conversion metadata explicitly, resolve it in the
 checker, and serialize the checked result.
