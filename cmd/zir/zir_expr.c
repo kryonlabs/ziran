@@ -1,4 +1,5 @@
 #include "zir_expr.h"
+#include "zir_check.h"
 #include "zir_diagnostic.h"
 #include "zir_token.h"
 #include "zir_text.h"
@@ -414,6 +415,11 @@ prefix(ExprParser *p)
         size_t ts, length;
         expect(p, "(");
         ts = p->begin;
+        if(is(p, "char")) {
+            Diagnostic(p->span, "parse.jai_syntax",
+                       "non-Jai primitive type spelling: char");
+            exit(1);
+        }
         if(!type_name(p, p->token.text) && !is(p, "[") && !is(p, "*"))
             p->failed = 1;
         while(p->token.kind != ZIR_TOKEN_EOF && !is(p, ")")) next(p);

@@ -21,6 +21,9 @@ source that produced it. Diagnostics retain source paths and spans where
 available.
 
 The IR represents general calls, records, slots, imports, and capabilities.
+Scalar types use the current source names (`s32`, `s64`, `float32`, and
+`float64`, for example); `int` and `float` aliases are canonicalized before
+serialization. Earlier internal `i32`/`i64`/`f32`/`f64` names are not accepted.
 It has no widget kind, `#ui` flag, DOM attribute cache, KSS node, or implicit
 Kryon module. A Kryon widget call has the same representation as a call to an
 unrelated imported function with the same type shape.
