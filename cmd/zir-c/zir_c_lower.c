@@ -98,6 +98,12 @@ split_array_type(const char *type, char *base, size_t base_size,
     size_t sn = 0;
 
     suffix[0] = '\0';
+    if(p[0] == '[' && p[1] == ']') {
+        /* A borrowed slice is a descriptor value, not a flexible array. */
+        snprintf(base, base_size, "Slice");
+        snprintf(suffix, suffix_size, "");
+        return;
+    }
     while(*p == '[') {
         const char *close = strchr(p, ']');
 

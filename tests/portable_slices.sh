@@ -169,21 +169,21 @@ done
 
 cat > "$work/invalid_slice_record.zi" <<'ZI'
 Bad :: struct {
-    values: []s32
+    values: [][]s32
 }
 ZI
 if "$ziran" check --root "$work" "$work/invalid_slice_record.zi" \
     2> "$work/invalid_slice_record.err"; then
-    echo 'slice descriptor entered a record' >&2
+    echo 'nested slice descriptor entered a record' >&2
     exit 1
 fi
 
 cat > "$work/invalid_slice_global.zi" <<'ZI'
-view: []s32;
+view: [][]s32;
 ZI
 if "$ziran" check --root "$work" "$work/invalid_slice_global.zi" \
     2> "$work/invalid_slice_global.err"; then
-    echo 'slice descriptor entered a global' >&2
+    echo 'nested slice descriptor entered a global' >&2
     exit 1
 fi
 

@@ -142,6 +142,17 @@ expression_origin(BorrowCheck *check, int index)
              * keep that binding alive while the view is in scope. */
             return expression_origin(check, expression->first_child);
         }
+        if(SliceElementType(expression->type, NULL, 0)) {
+            /* Host slice returns own their storage: the VM copies the
+             * elements before the value reaches the caller. Ordinary
+             * checked calls keep their summarized origins. */
+            const ZirModule *owner = NULL;
+            const ZirFunction *callee = NULL;
+            if(ResolveFunction(check->current->module, expression->name,
+                               &owner, &callee) <= 0)
+                return (Origin){0};
+            return call_origin(check, expression);
+        }
         if(SliceElementType(expression->type, NULL, 0))
             return call_origin(check, expression);
         return (Origin){0, 0, 1}; /* A returned array/record is temporary storage. */
@@ -236,9 +247,9 @@ check_function(BorrowCheck *check, BorrowFunction *function)
                         check->depth, 0);
         } else if(statement->kind == ZIR_STMT_ASSIGN && statement->lhs_root >= 0) {
             const ZirExpr *destination = &fn->exprs[statement->lhs_root];
-            if(SliceElementType(destination->type, NULL, 0)) {
-                BorrowBinding *target = destination->kind == ZIR_EXPR_IDENT ?
-                    binding(check, destination->name) : NULL;
+            if(SliceElementType(destination->type, NULL, 0) &&
+               destination->kind == ZIR_EXPR_IDENT) {
+                BorrowBinding *target = binding(check, destination->name);
                 Origin source = expression_origin(check, statement->expr_root);
                 if(target == NULL || target->captured || source.invalid || source.depth > target->depth) {
                     reject(check, statement->span, "slice assignment may escape its backing storage");

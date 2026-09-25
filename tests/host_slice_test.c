@@ -9,6 +9,8 @@ fill(void *context, const char *module, const char *function,
      const VmHostValue *args, int arg_count, VmHostValue *result)
 {
     int *calls = context;
+    if(strcmp(module, "returned") == 0)
+        return 0;
     assert(strcmp(module, "host_buffer") == 0);
     assert(arg_count == 1);
     if(strcmp(function, "ReplaceWord") == 0) {
@@ -46,14 +48,54 @@ fill(void *context, const char *module, const char *function,
     return 1;
 }
 
+static int view[3] = {10, 20, 30};
+
+static int
+return_view(void *context, const char *module, const char *function,
+            const VmHostValue *args, int arg_count, VmHostValue *result)
+{
+    static VmHostValue elements[3];
+    (void)context; (void)args; (void)arg_count;
+    if(strcmp(module, "returned") != 0 || strcmp(function, "MakeView") != 0)
+        return 0;
+    for(int i = 0; i < 3; i++) {
+        elements[i].kind = VM_HOST_INTEGER;
+        elements[i].type = "s32";
+        elements[i].integer = view[i];
+    }
+    result->kind = VM_HOST_SLICE;
+    result->type = "[]s32";
+    result->elements = elements;
+    result->length = 3;
+    return 1;
+}
+
 int
 main(int argc, char **argv)
 {
     long long result = 0;
     int has_result = 0, calls = 0;
-    assert(argc == 2 || (argc == 3 && strcmp(argv[2], "overlap") == 0));
+    assert(argc == 2 ||
+           (argc == 3 && (strcmp(argv[2], "overlap") == 0 ||
+                          strcmp(argv[2], "return_view") == 0)));
     Bundle *bundle = BundleOpen(argv[1]);
     assert(bundle != NULL);
+    if(argc == 3 && strcmp(argv[2], "return_view") == 0) {
+        HostBinding make = {"returned", "MakeView", fill, &calls};
+        assert(BundleCapabilityCount(bundle) == 1);
+        (void)make;
+        {
+            HostBinding bindings[1] = {{"returned", "MakeView",
+                                        return_view, &calls}};
+            if(!BundleRun(bundle, bindings, 1, &result, &has_result)) {
+                fprintf(stderr, "returned view run failed\n");
+                return 1;
+            }
+            assert(has_result && result == 60);
+        }
+        BundleClose(bundle);
+        return 0;
+    }
     if(argc == 3) {
         assert(BundleCapabilityCount(bundle) == 1);
         HostBinding overlap = {"overlap", "Touch", fill, &calls};

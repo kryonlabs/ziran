@@ -3042,8 +3042,17 @@ storage_type_error(const ZirModule *module, const char *source,
     trim_in_place(type);
     if(!strcmp(type, "void"))
         return indirect ? NULL : "stored values cannot have void type";
-    if(SliceElementType(type, NULL, 0))
-        return "slice descriptors cannot be stored in aggregates or globals";
+    {
+        char slice_element[ZIR_NAME_MAX];
+        if(SliceElementType(type, slice_element, sizeof(slice_element))) {
+            if(SliceElementType(slice_element, NULL, 0) ||
+               !strcmp(slice_element, "char") ||
+               !strcmp(slice_element, "const char"))
+                return "nested slice descriptors are not storable";
+            return storage_type_error(module, slice_element, path, 1,
+                                      checked, detail, detail_capacity);
+        }
+    }
     if(*ScalarType(type) != '\0' || TargetType(type, ZIR_C) != NULL)
         return NULL;
     if(type[0] == '*') {
@@ -3245,10 +3254,6 @@ check_type_declarations(ZirModule *module)
                             return record_declaration_error(record,
                                 "duplicate generic record field", item.name);
                     }
-                    if(strstr(item.type, "[]") != NULL)
-                        return record_declaration_error(record,
-                            "slice descriptors cannot be stored in aggregates",
-                            item.name);
                     char resolved[ZIR_NAME_MAX];
                     if(!SubstituteGenericType(item.type, resolved,
                             sizeof(resolved), parameters, concrete,
@@ -3309,8 +3314,6 @@ check_type_declarations(ZirModule *module)
             size_t previous_offset = 0;
             ZirTypeField previous;
 
-            if(strstr(field.type, "[]") != NULL)
-                return record_declaration_error(record, "slice descriptors cannot be stored in aggregates", field.name);
             if(strcmp(field.type, "void") == 0)
                 return record_declaration_error(record, "record field cannot have void type", field.name);
             if(field.is_using) {
@@ -4758,9 +4761,18 @@ LinkImports(ZirProgram **programs, int count)
                         }
                 if(import->kind == ZIR_IMPORT_EXTERN &&
                    SliceElementType(import->return_type, NULL, 0)) {
-                    Diagnostic(import->span, "check.slice_signature",
-                                  "host calls cannot return borrowed slices");
-                    return 0;
+                    char element[ZIR_NAME_MAX];
+                    if(!SliceElementType(import->return_type, element,
+                                         sizeof(element)) ||
+                       !*element || strchr(element, '[') ||
+                       !strcmp(element, "char") ||
+                       !strcmp(element, "const char") ||
+                       (!*ScalarType(element) &&
+                        FindType(module, element, NULL) == NULL)) {
+                        Diagnostic(import->span, "check.slice_signature",
+                                      "host slice returns need a scalar element");
+                        return 0;
+                    }
                 }
                 if(import->kind != ZIR_IMPORT_OPEN &&
                    import->kind != ZIR_IMPORT_MODULE)

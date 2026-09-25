@@ -130,9 +130,35 @@ for target in c cpp; do
     fi
 done
 
+cat > "$work/returned.zi" <<'ZI'
+host_api :: #system_library "host_api";
+MakeView :: () -> []s32 #foreign host_api;
+#program_export
+Answer :: () -> s32 {
+    view: []s32 = MakeView()
+    if view.count != 3 { return -1 }
+    if view[0] != 10 || view[1] != 20 || view[2] != 30 { return -2 }
+    return view[0] + view[1] + view[2]
+}
+ZI
+"$ziran" ir --root "$work" -o "$work/ret-ir" "$work/returned.zi"
+for input in source saved; do
+    if test "$input" = source; then
+        returned=$work/returned.zi
+        returned_root=$work
+    else
+        returned=$work/ret-ir/returned.zir
+        returned_root=$work/ret-ir
+    fi
+    "$ziran" bundle --root "$returned_root" --entry returned:Answer \
+        -o "$work/returned-$input.zib" "$returned"
+    "$host_test" "$work/returned-$input.zib" return_view
+done
+cmp "$work/returned-source.zib" "$work/returned-saved.zib"
+
 cat > "$work/bad_return.zi" <<'ZI'
 host_api :: #system_library "host_api";
-Borrow :: () -> []u8 #foreign host_api;
+Borrow :: () -> [][]u8 #foreign host_api;
 #program_export
 Answer :: () -> s32 {
     return Borrow().count
@@ -140,10 +166,10 @@ Answer :: () -> s32 {
 ZI
 if "$ziran" check --root "$work" "$work/bad_return.zi" \
     2> "$work/bad_return.err"; then
-    echo 'host slice return was accepted' >&2
+    echo 'a nested host slice return was accepted' >&2
     exit 1
 fi
-grep -Fq 'host calls cannot return borrowed slices' "$work/bad_return.err"
+grep -Fq 'host slice returns need a scalar element' "$work/bad_return.err"
 
 cat > "$work/overlap.zi" <<'ZI'
 host_api :: #system_library "host_api";

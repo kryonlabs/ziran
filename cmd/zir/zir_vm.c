@@ -361,8 +361,7 @@ host_type_at(const ZirModule *module, const char *type, int depth,
     if(depth >= VM_MAX_DEPTH || ArrayElementType(type, NULL, 0, NULL))
         return 0;
     if(SliceElementType(type, element, sizeof(element)))
-        return slice_parameter && depth == 0 &&
-               value_kind(element) != VALUE_INVALID &&
+        return value_kind(element) != VALUE_INVALID &&
                value_kind(element) != VALUE_VOID;
     if(value_kind(type) != VALUE_INVALID)
         return 1;
@@ -3296,6 +3295,27 @@ host_return(Vm *vm, const ZirModule *module, const char *type,
         return (Value){.kind = VALUE_RECORD, .record = record};
     }
     ValueKind expected = value_kind(type);
+    char slice_element[ZIR_NAME_MAX];
+    if(SliceElementType(type, slice_element, sizeof(slice_element))) {
+        /* A host-returned slice is copied into VM-owned storage; the caller
+         * owns the elements from here on. */
+        Array *owned;
+        if(input->kind != VM_HOST_SLICE || input->elements == NULL) {
+            vm->failed = 1;
+            return result;
+        }
+        owned = allocate_array_try(vm, module, slice_element,
+                                   (int)input->length, 1);
+        if(owned == NULL)
+            return result;
+        for(size_t i = 0; i < input->length && !vm->failed; i++)
+            owned->elements[i] = host_return(vm, module, slice_element,
+                                             &input->elements[i], depth + 1);
+        if(vm->failed)
+            return result;
+        return (Value){.kind = VALUE_SLICE, .array = owned,
+                       .offset = 0, .length = input->length};
+    }
     VmHostValueKind kind = expected == VALUE_VOID ? VM_HOST_VOID :
         expected == VALUE_REAL ? VM_HOST_REAL :
         expected == VALUE_STRING ? VM_HOST_STRING :
