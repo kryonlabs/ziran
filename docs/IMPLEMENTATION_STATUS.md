@@ -481,7 +481,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.{...}` record literals are accepted and
   C-style casts and compound literals are rejected; array declarations accept
   `.[...]` directly in the expression parser without rewriting through a
-  C-style literal. Jai `#this` resolves the enclosing procedure for calls and
+  C-style literal. Explicit nonempty typed arrays such as `s32.[1, 2]` and
+  `Module.Point.[first, second]` infer their fixed capacity from the elements;
+  zero-element typed arrays are still rejected by the positive-capacity rule.
+  Jai `#this` resolves the enclosing procedure for calls and
   typed procedure values across native and portable targets, and resolves the
   enclosing type in plain and polymorphic struct fields. Saved IR preserves
   self references even when a parameter shadows the procedure name. Jai

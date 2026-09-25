@@ -167,8 +167,10 @@ view over those bytes. Bounds are checked, and callers must keep UTF-8
 codepoint boundaries intact when they need valid text.
 An ordinary record may still declare a field named `length`; generated C ABI
 structures also retain their internal length fields.
-Array declarations accept `.[values]` directly in the expression parser and
-preserve that spelling in saved `.zir`. C-style casts and compound literals
+Array declarations accept `.[values]` with an expected fixed-array type and
+explicit typed literals such as `s32.[1, 2]` or `Module.Point.[first, second]`.
+Saved `.zir` preserves these spellings. Zero-element typed literals still need
+zero-capacity array support. C-style casts and compound literals
 are rejected at the source boundary.
 Jai `#this` selects the enclosing procedure for recursive calls and typed
 procedure values, even if a local binding has the same name. In record field

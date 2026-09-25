@@ -17,6 +17,7 @@ NEGATIVE :: -1
 Point :: struct {
     x: s32
 }
+Direction :: enum { North; South; }
 
 Box :: struct {
     values: [CAPACITY]Point
@@ -85,6 +86,7 @@ EOF
 
 cat > "$work/arrayapp.zi" <<'EOF'
 #import "arraylib"
+Named :: #import "arraylib";
 
 ReadLoop :: () -> s32 {
     values: [4096]s32
@@ -101,6 +103,24 @@ ReadLoop :: () -> s32 {
 #program_export
 Answer :: () -> s32 {
     if CAPACITY != 2 || NEGATIVE != -1 { return 0 }
+    inferred := s32.[41, 1]
+    if inferred.count != 2 || inferred[0] + inferred[1] != 42 {
+        return 0
+    }
+    if SumArray(s32.[41, 1, 0]) != 42 { return 0 }
+    directions := Direction.[.North, .South]
+    if directions.count != 2 || directions[0] != .North ||
+       directions[1] != .South { return 0 }
+    contextual: [2]Direction = .[.South, .North]
+    if contextual[0] != .South || contextual[1] != .North { return 0 }
+    first: Named.Point
+    first.x = 41
+    second: Named.Point
+    second.x = 1
+    points := Named.Point.[first, second]
+    if points.count != 2 || points[0].x + points[1].x != 42 {
+        return 0
+    }
     computed: [(CAPACITY + 1) * 2]s32
     computed[5] = 42
     if computed[5] != 42 { return 0 }
@@ -156,6 +176,8 @@ EOF
 
 "$ziran" ir --root "$work" -o "$work/ir" "$work/arrayapp.zi"
 if ! rg -aFq '.[41, 1, 0]' "$work/ir/arrayapp.zir" ||
+   ! rg -aFq 's32.[41, 1]' "$work/ir/arrayapp.zir" ||
+   ! rg -aFq 'Named.Point.[first, second]' "$work/ir/arrayapp.zir" ||
    rg -aFq '([THREE]s32){41, 1, 0}' "$work/ir/arrayapp.zir"; then
     echo 'saved array expression did not retain Jai initializer syntax' >&2
     exit 1

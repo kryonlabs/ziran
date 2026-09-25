@@ -1897,7 +1897,11 @@ expression_type(Checker *c, int index)
                 ZirExpr *entry = &c->fn->exprs[child];
                 if(!strcmp(entry->op, "="))
                     error(c, entry->span, "array literals require positional elements", entry->name);
+                char saved_expected[ZIR_NAME_MAX];
+                copy_text(saved_expected, sizeof(saved_expected), c->expected_type);
+                copy_text(c->expected_type, sizeof(c->expected_type), element);
                 const char *value_type = expression_type(c, entry->right);
+                copy_text(c->expected_type, sizeof(c->expected_type), saved_expected);
                 if(!compatible_checked(c, element, value_type))
                     error(c, entry->span, "array initializer element type mismatch", element);
                 copy_text(entry->type, sizeof(entry->type), element);

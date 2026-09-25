@@ -384,7 +384,17 @@ record_initializer(ExprParser *p, size_t start, const char *type,
     while(!p->failed && !is(p, close) && p->token.kind != ZIR_TOKEN_EOF) {
         size_t field_start = p->begin;
         char name[ZIR_NAME_MAX] = "";
-        int named = take(p, ".");
+        int named = 0;
+        if(is(p, ".")) {
+            ZirLexer lookahead = p->lexer;
+            ZirToken field = LexerNext(&lookahead);
+            ZirToken equals = LexerNext(&lookahead);
+            if(field.kind == ZIR_TOKEN_IDENT &&
+               !strcmp(equals.text, "=")) {
+                next(p);
+                named = 1;
+            }
+        }
         if(!named && p->token.kind == ZIR_TOKEN_IDENT) {
             ZirLexer lookahead = p->lexer;
             ZirToken following = LexerNext(&lookahead);
@@ -444,6 +454,31 @@ record_initializer(ExprParser *p, size_t start, const char *type,
     int result = node(p, ZIR_EXPR_COMPOUND, start, type, "", -1, -1);
     if(result >= 0)
         p->fn->exprs[result].first_child = first;
+    return result;
+}
+
+static int
+typed_array_initializer(ExprParser *p, size_t start,
+                        const char *element_type)
+{
+    char type[ZIR_NAME_MAX];
+    int written = snprintf(type, sizeof(type), "[1]%s", element_type);
+    if(written < 0 || (size_t)written >= sizeof(type)) {
+        p->failed = 1;
+        return -1;
+    }
+    int result = record_initializer(p, start, type, "[", "]");
+    if(result < 0 || p->failed) return result;
+    int count = 0;
+    for(int child = p->fn->exprs[result].first_child; child >= 0;
+        child = p->fn->exprs[child].next_sibling)
+        count++;
+    written = snprintf(p->fn->exprs[result].name,
+                       sizeof(p->fn->exprs[result].name),
+                       "[%d]%s", count, element_type);
+    if(written < 0 ||
+       (size_t)written >= sizeof(p->fn->exprs[result].name))
+        p->failed = 1;
     return result;
 }
 
@@ -631,6 +666,25 @@ prefix(ExprParser *p)
                 if(record == NULL || record->is_enum) p->failed = 1;
                 next(p);
                 result = record_initializer(p, start, tok.text, "{", "}");
+            } else if(!strcmp(following.text, "[") &&
+                      type_name(p, tok.text)) {
+                next(p);
+                result = typed_array_initializer(p, start, tok.text);
+            } else if(following.kind == ZIR_TOKEN_IDENT) {
+                ZirToken dot = LexerNext(&lookahead);
+                ZirToken bracket = LexerNext(&lookahead);
+                char qualified[ZIR_NAME_MAX];
+                int length = snprintf(qualified, sizeof(qualified), "%s.%s",
+                                      tok.text, following.text);
+                if(!strcmp(dot.text, ".") &&
+                   !strcmp(bracket.text, "[") && length >= 0 &&
+                   (size_t)length < sizeof(qualified) &&
+                   type_name(p, qualified)) {
+                    next(p);
+                    next(p);
+                    next(p);
+                    result = typed_array_initializer(p, start, qualified);
+                }
             }
         }
         if(result < 0 && !p->failed)
