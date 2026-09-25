@@ -17,7 +17,9 @@ The split is underway. The current compiler can check and compile a tested
 subset of non-UI `.zi` to C, C++, and native Go. It can also save that subset as an
 experimental versioned `.zir` and build each native target from saved modules. It
 can build and run experimental `.zib` bundles for a non-graphical subset with
-scalars, strings, plain records, enums, fixed arrays, borrowed slices, and
+scalars, strings, plain records, enums, fixed arrays, borrowed slices, owned
+`Vec(T)` storage with `Option(T)` pop and lookup and a string builder, opaque
+host handles for declared pointer types, and
 declared host capabilities. The portable runner does not yet execute every
 checked program.
 [Implementation status](docs/IMPLEMENTATION_STATUS.md)
