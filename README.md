@@ -9,7 +9,9 @@ import its checked widgets as ordinary library declarations. Ziran rejects
 `#ui` and has no implicit Kryon dependency or widget-specific backend calls.
 See [Architecture](docs/ARCHITECTURE.md) for the intended boundary,
 [Language direction](docs/LANGUAGE_DIRECTION.md) for laws, LLM tooling, and
-parallelism, and [Migration](docs/MIGRATION.md) for the two-repository cutover.
+parallelism, the [Jai parity roadmap](docs/JAI_PARITY_ROADMAP.md) for the
+remaining language work, and [Migration](docs/MIGRATION.md) for the
+two-repository cutover.
 
 The split is underway. The current compiler can check and compile a tested
 subset of non-UI `.zi` to C, C++, and native Go. It can also save that subset as an
