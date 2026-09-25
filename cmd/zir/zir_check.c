@@ -618,7 +618,8 @@ static void
 promote_using_member(Checker *c, int index)
 {
     ZirExpr *member = &c->fn->exprs[index];
-    if(c->fn->from_ir || member->kind != ZIR_EXPR_IDENT ||
+    if((c->fn->from_ir && !c->fn->is_specialization) ||
+       member->kind != ZIR_EXPR_IDENT ||
        member->is_this || !member->name[0] ||
        *lookup_lexical(c, member->name) ||
        global_binding(c, member->name) != NULL)
@@ -3388,7 +3389,8 @@ restart:
                 error(c, fn->span, "Vec parameters require move support", params[a]);
             has_arrays |= ArrayValueType(colon) || SliceElementType(colon, NULL, 0);
             bind(c, params[a], colon, c->fn->span);
-            if(!fn->from_ir && (fn->using_parameters & (UINT64_C(1) << a)))
+            if((!fn->from_ir || fn->is_specialization) &&
+               (fn->using_parameters & (UINT64_C(1) << a)))
                 activate_using(c, params[a], fn->span);
         } else error(c, c->fn->span, "parameters require name: type", params[a]);
     }
@@ -3400,12 +3402,13 @@ restart:
             while(c->count && c->bindings[c->count - 1].depth == c->depth) c->count--;
             if(c->depth) c->depth--;
         }
-        if(!fn->from_ir && st->is_using && st->kind == ZIR_STMT_EXPR) {
+        if((!fn->from_ir || fn->is_specialization) &&
+           st->is_using && st->kind == ZIR_STMT_EXPR) {
             activate_using(c, st->name, st->span);
             expression_type(c, st->expr_root);
             continue;
         }
-        if(!fn->from_ir) {
+        if(!fn->from_ir || fn->is_specialization) {
             promote_using_tree(c, st->lhs_root);
             promote_using_tree(c, st->expr_root);
         }
@@ -3478,7 +3481,7 @@ restart:
                contains_vec(c->module, st->type, 0))
                 error(c, st->span, "Vec values cannot be copied", st->name);
             bind(c, st->name, st->type, st->span);
-            if(!fn->from_ir && st->is_using)
+            if((!fn->from_ir || fn->is_specialization) && st->is_using)
                 activate_using(c, st->name, st->span);
         } else if(st->kind == ZIR_STMT_ASSIGN) {
             const char *lhs = expression_type(c, st->lhs_root);
@@ -3569,6 +3572,11 @@ restart:
         error(c,c->fn->span,"function is not supported by portable scalar emission",c->fn->name);
         c->fn->checked=0;
     }
+    if(c->fn->checked) {
+        fn->using_parameters = 0;
+        for(int i = 0; i < fn->stmt_count; i++)
+            fn->stmts[i].is_using = 0;
+    }
     return !c->failed;
 }
 
@@ -3591,6 +3599,9 @@ check_template_declaration(Checker *c, ZirFunction *fn)
         split_top_level(fn->args, parameters[0], 64,
                         sizeof(parameters[0])) : 0;
     int binders = 0, valid = count > 0;
+    uint64_t allowed_using = count >= 64 ? UINT64_MAX :
+                             (UINT64_C(1) << count) - 1;
+    valid = valid && (fn->using_parameters & ~allowed_using) == 0;
     for(int i = 0; i < count && valid; i++) {
         char *colon = strchr(parameters[i], ':');
         if(colon == NULL) { valid = 0; break; }

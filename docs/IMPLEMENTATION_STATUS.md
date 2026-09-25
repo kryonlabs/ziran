@@ -14,7 +14,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   Reads and writes retain their nested storage layout in checked IR; source
   and saved IR agree in C, C++, Go, and `.zib`. Pointer-backed `using` fields
   work in native targets, while portable bundles retain their pointer limit.
-  Import re-exports, polymorphic `using` bodies, `#as`, and
+  Polymorphic procedures preserve parameter, local, and imperative `using`
+  declarations in saved templates and lower them for each concrete call.
+  Import re-exports, `#as`, and
   `using,only`/`except`/`map` modifiers remain gaps.
 - Jai-style `#program_export` on its own line or inline exports a procedure's
   native symbol. A quoted linker name works in C/C++; Go reports that override
@@ -153,7 +155,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.krb` are rejected by the shared loader. Kryon owns the UI test fixtures;
   Ziran keeps a non-UI array and UTF-8 byte law fixture that runs from source
   and saved IR through native C, C++, and Go.
-- `zi2zir` writes experimental binary `.zir` version 32 after checking all
+- `zi2zir` writes experimental binary `.zir` version 33 after checking all
   input modules together. C, C++, and Go can read saved modules without reparsing
   `.zi`; their imports are relinked from serialized module identities. The
   reader rejects malformed headers, versions, truncated data, invalid

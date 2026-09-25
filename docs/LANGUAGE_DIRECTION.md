@@ -107,8 +107,9 @@ accesses in saved IR. Explicit locals shadow promoted fields, and ambiguous
 promotions are errors. A struct field declared `using field: Record` exposes
 that record's fields while preserving the contained storage; nested and
 generic record applications keep the same behavior. Native targets also
-accept pointer-backed `using` fields. Import re-exports, polymorphic
-`using` bodies, `#as`, and `using` modifiers remain
+accept pointer-backed `using` fields. Polymorphic procedures retain `using`
+parameters and body declarations through specialization and saved IR.
+Import re-exports, `#as`, and `using` modifiers remain
 language gaps.
 A procedure type can be named with `Child :: #type (s32) -> ();` or
 `Compute :: #type (s32) -> s32;` and passed a named

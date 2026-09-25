@@ -11,10 +11,20 @@ Record :: struct { value: s32; }
 Identity :: (value: $T) -> T { return value }
 Agree :: (left: $T, right: T) -> T { return right }
 Nested :: (value: $T) -> T { return Identity(Identity(value)) }
+Field :: (using item: $T) -> s32 { return value }
+LocalField :: (item: $T) -> s32 {
+    using local: T = item
+    return value
+}
+PathField :: (item: $T) -> s32 {
+    using item.position;
+    return value
+}
 ZI
 cat > "$work/app.zi" <<'ZI'
 #import "lib"
 Local :: struct { value: s32; }
+NestedLocal :: struct { position: Local; }
 #program_export
 Answer :: () -> s32 {
     x: s32 = 30
@@ -22,6 +32,10 @@ Answer :: () -> s32 {
     local: Local = Local.{value = 8}
     fraction: float32 = 1.5
     if Identity(fraction) != 1.5 { return 0 }
+    if Field(record) != 2 { return 0 }
+    if LocalField(local) != 8 { return 0 }
+    nested: NestedLocal = NestedLocal.{position = Local.{value = 42}}
+    if PathField(nested) != 42 { return 0 }
     return x + Agree(x, record.value) + Identity(record).value + Nested(local).value
 }
 ZI
@@ -78,9 +92,14 @@ done
 cat > "$work/library-ir/named.zi" <<'ZI'
 Lib :: #import "lib";
 Local :: struct { value: s32; }
+NestedLocal :: struct { position: Local; }
 #program_export
 Answer :: () -> s32 {
     record: Local = Local.{value = 42}
+    nested: NestedLocal = NestedLocal.{position = record}
+    if Lib.Field(record) != 42 { return 0 }
+    if Lib.LocalField(record) != 42 { return 0 }
+    if Lib.PathField(nested) != 42 { return 0 }
     return Lib.Nested(record).value
 }
 ZI
@@ -133,3 +152,17 @@ if "$ziran" check --root "$work" "$work/multiple.zi" \
     exit 1
 fi
 rg -q 'requires one \$Type parameter' "$work/multiple.err"
+
+cat > "$work/scalar_using.zi" <<'ZI'
+Field :: (using item: $T) -> s32 { return value }
+Answer :: () -> s32 {
+    value: s32 = 42
+    return Field(value)
+}
+ZI
+if "$ziran" check --root "$work" "$work/scalar_using.zi" \
+    2> "$work/scalar_using.err"; then
+    echo 'using on a scalar polymorphic instance was accepted' >&2
+    exit 1
+fi
+rg -q 'using requires a concrete record binding' "$work/scalar_using.err"

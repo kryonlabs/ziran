@@ -13,6 +13,7 @@
 typedef enum FieldKind {
     FIELD_STRING,
     FIELD_INTEGER,
+    FIELD_U64,
     FIELD_SPAN
 } FieldKind;
 
@@ -33,10 +34,12 @@ typedef struct Reader {
     {offsetof(type, name), sizeof(((type *)0)->name), FIELD_STRING}
 #define INTEGER_FIELD(type, name) \
     {offsetof(type, name), sizeof(((type *)0)->name), FIELD_INTEGER}
+#define U64_FIELD(type, name) \
+    {offsetof(type, name), sizeof(((type *)0)->name), FIELD_U64}
 #define SPAN_FIELD(type, name) \
     {offsetof(type, name), sizeof(((type *)0)->name), FIELD_SPAN}
 #define FIELD_COUNT(fields) (sizeof(fields) / sizeof((fields)[0]))
-#define ZIR_FORMAT_VERSION 32u
+#define ZIR_FORMAT_VERSION 33u
 
 static const Field import_fields[] = {
     INTEGER_FIELD(ZirImport, kind), INTEGER_FIELD(ZirImport, extern_kind),
@@ -50,7 +53,7 @@ static const Field import_fields[] = {
 };
 static const Field statement_fields[] = {
     INTEGER_FIELD(ZirStmt, kind), STRING_FIELD(ZirStmt, text),
-    INTEGER_FIELD(ZirStmt, is_else),
+    INTEGER_FIELD(ZirStmt, is_else), INTEGER_FIELD(ZirStmt, is_using),
     INTEGER_FIELD(ZirStmt, loop_id), INTEGER_FIELD(ZirStmt, target_id),
     INTEGER_FIELD(ZirStmt, expr_root),
     INTEGER_FIELD(ZirStmt, lhs_root), STRING_FIELD(ZirStmt, name),
@@ -71,6 +74,7 @@ static const Field expression_fields[] = {
 static const Field function_fields[] = {
     STRING_FIELD(ZirFunction, name), STRING_FIELD(ZirFunction, args),
     STRING_FIELD(ZirFunction, default_args),
+    U64_FIELD(ZirFunction, using_parameters),
     STRING_FIELD(ZirFunction, return_type), INTEGER_FIELD(ZirFunction, must_use),
     INTEGER_FIELD(ZirFunction, exported),
     STRING_FIELD(ZirFunction, export_symbol),
@@ -127,6 +131,19 @@ enum_backing_valid(const char *backing)
         if(strcmp(backing, allowed[i]) == 0)
             return 1;
     return 0;
+}
+
+static int
+using_path_valid(const char *path, int allow_members)
+{
+    const unsigned char *cursor = (const unsigned char *)path;
+    if(!isalpha(*cursor) && *cursor != '_') return 0;
+    for(;;) {
+        while(isalnum(*cursor) || *cursor == '_') cursor++;
+        if(*cursor == '\0') return 1;
+        if(!allow_members || *cursor++ != '.' ||
+           (!isalpha(*cursor) && *cursor != '_')) return 0;
+    }
 }
 
 static int
@@ -213,6 +230,22 @@ read_u32(Reader *reader, uint32_t *value)
 }
 
 static int
+write_u64(FILE *out, uint64_t value)
+{
+    return write_u32(out, (uint32_t)value) &&
+           write_u32(out, (uint32_t)(value >> 32));
+}
+
+static int
+read_u64(Reader *reader, uint64_t *value)
+{
+    uint32_t low, high;
+    if(!read_u32(reader, &low) || !read_u32(reader, &high)) return 0;
+    *value = (uint64_t)low | ((uint64_t)high << 32);
+    return 1;
+}
+
+static int
 write_string(FILE *out, const char *value, size_t capacity)
 {
     size_t length = strnlen(value, capacity);
@@ -287,6 +320,9 @@ write_fields(FILE *out, const void *record, const Field *fields, size_t count)
         } else if(fields[i].kind == FIELD_INTEGER) {
             if(!write_u32(out, (uint32_t)*(const int *)value))
                 return 0;
+        } else if(fields[i].kind == FIELD_U64) {
+            if(!write_u64(out, *(const uint64_t *)value))
+                return 0;
         } else if(!write_span(out, (const ZirSourceSpan *)value)) {
             return 0;
         }
@@ -307,6 +343,9 @@ read_fields(Reader *reader, void *record, const Field *fields, size_t count)
             if(!read_u32(reader, &number))
                 return 0;
             *(int *)value = (int)(int32_t)number;
+        } else if(fields[i].kind == FIELD_U64) {
+            if(!read_u64(reader, (uint64_t *)value))
+                return 0;
         } else if(!read_span(reader, (ZirSourceSpan *)value)) {
             return 0;
         }
@@ -547,6 +586,7 @@ validate_program(const ZirProgram *program)
                 function->is_file_private != 1) ||
                (function->is_file_private && function->is_public) ||
                (function->is_template != 0 && function->is_template != 1) ||
+               (function->using_parameters && !function->is_template) ||
                (function->is_specialization != 0 &&
                 function->is_specialization != 1) ||
                (function->is_template &&
@@ -567,6 +607,13 @@ validate_program(const ZirProgram *program)
                    statement->kind > ZIR_STMT_IF_CASE ||
                    statement->kind == ZIR_STMT_IF_CASE ||
                    (statement->is_else != 0 && statement->is_else != 1) ||
+                   (statement->is_using != 0 && statement->is_using != 1) ||
+                   (statement->is_using &&
+                    (!function->is_template ||
+                     (statement->kind != ZIR_STMT_DECL &&
+                      statement->kind != ZIR_STMT_EXPR) ||
+                     !using_path_valid(statement->name,
+                                       statement->kind == ZIR_STMT_EXPR))) ||
                    (statement->is_else && statement->kind != ZIR_STMT_IF) ||
                    statement->loop_id < 0 || statement->target_id < 0 ||
                    (statement->loop_id && statement->kind != ZIR_STMT_WHILE) ||
