@@ -125,19 +125,12 @@ rewrite_self_pointer_type(const char *owner, char *base, size_t base_size)
     char work[LOWER_TEXT_MAX];
     char *p;
     char *star;
-    int is_const = 0;
     size_t n;
 
     snprintf(work, sizeof(work), "%s", base);
     p = work;
     while(*p == ' ' || *p == '\t')
         p++;
-    if(strncmp(p, "const ", 6) == 0) {
-        is_const = 1;
-        p += 6;
-        while(*p == ' ' || *p == '\t')
-            p++;
-    }
     star = strrchr(p, '*');
     if(star == NULL)
         return;
@@ -147,7 +140,7 @@ rewrite_self_pointer_type(const char *owner, char *base, size_t base_size)
         p[--n] = '\0';
     if(strcmp(p, owner) != 0)
         return;
-    snprintf(base, base_size, "%sstruct %s*", is_const ? "const " : "", owner);
+    snprintf(base, base_size, "struct %s*", owner);
 }
 
 static int is_module_alias(const ZirModule *m, const char *alias,
@@ -211,42 +204,11 @@ resolve_aliased_fn(const ZirModule *m, const ZirCModuleSyms *restab,
     return 0;
 }
 
-/* Rewrite a statement body: `null` -> `NULL`, `alias.X` -> `X` for module
- * aliases (enum/type members), bare calls to module functions -> C names,
- * and alias.fn( cross-module calls -> the target's C name. */
-
-/* Is ident (len chars) in the space-separated shadow list? Parameters and
- * locals shadow module functions of the same name. */
-static int
-name_is_shadowed(const char *shadow, const char *ident, size_t len)
-{
-    const char *p;
-
-    if(shadow == NULL || shadow[0] == '\0')
-        return 0;
-    p = shadow;
-    while(*p != '\0') {
-        const char *e = p;
-        size_t l;
-
-        while(*e != '\0' && *e != ' ')
-            e++;
-        l = (size_t)(e - p);
-        if(l == len && strncmp(p, ident, len) == 0)
-            return 1;
-        p = e;
-        while(*p == ' ')
-            p++;
-    }
-    return 0;
-}
-
-/* Returns 1 when the whole source was rewritten, 0 when the output buffer
- * ran out (the rewritten statement would be silently cut otherwise). */
+/* Rewrite the remaining textual constant, global initializer, or type bound.
+ * Function bodies are emitted from checked expression graphs. */
 static int
 rewrite_body2(const ZirModule *m, const ZirCModuleSyms *restab,
-              int restab_count, const char *src, char *dst, size_t dst_size,
-              const char *shadow)
+              int restab_count, const char *src, char *dst, size_t dst_size)
 {
     size_t n = 0;
     const char *p;
@@ -278,8 +240,7 @@ rewrite_body2(const ZirModule *m, const ZirCModuleSyms *restab,
             while(isalnum((unsigned char)*e) || *e == '_')
                 e++;
             if(*e == '.' &&
-               (isalpha((unsigned char)e[1]) || e[1] == '_') &&
-               !name_is_shadowed(shadow, p, (size_t)(e - p))) {
+               (isalpha((unsigned char)e[1]) || e[1] == '_')) {
                 const char *member = e + 1;
                 const char *end = member;
                 while(isalnum((unsigned char)*end) || *end == '_') end++;
@@ -341,7 +302,7 @@ rewrite_body2(const ZirModule *m, const ZirCModuleSyms *restab,
             if(!(p > src && p[-1] == '.') &&
                !(p > src + 1 && p[-1] == '>' && p[-2] == '-') &&
                *e == '(' && e[-1] != ' ') {
-                /* a call (not a member access 'x.fn' / 'p->fn'): resolve
+                /* a call (not a member access 'x.fn' or generated 'p->fn'): resolve
                  * module-local functions to C names */
                 char cname[LOWER_NAME_MAX * 2];
                 size_t clen = resolve_module_fn(m, p, (size_t)(e - p),
@@ -356,18 +317,11 @@ rewrite_body2(const ZirModule *m, const ZirCModuleSyms *restab,
                     continue;
                 }
             }
-            /* bare function reference in assignment-RHS position
-             * ('= name' / '= name;'): resolve, but never inside call
-             * parens where a local of the same name may shadow it. */
+            /* Bare function reference in an initializer. Generated C pointer
+             * members and source members are handled as values. */
             if(!(p > src && p[-1] == '.') &&
                !(p > src + 1 && p[-1] == '>' && p[-2] == '-') &&
-               ((*e == '-' && e[1] == '>') || *e == '.')) {
-                /* 'name->' / 'name.' — a variable access, not a function
-                 * reference ('item->count' must never resolve against a
-                 * module named 'item'). Skip resolution; fall through. */
-            } else if(!name_is_shadowed(shadow, p, (size_t)(e - p)) &&
-               !(p > src && p[-1] == '.') &&
-               !(p > src + 1 && p[-1] == '>' && p[-2] == '-') &&
+               *e != '.' && !(*e == '-' && e[1] == '>') &&
                *e != '(' && n >= 2 && dst[n - 1] == ' ' && dst[n - 2] == '=' &&
                (n < 3 || (dst[n - 3] != '=' && dst[n - 3] != '!'))) {
                 char cname[LOWER_NAME_MAX * 2];
@@ -385,8 +339,7 @@ rewrite_body2(const ZirModule *m, const ZirCModuleSyms *restab,
             }
             /* standalone call argument ('set_cb(name)' / 'f(a, name)'):
              * a bare identifier passing a function by reference. */
-            if(!name_is_shadowed(shadow, p, (size_t)(e - p)) &&
-               !(p > src && p[-1] == '.') &&
+            if(!(p > src && p[-1] == '.') &&
                !(p > src + 1 && p[-1] == '>' && p[-2] == '-') &&
                *e != '(' && (*e == ')' || *e == ',') &&
                n >= 1 && (dst[n - 1] == '(' ||
@@ -405,8 +358,7 @@ rewrite_body2(const ZirModule *m, const ZirCModuleSyms *restab,
                     continue;
                 }
             }
-            if(!name_is_shadowed(shadow, p, (size_t)(e - p)) &&
-               !(p > src && p[-1] == '.') &&
+            if(!(p > src && p[-1] == '.') &&
                !(p > src + 1 && p[-1] == '>' && p[-2] == '-')) {
                 int resolved_top = 0;
                 for(int i = 0; i < m->global_count; i++) {
@@ -654,7 +606,7 @@ resolve_body_symbol(void *context, const char *text, char *out, size_t size)
             TargetDefineName(symbols->module, ZIR_C, text, out, size);
             return;
         }
-    rewrite_body2(symbols->module, symbols->symbols, symbols->count, text, out, size, "");
+    rewrite_body2(symbols->module, symbols->symbols, symbols->count, text, out, size);
 }
 
 static void
@@ -835,7 +787,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
         char name[LOWER_NAME_MAX], value[LOWER_TEXT_MAX];
 
         TargetDefineName(m, ZIR_C, d->name, name, sizeof(name));
-        if(!rewrite_body2(m, NULL, 0, d->value, value, sizeof(value), NULL))
+        if(!rewrite_body2(m, NULL, 0, d->value, value, sizeof(value)))
             c_rewrite_overflow(m->source_path, d->span.line);
         if(!d->is_public) fprintf(h, "#ifdef %s_PRIVATE\n", guard);
         fprintf(h, "#define %s %s\n", name, value);
@@ -1005,7 +957,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
             if(suffix[0] != '\0') {
                 char tmps[LOWER_NAME_MAX];
 
-                if(!rewrite_body2(m, NULL, 0, suffix, tmps, sizeof(tmps), NULL))
+                if(!rewrite_body2(m, NULL, 0, suffix, tmps, sizeof(tmps)))
                     c_rewrite_overflow(m->source_path, g->span.line);
                 snprintf(suffix, sizeof(suffix), "%s", tmps);
             }
@@ -1069,7 +1021,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
         char name[LOWER_NAME_MAX], value[LOWER_TEXT_MAX];
 
         TargetDefineName(m, ZIR_C, d->name, name, sizeof(name));
-        if(!rewrite_body2(m, NULL, 0, d->value, value, sizeof(value), NULL))
+        if(!rewrite_body2(m, NULL, 0, d->value, value, sizeof(value)))
             c_rewrite_overflow(m->source_path, d->span.line);
         fprintf(c, "#define %s %s\n", name, value);
     }
@@ -1121,7 +1073,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
                 /* the alias sits inside brackets ('[state.MAX]'), so use the
                  * body rewriter (strips alias.member anywhere), not the
                  * leading-alias-only type strip */
-                if(!rewrite_body2(m, NULL, 0, suffix, tmps, sizeof(tmps), NULL))
+                if(!rewrite_body2(m, NULL, 0, suffix, tmps, sizeof(tmps)))
                     c_rewrite_overflow(m->source_path, g->span.line);
                 snprintf(suffix, sizeof(suffix), "%s", tmps);
             }
@@ -1131,7 +1083,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
 
             /* initializers carry 'null' and module-local function refs */
             if(!ScalarLiteral(g->type, g->init, ZIR_C, g->span, initw, sizeof(initw)))
-                if(!rewrite_body2(m, NULL, 0, g->init, initw, sizeof(initw), NULL))
+                if(!rewrite_body2(m, NULL, 0, g->init, initw, sizeof(initw)))
                     c_rewrite_overflow(m->source_path, g->span.line);
             fprintf(c, "%s%s %s%s = %s;\n", g->is_static ? "static " : "",
                     base, name, suffix,

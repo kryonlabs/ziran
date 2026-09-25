@@ -503,8 +503,7 @@ classify_extern_target(const char *target, char *symbol, size_t symbol_size,
 }
 
 /* Net block braces: only '{'/'}' at paren/bracket depth 0 open/close
- * blocks. Braces inside parens (compound literals like (Props){...}) are
- * expression braces, not blocks. */
+ * blocks. Braces inside a call argument's record literal are expressions. */
 static int
 net_block_braces(const char *s)
 {
@@ -616,8 +615,8 @@ classify_stmt(const char *s)
             if(strncmp(s, types[i], strlen(types[i])) == 0)
                 return ZIR_STMT_DECL;
     }
-    /* An '=' inside a call's compound literal is a designated initializer,
-     * not an assignment statement (Make((Props){.value = input})). */
+    /* An '=' inside a call's record literal is a field initializer,
+     * not an assignment statement (Make(Props.{value = input})). */
     {
         int depth = 0;
         int quote = 0;

@@ -10,6 +10,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `#export`, `#global`, and C-style `static` source forms are rejected. Source
   and saved IR retain these exports and globals across native and portable
   builds.
+- File-scope variable initializers and constants pass through the Jai
+  expression parser during checking. C-style compound literals and ternary
+  expressions are rejected there before native output, including from saved
+  IR. The C++ backend no longer carries the old compound-literal rewrite.
 - Jai `#string DELIMITER` raw multiline literals preserve their body bytes,
   including whitespace and the newline before the closing delimiter. Source
   and saved IR execute identically on the portable runner, C, C++, and Go.

@@ -12,7 +12,6 @@
 #include "zir_diagnostic.h"
 
 #include <ctype.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -180,163 +179,17 @@ resolve_aliased_fn(const ZirModule *m, const ZirCppModuleSyms *restab,
     return 0;
 }
 
-/* Rewrite a statement body: `null` -> `NULL`, `alias.X` -> `X` for module
- * aliases (enum/type members), bare calls to module functions -> C names,
- * and alias.fn( cross-module calls -> the target's C name. */
-
-/* Is ident (len chars) in the space-separated shadow list? Parameters and
- * locals shadow module functions of the same name. */
-static int
-name_is_shadowed(const char *shadow, const char *ident, size_t len)
-{
-    const char *p;
-
-    if(shadow == NULL || shadow[0] == '\0')
-        return 0;
-    p = shadow;
-    while(*p != '\0') {
-        const char *e = p;
-        size_t l;
-
-        while(*e != '\0' && *e != ' ')
-            e++;
-        l = (size_t)(e - p);
-        if(l == len && strncmp(p, ident, len) == 0)
-            return 1;
-        p = e;
-        while(*p == ' ')
-            p++;
-    }
-    return 0;
-}
-
-static void rewrite_body2(const ZirModule *m, const ZirCppModuleSyms *restab,
-                         int restab_count, const char *src, char *dst,
-                         size_t dst_size, const char *shadow);
-
-static void
-append_initializer(char *dst, size_t size, size_t *used, const char *format, ...)
-{
-    va_list args;
-    int written;
-
-    va_start(args, format);
-    written = vsnprintf(dst + *used, size - *used, format, args);
-    va_end(args);
-    if(written < 0 || (size_t)written >= size - *used) {
-        fprintf(stderr, "zi2cpp: named initializer exceeds output limit\n");
-        exit(1);
-    }
-    *used += (size_t)written;
-}
-
-/* Named fields are assignments, not C++ designated initializers: their source
- * order must not depend on the native struct layout or reorder side effects. */
-static const char *
-rewrite_named_initializer(const ZirModule *m, const ZirCppModuleSyms *restab,
-                          int restab_count, const char *src, char *dst,
-                          size_t dst_size, const char *shadow)
-{
-    const char *p = skip_ws(src + 1);
-    const char *type_start = p;
-    const char *body;
-    char type[LOWER_NAME_MAX];
-    char mapped_type[LOWER_NAME_MAX];
-    char raw[LOWER_TEXT_MAX];
-    char parts[33][LOWER_TEXT_MAX];
-    char temporary[64];
-    size_t used = 0;
-    size_t length;
-    int depth = 1;
-    int count;
-    unsigned serial = 0;
-
-    if(!isalpha((unsigned char)*p) && *p != '_')
-        return NULL;
-    while(is_ident_char((unsigned char)*p) || *p == '.')
-        p++;
-    length = (size_t)(p - type_start);
-    if(length >= sizeof(type) || *skip_ws(p) != ')')
-        return NULL;
-    memcpy(type, type_start, length);
-    type[length] = '\0';
-    p = skip_ws(skip_ws(p) + 1);
-    if(*p != '{' || *skip_ws(p + 1) != '.')
-        return NULL;
-    body = ++p;
-    while(*p && depth > 0) {
-        if(*p == '"' || *p == '\'') {
-            char quote = *p++;
-            while(*p && *p != quote) {
-                if(*p == '\\' && p[1])
-                    p++;
-                p++;
-            }
-            if(!*p)
-                return NULL;
-        } else if(*p == '{') {
-            depth++;
-        } else if(*p == '}') {
-            if(--depth == 0)
-                break;
-        }
-        p++;
-    }
-    length = (size_t)(p - body);
-    if(depth != 0 || length >= sizeof(raw))
-        return NULL;
-    memcpy(raw, body, length);
-    raw[length] = '\0';
-    count = split_top_level(raw, parts[0], 33, sizeof(parts[0]));
-    if(count >= 33) {
-        fprintf(stderr, "zi2cpp: too many named initializer fields\n");
-        exit(1);
-    }
-    do {
-        snprintf(temporary, sizeof(temporary), "record_value_%u", serial++);
-    } while(strstr(src, temporary) != NULL);
-    rewrite_body2(m, restab, restab_count, type, mapped_type, sizeof(mapped_type), shadow);
-    append_initializer(dst, dst_size, &used, "([%s]() { %s %s{}; ",
-                       shadow ? "&" : "", mapped_type, temporary);
-    for(int i = 0; i < count; i++) {
-        char *field = trim(parts[i]);
-        char *equals = strchr(field, '=');
-        char value[LOWER_TEXT_MAX];
-
-        if(!*field)
-            continue;
-        if(*field != '.' || equals == NULL) {
-            fprintf(stderr, "zi2cpp: expected named initializer field\n");
-            exit(1);
-        }
-        *equals = '\0';
-        trim_in_place(field);
-        rewrite_body2(m, restab, restab_count, skip_ws(equals + 1),
-                      value, sizeof(value), shadow);
-        append_initializer(dst, dst_size, &used, "%s%s = %s; ", temporary, field, value);
-    }
-    append_initializer(dst, dst_size, &used, "return %s; }())", temporary);
-    return p;
-}
+/* Rewrite textual constants, global initializers, and type bounds. Function
+ * bodies are emitted from checked expression graphs. */
 
 static void
 rewrite_body2(const ZirModule *m, const ZirCppModuleSyms *restab,
-              int restab_count, const char *src, char *dst, size_t dst_size,
-              const char *shadow)
+              int restab_count, const char *src, char *dst, size_t dst_size)
 {
     size_t n = 0;
 
     for(const char *p = src; *p != '\0' && n + 6 < dst_size; p++) {
-        if(*p == '(') {
-            const char *end = rewrite_named_initializer(m, restab, restab_count,
-                                                       p, dst + n, dst_size - n, shadow);
-            if(end != NULL) {
-                n += strlen(dst + n);
-                p = end;
-                continue;
-            }
-            dst[n++] = *p;
-        } else if(*p == '"' || *p == '\'') {
+        if(*p == '"' || *p == '\'') {
             char quote = *p;
             dst[n++] = *p++;
             while(*p && n + 2 < dst_size) {
@@ -362,8 +215,7 @@ rewrite_body2(const ZirModule *m, const ZirCppModuleSyms *restab,
             while(isalnum((unsigned char)*e) || *e == '_')
                 e++;
             if(*e == '.' &&
-               (isalpha((unsigned char)e[1]) || e[1] == '_') &&
-               !name_is_shadowed(shadow, p, (size_t)(e - p))) {
+               (isalpha((unsigned char)e[1]) || e[1] == '_')) {
                 const char *member = e + 1;
                 const char *end = member;
                 while(isalnum((unsigned char)*end) || *end == '_') end++;
@@ -429,7 +281,7 @@ rewrite_body2(const ZirModule *m, const ZirCppModuleSyms *restab,
             if(!(p > src && p[-1] == '.') &&
                !(p > src + 1 && p[-1] == '>' && p[-2] == '-') &&
                *e == '(' && e[-1] != ' ') {
-                /* a call (not a member access 'x.fn' / 'p->fn'): resolve
+                /* a call (not a member access 'x.fn' or generated 'p->fn'): resolve
                  * module-local functions to C names */
                 char cname[LOWER_NAME_MAX * 2];
                 size_t clen = resolve_module_fn(m, p, (size_t)(e - p),
@@ -444,18 +296,11 @@ rewrite_body2(const ZirModule *m, const ZirCppModuleSyms *restab,
                     continue;
                 }
             }
-            /* bare function reference in assignment-RHS position
-             * ('= name' / '= name;'): resolve, but never inside call
-             * parens where a local of the same name may shadow it. */
+            /* Bare function reference in an initializer. Generated C pointer
+             * members and source members are handled as values. */
             if(!(p > src && p[-1] == '.') &&
                !(p > src + 1 && p[-1] == '>' && p[-2] == '-') &&
-               ((*e == '-' && e[1] == '>') || *e == '.')) {
-                /* 'name->' / 'name.' — a variable access, not a function
-                 * reference ('item->count' must never resolve against a
-                 * module named 'item'). Skip resolution; fall through. */
-            } else if(!name_is_shadowed(shadow, p, (size_t)(e - p)) &&
-               !(p > src && p[-1] == '.') &&
-               !(p > src + 1 && p[-1] == '>' && p[-2] == '-') &&
+               *e != '.' && !(*e == '-' && e[1] == '>') &&
                *e != '(' && n >= 2 && dst[n - 1] == ' ' && dst[n - 2] == '=' &&
                (n < 3 || (dst[n - 3] != '=' && dst[n - 3] != '!'))) {
                 char cname[LOWER_NAME_MAX * 2];
@@ -473,8 +318,7 @@ rewrite_body2(const ZirModule *m, const ZirCppModuleSyms *restab,
             }
             /* standalone call argument ('set_cb(name)' / 'f(a, name)'):
              * a bare identifier passing a function by reference. */
-            if(!name_is_shadowed(shadow, p, (size_t)(e - p)) &&
-               !(p > src && p[-1] == '.') &&
+            if(!(p > src && p[-1] == '.') &&
                !(p > src + 1 && p[-1] == '>' && p[-2] == '-') &&
                *e != '(' && (*e == ')' || *e == ',') &&
                n >= 1 && (dst[n - 1] == '(' ||
@@ -493,8 +337,7 @@ rewrite_body2(const ZirModule *m, const ZirCppModuleSyms *restab,
                     continue;
                 }
             }
-            if(!name_is_shadowed(shadow, p, (size_t)(e - p)) &&
-               !(p > src && p[-1] == '.') &&
+            if(!(p > src && p[-1] == '.') &&
                !(p > src + 1 && p[-1] == '>' && p[-2] == '-')) {
                 int resolved_top = 0;
                 for(int i = 0; i < m->global_count; i++) {
@@ -733,7 +576,7 @@ resolve_body_symbol(void *context, const char *text, char *out, size_t size)
             TargetDefineName(symbols->module, ZIR_CPP, text, out, size);
             return;
         }
-    rewrite_body2(symbols->module, symbols->symbols, symbols->count, text, out, size, "");
+    rewrite_body2(symbols->module, symbols->symbols, symbols->count, text, out, size);
 }
 
 static void
@@ -914,7 +757,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
         char name[LOWER_NAME_MAX], value[LOWER_TEXT_MAX];
 
         TargetDefineName(m, ZIR_CPP, d->name, name, sizeof(name));
-        rewrite_body2(m, NULL, 0, d->value, value, sizeof(value), NULL);
+        rewrite_body2(m, NULL, 0, d->value, value, sizeof(value));
         if(!d->is_public) fprintf(h, "#ifdef %s_PRIVATE\n", guard);
         fprintf(h, "#define %s %s\n", name, value);
         if(!d->is_public) fputs("#endif\n", h);
@@ -1088,7 +931,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
             if(suffix[0] != '\0') {
                 char tmps[LOWER_NAME_MAX];
 
-                rewrite_body2(m, NULL, 0, suffix, tmps, sizeof(tmps), NULL);
+                rewrite_body2(m, NULL, 0, suffix, tmps, sizeof(tmps));
                 snprintf(suffix, sizeof(suffix), "%s", tmps);
             }
         }
@@ -1141,7 +984,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
         char name[LOWER_NAME_MAX], value[LOWER_TEXT_MAX];
 
         TargetDefineName(m, ZIR_CPP, d->name, name, sizeof(name));
-        rewrite_body2(m, NULL, 0, d->value, value, sizeof(value), NULL);
+        rewrite_body2(m, NULL, 0, d->value, value, sizeof(value));
         fprintf(c, "#define %s %s\n", name, value);
     }
     /* #foreign imports: emit C prototypes parsed from the raw signature
@@ -1191,7 +1034,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
                 /* the alias sits inside brackets ('[state.MAX]'), so use the
                  * body rewriter (strips alias.member anywhere), not the
                  * leading-alias-only type strip */
-                rewrite_body2(m, NULL, 0, suffix, tmps, sizeof(tmps), NULL);
+                rewrite_body2(m, NULL, 0, suffix, tmps, sizeof(tmps));
                 snprintf(suffix, sizeof(suffix), "%s", tmps);
             }
         }
@@ -1200,7 +1043,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
 
             /* initializers carry 'null' and module-local function refs */
             if(!ScalarLiteral(g->type, g->init, ZIR_CPP, g->span, initw, sizeof(initw)))
-                rewrite_body2(m, NULL, 0, g->init, initw, sizeof(initw), NULL);
+                rewrite_body2(m, NULL, 0, g->init, initw, sizeof(initw));
             fprintf(c, "%s%s %s%s = %s;\n", g->is_static ? "static " : "",
                     base, name, suffix,
                     initw[0] ? initw : "{0}");

@@ -4474,11 +4474,25 @@ CheckPrograms(ZirProgram **programs, int count)
                     return 0;
                 }
             }
-            for(int g = 0; g < module->global_count; g++)
-                if(module->globals[g].init[0] &&
-                   !check_file_private_expression(module,
-                       module->globals[g].init, module->globals[g].span))
+            for(int g = 0; g < module->global_count; g++) {
+                ZirGlobal *global = &module->globals[g];
+                if(!global->init[0]) continue;
+                ZirFunction expression = {0};
+                int root = ParseExprNoDefaults(&expression, module,
+                                               global->init, global->span);
+                int valid = root >= 0 &&
+                    expression.exprs[root].kind != ZIR_EXPR_UNKNOWN;
+                free(expression.exprs);
+                if(!valid) {
+                    Diagnostic(global->span, "check.global",
+                               "invalid file-scope initializer: %s",
+                               global->init);
                     return 0;
+                }
+                if(!check_file_private_expression(module, global->init,
+                                                  global->span))
+                    return 0;
+            }
             for(int d = 0; d < module->define_count; d++)
                 if(!check_file_private_expression(module,
                        module->defines[d].value,
@@ -4591,6 +4605,26 @@ CheckPrograms(ZirProgram **programs, int count)
         for(int m = 0; m < programs[p]->module_count; m++)
             if(!jai_module_types(&programs[p]->modules[m]))
                 return 0;
+    for(int p = 0; p < count; p++)
+        for(int m = 0; m < programs[p]->module_count; m++) {
+            ZirModule *module = &programs[p]->modules[m];
+            for(int d = 0; d < module->define_count; d++) {
+                ZirDefine *definition = &module->defines[d];
+                ZirFunction expression = {0};
+                int root = ParseExprNoDefaults(&expression, module,
+                                               definition->value,
+                                               definition->span);
+                int valid = root >= 0 &&
+                    expression.exprs[root].kind != ZIR_EXPR_UNKNOWN;
+                free(expression.exprs);
+                if(!valid) {
+                    Diagnostic(definition->span, "check.constant",
+                               "invalid file-scope constant: %s",
+                               definition->value);
+                    return 0;
+                }
+            }
+        }
     for(int p = 0; p < count; p++) {
         for(int m = 0; m < programs[p]->module_count; m++) {
             ZirModule *module = &programs[p]->modules[m];

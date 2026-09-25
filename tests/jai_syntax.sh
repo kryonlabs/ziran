@@ -101,8 +101,19 @@ Answer :: () -> s32 {
     return result
 }
 ZI
+cat > "$work/c_global_literal.zi" <<'ZI'
+Props :: struct { value: s32; }
+item: Props = (Props){.value = 42};
+#program_export
+Answer :: () -> s32 { return item.value }
+ZI
+cat > "$work/c_constant_ternary.zi" <<'ZI'
+VALUE :: 1 ? 42 : 0
+#program_export
+Answer :: () -> s32 { return VALUE }
+ZI
 
-for feature in variant anon_enum match postfix guard switch goto default_label label state c_local raw_c slot_decl slot_body block_call; do
+for feature in variant anon_enum match postfix guard switch goto default_label label state c_local raw_c slot_decl slot_body block_call c_global_literal c_constant_ternary; do
     if "$ziran" check --root "$work" "$work/$feature.zi" \
         2> "$work/$feature.err"; then
         echo "non-Jai $feature syntax was accepted" >&2
@@ -122,6 +133,8 @@ for feature in variant anon_enum match postfix guard switch goto default_label l
         raw_c) message='raw C statements are not Jai syntax' ;;
         slot_decl|slot_body) message='#slot is not Jai syntax' ;;
         block_call) message='block calls are not Jai syntax' ;;
+        c_global_literal) message='C-style cast or literal is not valid Jai syntax' ;;
+        c_constant_ternary) message='C-style conditional is not valid Jai syntax' ;;
     esac
     grep -Fq "$message" "$work/$feature.err"
     for target in c cpp go; do
