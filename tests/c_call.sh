@@ -95,6 +95,12 @@ Make :: () -> Binding {
 }
 
 #program_export
+Invoke :: (binding: Binding, context: *void, value: s32) -> s32 {
+    callback := binding.call
+    return callback(context, value)
+}
+
+#program_export
 Answer :: () -> s32 {
     binding: Binding = Make()
     unused binding
@@ -111,7 +117,7 @@ for target in c cpp; do
 #include "native.h"
 int main(void) {
     Binding binding = Make();
-    return binding.call(0, 41) == 42 ? 0 : 1;
+    return binding.call(0, 41) == 42 && Invoke(binding, 0, 41) == 42 ? 0 : 1;
 }
 C
         "${CC:-cc}" -std=c11 -Wall -Werror -I"$repo/include" -I"$output" \
@@ -121,7 +127,8 @@ C
 #include "native.hpp"
 int main() {
     Binding binding = Make();
-    return binding.call(nullptr, 41) == 42 ? 0 : 1;
+    return binding.call(nullptr, 41) == 42 &&
+        Invoke(binding, nullptr, 41) == 42 ? 0 : 1;
 }
 CPP
         "${CXX:-c++}" -std=c++17 -Wall -Werror -I"$repo/include" \

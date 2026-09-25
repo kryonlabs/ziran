@@ -1259,8 +1259,13 @@ emit_call(Emitter *e, const ZirExpr *expr, const char *array_result, char *out, 
         resolve(e, expr->name, source, sizeof(source));
         declare(e, callable, expr->slot_type, source);
         if(e->target == ZIR_C || e->target == ZIR_CPP) {
-            n = (size_t)format(text, sizeof(text), "%s.call(%s.context", callable, callable);
-            count = 1;
+            const ZirType *slot = FindType(e->module, expr->slot_type, NULL);
+            if(slot != NULL && slot->is_c_call) {
+                n = (size_t)format(text, sizeof(text), "%s(", callable);
+            } else {
+                n = (size_t)format(text, sizeof(text), "%s.call(%s.context", callable, callable);
+                count = 1;
+            }
         } else {
             n = (size_t)format(text, sizeof(text), "%s(", callable);
         }
