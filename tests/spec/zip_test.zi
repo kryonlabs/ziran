@@ -87,7 +87,13 @@ SelfTest :: () -> s32 {
         return 11
     }
     items[1].name_start = 0
-    if WriteStoredZip(archive[:], input[:], items[:]) != 180 ||
-       FindZipEntry(archive[:], "a").found { return 12 }
+    if StoredZipSize(input[:], items[:]) != 0 ||
+       WriteStoredZip(archive[:], input[:], items[:]) != 0 { return 12 }
+    archive[b.data_start - 1] = cast(u8)97
+    directory = OpenZipDirectory(archive[:])
+    named = NextZipEntry(archive[:], directory)
+    named = NextZipEntry(archive[:], named.directory)
+    archive[named.name_start] = cast(u8)97
+    if FindZipEntry(archive[:], "a").found { return 13 }
     return 0
 }

@@ -234,6 +234,14 @@ StoredZipSize :: (input: []u8, items: []ZipWriteItem) -> u64 {
            item.name_size > cast(u64)input.count - item.name_start ||
            item.data_start > cast(u64)input.count ||
            item.data_size > cast(u64)input.count - item.data_start { return 0 }
+        previous: u64 = 0
+        while previous < index {
+            earlier: ZipWriteItem = items[previous]
+            if earlier.name_size == item.name_size &&
+               ZipNamesMatch(input, earlier.name_start, item.name_start,
+                   item.name_size) { return 0 }
+            previous += 1
+        }
         increase: u64 = 76 + 2 * item.name_size + item.data_size
         if increase > cast(u64)0xffffffff - total { return 0 }
         total += increase
