@@ -196,6 +196,10 @@ value_kind(const char *type)
 {
     if(strcmp(type, "void") == 0)
         return VALUE_VOID;
+    /* Raw pointers are opaque host handles in portable bundles; null is the
+     * empty handle. The checker still rejects dereferencing and arithmetic. */
+    if(type[0] == '*' || strcmp(type, "null") == 0)
+        return VALUE_INT;
     if(strcmp(type, "s8") == 0 || strcmp(type, "s16") == 0 ||
        strcmp(type, "s32") == 0 || strcmp(type, "s64") == 0 ||
        strcmp(type, "u8") == 0 || strcmp(type, "u16") == 0 ||
@@ -664,6 +668,8 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
     }
     if(strcmp(type, "bool") == 0)
         return int_value(truthy(value));
+    if(type[0] == '*')
+        return uint_value(integer_bits(value));
     if(strcmp(type, "integer") == 0)
         return value;
     if(target == VALUE_REAL) {
@@ -856,6 +862,9 @@ parse_parameters(const ZirModule *module, const ZirFunction *function,
             if(*cursor++ != ']')
                 return -1;
         }
+        /* Pointer parameters name an opaque host handle in bundles. */
+        while(*cursor == '*')
+            cursor++;
         while((*cursor >= 'a' && *cursor <= 'z') ||
               (*cursor >= 'A' && *cursor <= 'Z') ||
               (*cursor >= '0' && *cursor <= '9') || *cursor == '_')
@@ -1055,6 +1064,7 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         }
         if(strcmp(expression->name, "true") == 0 ||
            strcmp(expression->name, "false") == 0 ||
+           strcmp(expression->name, "null") == 0 ||
            binding_index(bindings, binding_count, expression->name) >= 0 ||
            find_global_declaration(module, expression->name) != NULL)
             return 1;
@@ -1910,8 +1920,12 @@ binary_value(Vm *vm, const char *op, Value left, Value right,
 {
     int real = left.kind == VALUE_REAL || right.kind == VALUE_REAL;
     int shift = strcmp(op, "<<") == 0 || strcmp(op, ">>") == 0;
-    int unsigned64 = strcmp(left_type, "u64") == 0 ||
-                     (!shift && strcmp(right_type, "u64") == 0);
+    /* Host handles live in the unsigned bits; compare them by address. */
+    int unsigned64 = strcmp(left_type, "u64") == 0 || left_type[0] == '*' ||
+                     strcmp(left_type, "null") == 0 ||
+                     (!shift && (strcmp(right_type, "u64") == 0 ||
+                                 right_type[0] == '*' ||
+                                 strcmp(right_type, "null") == 0));
     int signed_wide = !unsigned64 &&
         (strcmp(left_type, "s64") == 0 ||
          (!shift && strcmp(right_type, "s64") == 0));
@@ -2139,6 +2153,8 @@ eval(Frame *frame, int index, int depth)
             return int_value(1);
         if(strcmp(expression->name, "false") == 0)
             return int_value(0);
+        if(strcmp(expression->name, "null") == 0)
+            return uint_value(0);
         Local *local = find_local(frame, expression->name);
         if(local != NULL)
             return coerce_expression(frame->vm, frame->module,
@@ -2942,7 +2958,14 @@ host_argument(const ZirModule *module, const char *type, Value value,
     out->length = value.length;
     out->kind = value.kind == VALUE_REAL ? VM_HOST_REAL :
         value.kind == VALUE_STRING ? VM_HOST_STRING :
+        type[0] == '*' ? VM_HOST_POINTER :
         type[0] == 'u' ? VM_HOST_UNSIGNED : VM_HOST_INTEGER;
+    if(out->kind == VM_HOST_POINTER) {
+        if(value.kind != VALUE_INT)
+            return 0;
+        out->pointer = (void *)(uintptr_t)integer_bits(value);
+        return 1;
+    }
     return value.kind == VALUE_INT || value.kind == VALUE_ENUM ||
            value.kind == VALUE_REAL || value.kind == VALUE_STRING;
 }
@@ -2998,6 +3021,7 @@ host_return(Vm *vm, const ZirModule *module, const char *type,
     VmHostValueKind kind = expected == VALUE_VOID ? VM_HOST_VOID :
         expected == VALUE_REAL ? VM_HOST_REAL :
         expected == VALUE_STRING ? VM_HOST_STRING :
+        type[0] == '*' ? VM_HOST_POINTER :
         type[0] == 'u' ? VM_HOST_UNSIGNED : VM_HOST_INTEGER;
     if((declared == NULL && expected == VALUE_INVALID) ||
        input->kind != kind || input->field_count != 0 ||
@@ -3011,6 +3035,8 @@ host_return(Vm *vm, const ZirModule *module, const char *type,
         result = real_value(input->real);
     else if(kind == VM_HOST_STRING)
         result = string_value(input->data, input->length);
+    else if(kind == VM_HOST_POINTER)
+        result = uint_value((uintptr_t)input->pointer);
     else if(kind == VM_HOST_UNSIGNED)
         result = uint_value(input->bits);
     else if(kind == VM_HOST_INTEGER)

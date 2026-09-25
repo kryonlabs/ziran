@@ -187,11 +187,12 @@ size, alignment, field overlap, and copy tests.
 
 ### 8. Expand `.zib` and host capabilities
 
-The portable verifier and VM support a useful scalar/record/array subset, but
-still reject raw pointers, slices inside globals or records, pointer-bearing
+The portable verifier and VM support a useful scalar/record/array subset, and
+carry raw pointers as opaque host handles that can be stored, compared, and
+passed across host capabilities. They still reject slices inside globals or
 records, reachable unions, and several host shapes. Explicit global
 initializers are not executed portably. Host calls support scalar, string,
-plain-record, and selected synchronous slice arguments; pointer, array, slot,
+plain-record, pointer, and selected synchronous slice arguments; array, slot,
 slice-return, and record-slice shapes remain open. Implement each boundary as
 a versioned checked contract in `cmd/zir/zir_bundle.c`, `cmd/zir/zir_vm.c`, and
 `include/ziran_host.h`. Retain preflight verification so a bundle cannot reach

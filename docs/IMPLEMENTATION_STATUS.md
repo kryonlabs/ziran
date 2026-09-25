@@ -371,8 +371,13 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `BundleRun` checks all required bindings before execution.
   The CLI runner also checks required bindings before execution. Source and
   saved-IR bundles, unused extern pruning, list tampering, missing binding
-  preflight, malformed record returns, and pointer-bearing record rejection
-  are tested. Pointer, array, and slot host calls remain unsupported.
+  preflight, malformed record returns, and pointer dereference rejection
+  are tested. Declared pointer types cross host calls as opaque handles with
+  kind `VM_HOST_POINTER`: the VM stores the address, compares handles against
+  `null` and each other, and never dereferences them, so the host owns the
+  storage behind a handle. Pointer-bearing records, including host-returned
+  records, bundle and run with that contract. Array and slot host calls
+  remain unsupported.
 - Portable strings now carry immutable UTF-8 bytes with exact byte lengths,
   including embedded nulls. The verifier and interpreter cover literals,
   equality, read-only byte indexing and ranges, `.count`, parameters, returns,
@@ -396,10 +401,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   record and array storage is reclaimed after a value copy; the portable VM
   currently allows up to 256 MiB each of tracked record and array allocations
   so large checked parsers such as Kryon's KSS parser can execute.
-- The portable verifier still rejects records with raw pointer fields. Kryon's
-  `CardButtonProps` builds for native C, C++, and Go, but a `.zib` entry that
-  carries its pointer-bearing `ButtonProps` result does not yet verify. A
-  portable host handle or capability contract is required for that case.
+- Records with raw pointer fields are portable as opaque host handles. A
+  bundle can store, compare, and pass them to and from host capabilities, and
+  the portable host ABI carries them as `VM_HOST_POINTER` values. Dereference,
+  address-of, indexing, and arithmetic on pointers remain outside the
+  portable subset; native targets keep direct pointer access.
 - Compiler functions use short names without `Zir` or `zir_` prefixes,
   including the IR serializer's `ProgramWrite`, `ProgramRead`, and `PathIsIR`.
   IR data types retain `Zir` names for now.

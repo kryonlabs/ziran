@@ -820,7 +820,8 @@ cat > "$work/unsupported_bundle.zi" <<'EOF'
 #program_export
 Answer :: () -> s32 {
     value: *s32 = null
-    return 42
+    if value == null { return 42 }
+    return value.*
 }
 EOF
 if "$ziran" bundle --root "$work" --entry unsupported_bundle:Answer \

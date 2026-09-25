@@ -54,6 +54,11 @@ Numeric, boolean, and string slice parameters use `VM_HOST_SLICE` and a mutable
 `elements` array. Hosts keep the element count and pointer intact; the VM
 validates each element and copies changes back into the caller's slice after a
 successful synchronous call. Overlapping mutable slice arguments are rejected.
+Declared pointer types cross as `VM_HOST_POINTER` with the raw address in
+`pointer`. The VM treats handles as opaque: bundles store, compare against
+`null` and each other, and pass them to host capabilities, but cannot
+dereference, index, or do arithmetic on them. The host owns the storage behind
+every handle it hands out.
 Source and saved-IR bundle bytes match in scalar, record, and enum tests,
 including Kryon's geometry, layout, and popup ownership tests. Synchronous
 procedure type aliases with imported named functions run from
@@ -61,8 +66,8 @@ source and saved IR. Fixed arrays with numeric or resolved integer
 constant-expression capacities support defaults,
 positional literals, element reads and writes, and value copies, including
 nested arrays and `u8` arrays inside imported records. Indexing is bounds-checked. Version 20 is
-experimental and has no compatibility promise. Host calls with pointers,
-arrays, or slots remain unsupported. Default-initialized module globals of
+experimental and has no compatibility promise. Host calls with arrays or
+slots remain unsupported. Default-initialized module globals of
 portable value types work within one `BundleRun`; each call starts with fresh
 global values. `BundleInstantiate` creates an instance whose globals persist
 across `BundleInstanceRun` calls. Explicit global initializers, complete

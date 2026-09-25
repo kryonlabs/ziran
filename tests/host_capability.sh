@@ -29,11 +29,43 @@ Echo :: (value: u32) -> u32 {
     return EchoHost(value)
 }
 EOF
+cat > "$work/handle_host.zi" <<'EOF'
+#scope_export
+Box :: struct {
+    value: *s32
+    count: s32
+}
+host_api :: #system_library "host_api";
+MakeHandleHost :: () -> *s32 #foreign host_api;
+ReadHandleHost :: (data: *s32) -> s32 #foreign host_api;
+BorrowBoxHost :: () -> Box #foreign host_api;
+#program_export
+MakeHandle :: () -> *s32 {
+    return MakeHandleHost()
+}
+#program_export
+ReadHandle :: (data: *s32) -> s32 {
+    return ReadHandleHost(data)
+}
+#program_export
+BorrowBox :: () -> Box {
+    return BorrowBoxHost()
+}
+EOF
 cat > "$work/application.zi" <<'EOF'
 #import "host_api"
+#import "handle_host"
 #program_export
 Answer :: () -> s32 {
     if Echo(cast(u32)4294967295) != cast(u32)4294967295 { return 0 }
+    handle: *s32 = MakeHandle()
+    if handle == null { return 1 }
+    if ReadHandle(handle) != 7 { return 2 }
+    if ReadHandle(null) != -1 { return 3 }
+    box: Box = BorrowBox()
+    if box.count != 1 { return 4 }
+    if box.value == null { return 5 }
+    if ReadHandle(box.value) != 7 { return 6 }
     return AddTen(28) + ByteCount("hi") + cast(s32)Double(1.0)
 }
 EOF
@@ -53,7 +85,7 @@ for _ in range(2):
     length, = struct.unpack_from('<I', data, offset)
     offset += 4 + length
 count, = struct.unpack_from('<I', data, offset)
-assert count == 4, count
+assert count == 7, count
 assert b'UnusedHost' not in data
 PY
 "$host_test" "$work/source.zib"
@@ -62,7 +94,7 @@ if "$ziran" run "$work/source.zib" 2> "$work/missing.err"; then
     echo 'bundle unexpectedly ran without its host capabilities' >&2
     exit 1
 fi
-grep -Fq 'missing host capability: host_api:AddTenHost' "$work/missing.err"
+grep -Fq 'missing host capability:' "$work/missing.err"
 python3 - "$work/source.zib" "$work/tampered.zib" <<'PY'
 from pathlib import Path
 import sys
@@ -79,20 +111,17 @@ fi
 grep -Fq 'bundle capability list differs from linked IR' "$work/tampered.err"
 cat > "$work/unsupported.zi" <<'EOF'
 host_api :: #system_library "host_api";
-Box :: struct {
-    value: *s32
-}
-Borrow :: () -> Box #foreign host_api;
+MakeHandleHost :: () -> *s32 #foreign host_api;
 #program_export
 Answer :: () -> s32 {
-    box: Box = Borrow()
-    return 42
+    handle: *s32 = MakeHandleHost()
+    return handle.*
 }
 EOF
 if "$ziran" bundle --root "$work" --entry unsupported:Answer \
     -o "$work/unsupported.zib" "$work/unsupported.zi" \
     2> "$work/unsupported.err"; then
-    echo 'pointer capability unexpectedly bundled' >&2
+    echo 'pointer dereference unexpectedly bundled' >&2
     exit 1
 fi
-grep -Fq 'supported host capability' "$work/unsupported.err"
+grep -Fq 'outside the portable subset' "$work/unsupported.err"
