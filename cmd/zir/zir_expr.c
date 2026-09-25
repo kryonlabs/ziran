@@ -89,6 +89,50 @@ static int parse_expr(ZirFunction *fn, const ZirModule *module,
 static int default_expansion_depth;
 
 static int
+qualify_default_field_helpers(const char *value, const char *base,
+                              const char *target, const char *path,
+                              char *output, size_t capacity)
+{
+    const char *dot = strchr(target, '.');
+    ZirLexer lexer;
+    size_t used = 0, copied = 0;
+    LexerInit(&lexer, value, path);
+    for(;;) {
+        ZirToken token = LexerNext(&lexer);
+        if(token.kind == ZIR_TOKEN_EOF) break;
+        size_t length = strlen(token.text);
+        size_t base_length = strlen(base);
+        if(dot == NULL || token.kind != ZIR_TOKEN_IDENT ||
+           token.truncated || length <= base_length + 7 ||
+           strncmp(token.text, base, base_length) != 0 ||
+           strncmp(token.text + base_length, "_field_", 7) != 0)
+            continue;
+        const char *number = token.text + base_length + 7;
+        if(!*number) continue;
+        for(const char *digit = number; *digit; digit++)
+            if(!isdigit((unsigned char)*digit)) goto next_token;
+        size_t start = lexer.pos - length;
+        size_t prefix = (size_t)(dot - target);
+        if(start < copied || used + start - copied + prefix + 1 + length >=
+                             capacity)
+            return 0;
+        memcpy(output + used, value + copied, start - copied);
+        used += start - copied;
+        memcpy(output + used, target, prefix);
+        used += prefix;
+        output[used++] = '.';
+        memcpy(output + used, token.text, length);
+        used += length;
+        copied = lexer.pos;
+next_token: ;
+    }
+    size_t rest = strlen(value + copied);
+    if(used + rest >= capacity) return 0;
+    memcpy(output + used, value + copied, rest + 1);
+    return 1;
+}
+
+static int
 call_name_shadowed(const ExprParser *p, const char *name)
 {
     if(p->stmt_index < 0 || strchr(name, '.') != NULL)
@@ -201,6 +245,7 @@ append_default_arguments(ExprParser *p, int callee,
         const char *value = skip_ws(assignment + 1);
         char helper_name[ZIR_NAME_MAX];
         char helper_call[ZIR_NAME_MAX * 2];
+        char qualified_default[ZIR_TEXT_MAX];
         FunctionDefaultHelperName(function, i, helper_name,
                                   sizeof(helper_name));
         int has_helper = !function->is_template;
@@ -221,6 +266,13 @@ append_default_arguments(ExprParser *p, int callee,
                 break;
             }
             value = helper_call;
+        } else if(!qualify_default_field_helpers(
+                      value, helper_name, target, p->span.path,
+                      qualified_default, sizeof(qualified_default))) {
+            p->failed = 1;
+            break;
+        } else {
+            value = qualified_default;
         }
         default_expansion_depth++;
         int child = parse_expr(p->fn, p->module, value, p->span,

@@ -6,7 +6,12 @@ repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
+cat > "$work/dependency.zi" <<'ZI'
+#scope_export
+Other :: () -> s32 { return 43 }
+ZI
 cat > "$work/lib.zi" <<'ZI'
+Dependency :: #import "dependency";
 #scope_file
 Base :: () -> s32 { return 40 }
 #scope_export
@@ -23,6 +28,21 @@ ChooseRecord :: (first: $T, second: T = T.{value = 40}) -> T {
     return second
 }
 ChooseInferredRecord :: (first: $T, second: T = .{value = 41}) -> T {
+    return second
+}
+ChooseRecordScoped :: (first: $T, second: T = T.{value = Base()}) -> T {
+    return second
+}
+PairBox :: struct {
+    first: s32
+    second: s32
+}
+ChoosePairScoped :: (first: $T,
+                     second: T = T.{first = Base(), second = Base() + 2}) -> T {
+    return second
+}
+ChooseImported :: (first: $T,
+                   second: T = T.{value = Dependency.Other()}) -> T {
     return second
 }
 ZI
@@ -88,7 +108,13 @@ Answer :: () -> s32 {
     boxed: Box = Box.{value = 2}
     if ChooseRecord(boxed).value != 40 ||
        Library.ChooseRecord(boxed).value != 40 ||
-       ChooseInferredRecord(boxed).value != 41 { return 0 }
+       ChooseInferredRecord(boxed).value != 41 ||
+       ChooseRecordScoped(boxed).value != 40 ||
+       Library.ChooseRecordScoped(boxed).value != 40 ||
+       Library.ChooseImported(boxed).value != 43 { return 0 }
+    pair: PairBox = PairBox.{first = 0, second = 0}
+    if ChoosePairScoped(pair).first != 40 ||
+       Library.ChoosePairScoped(pair).second != 42 { return 0 }
     if Inferred() != 42 || Inferred(value = 41) != 43 { return 0 }
     if InferredBeforeRequired(extra = 2) != 42 { return 0 }
     if InferredCall() != 7 || !InferredBool() { return 0 }

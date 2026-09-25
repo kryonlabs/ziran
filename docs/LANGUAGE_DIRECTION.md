@@ -81,8 +81,10 @@ resolution. Polymorphic defaults with a concrete expression type also use a
 checked helper in the declaring module. Scope-independent literals retain
 their call context for type inference. Literal record defaults such as
 `T.{value = 42}` use the specialized parameter type at the call. Defaults
-that refer to declaration-scope names inside a polymorphic record initializer
-still need specialization support.
+such as `T.{value = Base()}` evaluate concrete field expressions in the
+declaring module while retaining the specialized record type at the call.
+Field expressions that themselves require the specialized type still need
+specialization support.
 Pure named calls with supported scalar values also work in `#run` and other
 compile-time expressions.
 The `#slot` declaration, capturing body forms, and record block calls are

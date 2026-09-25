@@ -1080,26 +1080,110 @@ default_is_scope_independent(const char *expression, const char *path)
 }
 
 static int
-normalize_template_default_literal(const ZirFunction *function,
-                                   char *part, size_t capacity)
+lower_template_record_default(ZirModule *module,
+                              const ZirFunction *function, int parameter,
+                              char *part, size_t capacity)
 {
     char *assignment = top_level_assignment(part);
     if(!function->is_template || assignment == NULL) return 0;
     const char *value = skip_ws(assignment + 1);
-    size_t length = strlen(function->template_param);
-    if(strncmp(value, function->template_param, length) != 0)
-        return 0;
-    const char *rest = skip_ws(value + length);
-    if(rest[0] != '.' || rest[1] != '{' ||
-       !default_is_scope_independent(rest, function->span.path))
-        return 0;
+    const char *dot = value;
+    size_t name_length = strlen(function->template_param);
+    if(strncmp(value, function->template_param, name_length) == 0)
+        dot = skip_ws(value + name_length);
+    if(*dot != '.') return 0;
+    const char *opening = skip_ws(dot + 1);
+    size_t value_length = strlen(value);
+    while(value_length > 0 && isspace((unsigned char)value[value_length - 1]))
+        value_length--;
+    if(*opening != '{' || value_length == 0 ||
+       value[value_length - 1] != '}') return 0;
+    const char *closing = value + value_length - 1;
+    if(closing < opening) return 0;
+    char body[ZIR_TEXT_MAX];
+    size_t body_length = (size_t)(closing - opening - 1);
+    if(body_length >= sizeof(body))
+        die_at(function->span, "default record initializer is too long");
+    memcpy(body, opening + 1, body_length);
+    body[body_length] = '\0';
+    char (*fields)[ZIR_TEXT_MAX] = calloc(65, sizeof(*fields));
+    if(fields == NULL)
+        die("out of memory lowering default record initializer");
+    int field_count = *skip_ws(body) ?
+        split_top_level(body, fields[0], 65, sizeof(fields[0])) : 0;
+    if(field_count > 64)
+        die_at(function->span, "too many default record initializer fields");
     char normalized[ZIR_TEXT_MAX];
-    int written = snprintf(normalized, sizeof(normalized), "%.*s%s",
-                           (int)(assignment + 1 - part), part, rest);
-    if(written < 0 || (size_t)written >= sizeof(normalized) ||
-       (size_t)written >= capacity)
+    int written = snprintf(normalized, sizeof(normalized), "%.*s.{",
+                           (int)(assignment + 1 - part), part);
+    if(written < 0 || (size_t)written >= sizeof(normalized))
         die_at(function->span, "default parameter expression is too long");
+    size_t used = (size_t)written;
+    for(int field = 0; field < field_count; field++) {
+        char *field_assignment = top_level_assignment(fields[field]);
+        const char *field_value = skip_ws(field_assignment != NULL ?
+                                          field_assignment + 1 : fields[field]);
+        if(!default_is_scope_independent(field_value, function->span.path)) {
+            char result_type[ZIR_NAME_MAX];
+            if(!InferExpressionType(module, field_value, function->span,
+                                    result_type, sizeof(result_type)) ||
+               !strcmp(result_type, "void") ||
+               !strcmp(result_type, "null"))
+                die_at(function->span,
+                       "cannot resolve polymorphic default field in declaration scope: %s",
+                       function->name);
+            if(!strcmp(result_type, "integer"))
+                copy_text(result_type, sizeof(result_type), "s64");
+            else if(!strcmp(result_type, "real"))
+                copy_text(result_type, sizeof(result_type), "float64");
+            char base_name[ZIR_NAME_MAX], helper_name[ZIR_NAME_MAX];
+            FunctionDefaultHelperName(function, parameter, base_name,
+                                      sizeof(base_name));
+            written = snprintf(helper_name, sizeof(helper_name),
+                               "%s_field_%d", base_name, field);
+            if(written < 0 || (size_t)written >= sizeof(helper_name))
+                die_at(function->span, "default field helper name is too long");
+            for(int f = 0; f < module->function_count; f++)
+                if(!strcmp(module->functions[f].name, helper_name))
+                    die_at(function->span,
+                           "default field helper name conflicts with a procedure");
+            char return_text[ZIR_TEXT_MAX];
+            written = snprintf(return_text, sizeof(return_text),
+                               "return %s", field_value);
+            if(written < 0 || (size_t)written >= sizeof(return_text))
+                die_at(function->span, "default field expression is too long");
+            ZirFunction *helper = ModuleAddFunction(module, helper_name, "",
+                                                    result_type, 0,
+                                                    function->span);
+            if(helper == NULL)
+                die("out of memory creating default field helper");
+            helper->is_public = function->is_public;
+            helper->is_file_private = function->is_file_private;
+            if(FunctionAddStmt(helper, ZIR_STMT_RETURN, return_text,
+                               function->span) == NULL)
+                die("out of memory creating default field helper body");
+            char rewritten[ZIR_TEXT_MAX];
+            written = field_assignment != NULL ?
+                snprintf(rewritten, sizeof(rewritten), "%.*s %s()",
+                         (int)(field_assignment + 1 - fields[field]),
+                         fields[field], helper_name) :
+                snprintf(rewritten, sizeof(rewritten), "%s()", helper_name);
+            if(written < 0 || (size_t)written >= sizeof(rewritten))
+                die_at(function->span, "default field initializer is too long");
+            copy_text(fields[field], sizeof(fields[field]), rewritten);
+        }
+        written = snprintf(normalized + used, sizeof(normalized) - used,
+                           "%s%s", field ? ", " : "", fields[field]);
+        if(written < 0 || (size_t)written >= sizeof(normalized) - used)
+            die_at(function->span, "default record initializer is too long");
+        used += (size_t)written;
+    }
+    if(used + 2 > sizeof(normalized))
+        die_at(function->span, "default record initializer is too long");
+    normalized[used++] = '}';
+    normalized[used] = '\0';
     copy_text(part, capacity, normalized);
+    free(fields);
     return 1;
 }
 
@@ -1124,6 +1208,7 @@ add_default_helpers(ZirProgram *program, ZirModule *module,
                            sizeof(defaults[0])) != count)
             die_at(function->span, "invalid default parameter signature");
         int inferred = 0;
+        unsigned char contextual[64] = {0};
         for(int i = 0; i < count; i++) {
             char *assignment = top_level_assignment(defaults[i]);
             if(assignment == NULL || assignment == defaults[i] ||
@@ -1171,9 +1256,11 @@ add_default_helpers(ZirProgram *program, ZirModule *module,
                 die_at(function->span, "default parameters exceed size limit");
             inferred = 1;
         }
+        ZirFunction signature = module->functions[fi];
         for(int i = 0; i < count; i++)
-            if(normalize_template_default_literal(function, defaults[i],
-                                                  sizeof(defaults[i])))
+            if((contextual[i] = lower_template_record_default(
+                    module, &signature, i, defaults[i],
+                    sizeof(defaults[i]))))
                 inferred = 1;
         if(inferred) {
             char args[ZIR_TEXT_MAX] = "", full[ZIR_TEXT_MAX] = "";
@@ -1204,6 +1291,7 @@ add_default_helpers(ZirProgram *program, ZirModule *module,
             char *assignment = top_level_assignment(defaults[i]);
             if(assignment == NULL) continue;
             const char *value = trim(assignment + 1);
+            if(contextual[i]) continue;
             if(function->is_template &&
                default_is_scope_independent(value, function->span.path))
                 continue;
