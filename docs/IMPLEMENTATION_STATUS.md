@@ -19,8 +19,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `using,only(...)`/`except(...)`/`map(...)` modifiers filter and rename
   promoted record fields and opened enum members on local and data-scope
   using declarations, in source and saved IR across C, C++, Go, and `.zib`;
-  a hidden or unmapped name stays unresolved. Import re-exports and `#as`
-  remain gaps.
+  a hidden or unmapped name stays unresolved. `using Alias :: #import
+  "Module";` re-exports the module's public procedures, types, and constants
+  into unqualified scope beside the alias: local declarations shadow the
+  re-export, and two using-imports exposing one name are ambiguous. `#as`
+  remains a gap.
 - Jai-style `#program_export` on its own line or inline exports a procedure's
   native symbol. A quoted linker name works in C/C++; Go reports that override
   as unsupported. File-scope variables use `name: Type` declarations.

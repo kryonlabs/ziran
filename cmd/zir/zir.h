@@ -91,6 +91,7 @@ typedef struct ZirImport {
     char return_type[ZIR_NAME_MAX];
     int must_use; /* #must requires callers to keep the result */
     int required;
+    int is_using; /* `using Alias :: #import` re-exports public names */
     ZirSourceSpan span;
     const struct ZirModule *resolved_module; /* borrowed from the checked program set */
 } ZirImport;

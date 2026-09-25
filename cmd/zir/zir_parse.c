@@ -1645,6 +1645,15 @@ parse_import_line(ZirModule *module, const char *path, int line_no,
     directive = strstr(line, "#import");
     if(directive == NULL)
         return 0;
+    /* `using Alias :: #import "Module";` re-exports the module's public
+     * names into unqualified scope beside the alias. */
+    int using_import = starts_word(line, "using");
+    const char *body = line;
+    if(using_import) {
+        body = skip_ws(line + 5);
+        if(!isalpha((unsigned char)*body) && *body != '_')
+            return 0;
+    }
     target[0] = '\0';
     name[0] = '\0';
     signature[0] = '\0';
@@ -1732,7 +1741,7 @@ parse_import_line(ZirModule *module, const char *path, int line_no,
                 copy_text(target, sizeof(target), name);
             kind = named ? ZIR_IMPORT_MODULE : ZIR_IMPORT_OPEN;
         }
-    } else if(parse_symbol_before_colons(line, name, sizeof(name)))
+    } else if(parse_symbol_before_colons(body, name, sizeof(name)))
         kind = ZIR_IMPORT_MODULE;
     else {
         copy_text(name, sizeof(name), target);
@@ -1752,9 +1761,17 @@ parse_import_line(ZirModule *module, const char *path, int line_no,
                    "Jai #import requires a module identifier; use #import, file for paths");
     /* A private-scope include belongs in the implementation, not the
      * generated header. File imports retain their source path in signature. */
-    ModuleAddImport(module, kind, name, target, signature,
-                       scope_public,
-                       Span(path, line_no, 1));
+    {
+        ZirImport *imported = ModuleAddImport(module, kind, name, target,
+                                             signature, scope_public,
+                                             Span(path, line_no, 1));
+        if(imported != NULL && using_import) {
+            if(kind != ZIR_IMPORT_MODULE)
+                die_at(Span(path, line_no, 1),
+                       "using #import requires a named module alias");
+            imported->is_using = 1;
+        }
+    }
     return 1;
 }
 
@@ -5610,7 +5627,8 @@ parse_source(const char *path, const char *root, const char *source,
                   !looks_like_function_header(t)) {
             die_at(Span(rel, program_export_line, 1),
                    "#program_export must precede a function declaration");
-        } else if(mode == TOP && starts_word(t, "using")) {
+        } else if(mode == TOP && starts_word(t, "using") &&
+                  strstr(t, "#import") == NULL) {
             char name[ZIR_NAME_MAX];
             char filter[160];
             const char *path = skip_ws(t + 5);

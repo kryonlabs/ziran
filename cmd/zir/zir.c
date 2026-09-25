@@ -244,7 +244,9 @@ ResolveFunctionAt(const ZirModule *module, const char *name,
     if(*function != NULL)
         return 1;
     for(int i = 0; i < module->import_count; i++) {
-        if(module->imports[i].kind != ZIR_IMPORT_OPEN ||
+        if((module->imports[i].kind != ZIR_IMPORT_OPEN &&
+            !(module->imports[i].kind == ZIR_IMPORT_MODULE &&
+              module->imports[i].is_using)) ||
            !file_scope_visible_at(source_path,
                                   module->imports[i].is_file_private,
                                   module->imports[i].span))
@@ -346,7 +348,9 @@ FindType(const ZirModule *module, const char *name, const ZirModule **owner)
     for(int i = 0; i < module->import_count; i++) {
         const ZirImport *import = &module->imports[i];
         const ZirModule *target = import->resolved_module;
-        if(import->kind != ZIR_IMPORT_OPEN || target == NULL ||
+        if((import->kind != ZIR_IMPORT_OPEN &&
+            !(import->kind == ZIR_IMPORT_MODULE && import->is_using)) ||
+           target == NULL ||
            !file_scope_visible(module, import->is_file_private,
                                import->span))
             continue;

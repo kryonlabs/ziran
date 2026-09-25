@@ -97,11 +97,12 @@ the compile-time evaluator there, with `tests/compile_if_syntax.sh`,
 
 ### 3. Import re-exports and composition modifiers
 
-`using Alias :: #import "Module";` and `#as` have no complete checked
-representation. `using,only(...)`/`except(...)`/`map(...)` modifiers now
+`using Alias :: #import "Module";` re-exports public procedures, types, and
+constants beside the alias with local shadowing and ambiguity diagnostics.
+`using,only(...)`/`except(...)`/`map(...)` modifiers now
 filter and rename promoted fields and enum members with hidden names staying
-unresolved. Define the remaining visibility, collision, conversion, and
-storage rules before changing the parser. In particular, `#as` affects
+unresolved. `#as` has no complete checked representation; define its
+conversion and storage rules before changing the parser. In particular, `#as` affects
 conversions, so a text substitution in a backend is insufficient. Model
 namespace import and conversion metadata explicitly, resolve it in the
 checker, and serialize the checked result.

@@ -781,29 +781,84 @@ declare_array(Emitter *e, const char *name, const char *type, const char *value)
 {
     char element[ZIR_NAME_MAX];
     char target_element[ZIR_NAME_MAX * 2];
-    char bound[ZIR_NAME_MAX];
+    /* Nested fixed arrays ([4][96]u8) flatten to one C dimension list:
+     * uint8_t name[4][96]. Collect every bound outside-in. */
+    char bounds[ZIR_NAME_MAX * 2] = "";
+    char working[ZIR_NAME_MAX * 2];
     int capacity;
 
-    ArrayElementType(type, element, sizeof(element), &capacity);
+    copy_text(working, sizeof(working), type);
+    for(;;) {
+        char inner[ZIR_NAME_MAX];
+        char bound[ZIR_NAME_MAX];
+
+        if(!ArrayElementType(working, inner, sizeof(inner), &capacity))
+            break;
+        if(capacity >= 0) {
+            format(bound, sizeof(bound), "[%d]", capacity);
+        } else {
+            char symbol[ZIR_NAME_MAX];
+            format(symbol, sizeof(symbol), "%.*s", (int)(strchr(working, ']') - working - 1), working + 1);
+            e->resolve(e->context, symbol, bound, sizeof(bound));
+            char wrapped[ZIR_NAME_MAX];
+            format(wrapped, sizeof(wrapped), "[%s]", bound);
+            copy_text(bound, sizeof(bound), wrapped);
+        }
+        copy_text(working, sizeof(working), inner);
+        if(bounds[0] == '\0') {
+            copy_text(bounds, sizeof(bounds), bound);
+        } else if(strlen(bounds) + strlen(bound) < sizeof(bounds)) {
+            strcat(bounds, bound);
+        }
+    }
+    copy_text(element, sizeof(element), working);
     const char *scalar = TargetType(element, e->target);
     if(scalar != NULL)
         copy_text(target_element, sizeof(target_element), scalar);
     else
         e->resolve(e->context, element, target_element, sizeof(target_element));
-    if(capacity >= 0) {
-        format(bound, sizeof(bound), "%d", capacity);
-    } else {
-        char symbol[ZIR_NAME_MAX];
-        format(symbol, sizeof(symbol), "%.*s", (int)(strchr(type, ']') - type - 1), type + 1);
-        e->resolve(e->context, symbol, bound, sizeof(bound));
-    }
     if(e->target == ZIR_GO) {
+        char go_bounds[ZIR_NAME_MAX * 2] = "";
+        /* Go dimensions run inner-first: reverse the collected order. */
+        char reversed[ZIR_NAME_MAX * 2] = "";
+        const char *scan = bounds;
+        char dims[8][ZIR_NAME_MAX];
+        int dim_count = 0;
+        while(*scan == '[' && dim_count < 8) {
+            const char *close = strchr(scan, ']');
+            if(close == NULL)
+                break;
+            size_t length = (size_t)(close - scan + 1);
+            if(length >= sizeof(dims[dim_count]))
+                length = sizeof(dims[dim_count]) - 1;
+            memcpy(dims[dim_count], scan, length);
+            dims[dim_count][length] = '\0';
+            dim_count++;
+            scan = close + 1;
+        }
+        for(int dim = dim_count - 1; dim >= 0; dim--) {
+            char stripped[ZIR_NAME_MAX];
+            size_t length = strlen(dims[dim]);
+            if(length >= 2) {
+                memcpy(stripped, dims[dim] + 1, length - 2);
+                stripped[length - 2] = '\0';
+            } else {
+                stripped[0] = '\0';
+            }
+            if(go_bounds[0] == '\0') {
+                copy_text(go_bounds, sizeof(go_bounds), stripped);
+            } else if(strlen(go_bounds) + strlen(stripped) + 1 < sizeof(go_bounds)) {
+                strcat(go_bounds, "]");
+                strcat(go_bounds, stripped);
+            }
+            (void)reversed;
+        }
         if(value != NULL && *value)
-            line(e, "var %s [%s]%s = %s", name, bound, target_element, value);
+            line(e, "var %s [%s]%s = %s", name, go_bounds, target_element, value);
         else
-            line(e, "var %s [%s]%s", name, bound, target_element);
+            line(e, "var %s [%s]%s", name, go_bounds, target_element);
     } else if(e->target == ZIR_C || e->target == ZIR_CPP) {
-        line(e, "%s %s[%s] = %s;", target_element, name, bound,
+        line(e, "%s %s%s = %s;", target_element, name, bounds,
              e->target == ZIR_C ? "{0}" : "{}");
         if(value != NULL && *value)
             assign_value(e, name, type, value);

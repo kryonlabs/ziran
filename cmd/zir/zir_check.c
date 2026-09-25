@@ -1428,7 +1428,9 @@ bound_constant(const ZirModule *module, const char *name, int depth, int64_t *va
                 if(!in_lookup_file(module, import->is_file_private,
                                    import->span))
                     continue;
-                if(dot == NULL && import->kind != ZIR_IMPORT_OPEN)
+                if(dot == NULL && import->kind != ZIR_IMPORT_OPEN &&
+                   !(import->kind == ZIR_IMPORT_MODULE &&
+                     import->is_using))
                     continue;
                 if(dot != NULL &&
                    (import->kind != ZIR_IMPORT_MODULE ||
@@ -1486,7 +1488,9 @@ bound_string_constant(const ZirModule *module, const char *name, int depth,
                 if(!in_lookup_file(module, import->is_file_private,
                                    import->span))
                     continue;
-                if(dot == NULL && import->kind != ZIR_IMPORT_OPEN)
+                if(dot == NULL && import->kind != ZIR_IMPORT_OPEN &&
+                   !(import->kind == ZIR_IMPORT_MODULE &&
+                     import->is_using))
                     continue;
                 if(dot != NULL &&
                    (import->kind != ZIR_IMPORT_MODULE ||
