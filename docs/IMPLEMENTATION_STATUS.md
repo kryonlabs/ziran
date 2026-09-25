@@ -586,10 +586,16 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `unknown`, and the tables serialize per module in `.zir` (byte-identical
   from source and saved IR) and as the linked closure in `.zib`, where
   `BundleLaw*` accessors expose them and laws keep the types, procedures,
-  and externs they name. The remaining law work is richer proof kinds and
-  effect classes recorded in signatures with `#parallel for` regions per
-  [Language direction](LANGUAGE_DIRECTION.md); there is no automatic
-  parallel execution or GPU backend in this repository.
+  and externs they name. Every checked procedure also carries a derived
+  effect class — `pure`, `observing`, `mutating`, or `external` — computed
+  from its body to a fixpoint and serialized in its `.zir` signature as ABI.
+  `#parallel for` regions ride the range lowering into the checked `while`
+  and the region checker accepts a body only when every called procedure is
+  `pure` or `observing`, writes target iteration-local bindings, Vec
+  mutations stay on region storage, regions do not nest, and the shape is a
+  `for`; all targets execute regions serially with identical results and
+  byte-identical source/saved-IR bundles. The remaining law work is richer
+  proof kinds; there is no threaded or GPU scheduler in this repository.
 - Complete Kryon's moved `.zi` widget modules with platform access through
   declared interfaces. The checked Kryon archive builds all 191 maintained UI
   modules; native host integration, full renderer behavior, and downstream

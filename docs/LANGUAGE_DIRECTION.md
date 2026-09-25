@@ -111,10 +111,11 @@ target error instead of silently changing the result.
    checking; native targets may use threads; a GPU target must reject
    `external`-class calls and pointer arguments before offloading.
 
-Parallel execution is a target requirement, not a claim that today's C/Go
-subset auto-parallelizes or has a GPU backend. The implementation must be
-verified with deterministic reference behavior, parallel runs, and tests for
-data races and backend parity before being treated as supported.
+Parallel execution is a target requirement. Effect classes and the
+`#parallel for` acceptance rules above are implemented and checked on every
+target; the executed schedule is serial on all current backends, which the
+backend-duties clause permits as a reported downgrade. Threaded and GPU
+schedulers remain future work.
 
 ## Jai source syntax
 
