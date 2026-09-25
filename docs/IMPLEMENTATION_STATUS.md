@@ -467,9 +467,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   checked helper in the declaration module, so local and imported caller names
   cannot capture the default's constants, globals, or procedure calls.
   Polymorphic defaults with a declaration-resolvable expression type now use
-  the same helper path; scope-independent literals preserve their type context.
-  Defaults whose expressions require a polymorphic type still need
-  specialization support. Defaults on
+  the same helper path; scope-independent literals and literal `T.{...}`
+  record defaults preserve their specialized type context. Polymorphic record
+  defaults containing declaration-scope names still need specialization
+  support. Defaults on
   procedure-type values and broader procedure value support also remain.
 - Make structured `.zir` authoritative across all features: the checker now
   validates saved expression graphs directly, and the shared typed emitter and

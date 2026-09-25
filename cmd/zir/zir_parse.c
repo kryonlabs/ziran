@@ -1058,14 +1058,49 @@ static int
 default_is_scope_independent(const char *expression, const char *path)
 {
     ZirLexer lexer;
+    ZirToken previous = {0};
     LexerInit(&lexer, expression, path);
     for(;;) {
         ZirToken token = LexerNext(&lexer);
         if(token.kind == ZIR_TOKEN_EOF) return 1;
+        if(token.kind == ZIR_TOKEN_UNKNOWN || token.truncated) return 0;
+        if(token.kind == ZIR_TOKEN_DIRECTIVE &&
+           strcmp(token.text, "#char")) return 0;
         if(token.kind == ZIR_TOKEN_IDENT &&
            strcmp(token.text, "true") && strcmp(token.text, "false") &&
-           strcmp(token.text, "null")) return 0;
+           strcmp(token.text, "null")) {
+            ZirLexer ahead = lexer;
+            ZirToken next = LexerNext(&ahead);
+            if((strcmp(previous.text, "{") &&
+                strcmp(previous.text, ",")) ||
+               strcmp(next.text, "=")) return 0;
+        }
+        previous = token;
     }
+}
+
+static int
+normalize_template_default_literal(const ZirFunction *function,
+                                   char *part, size_t capacity)
+{
+    char *assignment = top_level_assignment(part);
+    if(!function->is_template || assignment == NULL) return 0;
+    const char *value = skip_ws(assignment + 1);
+    size_t length = strlen(function->template_param);
+    if(strncmp(value, function->template_param, length) != 0)
+        return 0;
+    const char *rest = skip_ws(value + length);
+    if(rest[0] != '.' || rest[1] != '{' ||
+       !default_is_scope_independent(rest, function->span.path))
+        return 0;
+    char normalized[ZIR_TEXT_MAX];
+    int written = snprintf(normalized, sizeof(normalized), "%.*s%s",
+                           (int)(assignment + 1 - part), part, rest);
+    if(written < 0 || (size_t)written >= sizeof(normalized) ||
+       (size_t)written >= capacity)
+        die_at(function->span, "default parameter expression is too long");
+    copy_text(part, capacity, normalized);
+    return 1;
 }
 
 static void
@@ -1136,6 +1171,10 @@ add_default_helpers(ZirProgram *program, ZirModule *module,
                 die_at(function->span, "default parameters exceed size limit");
             inferred = 1;
         }
+        for(int i = 0; i < count; i++)
+            if(normalize_template_default_literal(function, defaults[i],
+                                                  sizeof(defaults[i])))
+                inferred = 1;
         if(inferred) {
             char args[ZIR_TEXT_MAX] = "", full[ZIR_TEXT_MAX] = "";
             size_t args_used = 0, full_used = 0;

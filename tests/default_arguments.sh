@@ -18,6 +18,13 @@ COUNT :: 42;
 ChooseScoped :: (first: $T, second: T = Base()) -> T {
     return first + second
 }
+Box :: struct { value: s32 }
+ChooseRecord :: (first: $T, second: T = T.{value = 40}) -> T {
+    return second
+}
+ChooseInferredRecord :: (first: $T, second: T = .{value = 41}) -> T {
+    return second
+}
 ZI
 cat > "$work/app.zi" <<'ZI'
 #import "lib"
@@ -78,6 +85,10 @@ Answer :: () -> s32 {
     if ChooseScoped(typed) != 82 || Library.ChooseScoped(typed) != 82 {
         return 0
     }
+    boxed: Box = Box.{value = 2}
+    if ChooseRecord(boxed).value != 40 ||
+       Library.ChooseRecord(boxed).value != 40 ||
+       ChooseInferredRecord(boxed).value != 41 { return 0 }
     if Inferred() != 42 || Inferred(value = 41) != 43 { return 0 }
     if InferredBeforeRequired(extra = 2) != 42 { return 0 }
     if InferredCall() != 7 || !InferredBool() { return 0 }

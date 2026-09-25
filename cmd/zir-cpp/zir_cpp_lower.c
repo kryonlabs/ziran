@@ -1047,8 +1047,10 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
                         nl2 = sizeof(name) - 1;
                     memcpy(name, raw, nl2);
                     name[nl2] = '\0';
+                    trim_in_place(name);
                     TargetFieldName(ty, ZIR_CPP, name, mapped, sizeof(mapped));
                     snprintf(type, sizeof(type), "%s", ty2);
+                    trim_in_place(type);
                     split_array_type(type, base, sizeof(base),
                                      suffix, sizeof(suffix));
                     {

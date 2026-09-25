@@ -20,7 +20,7 @@ Kryon's widget or runtime policy.
 
 ## Current state and remaining work
 
-The old Kryon `.kry` compiler and `.krb` runtime have been removed. All 194
+The old Kryon `.kry` compiler and `.krb` runtime have been removed. All 198
 maintained Kryon UI modules are `.zi` sources using current Ziran syntax. The
 complete Kryon `make all` build passes checked `.zir`, C, C++, and Go generation
 and native backend compilation with the current Ziran compiler. Platform host
