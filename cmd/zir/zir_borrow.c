@@ -113,8 +113,15 @@ expression_origin(BorrowCheck *check, int index)
     switch(expression->kind) {
     case ZIR_EXPR_IDENT: {
         BorrowBinding *source = binding(check, expression->name);
-        if(expression->type[0] != '[' && strchr(expression->type, '*') != NULL)
+        if(expression->type[0] != '[' && strchr(expression->type, '*') != NULL) {
+            /* A direct pointer parameter owns no storage, but its caller
+             * keeps the pointee live for this invocation. Views of its
+             * fixed-array fields may be used here, never returned. */
+            if(source != NULL && source->local < 0 &&
+               source->origin.depth == 1 && !source->origin.invalid)
+                return source->origin;
             return (Origin){0, 0, 1};
+        }
         if(source == NULL)
             return (Origin){0}; /* Typed module-owned array or record storage. */
         if(SliceElementType(source->type, NULL, 0))
@@ -122,6 +129,7 @@ expression_origin(BorrowCheck *check, int index)
         return (Origin){0, source->depth, 0};
     }
     case ZIR_EXPR_MEMBER:
+    case ZIR_EXPR_POINTER_MEMBER:
     case ZIR_EXPR_INDEX:
     case ZIR_EXPR_SLICE:
         return expression_origin(check, expression->left);
@@ -197,6 +205,8 @@ check_function(BorrowCheck *check, BorrowFunction *function)
             origin.parameters = UINT64_C(1) << i;
             local = fn->stmt_count + i;
             accumulate(check, &function->locals[local], origin);
+        } else if(colon[0] == '*') {
+            origin.depth = 1;
         }
         add_binding(check, parameters[i], colon, origin, local, 1, 0);
     }

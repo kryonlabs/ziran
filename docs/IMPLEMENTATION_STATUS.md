@@ -205,6 +205,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   checker rejects slices in records and globals, host slice returns, and
   returns that borrow a local array. Unresolved fixed-array bounds remain
   outside the portable subset.
+  Native C, C++, and Go targets also permit a temporary slice of a fixed
+  array field reached through a direct record-pointer parameter. The caller
+  owns that record for the call; the checker rejects returning the slice.
+  Portable bundles still reject pointer programs.
   Borrowed arrays retain record elements written by called functions after
   those functions return; the portable slice test covers replacing a nested
   record in a live view across calls.

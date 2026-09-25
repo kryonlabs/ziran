@@ -14,6 +14,7 @@ Child :: struct {
 Node :: struct {
     value: s32
     child: Child
+    values: [4]s32
 }
 ZI
 
@@ -40,6 +41,13 @@ WriteForward :: (node: *Node, value: s32) -> s32 {
     Forward(node).value = value
     return node.value
 }
+#program_export
+BorrowArray :: (node: *Node) -> s32 {
+    if node == null { return -1 }
+    values := node.values[:]
+    values[1] = 42
+    return node.values[1]
+}
 ZI
 "$compiler" --check-only --root "$work" "$work/read.zi"
 "$compiler" --root "$work" -o "$work/ir" "$work/read.zi"
@@ -60,7 +68,8 @@ int main(void) {
     Node node = {0};
     return Write(&node, 20) == 41 && Read(&node) == 41 &&
            WriteForward(&node, 23) == 23 && node.value == 23 &&
-           node.child.value == 21 ? 0 : 1;
+           node.child.value == 21 && BorrowArray(&node) == 42 &&
+           node.values[1] == 42 ? 0 : 1;
 }
 C
     "${CC:-cc}" -std=c11 -I"$repo/include" -I"$output/c" \
@@ -75,7 +84,8 @@ int main() {
     Node node = {};
     return Write(&node, 20) == 41 && Read(&node) == 41 &&
            WriteForward(&node, 23) == 23 && node.value == 23 &&
-           node.child.value == 21 ? 0 : 1;
+           node.child.value == 21 && BorrowArray(&node) == 42 &&
+           node.values[1] == 42 ? 0 : 1;
 }
 CPP
     "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$output/cpp" \
@@ -91,7 +101,8 @@ func TestPointerMember(t *testing.T) {
     node := Node{}
     if Read_Write(&node, 20) != 41 || Read_Read(&node) != 41 ||
        Read_WriteForward(&node, 23) != 23 || node.Value != 23 ||
-       node.Child.Value != 21 {
+       node.Child.Value != 21 || Read_BorrowArray(&node) != 42 ||
+       node.Values[1] != 42 {
         t.Fatal("pointer member read/write changed")
     }
 }
@@ -101,6 +112,19 @@ GO
         exit 1
     fi
 done
+
+cat > "$work/escape_slice.zi" <<'ZI'
+#import "types"
+Bad :: (node: *Node) -> []s32 {
+    return node.values[:]
+}
+ZI
+if "$compiler" --check-only --root "$work" "$work/escape_slice.zi" \
+    >"$work/out" 2>"$work/err"; then
+    echo "slice borrowed through pointer escaped its call" >&2
+    exit 1
+fi
+grep -q 'returned slice borrows local or temporary storage' "$work/err"
 
 if "$bin/zi2zib" bundle --root "$work" --entry read:Write \
     -o "$work/read.zib" "$work/read.zi" 2>"$work/bundle.err"; then
