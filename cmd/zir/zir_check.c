@@ -6304,6 +6304,9 @@ CheckPrograms(ZirProgram **programs, int count)
                !name_private_globals(&programs[p]->modules[m]) ||
                !name_private_types(&programs[p]->modules[m]))
                 return 0;
+    DeriveEffectClasses(programs, count);
+    if(!CheckParallelRegions(programs, count))
+        return 0;
     if(!CheckLawGates(programs, count))
         return 0;
     return 1;

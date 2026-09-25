@@ -8,3 +8,5 @@ const char *LawStatusName(int status);
 int CheckLawGates(ZirProgram **programs, int count);
 void PrintLawResults(ZirProgram **programs, int count, FILE *out);
 #endif
+void DeriveEffectClasses(ZirProgram **programs, int count);
+int CheckParallelRegions(ZirProgram **programs, int count);

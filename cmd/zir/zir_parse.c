@@ -6446,7 +6446,19 @@ parse_source(const char *path, const char *root, const char *source,
             }
         } else if(mode == FUNCTION) {
             char *bcnd = NULL;
-            int bck = parse_cond_start(t, &bcnd);
+            int bck;
+            int parallel_for = 0;
+            char parallel_text[SOURCE_LINE_MAX * 2];
+            if(starts_word(t, "#parallel")) {
+                const char *after = skip_ws(t + strlen("#parallel"));
+                if(!starts_word(after, "for"))
+                    die_at(Span(rel, line_no, 1),
+                           "#parallel requires a for region");
+                parallel_for = 1;
+                snprintf(parallel_text, sizeof(parallel_text), "%s", after);
+                t = trim(parallel_text);
+            }
+            bck = parse_cond_start(t, &bcnd);
 
             int compile_else = body_mcount > 0 &&
                 depth == body_mdepth[body_mcount - 1] &&
@@ -6494,7 +6506,8 @@ parse_source(const char *path, const char *root, const char *source,
                       !body_mactive[body_mcount - 1]) {
                 depth += net_block_braces(t);
             } else if(t[0] == '#' && strcmp(t, "#through") != 0 &&
-                      strcmp(t, "#through;") != 0) {
+                      strcmp(t, "#through;") != 0 &&
+                      !starts_word(t, "#parallel")) {
                 die_at(Span(rel, line_no, 1),
                        "unknown function-body directive: %s", t);
             } else if(t[0] == '}') {
@@ -6621,6 +6634,11 @@ parse_source(const char *path, const char *root, const char *source,
                             kind = ZIR_STMT_IF_CASE;
                     }
                     ZirStmt *statement = FunctionAddStmt(fn, kind, t, span);
+                    if(statement != NULL && parallel_for) {
+                        if(kind != ZIR_STMT_FOR)
+                            die_at(span, "#parallel requires a for region");
+                        statement->is_parallel = 1;
+                    }
                     if(statement != NULL && using_binding) {
                         statement->is_using = 1;
                         if(kind == ZIR_STMT_EXPR) {

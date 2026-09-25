@@ -99,6 +99,7 @@ typedef struct ZirImport {
 typedef struct ZirStmt {
     ZirStmtKind kind;
     int is_using; /* template namespace activation; lowered in checked bodies */
+    int is_parallel; /* `#parallel for` region; serial lowering, checked rules */
     char text[ZIR_TEXT_MAX];
     int is_else;        /* checked branch role; source text is diagnostic only */
     int loop_id;        /* checked loop identity for named control flow */
@@ -139,6 +140,7 @@ typedef struct ZirFunction {
     char return_type[ZIR_NAME_MAX];
     int must_use; /* #must requires callers to keep the result */
     int is_conversion; /* `Name :: #as (source: Type) -> Result` */
+    char effect_class[12]; /* pure | observing | mutating | external */
     int exported;
     char export_symbol[ZIR_NAME_MAX]; /* optional #program_export linker name */
     int is_extern;

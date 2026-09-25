@@ -452,3 +452,333 @@ PrintLawResults(ZirProgram **programs, int count, FILE *out)
             }
         }
 }
+
+/* ---- Effect classes (parallel contract, LANGUAGE_DIRECTION.md) ------- */
+
+static int
+vec_operation_name(const char *name)
+{
+    return !strcmp(name, "VecPush") || !strcmp(name, "VecClear") ||
+           !strcmp(name, "VecFree") || !strcmp(name, "VecSwap") ||
+           !strcmp(name, "VecPop") || !strcmp(name, "VecGet") ||
+           !strcmp(name, "VecClone") || !strcmp(name, "VecSlice") ||
+           !strcmp(name, "BuilderAppend") || !strcmp(name, "BuilderFinish");
+}
+
+static int
+effect_rank(const char *name)
+{
+    return !strcmp(name, "external") ? 3 :
+           !strcmp(name, "mutating") ? 2 :
+           !strcmp(name, "observing") ? 1 : 0;
+}
+
+static const char *
+effect_name(int rank)
+{
+    return rank == 3 ? "external" : rank == 2 ? "mutating" :
+           rank == 1 ? "observing" : "pure";
+}
+
+static int
+expr_references_global(const ZirExpr *expr)
+{
+    return expr->kind == ZIR_EXPR_IDENT && expr->is_global_value;
+}
+
+static int
+lhs_writes_through_pointer(const ZirFunction *fn, int root)
+{
+    for(int index = root; index >= 0 && index < fn->expr_count;) {
+        const ZirExpr *expr = &fn->exprs[index];
+        if(expr->kind == ZIR_EXPR_POINTER_MEMBER ||
+           (expr->kind == ZIR_EXPR_UNARY && !strcmp(expr->op, "*")))
+            return 1;
+        if(expr->kind != ZIR_EXPR_MEMBER)
+            return 0;
+        index = expr->left;
+    }
+    return 0;
+}
+
+static const char *
+imported_callee_class(const ZirModule *module, const char *name)
+{
+    for(int i = 0; i < module->import_count; i++)
+        if(module->imports[i].kind == ZIR_IMPORT_EXTERN &&
+           strcmp(module->imports[i].name, name) == 0)
+            return "external";
+    return NULL;
+}
+
+/* One derivation sweep: fold each body's reads, writes, and callee classes
+ * into the highest applicable rank. Iterated to a fixpoint by the caller. */
+static int
+sweep_effect_class(ZirProgram *program)
+{
+    int changed = 0;
+    for(int m = 0; m < program->module_count; m++) {
+        ZirModule *module = &program->modules[m];
+        for(int f = 0; f < module->function_count; f++) {
+            ZirFunction *fn = &module->functions[f];
+            int rank = effect_rank(fn->effect_class);
+            int reads_global = 0;
+            if(fn->is_extern)
+                rank = 3;
+            for(int s = 0; s < fn->stmt_count; s++) {
+                const ZirStmt *st = &fn->stmts[s];
+                if(st->kind == ZIR_STMT_ASSIGN && st->lhs_root >= 0) {
+                    const ZirExpr *lhs = &fn->exprs[st->lhs_root];
+                    if(expr_references_global(lhs) ||
+                       lhs_writes_through_pointer(fn, st->lhs_root))
+                        rank = rank < 2 ? 2 : rank;
+                }
+            }
+            for(int e = 0; e < fn->expr_count; e++) {
+                const ZirExpr *expr = &fn->exprs[e];
+                const ZirModule *owner = NULL;
+                const ZirFunction *callee = NULL;
+                const char *imported;
+                if(expr_references_global(expr))
+                    reads_global = 1;
+                if(expr->kind != ZIR_EXPR_CALL || !expr->name[0] ||
+                   expr->slot_type[0])
+                    continue;
+                imported = imported_callee_class(module, expr->name);
+                if(imported != NULL) {
+                    rank = 3;
+                    continue;
+                }
+                if(ResolveFunction(module, expr->name, &owner, &callee) == 1 &&
+                   callee != NULL) {
+                    int callee_rank = effect_rank(callee->effect_class);
+                    if(callee_rank == 3)
+                        rank = 3;
+                    else if(callee_rank == 2 && rank < 2)
+                        rank = 2;
+                    else if(callee_rank == 1 && rank < 1)
+                        rank = 1;
+                }
+            }
+            if(rank == 0 && reads_global)
+                rank = 1;
+            {
+                const char *name = effect_name(rank);
+                if(strcmp(fn->effect_class, name) != 0) {
+                    copy_text(fn->effect_class, sizeof(fn->effect_class),
+                              name);
+                    changed = 1;
+                }
+            }
+        }
+    }
+    return changed;
+}
+
+void
+DeriveEffectClasses(ZirProgram **programs, int count)
+{
+    for(int pass = 0; pass < 64; pass++) {
+        int changed = 0;
+        for(int p = 0; p < count; p++)
+            changed |= sweep_effect_class(programs[p]);
+        if(!changed)
+            break;
+    }
+}
+
+/* ---- #parallel for regions ------------------------------------------- */
+
+static int
+stmt_declares_name(const ZirStmt *st, const char *name)
+{
+    return st->kind == ZIR_STMT_DECL && strcmp(st->name, name) == 0;
+}
+
+static int
+destination_identifier(const ZirFunction *fn, int root, char *out,
+                       size_t size, int *through_pointer)
+{
+    const ZirExpr *expr = &fn->exprs[root];
+    *through_pointer = 0;
+    if(expr->kind == ZIR_EXPR_IDENT) {
+        snprintf(out, size, "%s", expr->name);
+        return 1;
+    }
+    for(int index = root; index >= 0 && index < fn->expr_count;) {
+        const ZirExpr *cursor = &fn->exprs[index];
+        if(cursor->kind == ZIR_EXPR_IDENT) {
+            snprintf(out, size, "%s", cursor->name);
+            return 1;
+        }
+        if(cursor->kind == ZIR_EXPR_POINTER_MEMBER ||
+           (cursor->kind == ZIR_EXPR_UNARY && !strcmp(cursor->op, "*")))
+            *through_pointer = 1;
+        if(cursor->kind != ZIR_EXPR_MEMBER &&
+           !(cursor->kind == ZIR_EXPR_POINTER_MEMBER) &&
+           !(cursor->kind == ZIR_EXPR_UNARY && !strcmp(cursor->op, "*")))
+            return 0;
+        index = cursor->left;
+    }
+    return 0;
+}
+
+static int
+region_declares(const ZirFunction *fn, int begin, int end, const char *name)
+{
+    for(int i = begin; i < end; i++)
+        if(stmt_declares_name(&fn->stmts[i], name))
+            return 1;
+    return 0;
+}
+
+static const ZirFunction *
+parallel_callee(const ZirModule *module, const ZirExpr *expr)
+{
+    const ZirModule *owner = NULL;
+    const ZirFunction *callee = NULL;
+    if(expr->slot_type[0])
+        return NULL;
+    if(ResolveFunction(module, expr->name, &owner, &callee) == 1)
+        return callee;
+    return NULL;
+}
+
+static int
+check_parallel_region(const ZirProgram *program, const ZirModule *module,
+                      const ZirFunction *fn, int while_index)
+{
+    int close = -1, depth = 1;
+    int preamble_begin = while_index;
+    for(int i = while_index - 1; i >= 0 && preamble_begin == while_index;
+        i--) {
+        if(depth == 1)
+            preamble_begin = i + 1;
+    }
+    (void)preamble_begin;
+    for(int i = while_index + 1; i < fn->stmt_count; i++) {
+        ZirStmtKind kind = fn->stmts[i].kind;
+        if(kind == ZIR_STMT_IF || kind == ZIR_STMT_WHILE ||
+           kind == ZIR_STMT_FOR || kind == ZIR_STMT_BLOCK_OPEN ||
+           kind == ZIR_STMT_IF_CASE)
+            depth++;
+        else if(kind == ZIR_STMT_BLOCK_CLOSE && --depth == 0) {
+            close = i;
+            break;
+        }
+    }
+    if(close < 0) {
+        Diagnostic(fn->stmts[while_index].span, "parallel.region",
+                   "unterminated #parallel region");
+        return 0;
+    }
+    /* Region-local names: declarations from the enclosing block open through
+     * the while header (the lowered range preamble) and everything declared
+     * inside the region body. */
+    int block_open = -1, scan = 0;
+    depth = 0;
+    for(int i = while_index - 1; i >= 0; i--) {
+        ZirStmtKind kind = fn->stmts[i].kind;
+        if(kind == ZIR_STMT_BLOCK_CLOSE)
+            depth++;
+        else if(kind == ZIR_STMT_BLOCK_OPEN || kind == ZIR_STMT_IF ||
+                kind == ZIR_STMT_WHILE || kind == ZIR_STMT_FOR ||
+                kind == ZIR_STMT_IF_CASE) {
+            if(depth == 0) {
+                block_open = i;
+                break;
+            }
+            depth--;
+        }
+    }
+    scan = block_open >= 0 ? block_open + 1 : 0;
+    for(int s = scan; s <= close; s++) {
+        const ZirStmt *st = &fn->stmts[s];
+        int through_pointer = 0;
+        char name[ZIR_NAME_MAX];
+        int is_body = s > while_index && s < close;
+        if(st->kind == ZIR_STMT_WHILE && st->is_parallel && is_body) {
+            Diagnostic(st->span, "parallel.nest",
+                       "#parallel regions cannot nest");
+            return 0;
+        }
+        if(st->kind == ZIR_STMT_ASSIGN && st->lhs_root >= 0 && is_body) {
+            if(!destination_identifier(fn, st->lhs_root, name, sizeof(name),
+                                       &through_pointer)) {
+                Diagnostic(st->span, "parallel.memory",
+                           "#parallel writes need an iteration-local binding");
+                return 0;
+            }
+            if(through_pointer ||
+               !region_declares(fn, scan, close + 1, name)) {
+                Diagnostic(st->span, "parallel.memory",
+                           "#parallel writes need an iteration-local binding: %s",
+                           name);
+                return 0;
+            }
+        }
+        if(st->expr_root >= 0 || st->lhs_root >= 0) {
+            int roots[2] = {st->expr_root, st->lhs_root};
+            for(int r = 0; r < 2; r++) {
+                for(int e = roots[r]; e >= 0 && e < fn->expr_count;
+                    e = fn->exprs[e].next_sibling) {
+                    const ZirExpr *expr = &fn->exprs[e];
+                    const ZirFunction *callee;
+                    (void)program;
+                    if(expr->kind != ZIR_EXPR_CALL || !expr->name[0])
+                        continue;
+                    if(vec_operation_name(expr->name)) {
+                        int first = expr->first_child;
+                        if(!strcmp(expr->name, "VecGet"))
+                            continue;
+                        if(first >= 0 && first < fn->expr_count &&
+                            fn->exprs[first].kind == ZIR_EXPR_IDENT &&
+                            !region_declares(fn, scan, close + 1,
+                                             fn->exprs[first].name) &&
+                            !stmt_declares_name(st,
+                                                fn->exprs[first].name)) {
+                            Diagnostic(st->span, "parallel.memory",
+                                       "#parallel mutates storage outside the region: %s",
+                                       fn->exprs[first].name);
+                            return 0;
+                        }
+                        continue;
+                    }
+                    if(imported_callee_class(module, expr->name) != NULL) {
+                        Diagnostic(st->span, "parallel.effect",
+                                   "#parallel cannot call foreign code: %s",
+                                   expr->name);
+                        return 0;
+                    }
+                    callee = parallel_callee(module, expr);
+                    if(callee != NULL &&
+                       effect_rank(callee->effect_class) > 1) {
+                        Diagnostic(st->span, "parallel.effect",
+                                   "#parallel calls %s code: %s",
+                                   callee->effect_class, expr->name);
+                        return 0;
+                    }
+                }
+            }
+        }
+    }
+    return 1;
+}
+
+int
+CheckParallelRegions(ZirProgram **programs, int count)
+{
+    for(int p = 0; p < count; p++)
+        for(int m = 0; m < programs[p]->module_count; m++) {
+            const ZirModule *module = &programs[p]->modules[m];
+            for(int f = 0; f < module->function_count; f++) {
+                const ZirFunction *fn = &module->functions[f];
+                for(int s = 0; s < fn->stmt_count; s++)
+                    if(fn->stmts[s].kind == ZIR_STMT_WHILE &&
+                       fn->stmts[s].is_parallel &&
+                       !check_parallel_region(programs[p], module, fn, s))
+                        return 0;
+            }
+        }
+    return 1;
+}

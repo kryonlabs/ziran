@@ -39,7 +39,7 @@ typedef struct Reader {
 #define SPAN_FIELD(type, name) \
     {offsetof(type, name), sizeof(((type *)0)->name), FIELD_SPAN}
 #define FIELD_COUNT(fields) (sizeof(fields) / sizeof((fields)[0]))
-#define ZIR_FORMAT_VERSION 35u
+#define ZIR_FORMAT_VERSION 36u
 
 static const Field import_fields[] = {
     INTEGER_FIELD(ZirImport, kind), INTEGER_FIELD(ZirImport, extern_kind),
@@ -59,6 +59,7 @@ static const Field statement_fields[] = {
     INTEGER_FIELD(ZirStmt, expr_root),
     INTEGER_FIELD(ZirStmt, lhs_root), STRING_FIELD(ZirStmt, name),
     STRING_FIELD(ZirStmt, type), STRING_FIELD(ZirStmt, assignment_op),
+    INTEGER_FIELD(ZirStmt, is_parallel),
     SPAN_FIELD(ZirStmt, span)
 };
 static const Field expression_fields[] = {
@@ -78,6 +79,7 @@ static const Field function_fields[] = {
     U64_FIELD(ZirFunction, using_parameters),
     STRING_FIELD(ZirFunction, return_type), INTEGER_FIELD(ZirFunction, must_use),
     INTEGER_FIELD(ZirFunction, is_conversion),
+    STRING_FIELD(ZirFunction, effect_class),
     INTEGER_FIELD(ZirFunction, exported),
     STRING_FIELD(ZirFunction, export_symbol),
     INTEGER_FIELD(ZirFunction, is_extern), INTEGER_FIELD(ZirFunction, extern_kind),

@@ -961,6 +961,7 @@ lower_one_range(ZirFunction *fn, const ZirModule *module, int index)
        (int)sizeof(line) || !range_line(&out, ZIR_STMT_WHILE, line, span))
         goto done;
     out.stmts[out.stmt_count - 1].loop_id = header->loop_id;
+    out.stmts[out.stmt_count - 1].is_parallel = header->is_parallel;
     if(snprintf(line, sizeof(line), "%s: s64 = %s", binder, cursor) >=
        (int)sizeof(line) || !range_line(&out, ZIR_STMT_DECL, line, span))
         goto done;
@@ -1034,6 +1035,7 @@ lower_one_collection(ZirFunction *fn, const ZirModule *module, int index)
        (int)sizeof(line) || !range_line(&out, ZIR_STMT_WHILE, line, span))
         goto done;
     out.stmts[out.stmt_count - 1].loop_id = header->loop_id;
+    out.stmts[out.stmt_count - 1].is_parallel = header->is_parallel;
     if(snprintf(line, sizeof(line), "%s: s64 = %s", item_index,
                 reverse ? "0" : cursor) >= (int)sizeof(line)) goto done;
     if(reverse && snprintf(line, sizeof(line), "%s: s64 = %s - %s - 1",
