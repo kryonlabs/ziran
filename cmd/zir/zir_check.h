@@ -5,6 +5,8 @@
 /* Resolve scalar expression types and lexical bindings. */
 int CheckPrograms(ZirProgram **programs, int count);
 int LinkImports(ZirProgram **programs, int count);
+int LowerFileScopeUsing(ZirModule *module, char *source, size_t capacity,
+                        ZirSourceSpan span);
 const char *ScalarType(const char *type);
 int JaiTypeSpelling(ZirSourceSpan span, const char *type);
 int TypeOfOperand(const char *source, char *operand, size_t capacity);

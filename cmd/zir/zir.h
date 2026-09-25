@@ -177,6 +177,7 @@ typedef struct ZirDefine {
     char value[ZIR_TEXT_MAX];
     int is_public; /* visible to importing modules */
     int is_file_private;
+    int requires_open_enum; /* unresolved source alias, cleared by checking */
     ZirSourceSpan span;
 } ZirDefine;
 
@@ -185,6 +186,12 @@ typedef struct ZirAssert {
     char message[ZIR_TEXT_MAX];
     ZirSourceSpan span;
 } ZirAssert;
+
+typedef struct ZirUsing {
+    char path[ZIR_NAME_MAX];
+    int is_file_private;
+    ZirSourceSpan span;
+} ZirUsing;
 
 /* A `Name :: struct { fields }` type declaration. body holds the raw field
  * lines (one per line, no braces). */
@@ -248,6 +255,9 @@ typedef struct ZirModule {
     ZirAssert *asserts;
     int assert_count;
     int assert_cap;
+    ZirUsing *usings; /* source scope; references lower before saving IR */
+    int using_count;
+    int using_cap;
     ZirType *types;
     int type_count;
     int type_cap;
@@ -311,6 +321,8 @@ ZirDefine *ModuleAddDefine(ZirModule *module, const char *name,
                               const char *value, ZirSourceSpan span);
 int ModuleAddAssert(ZirModule *module, const char *condition,
                     const char *message, ZirSourceSpan span);
+ZirUsing *ModuleAddUsing(ZirModule *module, const char *path,
+                         ZirSourceSpan span);
 ZirType *ModuleAddType(ZirModule *module, const char *name,
                           ZirSourceSpan span);
 ZirStmt *FunctionAddStmt(ZirFunction *fn, ZirStmtKind kind,

@@ -11,6 +11,10 @@ EOF
 
 cat > "$work/flags.zi" <<'EOF'
 #import "shared"
+SharedValue :: SharedFirst;
+using Shared;
+shared_global: s32 = SharedFirst;
+#assert SharedValue == 5
 Mask :: enum_flags u32
 {
     A;
@@ -43,7 +47,6 @@ Shadow :: () -> s32 {
 #program_export
 Answer :: () -> s32 {
     using Prefixed;
-    using Shared;
     using Mask;
     using Small;
     using Default;
@@ -53,7 +56,7 @@ Answer :: () -> s32 {
     if PrefixedFirst != 1 || PrefixedSecond != 2 { return 0 }
     prefixed: Prefixed = Prefixed.PrefixedSecond
     if prefixed != Prefixed.PrefixedSecond { return 0 }
-    if SharedFirst != 5 || Shadow() != 9 { return 0 }
+    if SharedFirst != 5 || SharedValue != 5 || Shadow() != 9 { return 0 }
     small: Small = .Low
     if small != Small.Low { return 0 }
     small = .High
@@ -96,6 +99,9 @@ EOF
 
 "$ziran" check --root "$work" "$work/flags.zi"
 "$ziran" ir --root "$work" -o "$work/ir" "$work/flags.zi"
+"$ziran" inspect "$work/ir/flags.zir" > "$work/flags.inspect"
+grep -Fq 'constant SharedValue = "5"' "$work/flags.inspect"
+grep -Fq 'global shared_global: s32 = "5"' "$work/flags.inspect"
 "$ziran" bundle --root "$work" --entry flags:Answer \
     -o "$work/source.zib" "$work/flags.zi"
 "$ziran" bundle --root "$work/ir" --entry flags:Answer \
@@ -157,6 +163,85 @@ EOF
         fi
     done
 done
+
+cat > "$work/named_top.zi" <<'ZI'
+Named :: #import "shared";
+Result :: SharedFirst;
+Value :: () -> s64 { return SharedFirst }
+using Named.Shared;
+Computed :: #run SharedFirst;
+#assert Computed == 5
+#if SharedFirst == 5 {
+    Selected :: 5;
+} else {
+    Selected :: 0;
+}
+Answer :: () -> s64 {
+    if Value() != 5 { return 0 }
+    return Result + Selected + Computed - 10
+}
+ZI
+"$ziran" check --root "$work" "$work/named_top.zi"
+"$ziran" ir --root "$work" -o "$work/named-ir" "$work/named_top.zi"
+for input in "$work/named_top.zi" "$work/named-ir/named_top.zir"; do
+    "$ziran" bundle --root "$work" --entry named_top:Answer \
+        -o "$work/named.zib" "$input"
+    test "$("$ziran" run "$work/named.zib")" = 5
+done
+
+cat > "$work/loaded_enum.zi" <<'ZI'
+Direction :: enum { North :: 7; }
+using Direction;
+ZI
+cat > "$work/loaded_top.zi" <<'ZI'
+#load "loaded_enum.zi";
+Answer :: () -> s64 { return North }
+ZI
+"$ziran" check --root "$work" "$work/loaded_top.zi"
+
+cat > "$work/private_enum.zi" <<'ZI'
+Direction :: enum { North :: 7; }
+#scope_file
+using Direction;
+Inside :: () -> s64 { return North }
+ZI
+"$ziran" check --root "$work" "$work/private_enum.zi"
+cat > "$work/private_top.zi" <<'ZI'
+#load "private_enum.zi";
+Bad :: () -> s64 { return North }
+ZI
+if "$ziran" check --root "$work" "$work/private_top.zi" \
+    2> "$work/private_top.err"; then
+    echo 'file-private enum using leaked through #load' >&2
+    exit 1
+fi
+grep -Fq 'unresolved name: North' "$work/private_top.err"
+
+cat > "$work/ambiguous_top.zi" <<'ZI'
+One :: enum { Value :: 1; }
+Two :: enum { Value :: 2; }
+using One;
+using Two;
+value: s32 = Value;
+ZI
+if "$ziran" check --root "$work" "$work/ambiguous_top.zi" \
+    2> "$work/ambiguous_top.err"; then
+    echo 'ambiguous file-scope enum member was accepted' >&2
+    exit 1
+fi
+grep -Fq 'ambiguous using enum member: Value' "$work/ambiguous_top.err"
+
+cat > "$work/invalid_top.zi" <<'ZI'
+Thing :: struct { value: s32; }
+using Thing;
+ZI
+if "$ziran" check --root "$work" "$work/invalid_top.zi" \
+    2> "$work/invalid_top.err"; then
+    echo 'top-level using accepted a non-enum type' >&2
+    exit 1
+fi
+grep -Fq 'top-level using requires an enum type: Thing' \
+    "$work/invalid_top.err"
 
 cat > "$work/bare_enum.zi" <<'ZI'
 Direction :: enum { North :: 1; }

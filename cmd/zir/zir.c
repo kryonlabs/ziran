@@ -536,6 +536,7 @@ ProgramFree(ZirProgram *program)
         free(m->functions);
         free(m->defines);
         free(m->asserts);
+        free(m->usings);
         free(m->types);
     }
     free(program->modules);
@@ -734,6 +735,20 @@ ModuleAddAssert(ZirModule *module, const char *condition,
     copy_text(a->message, sizeof(a->message), message);
     a->span = span;
     return 1;
+}
+
+ZirUsing *
+ModuleAddUsing(ZirModule *module, const char *path, ZirSourceSpan span)
+{
+    ZirUsing *usings = realloc_array(module->usings, &module->using_cap,
+                                     module->using_count, sizeof(ZirUsing));
+    if(usings == NULL) return NULL;
+    module->usings = usings;
+    ZirUsing *using = &module->usings[module->using_count++];
+    memset(using, 0, sizeof(*using));
+    copy_text(using->path, sizeof(using->path), path);
+    using->span = span;
+    return using;
 }
 
 ZirType *

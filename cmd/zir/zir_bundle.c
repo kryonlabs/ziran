@@ -141,6 +141,7 @@ copy_program(const ZirProgram *source)
         to->globals = NULL; to->global_count = to->global_cap = 0;
         to->defines = NULL; to->define_count = to->define_cap = 0;
         to->asserts = NULL; to->assert_count = to->assert_cap = 0;
+        to->usings = NULL; to->using_count = to->using_cap = 0;
         to->types = NULL; to->type_count = to->type_cap = 0;
         to->imports = NULL; to->import_count = to->import_cap = 0;
         to->functions = NULL; to->function_count = to->function_cap = 0;
@@ -1182,6 +1183,7 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
         target->globals = NULL; target->global_count = target->global_cap = 0;
         target->defines = NULL; target->define_count = target->define_cap = 0;
         target->asserts = NULL; target->assert_count = target->assert_cap = 0;
+        target->usings = NULL; target->using_count = target->using_cap = 0;
         target->types = NULL; target->type_count = target->type_cap = 0;
         target->imports = NULL; target->import_count = target->import_cap = 0;
         target->functions = NULL;

@@ -193,6 +193,91 @@ file_scope_symbol_visible(const ZirModule *module, const char *name)
 }
 
 static int
+opened_file_enum(ZirModule *module, const char *name,
+                 ZirSourceSpan span, int64_t *value)
+{
+    const ZirType *found = NULL;
+    for(int i = 0; i < module->using_count; i++) {
+        const ZirUsing *using = &module->usings[i];
+        if(!in_lookup_file(module, using->is_file_private, using->span))
+            continue;
+        const ZirType *candidate = FindType(module, using->path, NULL);
+        int64_t candidate_value;
+        if(candidate == NULL || !candidate->is_enum ||
+           !EnumMemberValue(candidate, name, &candidate_value))
+            continue;
+        if(found != NULL && found != candidate) {
+            Diagnostic(span, "check.enum_scope",
+                       "ambiguous using enum member: %s", name);
+            return -1;
+        }
+        found = candidate;
+        *value = candidate_value;
+    }
+    return found != NULL;
+}
+
+int
+LowerFileScopeUsing(ZirModule *module, char *source, size_t capacity,
+                    ZirSourceSpan span)
+{
+    if(module->using_count == 0 || !source[0]) return 1;
+    char saved_path[ZIR_PATH_MAX];
+    char output[ZIR_TEXT_MAX];
+    ZirLexer lexer;
+    ZirToken previous = {0};
+    size_t used = 0, copied = 0;
+    copy_text(saved_path, sizeof(saved_path), module->lookup_path);
+    select_lookup_file(module, span);
+    LexerInit(&lexer, source, span.path);
+    ZirToken current = LexerNext(&lexer);
+    size_t end = lexer.pos;
+    while(current.kind != ZIR_TOKEN_EOF) {
+        ZirToken next = LexerNext(&lexer);
+        size_t start = end - strlen(current.text);
+        int64_t value = 0;
+        int opened = 0;
+        if(current.kind == ZIR_TOKEN_IDENT && !current.truncated &&
+           strcmp(previous.text, ".") != 0 &&
+           strcmp(next.text, "=") != 0 &&
+           strcmp(next.text, ":") != 0 &&
+           !file_scope_symbol_visible(module, current.text))
+            opened = opened_file_enum(module, current.text, span, &value);
+        if(opened < 0) {
+            copy_text(module->lookup_path, sizeof(module->lookup_path),
+                      saved_path);
+            return 0;
+        }
+        if(opened > 0) {
+            char number[64];
+            int length = snprintf(number, sizeof(number), "%lld",
+                                  (long long)value);
+            if(length < 0 || used + start - copied + (size_t)length >=
+                             sizeof(output)) goto failed;
+            memcpy(output + used, source + copied, start - copied);
+            used += start - copied;
+            memcpy(output + used, number, (size_t)length);
+            used += (size_t)length;
+            copied = end;
+        }
+        previous = current;
+        current = next;
+        end = lexer.pos;
+    }
+    if(used + strlen(source + copied) >= sizeof(output) ||
+       used + strlen(source + copied) >= capacity) goto failed;
+    copy_text(output + used, sizeof(output) - used, source + copied);
+    copy_text(source, capacity, output);
+    copy_text(module->lookup_path, sizeof(module->lookup_path), saved_path);
+    return 1;
+failed:
+    copy_text(module->lookup_path, sizeof(module->lookup_path), saved_path);
+    Diagnostic(span, "check.enum_scope",
+               "cannot lower file-scope using expression");
+    return 0;
+}
+
+static int
 check_file_scope_enum_names(const ZirModule *module,
                             const ZirFunction *expression,
                             ZirSourceSpan span)
@@ -3508,6 +3593,15 @@ check_function(Checker *c, ZirFunction *fn)
 restart:
     c->count = 0; c->depth = 0;
     c->using_rewritten = 0;
+    if(!fn->from_ir || fn->is_specialization)
+        for(int i = 0; i < c->module->using_count; i++) {
+            const ZirUsing *using = &c->module->usings[i];
+            if(!in_lookup_file(c->module, using->is_file_private,
+                               using->span) ||
+               FindType(c->module, using->path, NULL) == NULL)
+                continue;
+            activate_using(c, using->path, using->span);
+        }
     has_slots = 0;
     has_arrays = fn->return_type[0] == '[';
     fn->uses_host = fn->is_extern && fn->extern_kind == ZIR_EXTERN_HOST;
@@ -4933,6 +5027,57 @@ CheckPrograms(ZirProgram **programs, int count)
     c.programs = programs; c.program_count = count;
     if(!LinkImports(programs, count))
         return 0;
+    for(int p = 0; p < count; p++)
+        for(int m = 0; m < programs[p]->module_count; m++) {
+            ZirModule *module = &programs[p]->modules[m];
+            char saved_path[ZIR_PATH_MAX];
+            copy_text(saved_path, sizeof(saved_path), module->lookup_path);
+            for(int i = 0; i < module->using_count; i++) {
+                const ZirUsing *using = &module->usings[i];
+                select_lookup_file(module, using->span);
+                const ZirType *type = FindType(module, using->path, NULL);
+                if(type == NULL || !type->is_enum) {
+                    Diagnostic(using->span, "check.enum_scope",
+                               "top-level using requires an enum type: %s",
+                               using->path);
+                    return 0;
+                }
+            }
+            copy_text(module->lookup_path, sizeof(module->lookup_path),
+                      saved_path);
+            for(int g = 0; g < module->global_count; g++)
+                if(!LowerFileScopeUsing(module, module->globals[g].init,
+                         sizeof(module->globals[g].init),
+                         module->globals[g].span)) return 0;
+            for(int d = 0; d < module->define_count; d++)
+            {
+                ZirDefine *definition = &module->defines[d];
+                if(definition->requires_open_enum) {
+                    int64_t value = 0;
+                    select_lookup_file(module, definition->span);
+                    int opened = opened_file_enum(module, definition->value,
+                                                   definition->span, &value);
+                    copy_text(module->lookup_path,
+                              sizeof(module->lookup_path), saved_path);
+                    if(opened <= 0) {
+                        if(opened == 0)
+                            Diagnostic(definition->span, "check.enum_scope",
+                                       "unresolved opened enum member: %s",
+                                       definition->value);
+                        return 0;
+                    }
+                }
+                if(!LowerFileScopeUsing(module, definition->value,
+                         sizeof(definition->value),
+                         definition->span)) return 0;
+                definition->requires_open_enum = 0;
+            }
+            for(int a = 0; a < module->assert_count; a++)
+                if(!LowerFileScopeUsing(module,
+                         module->asserts[a].condition,
+                         sizeof(module->asserts[a].condition),
+                         module->asserts[a].span)) return 0;
+        }
     for(int p = 0; p < count; p++)
         for(int m = 0; m < programs[p]->module_count; m++) {
             ZirModule *module = &programs[p]->modules[m];

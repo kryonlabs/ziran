@@ -2007,6 +2007,8 @@ typedef struct {
     char type[ZIR_NAME_MAX]; /* active evaluator local; empty for file constants */
     char path[SOURCE_PATH_MAX];
     int is_file_private;
+    int is_public;
+    int source_line;
 } ZirConst;
 
 typedef struct {
@@ -3881,6 +3883,13 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
     long value = 0;
     int known;
     expand_compile_expr(expanded, sizeof(expanded), consts, source, span.path);
+    if(module->using_count > 0 && context != NULL &&
+       context->resolver != NULL &&
+       !context->resolver(context->resolver_context, context->program,
+                          module, source_path, context->root, NULL))
+        die_at(span, "cannot resolve imports for #if enum member");
+    if(!LowerFileScopeUsing(module, expanded, sizeof(expanded), span))
+        die_at(span, "invalid #if enum member");
     if(strstr(expanded, "size_of") != NULL && context != NULL &&
        context->resolver != NULL &&
        !context->resolver(context->resolver_context, context->program,
@@ -3915,6 +3924,8 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
                               module, source_path, context->root,
                               expanded))
             die_at(span, "cannot resolve imports for #if condition");
+        if(!LowerFileScopeUsing(module, expanded, sizeof(expanded), span))
+            die_at(span, "invalid #if enum member");
         known = eval_const_condition(expanded, &value, module, consts,
                                      span.path, 0);
         if(!known)
@@ -5505,6 +5516,27 @@ parse_source(const char *path, const char *root, const char *source,
                   !looks_like_function_header(t)) {
             die_at(Span(rel, program_export_line, 1),
                    "#program_export must precede a function declaration");
+        } else if(mode == TOP && starts_word(t, "using")) {
+            char name[ZIR_NAME_MAX];
+            const char *path = skip_ws(t + 5);
+            size_t length = strlen(path);
+            if(length < 2 || path[length - 1] != ';' ||
+               length >= sizeof(name))
+                die_at(Span(rel, line_no, 1),
+                       "using requires an enum type and ';'");
+            memcpy(name, path, length - 1);
+            name[length - 1] = '\0';
+            trim_in_place(name);
+            if(!is_member_path_text(name))
+                die_at(Span(rel, line_no, 1),
+                       "using requires an enum type name");
+            ZirUsing *using = ModuleAddUsing(module, name,
+                Span(rel, line_no, 1));
+            if(using == NULL)
+                die_at(Span(rel, line_no, 1),
+                       "out of memory recording using declaration");
+            using->is_file_private = scope_file;
+            continue;
         } else if(mode == TOP && starts_word(t, "#load")) {
             char requested[SOURCE_PATH_MAX];
             char candidate[SOURCE_PATH_MAX * 2];
@@ -6013,22 +6045,28 @@ parse_source(const char *path, const char *root, const char *source,
                                             Span(rel, line_no, 1));
                         expr = selected_value;
                     }
-                    int emitted_alias = 0;
+                    int known_alias = 0;
                     if(is_identifier_text(expr)) {
                         for(int i = 0; i < module->define_count; i++) {
                             if(!strcmp(module->defines[i].name, expr)) {
-                                emitted_alias = 1;
+                                known_alias = 1;
                                 break;
                             }
                         }
                     }
+                    int using_alias = module->using_count > 0 &&
+                        is_identifier_text(expr) && !known_alias &&
+                        strcmp(expr, "true") && strcmp(expr, "false") &&
+                        strcmp(expr, "null");
                     if(!starts_word(expr, "#defined") &&
-                       (!is_identifier_text(expr) || emitted_alias)) {
+                       (!is_identifier_text(expr) || known_alias ||
+                        using_alias)) {
                         def = ModuleAddDefine(module, cname, expr,
                                                  Span(rel, line_no, 1));
                         if(def != NULL) {
                             def->is_public = scope_public;
                             def->is_file_private = scope_file;
+                            def->requires_open_enum = using_alias;
                         }
                     }
                     memset(&consts.items[consts.count], 0,
@@ -6040,6 +6078,8 @@ parse_source(const char *path, const char *root, const char *source,
                     copy_text(consts.items[consts.count].path,
                               sizeof(consts.items[0].path), rel);
                     consts.items[consts.count].is_file_private = scope_file;
+                    consts.items[consts.count].is_public = scope_public;
+                    consts.items[consts.count].source_line = line_no;
                     consts.count++;
                 }
             }
@@ -6383,6 +6423,31 @@ parse_source(const char *path, const char *root, const char *source,
     if(program_export)
         die_at(Span(rel, program_export_line, 1),
                "#program_export must precede a function declaration");
+    module = &program->modules[0];
+    if(module->using_count > 0)
+        for(int i = 0; i < consts.count; i++) {
+            const ZirConst *constant = &consts.items[i];
+            if(!is_identifier_text(constant->expr) ||
+               !strcmp(constant->expr, "true") ||
+               !strcmp(constant->expr, "false") ||
+               !strcmp(constant->expr, "null")) continue;
+            int emitted = 0;
+            for(int d = 0; d < module->define_count; d++)
+                if(!strcmp(module->defines[d].name, constant->name)) {
+                    emitted = 1;
+                    break;
+                }
+            if(emitted) continue;
+            ZirDefine *def = ModuleAddDefine(module, constant->name,
+                constant->expr, Span(constant->path,
+                                      constant->source_line, 1));
+            if(def == NULL)
+                die_at(Span(constant->path, constant->source_line, 1),
+                       "out of memory recording enum constant");
+            def->is_public = constant->is_public;
+            def->is_file_private = constant->is_file_private;
+            def->requires_open_enum = 1;
+        }
     for(int mi = 0; mi < program->module_count; mi++) {
         ZirModule *module = &program->modules[mi];
         add_default_helpers(program, module, path, root,

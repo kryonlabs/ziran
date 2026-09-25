@@ -109,9 +109,14 @@ that record's fields while preserving the contained storage; nested and
 generic record applications keep the same behavior. Native targets also
 accept pointer-backed `using` fields. Polymorphic procedures retain `using`
 parameters and body declarations through specialization and saved IR.
-Inside a procedure, `using Enum;` opens an enum's members within lexical scope;
-bare enum members elsewhere require a qualifier or an expected enum type for
-`.Member`. Top-level enum `using` is still missing.
+Inside a procedure, `using Enum;` opens an enum's members within lexical scope.
+At data scope, `using Enum;` opens them for procedures and file-scope constants,
+globals, `#run`, `#assert`, and following `#if` conditions. The opened names lower to
+checked values in `.zir`. A `#scope_file` using stays in its source file across
+`#load`; named imports accept `using Module.Enum;`. Without `using`, bare enum
+members require a type qualifier or an expected enum type for `.Member`.
+Data-scope `using` for records and unions, and `#if` before a later `using`
+declaration, remain unsupported.
 Import re-exports, `#as`, and `using` modifiers remain
 language gaps.
 A procedure type can be named with `Child :: #type (s32) -> ();` or
