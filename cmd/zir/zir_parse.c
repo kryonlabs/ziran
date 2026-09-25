@@ -1134,6 +1134,48 @@ separate_parameter_defaults(char *args, size_t capacity,
     free(parts);
 }
 
+static uint64_t
+strip_using_parameters(char *args, size_t capacity, ZirSourceSpan span)
+{
+    char (*parts)[ZIR_TEXT_MAX] = calloc(65, sizeof(*parts));
+    char cleaned[ZIR_TEXT_MAX] = "";
+    size_t used = 0;
+    uint64_t flags = 0;
+    if(parts == NULL)
+        die("out of memory reading using parameters");
+    int count = *skip_ws(args) ?
+        split_top_level(args, parts[0], 65, sizeof(parts[0])) : 0;
+    if(count > 64)
+        die_at(span, "too many procedure parameters");
+    for(int i = 0; i < count; i++) {
+        char *part = trim(parts[i]);
+        if(starts_word(part, "using")) {
+            if(!isspace((unsigned char)part[5]))
+                die_at(span, "using parameter modifiers are not supported");
+            part = trim(part + 5);
+            char *colon = strchr(part, ':');
+            if(colon == NULL || colon == part ||
+               (size_t)(colon - part) >= ZIR_NAME_MAX)
+                die_at(span, "using parameter needs name: Type");
+            char name[ZIR_NAME_MAX];
+            memcpy(name, part, (size_t)(colon - part));
+            name[colon - part] = '\0';
+            trim_in_place(name);
+            if(!is_identifier_text(name))
+                die_at(span, "using parameter needs a plain name");
+            flags |= UINT64_C(1) << i;
+        }
+        int written = snprintf(cleaned + used, sizeof(cleaned) - used,
+                               "%s%s", i ? ", " : "", part);
+        if(written < 0 || (size_t)written >= sizeof(cleaned) - used)
+            die_at(span, "procedure parameters exceed size limit");
+        used += (size_t)written;
+    }
+    copy_text(args, capacity, cleaned);
+    free(parts);
+    return flags;
+}
+
 static int
 default_is_scope_independent(const char *expression, const char *path)
 {
@@ -5706,8 +5748,16 @@ parse_source(const char *path, const char *root, const char *source,
                 separate_parameter_defaults(args, sizeof(args), defaults,
                                             sizeof(defaults),
                                             Span(rel, line_no, 1));
+                uint64_t using_parameters = strip_using_parameters(
+                    args, sizeof(args), Span(rel, line_no, 1));
+                if(defaults[0] && strip_using_parameters(
+                       defaults, sizeof(defaults),
+                       Span(rel, line_no, 1)) != using_parameters)
+                    die_at(Span(rel, line_no, 1),
+                           "inconsistent using parameter defaults");
                 fn = ModuleAddFunction(module, name, args, ret, 0,
                                           Span(rel, line_no, 1));
+                fn->using_parameters = using_parameters;
                 fn->must_use = function_must_use(t, ret, fn->span);
                 copy_text(fn->default_args, sizeof(fn->default_args), defaults);
                 if(strchr(args, '$') != NULL) {
@@ -6205,6 +6255,17 @@ parse_source(const char *path, const char *root, const char *source,
                     }
                 }
             } else {
+                int using_binding = 0;
+                if(starts_word(t, "using")) {
+                    if(!isspace((unsigned char)t[5]))
+                        die_at(Span(rel, line_no, 1),
+                               "using modifiers are not supported");
+                    t = trim(t + 5);
+                    if(*t == '\0')
+                        die_at(Span(rel, line_no, 1),
+                               "using needs a record binding");
+                    using_binding = 1;
+                }
                 if(starts_word(t, "match")) {
                     const char *after_match = skip_ws(t + 5);
                     if((t[5] == '!' || t[5] == '?' ||
@@ -6220,6 +6281,12 @@ parse_source(const char *path, const char *root, const char *source,
                                "match is not Jai syntax; use if value == { case ... }");
                 }
                 ZirStmtKind kind = classify_stmt(t);
+                if(using_binding && kind == ZIR_STMT_UNKNOWN)
+                    kind = ZIR_STMT_EXPR;
+                if(using_binding && kind != ZIR_STMT_DECL &&
+                   kind != ZIR_STMT_EXPR)
+                    die_at(Span(rel, line_no, 1),
+                           "using needs a record binding");
                 int brace_delta = net_block_braces(t);
                 char block_callee[ZIR_NAME_MAX];
                 char block_name[ZIR_NAME_MAX];
@@ -6265,7 +6332,23 @@ parse_source(const char *path, const char *root, const char *source,
                            *skip_ws(skip_ws(equals + 2) + 1) == '\0')
                             kind = ZIR_STMT_IF_CASE;
                     }
-                    FunctionAddStmt(fn, kind, t, span);
+                    ZirStmt *statement = FunctionAddStmt(fn, kind, t, span);
+                    if(statement != NULL && using_binding) {
+                        statement->is_using = 1;
+                        if(kind == ZIR_STMT_EXPR) {
+                            char name[ZIR_NAME_MAX];
+                            copy_text(name, sizeof(name), t);
+                            size_t length = strlen(name);
+                            if(length > 0 && name[length - 1] == ';')
+                                name[--length] = '\0';
+                            trim_in_place(name);
+                            if(!is_identifier_text(name))
+                                die_at(span,
+                                       "using needs a plain record binding");
+                            copy_text(statement->name,
+                                      sizeof(statement->name), name);
+                        }
+                    }
                 }
                 depth += brace_delta;
                 if(depth < 0)

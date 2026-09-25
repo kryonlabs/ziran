@@ -98,8 +98,14 @@ checker rejects discarded results from ordinary, imported, polymorphic, and
 foreign calls before native or portable output, including when checking saved
 `.zir`.
 The `#slot` declaration, capturing body forms, and record block calls are
-rejected. Record values use `Type.{field = value}` in ordinary calls. A
-procedure type can be named with `Child :: #type (s32) -> ();` or
+rejected. Record values use `Type.{field = value}` in ordinary calls.
+`using record: Type` parameter or local, or `using record;` after a local or
+parameter declaration, makes that record's direct fields available by name
+within the lexical scope. These references become ordinary checked member
+accesses in saved IR. Explicit locals shadow promoted fields, and ambiguous
+promotions are errors. Struct-field `using`, nested paths, import re-exports,
+polymorphic `using` bodies, `#as`, and `using` modifiers remain language gaps.
+A procedure type can be named with `Child :: #type (s32) -> ();` or
 `Compute :: #type (s32) -> s32;` and passed a named
 function value. Capture-free procedure values can be stored in records, fixed
 arrays, and globals, and returned from functions. The callbacks do not capture

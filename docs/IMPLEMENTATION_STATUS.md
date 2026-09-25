@@ -5,6 +5,14 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 
 ## Working now
 
+- Jai `using record: Type` parameters and local declarations, plus `using
+  record;` in a procedure body, promote direct record fields into lexical
+  lookup. Explicit local bindings shadow promoted fields; duplicate promoted
+  names are diagnosed. Field reads and assignments lower to checked member
+  expressions, so source and saved IR agree in C, C++, Go, and `.zib`.
+  Struct-field `using`, nested `using record.field`, import re-exports,
+  polymorphic `using` bodies, `#as`, and `using,only`/`except`/`map` modifiers
+  still need implementation.
 - Jai-style `#program_export` on its own line or inline exports a procedure's
   native symbol. A quoted linker name works in C/C++; Go reports that override
   as unsupported. File-scope variables use `name: Type` declarations.

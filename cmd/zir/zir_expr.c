@@ -803,6 +803,10 @@ StructureFunction(ZirFunction *fn, const ZirModule *module)
         char *value = NULL;
         copy_text(text, sizeof(text), st->text);
         st->expr_root = st->lhs_root = -1;
+        if(st->is_using && st->kind == ZIR_STMT_EXPR) {
+            st->expr_root = ParseExprNoDefaults(fn, module, "0", st->span);
+            continue;
+        }
         st->is_else = st->kind == ZIR_STMT_IF &&
                       strncmp(text, "else", 4) == 0 &&
                       (text[4] == 0 || isspace((unsigned char)text[4]));

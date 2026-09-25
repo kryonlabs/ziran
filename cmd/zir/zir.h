@@ -97,6 +97,7 @@ typedef struct ZirImport {
 
 typedef struct ZirStmt {
     ZirStmtKind kind;
+    int is_using; /* source-only namespace activation; lowered before saving */
     char text[ZIR_TEXT_MAX];
     int is_else;        /* checked branch role; source text is diagnostic only */
     int loop_id;        /* checked loop identity for named control flow */
@@ -133,6 +134,7 @@ typedef struct ZirFunction {
     char name[ZIR_NAME_MAX];
     char args[ZIR_TEXT_MAX];
     char default_args[ZIR_TEXT_MAX]; /* declaration parameters with defaults */
+    uint64_t using_parameters; /* source-only parameter namespace flags */
     char return_type[ZIR_NAME_MAX];
     int must_use; /* #must requires callers to keep the result */
     int exported;

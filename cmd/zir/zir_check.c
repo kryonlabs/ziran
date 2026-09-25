@@ -17,6 +17,7 @@ typedef struct Binding {
     char name[ZIR_NAME_MAX];
     char type[ZIR_NAME_MAX];
     int depth;
+    int using_depth; /* source-only activation scope, -1 when inactive */
 } Binding;
 
 typedef struct SpecializationRequest {
@@ -38,6 +39,7 @@ typedef struct Checker {
     Binding *bindings;
     int count, capacity, depth, errors, failed;
     int inference_only;
+    int using_rewritten;
     SpecializationRequest *specializations;
     int specialization_count, specialization_capacity;
 } Checker;
@@ -462,6 +464,9 @@ bind_call_arguments(Checker *c, ZirExpr *call,
     return 1;
 }
 
+static const char *lookup_lexical(Checker *c, const char *name);
+static const ZirGlobal *global_binding(Checker *c, const char *name);
+
 static void
 bind(Checker *c, const char *name, const char *type, ZirSourceSpan span)
 {
@@ -508,7 +513,188 @@ bind(Checker *c, const char *name, const char *type, ZirSourceSpan span)
     }
     copy_text(c->bindings[c->count].name, ZIR_NAME_MAX, name);
     copy_text(c->bindings[c->count].type, ZIR_NAME_MAX, type);
-    c->bindings[c->count++].depth = c->depth;
+    c->bindings[c->count].depth = c->depth;
+    c->bindings[c->count++].using_depth = -1;
+}
+
+static void
+activate_using(Checker *c, const char *name, ZirSourceSpan span)
+{
+    for(int i = c->count - 1; i >= 0; i--) {
+        Binding *binding = &c->bindings[i];
+        if(strcmp(binding->name, name)) continue;
+        const char *type = skip_ws(binding->type);
+        if(*type == '*') type = skip_ws(type + 1);
+        const ZirType *record = FindType(c->module, type, NULL);
+        if(record == NULL || record->is_enum || record->is_procedure_type ||
+           record->is_record_template) {
+            error(c, span, "using requires a concrete record binding", name);
+            return;
+        }
+        if(binding->using_depth < 0)
+            binding->using_depth = c->depth;
+        return;
+    }
+    error(c, span, "using requires a local or parameter binding", name);
+}
+
+static void
+promote_using_member(Checker *c, int index)
+{
+    ZirExpr *member = &c->fn->exprs[index];
+    if(c->fn->from_ir || member->kind != ZIR_EXPR_IDENT ||
+       member->is_this || !member->name[0] ||
+       *lookup_lexical(c, member->name) ||
+       global_binding(c, member->name) != NULL)
+        return;
+    for(int i = 0; i < c->module->import_count; i++) {
+        const ZirImport *import = &c->module->imports[i];
+        if(import->kind == ZIR_IMPORT_MODULE &&
+           in_lookup_file(c->module, import->is_file_private,
+                          import->span) &&
+           strcmp(import->name, member->name) == 0)
+            return;
+    }
+    const ZirType *named_type = FindType(c->module, member->name, NULL);
+    if(named_type != NULL && named_type->is_enum)
+        return;
+    int selected = -1;
+    for(int i = c->count - 1; i >= 0; i--) {
+        const Binding *binding = &c->bindings[i];
+        if(binding->using_depth < 0) continue;
+        const char *type = skip_ws(binding->type);
+        if(*type == '*') type = skip_ws(type + 1);
+        const ZirType *record = FindType(c->module, type, NULL);
+        if(record == NULL) continue;
+        size_t offset = 0;
+        ZirTypeField field;
+        while(TypeNextField(record, &offset, &field) == 1)
+            if(strcmp(field.name, member->name) == 0) {
+                if(selected >= 0) {
+                    error(c, member->span, "ambiguous using field", member->name);
+                    return;
+                }
+                selected = i;
+                break;
+            }
+    }
+    if(selected < 0) return;
+    char base_name[ZIR_NAME_MAX];
+    copy_text(base_name, sizeof(base_name), c->bindings[selected].name);
+    ZirSourceSpan span = member->span;
+    int base_index = c->fn->expr_count;
+    ZirExpr *base = FunctionAddExpr(c->fn, ZIR_EXPR_IDENT, base_name, span);
+    if(base == NULL) {
+        c->failed = 1;
+        return;
+    }
+    copy_text(base->name, sizeof(base->name), base_name);
+    member = &c->fn->exprs[index];
+    member->kind = ZIR_EXPR_MEMBER;
+    member->left = base_index;
+    copy_text(member->op, sizeof(member->op), ".");
+    c->using_rewritten = 1;
+}
+
+static void
+promote_using_tree(Checker *c, int index)
+{
+    if(index < 0 || index >= c->fn->expr_count) return;
+    const ZirExpr *e = &c->fn->exprs[index];
+    int left = e->left, right = e->right, third = e->third;
+    int child = e->first_child;
+    promote_using_tree(c, left);
+    promote_using_tree(c, right);
+    promote_using_tree(c, third);
+    while(child >= 0) {
+        int next = c->fn->exprs[child].next_sibling;
+        promote_using_tree(c, child);
+        child = next;
+    }
+    promote_using_member(c, index);
+}
+
+typedef struct ExprOrder {
+    const ZirFunction *function;
+    ZirExpr *ordered;
+    int *map;
+    unsigned char *state;
+    int count;
+} ExprOrder;
+
+static int
+order_expression(ExprOrder *order, int index, int depth)
+{
+    if(index < 0) return 1;
+    if(index >= order->function->expr_count || depth > 1024)
+        return 0;
+    if(order->state[index] == 2) return 1;
+    if(order->state[index] == 1) return 0;
+    order->state[index] = 1;
+    const ZirExpr *expression = &order->function->exprs[index];
+    if(!order_expression(order, expression->left, depth + 1) ||
+       !order_expression(order, expression->right, depth + 1) ||
+       !order_expression(order, expression->third, depth + 1))
+        return 0;
+    for(int child = expression->first_child; child >= 0;
+        child = order->function->exprs[child].next_sibling)
+        if(!order_expression(order, child, depth + 1))
+            return 0;
+    order->map[index] = order->count;
+    order->ordered[order->count++] = *expression;
+    order->state[index] = 2;
+    return 1;
+}
+
+static int
+order_using_expressions(ZirFunction *function)
+{
+    int count = function->expr_count;
+    ExprOrder order = {0};
+    order.function = function;
+    order.ordered = calloc((size_t)count, sizeof(*order.ordered));
+    order.map = malloc((size_t)count * sizeof(*order.map));
+    order.state = calloc((size_t)count, sizeof(*order.state));
+    if(order.ordered == NULL || order.map == NULL || order.state == NULL)
+        goto failed;
+    for(int i = 0; i < count; i++) order.map[i] = -1;
+    for(int s = 0; s < function->stmt_count; s++) {
+        ZirStmt *statement = &function->stmts[s];
+        if(!order_expression(&order, statement->lhs_root, 0) ||
+           !order_expression(&order, statement->expr_root, 0))
+            goto failed;
+    }
+    for(int i = 0; i < count; i++)
+        if(!order_expression(&order, i, 0)) goto failed;
+    if(order.count != count) goto failed;
+    for(int i = 0; i < count; i++) {
+        ZirExpr *expression = &order.ordered[i];
+        if(expression->left >= 0) expression->left = order.map[expression->left];
+        if(expression->right >= 0) expression->right = order.map[expression->right];
+        if(expression->third >= 0) expression->third = order.map[expression->third];
+        if(expression->first_child >= 0)
+            expression->first_child = order.map[expression->first_child];
+        if(expression->next_sibling >= 0)
+            expression->next_sibling = order.map[expression->next_sibling];
+    }
+    for(int s = 0; s < function->stmt_count; s++) {
+        ZirStmt *statement = &function->stmts[s];
+        if(statement->expr_root >= 0)
+            statement->expr_root = order.map[statement->expr_root];
+        if(statement->lhs_root >= 0)
+            statement->lhs_root = order.map[statement->lhs_root];
+    }
+    free(function->exprs);
+    function->exprs = order.ordered;
+    function->expr_cap = count;
+    free(order.map);
+    free(order.state);
+    return 1;
+failed:
+    free(order.ordered);
+    free(order.map);
+    free(order.state);
+    return 0;
 }
 
 static const ZirFunction *
@@ -3054,6 +3240,7 @@ check_function(Checker *c, ZirFunction *fn)
         StructureFunction(c->fn, c->module);
 restart:
     c->count = 0; c->depth = 0;
+    c->using_rewritten = 0;
     has_slots = 0;
     has_arrays = fn->return_type[0] == '[';
     fn->uses_host = fn->is_extern && fn->extern_kind == ZIR_EXTERN_HOST;
@@ -3074,6 +3261,8 @@ restart:
                 error(c, fn->span, "Vec parameters require move support", params[a]);
             has_arrays |= ArrayValueType(colon) || SliceElementType(colon, NULL, 0);
             bind(c, params[a], colon, c->fn->span);
+            if(!fn->from_ir && (fn->using_parameters & (UINT64_C(1) << a)))
+                activate_using(c, params[a], fn->span);
         } else error(c, c->fn->span, "parameters require name: type", params[a]);
     }
     for(int i = 0; i < c->fn->stmt_count; i++) {
@@ -3081,8 +3270,20 @@ restart:
         c->current_stmt = st;
         const char *type;
         if(st->kind == ZIR_STMT_BLOCK_CLOSE) {
+            for(int b = 0; b < c->count; b++)
+                if(c->bindings[b].using_depth == c->depth)
+                    c->bindings[b].using_depth = -1;
             while(c->count && c->bindings[c->count - 1].depth == c->depth) c->count--;
             if(c->depth) c->depth--;
+        }
+        if(!fn->from_ir && st->is_using && st->kind == ZIR_STMT_EXPR) {
+            activate_using(c, st->name, st->span);
+            expression_type(c, st->expr_root);
+            continue;
+        }
+        if(!fn->from_ir) {
+            promote_using_tree(c, st->lhs_root);
+            promote_using_tree(c, st->expr_root);
         }
         if(st->kind == ZIR_STMT_DECL)
             normalize_array(c->module, st->type, sizeof(st->type));
@@ -3153,6 +3354,8 @@ restart:
                contains_vec(c->module, st->type, 0))
                 error(c, st->span, "Vec values cannot be copied", st->name);
             bind(c, st->name, st->type, st->span);
+            if(!fn->from_ir && st->is_using)
+                activate_using(c, st->name, st->span);
         } else if(st->kind == ZIR_STMT_ASSIGN) {
             const char *lhs = expression_type(c, st->lhs_root);
             if(contains_vec(c->module, lhs, 0))
@@ -3219,6 +3422,10 @@ restart:
         error(c, fn->span, "array or slice result requires a return on every path", fn->name);
     if(!validate_loop_targets(c, fn))
         return 0;
+    if(c->using_rewritten && !order_using_expressions(fn)) {
+        error(c, fn->span, "cannot order using expressions", fn->name);
+        return 0;
+    }
     c->fn->checked = c->errors == errors_before;
     for(int expression = 0; expression < c->fn->expr_count; expression++)
         has_slots |= c->fn->exprs[expression].is_function_value;
