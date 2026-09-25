@@ -97,17 +97,19 @@ the compile-time evaluator there, with `tests/compile_if_syntax.sh`,
 
 ### 3. Import re-exports and composition modifiers
 
-`using Alias :: #import "Module";`, `using,only(...)`, `using,except(...)`,
-`using,map(...)`, and `#as` have no complete checked representation. Define
-their visibility, collision, conversion, and storage rules before changing
-the parser. In particular, `#as` affects conversions, so a text substitution
-in a backend is insufficient. Model namespace import and conversion metadata
-explicitly, resolve it in the checker, and serialize the checked result.
+`using Alias :: #import "Module";` and `#as` have no complete checked
+representation. `using,only(...)`/`except(...)`/`map(...)` modifiers now
+filter and rename promoted fields and enum members with hidden names staying
+unresolved. Define the remaining visibility, collision, conversion, and
+storage rules before changing the parser. In particular, `#as` affects
+conversions, so a text substitution in a backend is insufficient. Model
+namespace import and conversion metadata explicitly, resolve it in the
+checker, and serialize the checked result.
 
 Acceptance: importing through a re-export preserves public/private scopes;
-filters and maps diagnose unknown or duplicate names; `#as` conversions work
-for values and pointers where legal; all targets agree or explicitly reject an
-unsupported ABI. Cover nested imports and saved `.zir`. The [OpenJai `using`
+`#as` conversions work for values and pointers where legal; all targets agree
+or explicitly reject an unsupported ABI. Cover nested imports and saved
+`.zir`. The [OpenJai `using`
 examples](https://raw.githubusercontent.com/withlang-dev/open-jai/main/docs/open_jai_spec.md)
 give candidate syntax, to be checked against Jai.
 

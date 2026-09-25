@@ -189,6 +189,8 @@ typedef struct ZirAssert {
 
 typedef struct ZirUsing {
     char path[ZIR_NAME_MAX];
+    /* Compact only/except/map filter: "O:a,b", "E:c", or "M:new=old". */
+    char filter[160];
     int is_file_private;
     ZirSourceSpan span;
 } ZirUsing;

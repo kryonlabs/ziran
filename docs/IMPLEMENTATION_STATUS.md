@@ -16,8 +16,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   work in native targets, while portable bundles retain their pointer limit.
   Polymorphic procedures preserve parameter, local, and imperative `using`
   declarations in saved templates and lower them for each concrete call.
-  Import re-exports, `#as`, and
-  `using,only`/`except`/`map` modifiers remain gaps.
+  `using,only(...)`/`except(...)`/`map(...)` modifiers filter and rename
+  promoted record fields and opened enum members on local and data-scope
+  using declarations, in source and saved IR across C, C++, Go, and `.zib`;
+  a hidden or unmapped name stays unresolved. Import re-exports and `#as`
+  remain gaps.
 - Jai-style `#program_export` on its own line or inline exports a procedure's
   native symbol. A quoted linker name works in C/C++; Go reports that override
   as unsupported. File-scope variables use `name: Type` declarations.

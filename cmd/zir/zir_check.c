@@ -25,6 +25,7 @@ typedef struct Binding {
     int touched;
     int borrow_count;
     int borrows_index;
+    char using_filter[160];
 } Binding;
 
 typedef struct SpecializationRequest {
@@ -714,11 +715,51 @@ bind(Checker *c, const char *name, const char *type, ZirSourceSpan span)
     c->bindings[c->count].moved = 0;
     c->bindings[c->count].touched = 0;
     c->bindings[c->count].borrow_count = 0;
-    c->bindings[c->count++].borrows_index = -1;
+    c->bindings[c->count].borrows_index = -1;
+    c->bindings[c->count++].using_filter[0] = '\0';
+}
+
+/* Map a promoted name back to its source field name under an only/except/map
+ * filter. Returns NULL when the filter hides the name. */
+static const char *
+apply_using_filter(const char *filter, const char *name,
+                   char *buffer, size_t size)
+{
+    const char *list;
+    if(filter[0] == '\0')
+        return name;
+    if(filter[1] != ':')
+        return name;
+    list = filter + 2;
+    while(*list != '\0') {
+        const char *comma = strchr(list, ',');
+        size_t length = comma == NULL ? strlen(list) :
+                        (size_t)(comma - list);
+        const char *equals = memchr(list, '=', length);
+        size_t new_length = equals == NULL ? length :
+                            (size_t)(equals - list);
+        if(new_length == strlen(name) &&
+           strncmp(list, name, new_length) == 0) {
+            if(filter[0] == 'E')
+                return NULL;
+            if(filter[0] == 'M' && equals != NULL) {
+                size_t old_length = length - new_length - 1;
+                if(old_length == 0 || old_length >= size)
+                    return NULL;
+                memcpy(buffer, equals + 1, old_length);
+                buffer[old_length] = '\0';
+                return buffer;
+            }
+            return name;
+        }
+        list = comma == NULL ? list + length : comma + 1;
+    }
+    return filter[0] == 'E' ? name : NULL;
 }
 
 static void
-activate_using(Checker *c, const char *path, ZirSourceSpan span)
+activate_using_filtered(Checker *c, const char *path,
+                        const char *filter, ZirSourceSpan span)
 {
     const char *dot = strchr(path, '.');
     size_t root_length = dot == NULL ? strlen(path) : (size_t)(dot - path);
@@ -755,10 +796,16 @@ activate_using(Checker *c, const char *path, ZirSourceSpan span)
             Binding *namespace = &c->bindings[c->count++];
             copy_text(namespace->name, sizeof(namespace->name), path);
             copy_text(namespace->type, sizeof(namespace->type), path);
+            copy_text(namespace->using_filter,
+                      sizeof(namespace->using_filter), filter);
             namespace->using_path[0] = '\0';
             namespace->depth = c->depth;
             namespace->is_using_namespace = 1;
             namespace->is_enum_namespace = 1;
+            namespace->moved = 0;
+            namespace->touched = 0;
+            namespace->borrow_count = 0;
+            namespace->borrows_index = -1;
             namespace->root_index = -1;
             return;
         }
@@ -825,27 +872,46 @@ activate_using(Checker *c, const char *path, ZirSourceSpan span)
     copy_text(namespace->name, sizeof(namespace->name), root);
     copy_text(namespace->type, sizeof(namespace->type), current_type);
     copy_text(namespace->using_path, sizeof(namespace->using_path), using_path);
+    copy_text(namespace->using_filter,
+              sizeof(namespace->using_filter), filter);
     namespace->depth = c->depth;
     namespace->is_using_namespace = 1;
     namespace->is_enum_namespace = 0;
+    namespace->moved = 0;
+    namespace->touched = 0;
+    namespace->borrow_count = 0;
+    namespace->borrows_index = -1;
     namespace->root_index = root_index;
+}
+
+static void
+activate_using(Checker *c, const char *path, ZirSourceSpan span)
+{
+    activate_using_filtered(c, path, "", span);
 }
 
 static int
 resolve_using_enum(Checker *c, const char *name,
-                   const ZirType **enumeration)
+                   const ZirType **enumeration, char *source, size_t size)
 {
     *enumeration = NULL;
     for(int i = c->count - 1; i >= 0; i--) {
         const Binding *binding = &c->bindings[i];
+        char source_name[ZIR_NAME_MAX];
+        const char *promoted;
         if(!binding->is_enum_namespace) continue;
+        promoted = apply_using_filter(binding->using_filter, name,
+                                      source_name, sizeof(source_name));
+        if(promoted == NULL) continue;
         const ZirType *candidate = FindType(c->module, binding->type, NULL);
         int64_t value;
         if(candidate == NULL ||
-           !EnumMemberValue(candidate, name, &value)) continue;
+           !EnumMemberValue(candidate, promoted, &value)) continue;
         if(*enumeration != NULL && *enumeration != candidate)
             return -1;
         *enumeration = candidate;
+        if(source != NULL && size > 0)
+            copy_text(source, size, promoted);
     }
     return *enumeration != NULL;
 }
@@ -889,8 +955,13 @@ promote_using_member(Checker *c, int index)
         const ZirModule *owner = NULL;
         const ZirType *record = FindType(c->module, type, &owner);
         if(record == NULL) continue;
+        char source_name[ZIR_NAME_MAX];
+        const char *promoted = apply_using_filter(binding->using_filter,
+                                                  member->name, source_name,
+                                                  sizeof(source_name));
+        if(promoted == NULL) continue;
         char field_path[ZIR_NAME_MAX], field_type[ZIR_NAME_MAX];
-        int found = ResolveRecordField(owner, record, member->name,
+        int found = ResolveRecordField(owner, record, promoted,
                                        field_path, sizeof(field_path),
                                        field_type, sizeof(field_type));
         if(found > 0 && selected >= 0 &&
@@ -938,6 +1009,14 @@ promote_using_member(Checker *c, int index)
     member = &c->fn->exprs[index];
     member->kind = ZIR_EXPR_MEMBER;
     member->left = base_index;
+    {
+        char source_name[ZIR_NAME_MAX];
+        const char *promoted = apply_using_filter(
+            c->bindings[selected].using_filter, member->name, source_name,
+            sizeof(source_name));
+        if(promoted != NULL && promoted != member->name)
+            copy_text(member->name, sizeof(member->name), promoted);
+    }
     copy_text(member->op, sizeof(member->op), ".");
     c->using_rewritten = 1;
 }
@@ -1190,7 +1269,7 @@ lookup(Checker *c, const char *name)
     const ZirGlobal *global = global_binding(c, name);
     if(global != NULL) return global->type;
     const ZirType *type = NULL;
-    int resolved = resolve_using_enum(c, name, &type);
+    int resolved = resolve_using_enum(c, name, &type, NULL, 0);
     if(resolved < 0) {
         error(c, c->fn->span, "ambiguous enum member", name);
         c->failed = 1;
@@ -2368,15 +2447,17 @@ expression_type(Checker *c, int index)
         else if(!strcmp(e->name, "null")) type = "null";
         else {
             const ZirType *enumeration = NULL;
+            char source_member[ZIR_NAME_MAX];
             int enum_member = !*lookup_lexical(c, e->name) &&
                               global_binding(c, e->name) == NULL ?
-                resolve_using_enum(c, e->name, &enumeration) : 0;
+                resolve_using_enum(c, e->name, &enumeration, source_member,
+                                   sizeof(source_member)) : 0;
             if(enum_member < 0) {
                 error(c, e->span, "ambiguous using enum member", e->name);
                 break;
             }
             if(enum_member == 1) {
-                if(!lower_enum_reference(c, e, enumeration, e->name))
+                if(!lower_enum_reference(c, e, enumeration, source_member))
                     break;
                 type = "integer";
                 break;
@@ -3967,7 +4048,8 @@ restart:
                                using->span) ||
                FindType(c->module, using->path, NULL) == NULL)
                 continue;
-            activate_using(c, using->path, using->span);
+            activate_using_filtered(c, using->path, using->filter,
+                                    using->span);
         }
     has_slots = 0;
     has_arrays = fn->return_type[0] == '[';
@@ -4039,7 +4121,7 @@ restart:
         }
         if((!fn->from_ir || fn->is_specialization) &&
            st->is_using && st->kind == ZIR_STMT_EXPR) {
-            activate_using(c, st->name, st->span);
+            activate_using_filtered(c, st->name, st->type, st->span);
             expression_type(c, st->expr_root);
             continue;
         }
@@ -4181,7 +4263,7 @@ restart:
                 }
             }
             if((!fn->from_ir || fn->is_specialization) && st->is_using)
-                activate_using(c, st->name, st->span);
+                activate_using_filtered(c, st->name, st->type, st->span);
         } else if(st->kind == ZIR_STMT_ASSIGN) {
             c->assign_destination = 1;
             const char *lhs = expression_type(c, st->lhs_root);

@@ -276,6 +276,100 @@ is_identifier_text(const char *text)
     return *cursor == '\0';
 }
 
+/* Parse a using modifier clause: `, only("a", "b")`, `, except("c")`, or
+ * `, map("x" = "a", "y" = "b")` directly after the `using` keyword. On
+ * success `cursor` advances past the clause and a compact filter string
+ * ("O:a,b" / "E:c" / "M:x=a,y=b") is written for the checker. */
+static int
+parse_using_modifiers(const char **cursor, char *filter, size_t filter_size,
+                      const char *path, int line_no)
+{
+    const char *start = *cursor;
+    const char *kind_text;
+    char kind;
+    size_t used = 0;
+    int entries = 0;
+    if(*start != ',')
+        return 1;
+    kind_text = skip_ws(start + 1);
+    if(starts_word(kind_text, "only")) {
+        kind = 'O';
+        kind_text = kind_text + 4;
+    } else if(starts_word(kind_text, "except")) {
+        kind = 'E';
+        kind_text = kind_text + 6;
+    } else if(starts_word(kind_text, "map")) {
+        kind = 'M';
+        kind_text = kind_text + 3;
+    } else {
+        die_at(Span(path, line_no, 1),
+               "using modifier must be only, except, or map");
+        return 0;
+    }
+    kind_text = skip_ws(kind_text);
+    if(*kind_text != '(')
+        die_at(Span(path, line_no, 1),
+               "using modifier requires a parenthesized name list");
+    filter[used++] = kind;
+    filter[used++] = ':';
+    kind_text++;
+    while(*kind_text != '\0' && *kind_text != ')') {
+        const char *item = skip_ws(kind_text);
+        char name[ZIR_NAME_MAX], mapped[ZIR_NAME_MAX];
+        size_t length = 0;
+        if(*item != '"')
+            die_at(Span(path, line_no, 1),
+                   "using modifier entries must be quoted names");
+        item++;
+        while(*item != '\0' && *item != '"' &&
+              length + 1 < sizeof(name))
+            name[length++] = *item++;
+        if(*item != '"' || length == 0)
+            die_at(Span(path, line_no, 1),
+                   "using modifier entries must be quoted names");
+        name[length] = '\0';
+        item = skip_ws(item + 1);
+        mapped[0] = '\0';
+        if(kind == 'M') {
+            if(*item != '=')
+                die_at(Span(path, line_no, 1),
+                       "using map entries need \"new\" = \"old\"");
+            item = skip_ws(item + 1);
+            if(*item != '"')
+                die_at(Span(path, line_no, 1),
+                       "using map entries need \"new\" = \"old\"");
+            item++;
+            length = 0;
+            while(*item != '\0' && *item != '"' &&
+                  length + 1 < sizeof(mapped))
+                mapped[length++] = *item++;
+            if(*item != '"' || length == 0)
+                die_at(Span(path, line_no, 1),
+                       "using map entries need \"new\" = \"old\"");
+            mapped[length] = '\0';
+            item = skip_ws(item + 1);
+        }
+        if(used + strlen(name) + strlen(mapped) + 2 >= filter_size)
+            die_at(Span(path, line_no, 1),
+                   "using modifier list is too long");
+        if(entries++)
+            filter[used++] = ',';
+        used += (size_t)snprintf(filter + used, filter_size - used, "%s%s%s",
+                                 name, mapped[0] ? "=" : "", mapped);
+        kind_text = skip_ws(item);
+        if(*kind_text == ',') {
+            kind_text = skip_ws(kind_text + 1);
+            continue;
+        }
+        break;
+    }
+    if(*kind_text != ')' || entries == 0)
+        die_at(Span(path, line_no, 1),
+               "using modifier requires a parenthesized name list");
+    *cursor = skip_ws(kind_text + 1);
+    return 1;
+}
+
 static int
 is_member_path_text(const char *text)
 {
@@ -5518,7 +5612,10 @@ parse_source(const char *path, const char *root, const char *source,
                    "#program_export must precede a function declaration");
         } else if(mode == TOP && starts_word(t, "using")) {
             char name[ZIR_NAME_MAX];
+            char filter[160];
             const char *path = skip_ws(t + 5);
+            filter[0] = '\0';
+            parse_using_modifiers(&path, filter, sizeof(filter), rel, line_no);
             size_t length = strlen(path);
             if(length < 2 || path[length - 1] != ';' ||
                length >= sizeof(name))
@@ -5535,6 +5632,7 @@ parse_source(const char *path, const char *root, const char *source,
             if(using == NULL)
                 die_at(Span(rel, line_no, 1),
                        "out of memory recording using declaration");
+            copy_text(using->filter, sizeof(using->filter), filter);
             using->is_file_private = scope_file;
             continue;
         } else if(mode == TOP && starts_word(t, "#load")) {
@@ -6310,11 +6408,21 @@ parse_source(const char *path, const char *root, const char *source,
                 }
             } else {
                 int using_binding = 0;
-                if(starts_word(t, "using")) {
-                    if(!isspace((unsigned char)t[5]))
+                char using_filter[160];
+                char using_path_text[SOURCE_LINE_MAX * 2];
+                using_filter[0] = '\0';
+                using_path_text[0] = '\0';
+                if(starts_word(t, "using") ||
+                   strncmp(t, "using,", 6) == 0) {
+                    if(!isspace((unsigned char)t[5]) && t[5] != ',')
                         die_at(Span(rel, line_no, 1),
                                "using modifiers are not supported");
-                    t = trim(t + 5);
+                    const char *after = skip_ws(t + 5);
+                    parse_using_modifiers(&after, using_filter,
+                                          sizeof(using_filter), rel, line_no);
+                    snprintf(using_path_text, sizeof(using_path_text), "%s",
+                             after);
+                    t = trim(using_path_text);
                     if(*t == '\0')
                         die_at(Span(rel, line_no, 1),
                                "using needs a record binding");
@@ -6403,6 +6511,8 @@ parse_source(const char *path, const char *root, const char *source,
                                        "using needs a record binding or field path");
                             copy_text(statement->name,
                                       sizeof(statement->name), name);
+                            copy_text(statement->type,
+                                      sizeof(statement->type), using_filter);
                         }
                     }
                 }
