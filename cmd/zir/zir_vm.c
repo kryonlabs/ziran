@@ -361,8 +361,8 @@ host_type_at(const ZirModule *module, const char *type, int depth,
     if(depth >= VM_MAX_DEPTH || ArrayElementType(type, NULL, 0, NULL))
         return 0;
     if(SliceElementType(type, element, sizeof(element)))
-        return value_kind(element) != VALUE_INVALID &&
-               value_kind(element) != VALUE_VOID;
+        return element[0] != '[' && element[0] != '\0' &&
+               host_type_at(module, element, depth + 1, 0);
     if(value_kind(type) != VALUE_INVALID)
         return 1;
     const ZirModule *owner = NULL;

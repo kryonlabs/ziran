@@ -9,10 +9,41 @@ static VmHostField point_fields[2];
 static VmHostField packet_fields[3];
 
 static int
+sum_slice(void *context, const char *module, const char *function,
+          const VmHostValue *args, int arg_count, VmHostValue *result)
+{
+    int64_t total = 0;
+    (void)context;
+    assert(strcmp(module, "record_host") == 0);
+    assert(strcmp(function, "SumSliceHost") == 0);
+    assert(arg_count == 1);
+    assert(args[0].kind == VM_HOST_SLICE);
+    assert(strcmp(args[0].type, "[]Point") == 0);
+    assert(args[0].length == 2);
+    for(size_t i = 0; i < args[0].length; i++) {
+        const VmHostValue *point = &args[0].elements[i];
+        assert(point->kind == VM_HOST_RECORD);
+        assert(strcmp(point->type, "Point") == 0);
+        assert(point->field_count == 2);
+        assert(strcmp(point->fields[0].name, "x") == 0);
+        total += point->fields[0].value.integer +
+                 point->fields[1].value.integer;
+    }
+    result->kind = VM_HOST_INTEGER;
+    result->type = "s32";
+    result->integer = total;
+    return 1;
+}
+
+static int
 host_call(void *context, const char *module, const char *function,
           const VmHostValue *args, int arg_count, VmHostValue *result)
 {
     (void)context;
+    if(strcmp(function, "SumSliceHost") == 0) {
+        calls++;
+        return sum_slice(context, module, function, args, arg_count, result);
+    }
     assert(strcmp(module, "record_host") == 0);
     assert(strcmp(function, "TransformHost") == 0);
     assert(arg_count == 1);
@@ -62,23 +93,26 @@ main(int argc, char **argv)
     assert(argc == 2);
     Bundle *bundle = BundleOpen(argv[1]);
     assert(bundle != NULL);
-    assert(BundleCapabilityCount(bundle) == 1);
+    assert(BundleCapabilityCount(bundle) == 2);
     assert(strcmp(BundleCapabilityModule(bundle, 0), "record_host") == 0);
     assert(strcmp(BundleCapabilityFunction(bundle, 0), "TransformHost") == 0);
-    HostBinding binding = {"record_host", "TransformHost", host_call, NULL};
+    HostBinding binding[2] = {
+        {"record_host", "TransformHost", host_call, NULL},
+        {"record_host", "SumSliceHost", host_call, NULL}
+    };
     long long result = 0;
     int has_result = 0;
-    assert(BundleRun(bundle, &binding, 1, &result, &has_result));
-    assert(has_result && result == 42 && calls == 1);
+    assert(BundleRun(bundle, binding, 2, &result, &has_result));
+    assert(has_result && result == 42 && calls == 2);
     malformed = 1;
-    assert(!BundleRun(bundle, &binding, 1, &result, &has_result));
+    assert(!BundleRun(bundle, binding, 2, &result, &has_result));
     malformed = 2;
-    assert(!BundleRun(bundle, &binding, 1, &result, &has_result));
+    assert(!BundleRun(bundle, binding, 2, &result, &has_result));
     malformed = 3;
-    assert(!BundleRun(bundle, &binding, 1, &result, &has_result));
+    assert(!BundleRun(bundle, binding, 2, &result, &has_result));
     malformed = 0;
-    assert(BundleRun(bundle, &binding, 1, &result, &has_result));
-    assert(has_result && result == 42 && calls == 5);
+    assert(BundleRun(bundle, binding, 2, &result, &has_result));
+    assert(has_result && result == 42 && calls == 7);
     BundleClose(bundle);
     return 0;
 }

@@ -1627,8 +1627,33 @@ normalize_array(const ZirModule *module, char *type, size_t size)
 {
     char element[ZIR_NAME_MAX];
     int capacity;
-    if(!ArrayElementType(type, element, sizeof(element), NULL))
-        return;
+    if(!ArrayElementType(type, element, sizeof(element), NULL)) {
+        /* An alias naming an array type resolves through file-scope
+         * constants before normalization. */
+        const char *resolved = type;
+        for(int depth = 0; depth < 8; depth++) {
+            const ZirDefine *found = NULL;
+            for(int d = 0; d < module->define_count; d++)
+                if(strcmp(module->defines[d].name, resolved) == 0 &&
+                    in_lookup_file(module, module->defines[d].is_file_private,
+                                   module->defines[d].span)) {
+                    found = &module->defines[d];
+                    break;
+                }
+            if(found == NULL)
+                return;
+            resolved = skip_ws(found->value);
+            if(resolved[0] == '[')
+                break;
+        }
+        if(resolved == type || resolved[0] != '[')
+            return;
+        if(strlen(resolved) >= size)
+            return;
+        copy_text(type, size, resolved);
+        if(!ArrayElementType(type, element, sizeof(element), NULL))
+            return;
+    }
     normalize_array(module, element, sizeof(element));
     char normalized[ZIR_NAME_MAX];
     int length;
@@ -6146,11 +6171,17 @@ CheckPrograms(ZirProgram **programs, int count)
             ZirModule *module = &programs[p]->modules[m];
             for(int d = 0; d < module->define_count; d++) {
                 ZirDefine *definition = &module->defines[d];
+                const char *value = skip_ws(definition->value);
                 ZirFunction expression = {0};
-                int root = ParseExprNoDefaults(&expression, module,
-                                               definition->value,
-                                               definition->span);
-                int valid = root >= 0 &&
+                int root;
+                int valid;
+                /* Array type aliases name a storage shape, not a value. */
+                if(value[0] == '[')
+                    continue;
+                root = ParseExprNoDefaults(&expression, module,
+                                           definition->value,
+                                           definition->span);
+                valid = root >= 0 &&
                     expression.exprs[root].kind != ZIR_EXPR_UNKNOWN;
                 free(expression.exprs);
                 if(!valid) {

@@ -27,6 +27,7 @@ cat > "$work/record_host.zi" <<'EOF'
 host_api :: #system_library "host_api";
 #import "shapes"
 TransformHost :: (packet: Packet) -> Packet #foreign host_api;
+SumSliceHost :: (points: []Point) -> s32 #foreign host_api;
 #program_export
 Answer :: () -> s32 {
     using Tone;
@@ -39,6 +40,11 @@ Answer :: () -> s32 {
     if transformed.point.x != 41 || transformed.point.y != 1 ||
        transformed.label != "ok" ||
        transformed.tone != cast(Tone)ToneAccent { return 0 }
+    points: [2]Point
+    points[0] = Point.{.x = 3, .y = 4}
+    points[1] = transformed.point
+    view: []Point = points[0:2]
+    if SumSliceHost(view) != 49 { return 0 }
     return 42
 }
 EOF
@@ -73,6 +79,13 @@ Packet TransformHost(Packet packet) {
     packet.tone = (Tone)1;
     return packet;
 }
+int32_t SumSliceHost(Slice view) {
+    int64_t total = 0;
+    const Point *points = view.data;
+    for(int64_t i = 0; i < view.length; i++)
+        total += points[i].x + points[i].y;
+    return (int32_t)total;
+}
 int main(void) { return Answer() == 42 ? 0 : 1; }
 C
             "${CC:-cc}" -std=c11 -I"$output" -I"$include" \
@@ -86,6 +99,13 @@ extern "C" Packet TransformHost(Packet packet) {
     packet.label = StringView("ok", 2);
     packet.tone = (Tone)1;
     return packet;
+}
+extern "C" int32_t SumSliceHost(Slice view) {
+    int64_t total = 0;
+    const Point *points = static_cast<const Point *>(view.data);
+    for(int64_t i = 0; i < view.length; i++)
+        total += points[i].x + points[i].y;
+    return static_cast<int32_t>(total);
 }
 int main() { return Answer() == 42 ? 0 : 1; }
 CPP
@@ -102,6 +122,13 @@ func (testHost) TransformHost(packet Packet) Packet {
     packet.Label = "ok"
     packet.Tone = ToneAccent
     return packet
+}
+func (testHost) SumSliceHost(points []Point) int32 {
+    total := int64(0)
+    for _, p := range points {
+        total += int64(p.X + p.Y)
+    }
+    return int32(total)
 }
 func init() { SetRecordHostHost(testHost{}) }
 GO

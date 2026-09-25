@@ -1411,13 +1411,21 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                     fprintf(f, "}\n\n");
                 }
             }
-            /* defines -> consts */
+            /* defines -> consts; array type aliases become Go types */
             for(int i = 0; i < m->define_count; i++) {
                 char cname[ZIR_GO_NAME_MAX];
                 char cval[ZIR_GO_TEXT_MAX];
+                const char *value = skip_ws(m->defines[i].value);
 
                 TargetDefineName(m, ZIR_GO, m->defines[i].name,
                                  cname, sizeof(cname));
+                if(value[0] == '[') {
+                    char aliased[ZIR_GO_NAME_MAX];
+                    require_go_type(value, aliased, sizeof(aliased),
+                                    m->defines[i].span);
+                    fprintf(f, "type %s %s\n", cname, aliased);
+                    continue;
+                }
                 tx_expr(m, m->defines[i].value, cval, sizeof(cval));
                 fprintf(f, "const %s = %s\n", cname, cval);
             }

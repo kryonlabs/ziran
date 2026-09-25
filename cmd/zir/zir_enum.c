@@ -87,10 +87,41 @@ term(const char **cursor, const char *end,
 }
 
 static int
-add_expression(const char **cursor, const char *end,
+mul_expression(const char **cursor, const char *end,
                const EnumEntry *entries, int count, int64_t *value)
 {
     if(!term(cursor, end, entries, count, value)) return 0;
+    for(;;) {
+        char op;
+        int64_t rhs;
+        skip_space(cursor, end);
+        if(*cursor >= end ||
+           (**cursor != '*' && **cursor != '/' && **cursor != '%'))
+            return 1;
+        op = *(*cursor)++;
+        if(!term(cursor, end, entries, count, &rhs))
+            return 0;
+        if(op == '*') {
+            if((*value > 0 && rhs > 0 && *value > INT64_MAX / rhs) ||
+               (*value > 0 && rhs < 0 && rhs < INT64_MIN / *value) ||
+               (*value < 0 && rhs > 0 && *value < INT64_MIN / rhs) ||
+               (*value < 0 && rhs < 0 && *value != 0 &&
+                rhs < INT64_MAX / *value))
+                return 0;
+            *value *= rhs;
+        } else {
+            if(rhs == 0 || *value == INT64_MIN || rhs == -1)
+                return 0;
+            *value = op == '/' ? *value / rhs : *value % rhs;
+        }
+    }
+}
+
+static int
+add_expression(const char **cursor, const char *end,
+               const EnumEntry *entries, int count, int64_t *value)
+{
+    if(!mul_expression(cursor, end, entries, count, value)) return 0;
     for(;;) {
         int64_t rhs;
         skip_space(cursor, end);

@@ -31,8 +31,42 @@ laws, run conformance tests, and retain the checked result in `.zir` and
 `.zib` metadata where needed for independent validation. Diagnostics should
 identify the violated law and the smallest relevant source span. This is a
 tooling requirement for LLM-generated code and human-written code alike.
-The exact source syntax and proof format are still to be designed and should
-not be inferred from today's inherited compiler law checks.
+
+### Law contract
+
+A law obligation is a named, mechanically decidable check bound to a source
+span. The contract has four parts.
+
+1. **Declaration.** `#law NAME kind payload;` binds the stable identifier
+   `NAME` to one obligation at file scope. `kind` selects the checker:
+   `type`, `effect`, `bounds`, `abi`, or `custom`. `payload` is kind-specific
+   checked source — a boolean procedure for `custom`, a shape description
+   for the built-in kinds. A law with no checker for its kind is an error,
+   never a pass.
+2. **Result schema.** Every check emits one JSON object per obligation:
+   `{"law": NAME, "kind": K, "span": {file, line, column},
+   "status": "proved" | "disproved" | "unknown", "detail": string}`.
+   `unknown` is emitted when the checker lacks the assumption or budget to
+   decide; `detail` then names the missing capability. Build gates treat
+   `disproved` as an error and `unknown` as an error unless explicitly
+   waived for that law name.
+3. **Gate semantics.** `ziran check` evaluates every reachable law and exits
+   nonzero on any `disproved` or unwaived `unknown`. Generated artifacts
+   embed the result set: `.zir` stores per-module law tables and `.zib`
+   stores the transitive closure of laws its linked modules reached, so a
+   consumer can refuse a bundle whose laws were not all `proved` at save
+   time. Waivers are explicit `#law_waive NAME reason;` declarations with
+   their own spans and ride along in the same tables.
+4. **Determinism.** A law result depends only on the checked program text
+   and declared kinds, never on wall-clock time, iteration order, or backend
+   choice. The same module set must produce byte-identical law tables in
+   repeated runs, which the test matrix enforces the same way it enforces
+   `.zib` byte equality.
+
+Diagnostics identify the violated law and the smallest relevant source span.
+Today's compiler implements only the generic post-check IR invariant without
+names or tables; the syntax above is the contract to implement, not current
+behavior.
 
 ## Parallel computation
 
@@ -42,6 +76,40 @@ operations may run concurrently, their memory and effect rules, and the
 observable ordering guarantees. CPU and GPU implementations must preserve
 those semantics; unsupported execution paths must report a capability or
 target error instead of silently changing the result.
+
+### Parallel execution contract
+
+1. **Effect classes.** Every procedure has one of four effect classes derived
+   from its checked body: `pure` (reads only its arguments and immutable
+   globals, allocates, and calls only `pure` procedures), `observing` (also
+   reads mutable globals or host observations), `mutating` (also writes
+   through pointers or mutable globals it does not own), and `external`
+   (calls `#foreign` code whose effects the checker cannot see). The class
+   is recorded in `.zir` signatures and is part of the ABI: a caller sees
+   the callee's declared class, not its implementation.
+2. **Concurrency granularity.** `#parallel for` over a range or fixed array
+   executes iterations concurrently when every called procedure in the loop
+   body is `pure` or `observing` and the body writes only to storage whose
+   lifetime is one iteration. Any other body is rejected at check time with
+   the offending span; the compiler never silently serializes a loop marked
+   `#parallel`.
+3. **Memory rules.** Concurrent iterations share no mutable storage. Writes
+   to `Vec(T)` storage, host slices, and pointer-backed records inside a
+   parallel body are rejected unless the storage is declared `#local` to the
+   iteration. Allocation inside an iteration is private to it; a result
+   moved out of the loop body must be owned (`Vec` moves satisfy this).
+4. **Observable ordering.** The only ordering guarantees are: effects of an
+   iteration appear between the loop's entry and exit; `#parallel` regions
+   do not nest; and the loop completes before any statement after it runs.
+   Interleaving between iterations is unobservable: any program whose
+   result differs between two legal interleavings is rejected by the effect
+   and memory rules above, not by runtime detection.
+5. **Backend duties.** A backend that cannot execute a legal `#parallel`
+   region concurrently must still produce the same result serially and
+   report the downgrade through a capability flag, never through a changed
+   value. The portable VM executes regions serially with the same effect
+   checking; native targets may use threads; a GPU target must reject
+   `external`-class calls and pointer arguments before offloading.
 
 Parallel execution is a target requirement, not a claim that today's C/Go
 subset auto-parallelizes or has a GPU backend. The implementation must be

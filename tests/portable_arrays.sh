@@ -30,6 +30,21 @@ Matrix :: struct {
 
 matrix_state: Matrix;
 
+Triple :: [THREE]s32
+AliasState :: [CAPACITY]Point
+
+#program_export
+AliasAnswer :: () -> s32 {
+    triple: Triple
+    triple[0] = 4
+    triple[1] = 5
+    triple[2] = 6
+    state: AliasState
+    state[0] = Point.{.x = 7}
+    if triple.count != 3 || state.count != 2 { return 0 }
+    return triple[0] + triple[1] + triple[2] + state[0].x
+}
+
 #program_export
 MatrixGlobalAnswer :: () -> s32 {
     matrix_state.values[1][2] = 42
@@ -156,6 +171,7 @@ Answer :: () -> s32 {
     box.values[0] = point
     if SumBox(saved) != 42 { return 0 }
     if MatrixGlobalAnswer() != 42 { return 0 }
+    if AliasAnswer() != 22 { return 0 }
     return MatrixAnswer()
 }
 

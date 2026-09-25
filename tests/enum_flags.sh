@@ -29,6 +29,7 @@ Specified :: enum u16 #specified { Third :: 3; Zeroth :: 0; }
 SpecifiedDefault :: enum #specified { Chosen :: 7; }
 SpecifiedFlags :: enum_flags u8 #specified { FlagOne :: 1; FlagFour :: 4; }
 Default :: enum { Wide :: 4294967296; Shifted :: 1 << 1 + 2; }
+Scaled :: enum { Base :: 3; Doubled :: Base * 2; Halved :: Doubled / 2; Mixed :: Base * 3 + Doubled - 1; Remain :: Mixed % 4; }
 Prefixed :: enum { PrefixedFirst :: 1; PrefixedSecond :: 2; }
 Pair :: struct {
     mask: Mask
@@ -46,6 +47,8 @@ Shadow :: () -> s32 {
 }
 #program_export
 Answer :: () -> s32 {
+    if cast(s64)Scaled.Doubled != 6 || cast(s64)Scaled.Halved != 3 ||
+       cast(s64)Scaled.Mixed != 14 || cast(s64)Scaled.Remain != 2 { return 0 }
     using Prefixed;
     using Mask;
     using Small;
