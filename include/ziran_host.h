@@ -64,7 +64,7 @@ typedef struct HostBinding {
     void *context;
 } HostBinding;
 
-/* Open and validate a version 12 portable bundle. Close releases all names. */
+/* Open and validate a version 21 portable bundle. Close releases all names. */
 Bundle *BundleOpen(const char *path);
 void BundleClose(Bundle *bundle);
 size_t BundleCapabilityCount(const Bundle *bundle);
@@ -75,6 +75,17 @@ const char *BundleCapabilityFunction(const Bundle *bundle, size_t index);
  * Integer/bool entry results are returned in result; void sets has_result=0. */
 int BundleRun(const Bundle *bundle, const HostBinding *bindings,
               size_t binding_count, long long *result, int *has_result);
+
+/* Law closure recorded at bundle time. Status strings are "proved",
+ * "disproved", or "unknown"; a consumer can refuse bundles whose laws were
+ * not all proved at save time. */
+size_t BundleLawCount(const Bundle *bundle);
+const char *BundleLawModule(const Bundle *bundle, size_t index);
+const char *BundleLawName(const Bundle *bundle, size_t index);
+const char *BundleLawStatus(const Bundle *bundle, size_t index);
+size_t BundleLawWaiverCount(const Bundle *bundle);
+const char *BundleLawWaiverName(const Bundle *bundle, size_t index);
+const char *BundleLawWaiverReason(const Bundle *bundle, size_t index);
 
 /* An instance preserves module globals across runs of the bundle entry.
  * Keep the Bundle and any binding contexts alive until the instance closes.

@@ -3,6 +3,8 @@
 #include "zir_diagnostic.h"
 #include "zir_vm.h"
 
+#include "zir_bundle.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +13,27 @@ struct Bundle {
     ZirProgram *program;
     char entry_module[ZIR_NAME_MAX];
     char entry_function[ZIR_NAME_MAX];
+    ZibLawTable laws;
 };
+
+/* Mirrors the linker's rule: externs kept only for laws demand no binding. */
+static int
+capability_import(const ZirModule *module, const ZirImport *import)
+{
+    if(import->kind != ZIR_IMPORT_EXTERN ||
+       (import->extern_kind == ZIR_EXTERN_HOST &&
+        strncmp(import->target, "ziran:", 6) == 0))
+        return 0;
+    for(int f = 0; f < module->function_count; f++) {
+        const ZirFunction *fn = &module->functions[f];
+        for(int e = 0; e < fn->expr_count; e++)
+            if(fn->exprs[e].kind == ZIR_EXPR_CALL &&
+               fn->exprs[e].slot_type[0] == '\0' &&
+               strcmp(fn->exprs[e].name, import->name) == 0)
+                return 1;
+    }
+    return 0;
+}
 
 static const ZirImport *
 capability_at(const Bundle *bundle, size_t index, const ZirModule **owner)
@@ -21,9 +43,7 @@ capability_at(const Bundle *bundle, size_t index, const ZirModule **owner)
     for(int m = 0; m < bundle->program->module_count; m++) {
         const ZirModule *module = &bundle->program->modules[m];
         for(int i = 0; i < module->import_count; i++) {
-            if(module->imports[i].kind != ZIR_IMPORT_EXTERN ||
-               (module->imports[i].extern_kind == ZIR_EXTERN_HOST &&
-                strncmp(module->imports[i].target, "ziran:", 6) == 0))
+            if(!capability_import(module, &module->imports[i]))
                 continue;
             if(index-- == 0) {
                 if(owner != NULL)
@@ -52,7 +72,8 @@ BundleOpen(const char *path)
         bundle->program = BundleRead(file, path, bundle->entry_module,
                                      sizeof(bundle->entry_module),
                                      bundle->entry_function,
-                                     sizeof(bundle->entry_function));
+                                     sizeof(bundle->entry_function),
+                                     &bundle->laws);
     fclose(file);
     if(bundle == NULL)
         return NULL;
@@ -70,6 +91,7 @@ BundleClose(Bundle *bundle)
 {
     if(bundle != NULL) {
         ProgramFree(bundle->program);
+        ZibLawTableFree(&bundle->laws);
         free(bundle);
     }
 }
@@ -81,12 +103,9 @@ BundleCapabilityCount(const Bundle *bundle)
     if(bundle != NULL)
         for(int m = 0; m < bundle->program->module_count; m++)
             for(int i = 0; i < bundle->program->modules[m].import_count; i++)
-                count += bundle->program->modules[m].imports[i].kind ==
-                         ZIR_IMPORT_EXTERN &&
-                         (bundle->program->modules[m].imports[i].extern_kind !=
-                          ZIR_EXTERN_HOST ||
-                          strncmp(bundle->program->modules[m].imports[i].target,
-                                  "ziran:", 6) != 0);
+                count += capability_import(
+                    &bundle->program->modules[m],
+                    &bundle->program->modules[m].imports[i]);
     return count;
 }
 
@@ -255,4 +274,51 @@ BundleRun(const Bundle *bundle, const HostBinding *bindings,
     int ok = BundleInstanceRun(instance, result, has_result);
     BundleInstanceClose(instance);
     return ok;
+}
+
+size_t
+BundleLawCount(const Bundle *bundle)
+{
+    return bundle == NULL ? 0 : (size_t)bundle->laws.law_count;
+}
+
+const char *
+BundleLawModule(const Bundle *bundle, size_t index)
+{
+    return bundle != NULL && index < (size_t)bundle->laws.law_count ?
+           bundle->laws.laws[index].module : NULL;
+}
+
+const char *
+BundleLawName(const Bundle *bundle, size_t index)
+{
+    return bundle != NULL && index < (size_t)bundle->laws.law_count ?
+           bundle->laws.laws[index].name : NULL;
+}
+
+const char *
+BundleLawStatus(const Bundle *bundle, size_t index)
+{
+    return bundle != NULL && index < (size_t)bundle->laws.law_count ?
+           bundle->laws.laws[index].status : NULL;
+}
+
+size_t
+BundleLawWaiverCount(const Bundle *bundle)
+{
+    return bundle == NULL ? 0 : (size_t)bundle->laws.waiver_count;
+}
+
+const char *
+BundleLawWaiverName(const Bundle *bundle, size_t index)
+{
+    return bundle != NULL && index < (size_t)bundle->laws.waiver_count ?
+           bundle->laws.waivers[index].name : NULL;
+}
+
+const char *
+BundleLawWaiverReason(const Bundle *bundle, size_t index)
+{
+    return bundle != NULL && index < (size_t)bundle->laws.waiver_count ?
+           bundle->laws.waivers[index].reason : NULL;
 }

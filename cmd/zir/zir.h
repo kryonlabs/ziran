@@ -197,6 +197,21 @@ typedef struct ZirUsing {
     ZirSourceSpan span;
 } ZirUsing;
 
+/* A `#law NAME kind payload;` obligation (see LANGUAGE_DIRECTION.md). */
+typedef struct ZirLaw {
+    char name[ZIR_NAME_MAX];
+    char kind[16];      /* type | effect | bounds | abi | custom */
+    char payload[ZIR_TEXT_MAX];
+    ZirSourceSpan span;
+} ZirLaw;
+
+/* A `#law_waive NAME reason;` declaration. */
+typedef struct ZirLawWaiver {
+    char name[ZIR_NAME_MAX];
+    char reason[ZIR_TEXT_MAX];
+    ZirSourceSpan span;
+} ZirLawWaiver;
+
 /* A `Name :: struct { fields }` type declaration. body holds the raw field
  * lines (one per line, no braces). */
 typedef struct ZirType {
@@ -262,6 +277,12 @@ typedef struct ZirModule {
     ZirUsing *usings; /* source scope; references lower before saving IR */
     int using_count;
     int using_cap;
+    ZirLaw *laws;
+    int law_count;
+    int law_cap;
+    ZirLawWaiver *law_waivers;
+    int law_waiver_count;
+    int law_waiver_cap;
     ZirType *types;
     int type_count;
     int type_cap;
@@ -323,7 +344,11 @@ void ModuleAddStatic(ZirModule *module, const char *name, const char *type,
                         const char *init, ZirSourceSpan span);
 ZirDefine *ModuleAddDefine(ZirModule *module, const char *name,
                               const char *value, ZirSourceSpan span);
-int ModuleAddAssert(ZirModule *module, const char *condition,
+int ModuleAddLaw(ZirModule *module, const char *name, const char *kind,
+                 const char *payload, ZirSourceSpan span);
+int ModuleAddLawWaiver(ZirModule *module, const char *name,
+                       const char *reason, ZirSourceSpan span);
+int ModuleAddAssert(ZirModule *module, const char * condition,
                     const char *message, ZirSourceSpan span);
 ZirUsing *ModuleAddUsing(ZirModule *module, const char *path,
                          ZirSourceSpan span);

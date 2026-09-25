@@ -1,0 +1,92 @@
+#!/bin/sh
+set -eu
+
+ziran=${1:?pass the ziran command}
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+
+cat > "$work/laws.zi" <<'ZI'
+host_api :: #system_library "host_api";
+Count :: 4
+Point :: struct { x: s32; y: s32; }
+Pure :: (a: s32, b: s32) -> s32 { return a + b }
+Extern :: () -> s32 #foreign host_api;
+
+#law LayoutComplete type Point;
+#law BoundResolved bounds [Count]s32;
+#law EffectPure effect Pure;
+#law AbiPortable abi Pure;
+#law CustomTrue custom Pure(20, 22) == 42;
+
+#program_export
+Answer :: () -> s32 { return Pure(20, 22) }
+ZI
+
+"$ziran" check --root "$work" "$work/laws.zi" > "$work/laws.json"
+test "$(wc -l < "$work/laws.json")" = 5
+rg -q '"law":"LayoutComplete","kind":"type".*"status":"proved"' "$work/laws.json"
+rg -q '"law":"BoundResolved","kind":"bounds".*"status":"proved"' "$work/laws.json"
+rg -q '"law":"EffectPure","kind":"effect".*"status":"proved"' "$work/laws.json"
+rg -q '"law":"AbiPortable","kind":"abi".*"status":"proved"' "$work/laws.json"
+rg -q '"law":"CustomTrue","kind":"custom".*"status":"proved"' "$work/laws.json"
+
+"$ziran" ir --root "$work" -o "$work/ir" "$work/laws.zi"
+"$ziran" check --root "$work/ir" "$work/ir/laws.zir" > "$work/saved.json"
+cmp "$work/laws.json" "$work/saved.json"
+
+"$ziran" bundle --root "$work" --entry laws:Answer \
+    -o "$work/laws-source.zib" "$work/laws.zi"
+"$ziran" bundle --root "$work/ir" --entry laws:Answer \
+    -o "$work/laws-saved.zib" "$work/ir/laws.zir"
+cmp "$work/laws-source.zib" "$work/laws-saved.zib"
+test "$("$ziran" run "$work/laws-source.zib")" = 42
+
+cat > "$work/disproved.zi" <<'ZI'
+Pure :: (a: s32, b: s32) -> s32 { return a + b }
+#law CustomFalse custom Pure(1, 1) == 42;
+#program_export
+Answer :: () -> s32 { return 1 }
+ZI
+if "$ziran" check --root "$work" "$work/disproved.zi" \
+    > "$work/disproved.json" 2> "$work/disproved.err"; then
+    echo 'a disproved law passed the gate' >&2
+    exit 1
+fi
+rg -q '"status":"disproved"' "$work/disproved.json"
+rg -q 'law CustomFalse is disproved' "$work/disproved.err"
+
+cat > "$work/unknown.zi" <<'ZI'
+host_api :: #system_library "host_api";
+Extern :: () -> s32 #foreign host_api;
+#law EffectForeign effect Extern;
+#program_export
+Answer :: () -> s32 { return 2 }
+ZI
+if "$ziran" check --root "$work" "$work/unknown.zi" \
+    > "$work/unknown.json" 2> "$work/unknown.err"; then
+    echo 'an unwaived unknown law passed the gate' >&2
+    exit 1
+fi
+rg -q '"status":"unknown"' "$work/unknown.json"
+
+cat > "$work/waived.zi" <<'ZI'
+host_api :: #system_library "host_api";
+Extern :: () -> s32 #foreign host_api;
+#law EffectForeign effect Extern;
+#law_waive EffectForeign "host bridge pending review";
+#program_export
+Answer :: () -> s32 { return 7 }
+ZI
+"$ziran" check --root "$work" "$work/waived.zi" > "$work/waived.json"
+rg -q '"kind":"waiver".*"status":"waived".*host bridge pending review' \
+    "$work/waived.json"
+rg -q '"status":"unknown"' "$work/waived.json"
+
+"$ziran" ir --root "$work" -o "$work/wir" "$work/waived.zi"
+"$ziran" bundle --root "$work" --entry waived:Answer \
+    -o "$work/waived-source.zib" "$work/waived.zi"
+"$ziran" bundle --root "$work/wir" --entry waived:Answer \
+    -o "$work/waived-saved.zib" "$work/wir/waived.zir"
+cmp "$work/waived-source.zib" "$work/waived-saved.zib"
+test "$("$ziran" run "$work/waived-source.zib")" = 7

@@ -720,6 +720,44 @@ ModuleAddDefine(ZirModule *module, const char *name, const char *value,
 }
 
 int
+ModuleAddLaw(ZirModule *module, const char *name, const char *kind,
+                 const char *payload, ZirSourceSpan span)
+{
+    ZirLaw *laws = realloc_array(module->laws, &module->law_cap,
+                                 module->law_count, sizeof(ZirLaw));
+    ZirLaw *law;
+    if(module == NULL || laws == NULL)
+        return 0;
+    module->laws = laws;
+    law = &module->laws[module->law_count++];
+    memset(law, 0, sizeof(*law));
+    copy_text(law->name, sizeof(law->name), name);
+    copy_text(law->kind, sizeof(law->kind), kind);
+    copy_text(law->payload, sizeof(law->payload), payload);
+    law->span = span;
+    return 1;
+}
+
+int
+ModuleAddLawWaiver(ZirModule *module, const char *name,
+                   const char *reason, ZirSourceSpan span)
+{
+    ZirLawWaiver *waivers = realloc_array(module->law_waivers,
+        &module->law_waiver_cap, module->law_waiver_count,
+        sizeof(ZirLawWaiver));
+    ZirLawWaiver *waiver;
+    if(module == NULL || waivers == NULL)
+        return 0;
+    module->law_waivers = waivers;
+    waiver = &module->law_waivers[module->law_waiver_count++];
+    memset(waiver, 0, sizeof(*waiver));
+    copy_text(waiver->name, sizeof(waiver->name), name);
+    copy_text(waiver->reason, sizeof(waiver->reason), reason);
+    waiver->span = span;
+    return 1;
+}
+
+int
 ModuleAddAssert(ZirModule *module, const char *condition,
                    const char *message, ZirSourceSpan span)
 {

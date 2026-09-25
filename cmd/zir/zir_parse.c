@@ -5616,7 +5616,89 @@ parse_source(const char *path, const char *root, const char *source,
                 continue;
         }
         if(mode == TOP &&
-           parse_compile_check(module, rel, line_no, t, &consts)) {
+           (starts_word(t, "#law") || starts_word(t, "#law_waive"))) {
+            if(starts_word(t, "#law_waive")) {
+                const char *body = skip_ws(t + strlen("#law_waive"));
+                char name[ZIR_NAME_MAX], reason[ZIR_TEXT_MAX];
+                size_t length = 0;
+                while((isalnum((unsigned char)*body) || *body == '_') &&
+                      length + 1 < sizeof(name))
+                    name[length++] = *body++;
+                name[length] = '\0';
+                body = skip_ws(body);
+                if(length == 0 || *body != '"') {
+                    body = skip_ws(body);
+                    const char *semi = body[0] == '"' ? NULL : NULL;
+                    (void)semi;
+                }
+                {
+                    const char *quote = *body == '"' ? body + 1 : NULL;
+                    const char *end = quote != NULL ?
+                        strchr(quote, '"') : NULL;
+                    const char *semi = end != NULL ?
+                        skip_ws(end + 1) : NULL;
+                    if(quote == NULL || end == NULL || semi == NULL ||
+                        strcmp(semi, ";") != 0)
+                        die_at(Span(rel, line_no, 1),
+                               "#law_waive requires NAME \"reason\";");
+                    if((size_t)(end - quote) >= sizeof(reason))
+                        die_at(Span(rel, line_no, 1),
+                               "#law_waive reason is too long");
+                    memcpy(reason, quote, (size_t)(end - quote));
+                    reason[end - quote] = '\0';
+                    if(!ModuleAddLawWaiver(module, name, reason,
+                                           Span(rel, line_no, 1)))
+                        die_at(Span(rel, line_no, 1),
+                               "out of memory recording law waiver");
+                }
+            } else {
+                const char *body = skip_ws(t + strlen("#law"));
+                char name[ZIR_NAME_MAX], kind[16];
+                char payload[ZIR_TEXT_MAX];
+                size_t length = 0;
+                const char *semi;
+                while((isalnum((unsigned char)*body) || *body == '_') &&
+                      length + 1 < sizeof(name))
+                    name[length++] = *body++;
+                name[length] = '\0';
+                body = skip_ws(body);
+                length = 0;
+                while((isalnum((unsigned char)*body) || *body == '_') &&
+                      length + 1 < sizeof(kind))
+                    kind[length++] = *body++;
+                kind[length] = '\0';
+                semi = body;
+                while(*semi && *semi != ';') semi++;
+                if(name[0] == '\0' || kind[0] == '\0' ||
+                   (strcmp(kind, "type") != 0 &&
+                    strcmp(kind, "effect") != 0 &&
+                    strcmp(kind, "bounds") != 0 &&
+                    strcmp(kind, "abi") != 0 &&
+                    strcmp(kind, "custom") != 0) ||
+                   *skip_ws(body) == '\0' || *semi != ';' ||
+                   semi == body)
+                    die_at(Span(rel, line_no, 1),
+                           "#law requires NAME kind payload; with kind "
+                           "type, effect, bounds, abi, or custom");
+                {
+                    const char *start = skip_ws(body);
+                    size_t payload_length = (size_t)(semi - start);
+                    if(payload_length == 0 ||
+                       payload_length >= sizeof(payload))
+                        die_at(Span(rel, line_no, 1),
+                               "#law payload is empty or too long");
+                    memcpy(payload, start, payload_length);
+                    payload[payload_length] = '\0';
+                    trim_in_place(payload);
+                }
+                if(!ModuleAddLaw(module, name, kind, payload,
+                                 Span(rel, line_no, 1)))
+                    die_at(Span(rel, line_no, 1),
+                           "out of memory recording law");
+            }
+            continue;
+        } else if(mode == TOP &&
+                  parse_compile_check(module, rel, line_no, t, &consts)) {
             continue;
         } else if(mode == TOP &&
                   (strcmp(t, "#scope_file") == 0 ||

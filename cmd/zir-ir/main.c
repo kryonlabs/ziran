@@ -1,4 +1,5 @@
 #include "zir.h"
+#include "zir_law.h"
 #include "zir_parse.h"
 #include "zir_check.h"
 #include "zir_serial.h"
@@ -130,8 +131,13 @@ main(int argc, char **argv)
         goto done;
     count = set.count;
     if(!CheckCanonicalPrograms(set.programs, count,
-                               (const char *const *)set.paths))
+                               (const char *const *)set.paths)) {
+        if(check_only)
+            PrintLawResults(set.programs, count, stdout);
         goto done;
+    }
+    if(check_only)
+        PrintLawResults(set.programs, count, stdout);
     if(!check_only) {
         if(entry != NULL) {
             for(int i = 0; i < count; i++)

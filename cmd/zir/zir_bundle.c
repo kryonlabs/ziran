@@ -1,5 +1,6 @@
 #include "zir_bundle.h"
 #include "zir_check.h"
+#include "zir_law.h"
 #include "zir_diagnostic.h"
 #include "zir_serial.h"
 #include "zir_text.h"
@@ -9,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { ZIB_VERSION = 20, ZIB_MAX_IR_BYTES = 256 * 1024 * 1024,
+enum { ZIB_VERSION = 21, ZIB_MAX_IR_BYTES = 256 * 1024 * 1024,
        ZIB_MAX_CAPABILITIES = 4096 };
 
 typedef struct CapabilityName {
@@ -25,6 +26,22 @@ module_name_order(const void *left, const void *right)
     return strcmp(a->name, b->name);
 }
 
+/* An extern kept only so a law stays decidable demands no host binding:
+ * capabilities list imports the linked code actually calls. */
+static int
+import_is_called(const ZirModule *module, const ZirImport *import)
+{
+    for(int f = 0; f < module->function_count; f++) {
+        const ZirFunction *fn = &module->functions[f];
+        for(int e = 0; e < fn->expr_count; e++)
+            if(fn->exprs[e].kind == ZIR_EXPR_CALL &&
+               fn->exprs[e].slot_type[0] == '\0' &&
+               strcmp(fn->exprs[e].name, import->name) == 0)
+                return 1;
+    }
+    return 0;
+}
+
 static int
 count_capabilities(const ZirProgram *program)
 {
@@ -34,7 +51,9 @@ count_capabilities(const ZirProgram *program)
             count += program->modules[m].imports[i].kind == ZIR_IMPORT_EXTERN &&
                      (program->modules[m].imports[i].extern_kind != ZIR_EXTERN_HOST ||
                       strncmp(program->modules[m].imports[i].target,
-                              "ziran:", 6) != 0);
+                              "ziran:", 6) != 0) &&
+                     import_is_called(&program->modules[m],
+                                      &program->modules[m].imports[i]);
     return count;
 }
 
@@ -464,6 +483,19 @@ bundle_portable_union(const ZirModule *module, const ZirType *record)
             return 0;
     }
     return status == 0;
+}
+
+/* Laws keep the extern imports they name so their status stays decidable
+ * inside a linked bundle. */
+static int
+law_names_import(const ZirModule *module, const ZirImport *import)
+{
+    for(int l = 0; l < module->law_count; l++)
+        if((!strcmp(module->laws[l].kind, "effect") ||
+            !strcmp(module->laws[l].kind, "abi")) &&
+           strcmp(module->laws[l].payload, import->name) == 0)
+            return 1;
+    return 0;
 }
 
 static int
@@ -1151,6 +1183,54 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
             memchr(keep[m], 1, (size_t)program->modules[m].function_count) != NULL ||
             memchr(keep_types[m], 1, (size_t)program->modules[m].type_count) != NULL ||
             memchr(keep_defines[m], 1, (size_t)program->modules[m].define_count) != NULL;
+    /* A law keeps what it names so its closure stays decidable in the
+     * linked bundle. */
+    for(int m = 0; m < program->module_count; m++) {
+        const ZirModule *module = &program->modules[m];
+        for(int l = 0; l < module->law_count; l++) {
+            const ZirLaw *law = &module->laws[l];
+            if(!strcmp(law->kind, "type") || !strcmp(law->kind, "bounds")) {
+                const char *payload = skip_ws(law->payload);
+                const char *resolved = payload;
+                for(int depth = 0; depth < 8; depth++) {
+                    const ZirDefine *found = NULL;
+                    if(resolved[0] == '[')
+                        break;
+                    for(int d = 0; d < module->define_count; d++)
+                        if(strcmp(module->defines[d].name, resolved) == 0) {
+                            found = &module->defines[d];
+                            break;
+                        }
+                    if(found == NULL)
+                        break;
+                    resolved = skip_ws(found->value);
+                }
+                if(resolved[0] == '[') {
+                    const char *close = strchr(resolved, ']');
+                    char bound[ZIR_NAME_MAX];
+                    size_t length;
+                    if(close != NULL &&
+                       (length = (size_t)(close - resolved - 1)) > 0 &&
+                       length < sizeof(bound)) {
+                        memcpy(bound, resolved + 1, length);
+                        bound[length] = '\0';
+                        for(int d = 0; d < module->define_count; d++)
+                            if(strcmp(module->defines[d].name,
+                                      trim_in_place(bound)) == 0)
+                                keep_defines[m][d] = 1;
+                    }
+                } else
+                    for(int t = 0; t < module->type_count; t++)
+                        if(strcmp(module->types[t].name, resolved) == 0)
+                            keep_types[m][t] = 1;
+            } else if(!strcmp(law->kind, "effect") ||
+                      !strcmp(law->kind, "abi")) {
+                for(int f = 0; f < module->function_count; f++)
+                    if(strcmp(module->functions[f].name, law->payload) == 0)
+                        keep[m][f] = 1;
+            }
+        }
+    }
     /* Checked statement text may still use imported constants in array
      * bounds. Carry constants-only modules through the same import closure. */
     for(int changed = 1; changed;) {
@@ -1270,7 +1350,8 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
         for(int i = 0; i < source->import_count; i++)
             kept_imports += import_is_used(program, source, keep[m],
                                            keep_types, keep_defines,
-                                           &source->imports[i]);
+                                           &source->imports[i]) ||
+                           law_names_import(source, &source->imports[i]);
         if(kept_imports > 0) {
             target->imports = calloc((size_t)kept_imports,
                                      sizeof(*target->imports));
@@ -1281,7 +1362,8 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
             for(int i = 0; i < source->import_count; i++)
                 if(import_is_used(program, source, keep[m], keep_types,
                                   keep_defines,
-                                  &source->imports[i]))
+                                  &source->imports[i]) ||
+                   law_names_import(source, &source->imports[i]))
                     target->imports[next_import++] = source->imports[i];
         }
     }
@@ -1388,9 +1470,45 @@ BundleWrite(FILE *out, const ZirProgram *program,
                 if(program->modules[m].imports[i].kind == ZIR_IMPORT_EXTERN &&
                    (program->modules[m].imports[i].extern_kind != ZIR_EXTERN_HOST ||
                     strncmp(program->modules[m].imports[i].target,
-                            "ziran:", 6) != 0))
+                            "ziran:", 6) != 0) &&
+                   import_is_called(&program->modules[m],
+                                    &program->modules[m].imports[i]))
                     ok = write_name(out, program->modules[m].name) &&
                          write_name(out, program->modules[m].imports[i].name);
+        {
+            int laws = 0, waivers = 0;
+            for(int m = 0; m < program->module_count; m++) {
+                laws += program->modules[m].law_count;
+                waivers += program->modules[m].law_waiver_count;
+            }
+            if(ok)
+                ok = write_u32(out, (uint32_t)laws);
+            for(int m = 0; ok && m < program->module_count; m++)
+                for(int l = 0; ok && l < program->modules[m].law_count;
+                    l++) {
+                    const ZirLaw *law = &program->modules[m].laws[l];
+                    char detail[ZIR_TEXT_MAX];
+                    int status = EvaluateLaw(program,
+                        &program->modules[m], law, detail,
+                        sizeof(detail));
+                    ok = write_name(out, program->modules[m].name) &&
+                         write_name(out, law->name) &&
+                         write_name(out, law->kind) &&
+                         write_name(out, LawStatusName(status)) &&
+                         write_name(out, detail);
+                }
+            if(ok)
+                ok = write_u32(out, (uint32_t)waivers);
+            for(int m = 0; ok && m < program->module_count; m++)
+                for(int w = 0; ok &&
+                    w < program->modules[m].law_waiver_count; w++) {
+                    const ZirLawWaiver *waiver =
+                        &program->modules[m].law_waivers[w];
+                    ok = write_name(out, program->modules[m].name) &&
+                         write_name(out, waiver->name) &&
+                         write_name(out, waiver->reason);
+                }
+        }
         ok = ok && write_u32(out, (uint32_t)length) &&
              copy_bytes(payload, out, (uint32_t)length) && fflush(out) == 0;
     }
@@ -1398,10 +1516,24 @@ BundleWrite(FILE *out, const ZirProgram *program,
     return ok;
 }
 
+void
+ZibLawTableFree(ZibLawTable *table)
+{
+    if(table == NULL)
+        return;
+    free(table->laws);
+    free(table->waivers);
+    table->laws = NULL;
+    table->waivers = NULL;
+    table->law_count = 0;
+    table->waiver_count = 0;
+}
+
 ZirProgram *
 BundleRead(FILE *in, const char *path,
-              char *entry_module, size_t module_size,
-              char *entry_function, size_t function_size)
+           char *entry_module, size_t module_size,
+           char *entry_function, size_t function_size,
+           ZibLawTable *laws)
 {
     unsigned char signature[4];
     uint32_t version, capability_count, length;
@@ -1438,6 +1570,41 @@ BundleRead(FILE *in, const char *path,
            !read_name(in, capabilities[i].function,
                       sizeof(capabilities[i].function)))
             goto failed;
+    if(laws != NULL) {
+        uint32_t law_count = 0, waiver_count = 0;
+        if(!read_u32(in, &law_count) ||
+           law_count > ZIB_MAX_CAPABILITIES * 64)
+            goto failed;
+        laws->laws = law_count ? calloc(law_count,
+                                        sizeof(*laws->laws)) : NULL;
+        if(law_count != 0 && laws->laws == NULL)
+            goto failed;
+        for(uint32_t i = 0; i < law_count; i++) {
+            ZibLawRecord *record = &laws->laws[i];
+            if(!read_name(in, record->module, sizeof(record->module)) ||
+               !read_name(in, record->name, sizeof(record->name)) ||
+               !read_name(in, record->kind, sizeof(record->kind)) ||
+               !read_name(in, record->status, sizeof(record->status)) ||
+               !read_name(in, record->detail, sizeof(record->detail)))
+                goto failed;
+        }
+        laws->law_count = (int)law_count;
+        if(!read_u32(in, &waiver_count) ||
+           waiver_count > ZIB_MAX_CAPABILITIES * 64)
+            goto failed;
+        laws->waivers = waiver_count ? calloc(waiver_count,
+                                              sizeof(*laws->waivers)) : NULL;
+        if(waiver_count != 0 && laws->waivers == NULL)
+            goto failed;
+        for(uint32_t i = 0; i < waiver_count; i++) {
+            ZibLawWaiverRecord *record = &laws->waivers[i];
+            if(!read_name(in, record->module, sizeof(record->module)) ||
+               !read_name(in, record->name, sizeof(record->name)) ||
+               !read_name(in, record->reason, sizeof(record->reason)))
+                goto failed;
+        }
+        laws->waiver_count = (int)waiver_count;
+    }
     if(!read_u32(in, &length) || length == 0 || length > ZIB_MAX_IR_BYTES)
         goto failed;
     payload = tmpfile();
@@ -1459,7 +1626,9 @@ BundleRead(FILE *in, const char *path,
             if(program->modules[m].imports[i].kind == ZIR_IMPORT_EXTERN &&
                (program->modules[m].imports[i].extern_kind != ZIR_EXTERN_HOST ||
                 strncmp(program->modules[m].imports[i].target,
-                        "ziran:", 6) != 0)) {
+                        "ziran:", 6) != 0) &&
+               import_is_called(&program->modules[m],
+                                &program->modules[m].imports[i])) {
                 if(strcmp(capabilities[next_capability].module,
                           program->modules[m].name) != 0 ||
                    strcmp(capabilities[next_capability].function,

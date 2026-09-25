@@ -39,7 +39,7 @@ typedef struct Reader {
 #define SPAN_FIELD(type, name) \
     {offsetof(type, name), sizeof(((type *)0)->name), FIELD_SPAN}
 #define FIELD_COUNT(fields) (sizeof(fields) / sizeof((fields)[0]))
-#define ZIR_FORMAT_VERSION 34u
+#define ZIR_FORMAT_VERSION 35u
 
 static const Field import_fields[] = {
     INTEGER_FIELD(ZirImport, kind), INTEGER_FIELD(ZirImport, extern_kind),
@@ -104,6 +104,14 @@ static const Field define_fields[] = {
 static const Field assert_fields[] = {
     STRING_FIELD(ZirAssert, condition), STRING_FIELD(ZirAssert, message),
     SPAN_FIELD(ZirAssert, span)
+};
+static const Field law_fields[] = {
+    STRING_FIELD(ZirLaw, name), STRING_FIELD(ZirLaw, kind),
+    STRING_FIELD(ZirLaw, payload), SPAN_FIELD(ZirLaw, span)
+};
+static const Field law_waiver_fields[] = {
+    STRING_FIELD(ZirLawWaiver, name), STRING_FIELD(ZirLawWaiver, reason),
+    SPAN_FIELD(ZirLawWaiver, span)
 };
 static const Field type_fields[] = {
     STRING_FIELD(ZirType, name), STRING_FIELD(ZirType, body),
@@ -439,6 +447,9 @@ write_module(FILE *out, const ZirModule *module)
        !WRITE_ARRAY(out, module, globals, global_count, global_fields) ||
        !WRITE_ARRAY(out, module, defines, define_count, define_fields) ||
        !WRITE_ARRAY(out, module, asserts, assert_count, assert_fields) ||
+       !WRITE_ARRAY(out, module, laws, law_count, law_fields) ||
+       !WRITE_ARRAY(out, module, law_waivers, law_waiver_count,
+                    law_waiver_fields) ||
        !WRITE_ARRAY(out, module, types, type_count, type_fields) ||
        !WRITE_ARRAY(out, module, imports, import_count, import_fields) ||
        !write_u32(out, (uint32_t)module->function_count))
@@ -458,6 +469,9 @@ read_module(Reader *reader, ZirModule *module)
     READ_ARRAY(reader, module, globals, global_count, global_fields);
     READ_ARRAY(reader, module, defines, define_count, define_fields);
     READ_ARRAY(reader, module, asserts, assert_count, assert_fields);
+    READ_ARRAY(reader, module, laws, law_count, law_fields);
+    READ_ARRAY(reader, module, law_waivers, law_waiver_count,
+               law_waiver_fields);
     READ_ARRAY(reader, module, types, type_count, type_fields);
     READ_ARRAY(reader, module, imports, import_count, import_fields);
     if(!read_u32(reader, &count))

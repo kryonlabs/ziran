@@ -579,13 +579,17 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 - Complete native C++, C, and Go backend parity, FFI, capability checks, and
   language law tests independent of UI assumptions. The current `make check`
   only covers the stated C/C++/Go subset.
-- Implement the law checking and parallel execution contracts now specified
-  in [Language direction](LANGUAGE_DIRECTION.md): named `#law` obligations
-  with machine-readable result tables and gate semantics, effect classes
-  recorded in signatures, and `#parallel for` regions with the memory and
-  ordering rules above. The current law pass checks a generic post-check IR
-  invariant; there is no general proof system, automatic parallel execution,
-  or GPU backend in this repository.
+- Named `#law NAME kind payload;` obligations are implemented for the
+  `type`, `bounds`, `effect`, `abi`, and `custom` kinds: `ziran check`
+  prints one JSON result object per obligation, `disproved` and unwaived
+  `unknown` results fail the build, `#law_waive NAME "reason";` waives an
+  `unknown`, and the tables serialize per module in `.zir` (byte-identical
+  from source and saved IR) and as the linked closure in `.zib`, where
+  `BundleLaw*` accessors expose them and laws keep the types, procedures,
+  and externs they name. The remaining law work is richer proof kinds and
+  effect classes recorded in signatures with `#parallel for` regions per
+  [Language direction](LANGUAGE_DIRECTION.md); there is no automatic
+  parallel execution or GPU backend in this repository.
 - Complete Kryon's moved `.zi` widget modules with platform access through
   declared interfaces. The checked Kryon archive builds all 191 maintained UI
   modules; native host integration, full renderer behavior, and downstream

@@ -1,5 +1,6 @@
 #include "zir_check.h"
 #include "zir_borrow.h"
+#include "zir_law.h"
 #include "zir_text.h"
 #include "zir_emit.h"
 #include "zir_expr.h"
@@ -6303,5 +6304,7 @@ CheckPrograms(ZirProgram **programs, int count)
                !name_private_globals(&programs[p]->modules[m]) ||
                !name_private_types(&programs[p]->modules[m]))
                 return 0;
+    if(!CheckLawGates(programs, count))
+        return 0;
     return 1;
 }
