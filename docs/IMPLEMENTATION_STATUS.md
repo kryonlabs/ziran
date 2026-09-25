@@ -13,7 +13,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 - File-scope variable initializers and constants pass through the Jai
   expression parser during checking. C-style compound literals and ternary
   expressions are rejected there before native output, including from saved
-  IR. The C++ backend no longer carries the old compound-literal rewrite.
+  IR. The C++ and Go backends no longer carry C-style compound-literal
+  rewrites; Go also no longer translates C casts, `NULL`, or C scalar type
+  aliases in file-scope expressions.
 - Jai `#string DELIMITER` raw multiline literals preserve their body bytes,
   including whitespace and the newline before the closing delimiter. Source
   and saved IR execute identically on the portable runner, C, C++, and Go.

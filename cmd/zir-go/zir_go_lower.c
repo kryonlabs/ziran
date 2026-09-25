@@ -118,7 +118,7 @@ go_type(const char *type, char *dst, size_t dst_size)
         const char *source;
         const char *go;
     } map[] = {
-        {"float", "float32"}, {"double", "float64"},
+        {"float", "float32"},
         {"bool", "bool"}, {"string", "string"},
         {"byte", "byte"},
         {"int8", "int8"}, {"int16", "int16"}, {"int32", "int32"},
@@ -635,37 +635,17 @@ go_set_module(const ZirModule *m, const char *guard)
 }
 
 
-/* Wrap a translated argument in a Go conversion for its source parameter type,
- * so int/long/float widening across the host bridge always compiles. */
+/* Convert scalar arguments to the checked parameter type at the Go boundary. */
 static const char *
 conv_arg(const char *source_type, const char *expr)
 {
     static char buf[ZIR_GO_TEXT_MAX];
-    char t[ZIR_GO_NAME_MAX];
+    const char *go_type_name = TargetType(source_type, ZIR_GO);
 
-    snprintf(t, sizeof(t), "%s", source_type);
-    {
-        size_t n = strlen(t);
-
-        while(n > 0 && (t[n - 1] == ' ' || t[n - 1] == '\t'))
-            t[--n] = '\0';
-    }
-    if(strcmp(t, "int") == 0 || strcmp(t, "int32") == 0)
-        snprintf(buf, sizeof(buf), "int32(%s)", expr);
-    else if(strcmp(t, "long") == 0 || strcmp(t, "long long") == 0 ||
-            strcmp(t, "size_t") == 0 || strcmp(t, "ssize_t") == 0)
-        snprintf(buf, sizeof(buf), "int64(%s)", expr);
-    else if(strcmp(t, "unsigned int") == 0 || strcmp(t, "uint") == 0 ||
-            strcmp(t, "unsigned") == 0)
-        snprintf(buf, sizeof(buf), "uint32(%s)", expr);
-    else if(strcmp(t, "unsigned long") == 0)
-        snprintf(buf, sizeof(buf), "uint64(%s)", expr);
-    else if(strcmp(t, "short") == 0)
-        snprintf(buf, sizeof(buf), "int16(%s)", expr);
-    else if(strcmp(t, "float") == 0 || strcmp(t, "float32") == 0)
-        snprintf(buf, sizeof(buf), "float32(%s)", expr);
-    else if(strcmp(t, "double") == 0 || strcmp(t, "float64") == 0)
-        snprintf(buf, sizeof(buf), "float64(%s)", expr);
+    if(go_type_name != NULL && go_type_name[0] != '\0' &&
+       strcmp(go_type_name, "string") != 0 &&
+       strcmp(go_type_name, "bool") != 0)
+        snprintf(buf, sizeof(buf), "%s(%s)", go_type_name, expr);
     else
         snprintf(buf, sizeof(buf), "%s", expr);
     return buf;
@@ -676,38 +656,6 @@ conv_arg(const char *source_type, const char *expr)
 /* Forward */
 static void tx_expr(const ZirModule *m, const char *src, char *dst,
                     size_t dst_size);
-
-/* Locate a postfix group's end without translating its contents. Quoted
- * delimiters, including escaped quotes, must not terminate calls or indices. */
-static const char *
-postfix_group_end(const char *p)
-{
-    char open = *p;
-    char close = open == '(' ? ')' : ']';
-    int depth = 1;
-
-    p++;
-    while(*p != '\0' && depth > 0) {
-        if(*p == '"' || *p == '\'') {
-            char quote = *p++;
-
-            while(*p != '\0' && *p != quote) {
-                if(*p == '\\' && p[1] != '\0')
-                    p++;
-                p++;
-            }
-            if(*p == quote)
-                p++;
-            continue;
-        }
-        if(*p == open)
-            depth++;
-        else if(*p == close)
-            depth--;
-        p++;
-    }
-    return p;
-}
 
 /* Translate the inside of a braced/paren group starting after the opener;
  * returns the position after the matching closer. */
@@ -778,9 +726,6 @@ split_top(const char *s, char parts[][ZIR_GO_TEXT_MAX], int max)
     return n;
 }
 
-/* "(Vector2){a,b}" style compound literal: p points after "(". */
-/* Positional record literals use declaration order. Names are the Go field
- * names after identifier conversion. */
 static void
 resolve_slot_type(void *context, const char *source, char *out, size_t size)
 {
@@ -788,180 +733,6 @@ resolve_slot_type(void *context, const char *source, char *out, size_t size)
     if(!go_type(source, out, size)) {
         fprintf(stderr, "unsupported slot parameter type: %s\n", source);
         exit(1);
-    }
-}
-
-static int
-source_record(const ZirModule *module, const char *name)
-{
-    const ZirType *record = FindType(module, name, NULL);
-    return record != NULL && !record->is_enum;
-}
-
-static int
-record_field_at(const ZirModule *module, const char *type, int index,
-               char *name, size_t name_size)
-{
-    const ZirType *record = FindType(module, type, NULL);
-    if(record != NULL && !record->is_enum) {
-        size_t offset = 0;
-        ZirTypeField field;
-        int position = 0;
-
-        while(TypeNextField(record, &offset, &field) == 1) {
-            if(position++ == index) {
-                go_field_ident(field.name, name, name_size);
-                return 1;
-            }
-        }
-        return 0;
-    }
-
-    return 0;
-}
-
-static void
-go_collapse_duplicate_slices(char *s)
-{
-    char *p;
-
-    while((p = strstr(s, "[:][:]")) != NULL)
-        memmove(p + 3, p + 6, strlen(p + 6) + 1);
-}
-
-static const char *
-tx_compound(const ZirModule *m, const char *p, char *dst, size_t *dn)
-{
-    char type[ZIR_GO_NAME_MAX];
-    size_t tn = 0;
-
-    while(*p != '\0' && *p != ')' && tn + 1 < sizeof(type))
-        type[tn++] = *p++;
-    if(*p != ')')
-        return p;
-    p++;
-    type[tn] = '\0';
-    while(tn > 0 && (type[tn - 1] == ' ' || type[tn - 1] == '\t'))
-        type[--tn] = '\0';
-
-    if(*p == '{') {
-        char qtype[ZIR_GO_NAME_MAX * 2];
-
-        snprintf(qtype, sizeof(qtype), "%s", type);
-        p++;
-        int declared_record = source_record(m, type);
-        if(declared_record) {
-            char raw[ZIR_GO_TEXT_MAX], parts[32][ZIR_GO_TEXT_MAX];
-            size_t rn = 0;
-            int depth = 1;
-            const char *q = p;
-            int count;
-
-            while(*q != '\0' && depth > 0 && rn + 1 < sizeof(raw)) {
-                if(*q == '{')
-                    depth++;
-                else if(*q == '}') {
-                    depth--;
-                    if(depth == 0)
-                        break;
-                }
-                raw[rn++] = *q++;
-            }
-            raw[rn] = '\0';
-            p = *q == '}' ? q + 1 : q;
-            count = split_top(raw, parts, 32);
-            *dn += (size_t)snprintf(dst + *dn, ZIR_GO_TEXT_MAX - *dn,
-                                    "%s{", qtype);
-            for(int i = 0, emitted = 0, positional = 0; i < count; i++) {
-                char *part = (char *)skip_ws(parts[i]);
-                char *eq;
-                char field[ZIR_GO_NAME_MAX];
-                char value[ZIR_GO_TEXT_MAX];
-
-                const char *source = part;
-                if(*part != '.') {
-                    if(*part == '\0') {
-                        positional++;
-                        continue;
-                    }
-                    if(!record_field_at(m, type, positional++, field, sizeof(field))) {
-                        fprintf(stderr, "zi2go: no positional field %d in %s\n", positional, type);
-                        exit(1);
-                    }
-                } else {
-                    eq = strchr(part, '=');
-                    if(eq == NULL)
-                        continue;
-                    *eq = '\0';
-                    go_field_ident(part + 1, field, sizeof(field));
-                    source = skip_ws(eq + 1);
-                }
-                char field_type[ZIR_NAME_MAX] = "";
-                const ZirType *contract = FindType(m, type, NULL);
-                ZirTypeField member;
-                size_t offset = 0;
-                while(contract != NULL && TypeNextField(contract, &offset, &member) == 1) {
-                    char member_name[ZIR_NAME_MAX];
-                    go_field_ident(member.name, member_name, sizeof(member_name));
-                    if(!strcmp(member_name, field)) {
-                        copy_text(field_type, sizeof(field_type), member.type);
-                        break;
-                    }
-                }
-                if(*source == '{' && *field_type) {
-                    char typed[ZIR_GO_TEXT_MAX];
-                    snprintf(typed, sizeof(typed), "(%s)%s", field_type, source);
-                    tx_expr(m, typed, value, sizeof(value));
-                } else {
-                    tx_expr(m, source, value, sizeof(value));
-                }
-                const char *scalar = ScalarType(field_type);
-                if(*scalar && strcmp(scalar, "bool") && strcmp(scalar, "string")) {
-                    char scalar_type[ZIR_NAME_MAX];
-                    char converted[ZIR_GO_TEXT_MAX];
-                    if(go_type(field_type, scalar_type, sizeof(scalar_type))) {
-                        snprintf(converted, sizeof(converted), "%s(%s)", scalar_type, value);
-                        copy_text(value, sizeof(value), converted);
-                    }
-                }
-                go_collapse_duplicate_slices(value);
-                if(emitted++)
-                    *dn += (size_t)snprintf(dst + *dn, ZIR_GO_TEXT_MAX - *dn, ", ");
-                *dn += (size_t)snprintf(dst + *dn, ZIR_GO_TEXT_MAX - *dn,
-                                        "%s: %s", field, value);
-            }
-            if(*dn + 2 < ZIR_GO_TEXT_MAX)
-                dst[(*dn)++] = '}';
-            return p;
-        }
-        /* other struct literals: Type{...} — recurse and keep braces */
-        {
-            char ctor[ZIR_GO_NAME_MAX + 8];
-
-            snprintf(ctor, sizeof(ctor), "%s{", qtype);
-            if(*dn + strlen(ctor) + 1 < ZIR_GO_TEXT_MAX) {
-                memcpy(dst + *dn, ctor, strlen(ctor));
-                *dn += strlen(ctor);
-            }
-            p = tx_group(m, p, dst, dn, '{', '}');
-            if(*dn + 2 < ZIR_GO_TEXT_MAX)
-                dst[(*dn)++] = '}';
-            return p;
-        }
-    }
-    /* plain cast "(T)expr" */
-    {
-        char gt[ZIR_GO_NAME_MAX];
-
-        if(go_type(type, gt, sizeof(gt)) && gt[0] != '\0') {
-            if(*dn + strlen(gt) + 1 < ZIR_GO_TEXT_MAX) {
-                memcpy(dst + *dn, gt, strlen(gt));
-                *dn += strlen(gt);
-            }
-            return p; /* caller emits the operand as the cast argument;
-                         Go cast syntax is T(operand), so open a paren */
-        }
-        return p; /* unknown cast: drop */
     }
 }
 
@@ -1024,98 +795,7 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                 dst[dn++] = *p++;
             continue;
         }
-        /* cast / compound literal: '(' ident ')' */
-        if(*p == '(' &&
-           (p == src || (!is_ident_char((unsigned char)p[-1]) &&
-                         p[-1] != ')' && p[-1] != ']'))) {
-            const char *q = p + 1;
-            size_t tl = 0;
-
-            if(!isalpha((unsigned char)*q) && *q != '_')
-                q = p; /* numeric or expression: not a cast */
-            else
-                while(is_ident_char((unsigned char)*q) || *q == ' ' || *q == '*')
-                    q++;
-            tl = (size_t)(q - (p + 1));
-            if(*q == ')' && tl > 0 && tl < sizeof(char) * ZIR_GO_NAME_MAX) {
-                char maybe[ZIR_GO_NAME_MAX];
-                int identish = 1;
-                const char *after = skip_ws(q + 1);
-
-                /* A cast needs an operand. A grouped argument at the end of
-                 * a call is not a type, even if it is a lone identifier. */
-                if(*after == '\0' || *after == ')' || *after == ',' || *after == '}')
-                    identish = 0;
-
-                memcpy(maybe, p + 1, tl < ZIR_GO_NAME_MAX - 1 ? tl : ZIR_GO_NAME_MAX - 1);
-                maybe[tl < ZIR_GO_NAME_MAX - 1 ? tl : ZIR_GO_NAME_MAX - 1] = '\0';
-                for(char *c = maybe; *c != '\0'; c++)
-                    if(!is_ident_char((unsigned char)*c) && *c != ' ' && *c != '*')
-                        identish = 0;
-                if(identish) {
-                    p = tx_compound(m, p + 1, dst, &dn);
-                    /* Go conversions wrap one operand, including its
-                     * postfix operations, rather than the remaining binary
-                     * expression. Compound literals are already complete. */
-                    if(*(p - 1) == ')' && strchr(maybe, '{') == NULL) {
-                        /* Scalar casts bind after postfix calls, indexing,
-                         * and member access, but before binary operators. */
-                        const char *op = skip_ws(p);
-                        char primary[ZIR_GO_TEXT_MAX];
-                        size_t pn = 0;
-
-                        if(dn + 1 < dst_size)
-                            dst[dn++] = '(';
-                        if(*op == '(') {
-                            const char *after;
-
-                            dst[dn++] = '(';
-                            after = tx_group(m, op + 1, dst, &dn, '(', ')');
-                            if(dn + 1 < dst_size)
-                                dst[dn++] = ')';
-                            p = after;
-                        } else if(is_ident_char((unsigned char)*op)) {
-                            const char *start = op;
-
-                            while(is_ident_char((unsigned char)*op))
-                                op++;
-                            for(;;) {
-                                const char *next = skip_ws(op);
-
-                                if(*next == '[' || *next == '(') {
-                                    op = postfix_group_end(next);
-                                } else if(*next == '.' &&
-                                          is_ident_char((unsigned char)next[1])) {
-                                    op = next + 1;
-                                    while(is_ident_char((unsigned char)*op))
-                                        op++;
-                                } else {
-                                    break;
-                                }
-                            }
-                            pn = (size_t)(op - start);
-                            if(pn >= sizeof(primary))
-                                pn = sizeof(primary) - 1;
-                            memcpy(primary, start, pn);
-                            primary[pn] = '\0';
-                            p = op;
-                            {
-                                char po[ZIR_GO_TEXT_MAX];
-
-                                tx_expr(m, primary, po, sizeof(po));
-                                size_t pl = strlen(po);
-                                if(dn + pl + 1 < dst_size) {
-                                    memcpy(dst + dn, po, pl);
-                                    dn += pl;
-                                }
-                            }
-                        }
-                        if(dn + 1 < dst_size)
-                            dst[dn++] = ')';
-                    }
-                    continue;
-                }
-            }
+        if(*p == '(') {
             dst[dn++] = *p++;
             p = tx_group(m, p, dst, &dn, '(', ')');
             if(dn + 1 < dst_size)
@@ -1129,17 +809,7 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                 dst[dn++] = '}';
             continue;
         }
-        /* NULL -> nil */
-        if(strncmp(p, "NULL", 4) == 0 && !is_ident_char((unsigned char)p[4])) {
-            const char *r = "nil";
-            if(dn + 4 < dst_size) {
-                memcpy(dst + dn, r, 3);
-                dn += 3;
-            }
-            p += 4;
-            continue;
-        }
-        /* 1.0f -> 1.0 */
+        /* Keep numeric literals intact while translating identifiers. */
         if(isdigit((unsigned char)*p)) {
             const char *q = p;
             const char *num_end;
@@ -1160,16 +830,13 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                 }
             }
             num_end = q;
-            if(*q == 'f' || *q == 'F')
-                q++;   /* C float suffix: drop it */
             while(p < num_end && dn + 1 < dst_size)
                 dst[dn++] = *p++;
             p = q;
             continue;
         }
-        if(is_ident_char((unsigned char)*p) || *p == '&') {
-            int addr = *p == '&';
-            const char *q = addr ? p + 1 : p;
+        if(is_ident_char((unsigned char)*p)) {
+            const char *q = p;
             char ident[ZIR_GO_NAME_MAX];
             size_t il = 0;
             int fni;
@@ -1181,7 +848,7 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                 dst[dn++] = *p++;
                 continue;
             }
-            if(!addr && *q == '.' &&
+            if(*q == '.' &&
                (isalpha((unsigned char)q[1]) || q[1] == '_') &&
                go_local_name_for(ident) == NULL) {
                 const ZirType *enumeration = FindType(m, ident, NULL);
@@ -1390,8 +1057,6 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
             if(dn + il + 1 < dst_size) {
                 const char *local = go_local_name_for(ident);
 
-                if(addr && dn + 1 < dst_size)
-                    dst[dn++] = '&';
                 if(local != NULL) {
                     size_t ll = strlen(local);
                     if(dn + ll + 1 < dst_size) {
