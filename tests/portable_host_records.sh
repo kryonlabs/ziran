@@ -3,6 +3,8 @@ set -eu
 
 ziran=$1
 host_test=$2
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+include=${ZIRAN_INCLUDE:-"$root/include"}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
@@ -72,7 +74,7 @@ Packet TransformHost(Packet packet) {
 }
 int main(void) { return Answer() == 42 ? 0 : 1; }
 C
-            "${CC:-cc}" -std=c11 -I"$output" -I"$(dirname "$ziran")/../../include" \
+            "${CC:-cc}" -std=c11 -I"$output" -I"$include" \
                 "$output"/*.c -o "$output/app"
             "$output/app"
         elif test "$target" = cpp; then
@@ -87,7 +89,7 @@ extern "C" Packet TransformHost(Packet packet) {
 int main() { return Answer() == 42 ? 0 : 1; }
 CPP
             "${CXX:-c++}" -std=c++17 -I"$output" \
-                -I"$(dirname "$ziran")/../../include" \
+                -I"$include" \
                 "$output"/*.cpp -o "$output/app"
             "$output/app"
         else
