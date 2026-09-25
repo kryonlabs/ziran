@@ -10,6 +10,10 @@
 
 /* Immutable borrowed UTF-8 bytes; length preserves embedded nulls. */
 typedef struct String { const char *data; size_t length; } String;
+typedef struct Source_Code_Location {
+    String fully_pathed_filename;
+    int64_t line_number;
+} Source_Code_Location;
 
 static inline String StringView(const char *data, size_t length) {
     String value = {data, length};

@@ -63,7 +63,14 @@ node(ExprParser *p, ZirExprKind kind, size_t start, const char *name,
     memcpy(text, p->source + start, n);
     text[n] = 0;
     trim_in_place(text);
-    span.column += (int)start;
+    for(size_t i = 0; i < start; i++) {
+        if(p->source[i] == '\n') {
+            span.line++;
+            span.column = 1;
+        } else {
+            span.column++;
+        }
+    }
     e = FunctionAddExpr(p->fn, kind, text, span);
     if(!e) { p->failed = 1; return -1; }
     copy_text(e->name, sizeof(e->name), name);
@@ -87,6 +94,39 @@ static int parse_expr(ZirFunction *fn, const ZirModule *module,
                       int expand_defaults);
 
 static int default_expansion_depth;
+
+static int
+caller_location_literal(const ExprParser *p, int callee,
+                        char *output, size_t capacity)
+{
+    const ZirSourceSpan *span = &p->fn->exprs[callee].span;
+    char candidate[ZIR_PATH_MAX * 2];
+    char escaped[ZIR_TEXT_MAX];
+    const char *path = span->path;
+    if(path[0] != '/' && p->module->source_root[0] != '\0') {
+        int written = snprintf(candidate, sizeof(candidate), "%s/%s",
+                               p->module->source_root, path);
+        if(written < 0 || (size_t)written >= sizeof(candidate))
+            return 0;
+        path = candidate;
+    }
+    char *canonical = realpath(path, NULL);
+    if(canonical != NULL)
+        path = canonical;
+    size_t length = strlen(path);
+    if(path[0] != '/' || length >= ZIR_PATH_MAX) {
+        free(canonical);
+        return 0;
+    }
+    size_t escaped_length = escape_c_string(path, escaped, sizeof(escaped));
+    free(canonical);
+    if(escaped_length >= sizeof(escaped) - 1)
+        return 0;
+    int written = snprintf(output, capacity,
+        "Source_Code_Location.{.fully_pathed_filename = \"%s\", "
+        ".line_number = %d}", escaped, span->line);
+    return written >= 0 && (size_t)written < capacity;
+}
 
 static int
 qualify_default_field_helpers(const char *value, const char *base,
@@ -246,33 +286,44 @@ append_default_arguments(ExprParser *p, int callee,
         char helper_name[ZIR_NAME_MAX];
         char helper_call[ZIR_NAME_MAX * 2];
         char qualified_default[ZIR_TEXT_MAX];
+        char location_default[ZIR_TEXT_MAX];
         FunctionDefaultHelperName(function, i, helper_name,
                                   sizeof(helper_name));
-        int has_helper = !function->is_template;
-        if(!has_helper && owner != NULL)
-            for(int f = 0; f < owner->function_count; f++)
-                if(!strcmp(owner->functions[f].name, helper_name)) {
-                    has_helper = 1;
-                    break;
-                }
-        if(has_helper) {
-            const char *dot = strchr(target, '.');
-            int written = dot == NULL ?
-                snprintf(helper_call, sizeof(helper_call), "%s()", helper_name) :
-                snprintf(helper_call, sizeof(helper_call), "%.*s.%s()",
-                         (int)(dot - target), target, helper_name);
-            if(written < 0 || (size_t)written >= sizeof(helper_call)) {
+        if(strcmp(value, "#caller_location") == 0) {
+            if(!caller_location_literal(p, callee, location_default,
+                                        sizeof(location_default))) {
                 p->failed = 1;
                 break;
             }
-            value = helper_call;
-        } else if(!qualify_default_field_helpers(
-                      value, helper_name, target, p->span.path,
-                      qualified_default, sizeof(qualified_default))) {
-            p->failed = 1;
-            break;
+            value = location_default;
         } else {
-            value = qualified_default;
+            int has_helper = !function->is_template;
+            if(!has_helper && owner != NULL)
+                for(int f = 0; f < owner->function_count; f++)
+                    if(!strcmp(owner->functions[f].name, helper_name)) {
+                        has_helper = 1;
+                        break;
+                    }
+            if(has_helper) {
+                const char *dot = strchr(target, '.');
+                int written = dot == NULL ?
+                    snprintf(helper_call, sizeof(helper_call), "%s()",
+                             helper_name) :
+                    snprintf(helper_call, sizeof(helper_call), "%.*s.%s()",
+                             (int)(dot - target), target, helper_name);
+                if(written < 0 || (size_t)written >= sizeof(helper_call)) {
+                    p->failed = 1;
+                    break;
+                }
+                value = helper_call;
+            } else if(!qualify_default_field_helpers(
+                          value, helper_name, target, p->span.path,
+                          qualified_default, sizeof(qualified_default))) {
+                p->failed = 1;
+                break;
+            } else {
+                value = qualified_default;
+            }
         }
         default_expansion_depth++;
         int child = parse_expr(p->fn, p->module, value, p->span,
@@ -412,6 +463,10 @@ prefix(ExprParser *p)
         result = node(p, ZIR_EXPR_IDENT, start, p->fn->name, "", -1, -1);
         if(result >= 0)
             p->fn->exprs[result].is_this = 1;
+    } else if(is(p, "#caller_location")) {
+        Diagnostic(p->span, "parse.caller_location",
+                   "#caller_location is only valid as a parameter default");
+        exit(1);
     } else if(take(p, "#compile_time")) {
         result = node(p, ZIR_EXPR_COMPILE_TIME, start, "", "", -1, -1);
     } else if(take(p, "#procedure_name")) {

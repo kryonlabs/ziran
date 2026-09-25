@@ -1249,6 +1249,10 @@ go_lower(const ZirProgram *const *progs, int prog_count,
             }
             if(g_extern_count > 0)
                 fprintf(f, "\n");
+            if(pi == 0 && mi == 0)
+                fputs("type Source_Code_Location struct {\n"
+                      "\tFullyPathedFilename string\n"
+                      "\tLineNumber int64\n}\n\n", f);
 
             for(int i = 0; i < m->import_count; i++) {
                 const ZirImport *imp = &m->imports[i];

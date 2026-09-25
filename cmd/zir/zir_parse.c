@@ -1369,9 +1369,15 @@ add_default_helpers(ZirProgram *program, ZirModule *module,
                            name);
                 imports_resolved = 1;
             }
-            if(!is_identifier_text(name) ||
-               !InferExpressionType(module, value, function->span,
-                                    type, sizeof(type)) ||
+            int type_known;
+            if(strcmp(value, "#caller_location") == 0) {
+                copy_text(type, sizeof(type), "Source_Code_Location");
+                type_known = 1;
+            } else
+                type_known = InferExpressionType(module, value,
+                                                 function->span, type,
+                                                 sizeof(type));
+            if(!is_identifier_text(name) || !type_known ||
                !strcmp(type, "void") || !strcmp(type, "null"))
                 die_at(function->span,
                        "cannot infer default parameter type: %s", name);
@@ -1421,6 +1427,14 @@ add_default_helpers(ZirProgram *program, ZirModule *module,
             if(assignment == NULL) continue;
             const char *value = trim(assignment + 1);
             if(contextual[i]) continue;
+            if(strcmp(value, "#caller_location") == 0) {
+                char *colon = strchr(parameters[i], ':');
+                if(colon == NULL ||
+                   strcmp(trim(colon + 1), "Source_Code_Location") != 0)
+                    die_at(function->span,
+                           "#caller_location requires a Source_Code_Location parameter");
+                continue;
+            }
             if(function->is_template &&
                default_is_scope_independent(value, function->span.path))
                 continue;
@@ -5009,6 +5023,12 @@ parse_source(const char *path, const char *root, const char *source,
     module = ProgramAddModule(program, module_name, rel, Span(rel, 1, 1));
     if(module == NULL)
         die("out of memory");
+    if(root != NULL) {
+        char *canonical_root = realpath(root, NULL);
+        copy_text(module->source_root, sizeof(module->source_root),
+                  canonical_root != NULL ? canonical_root : root);
+        free(canonical_root);
+    }
 
     for(;;) {
         if(!have_look && onelineq_count == 0 &&
@@ -5061,7 +5081,8 @@ parse_source(const char *path, const char *root, const char *source,
             from_lookahead = 1;
         }
 
-        line_no++;
+        if(!from_queue)
+            line_no++;
         if(!from_queue && !from_lookahead)
             strip_block_comments(line, &in_block_comment);
         if(contains_source_directive(line, "#else_if") ||
@@ -5088,7 +5109,7 @@ parse_source(const char *path, const char *root, const char *source,
             }
             pending_end_column = source_end_column_for_trimmed(raw, trimmed);
             if(pending_len > 0 && pending_len + 2 < (int)sizeof(pending)) {
-                pending[pending_len++] = ' ';
+                pending[pending_len++] = '\n';
                 pending[pending_len] = '\0';
             }
             strncat(pending, trimmed, sizeof(pending) - pending_len - 1);
@@ -5270,7 +5291,9 @@ parse_source(const char *path, const char *root, const char *source,
                         pending_end_column = source_end_column_for_trimmed(la, lt);
                         if(pending_len > 0 &&
                            pending_len + 2 < (int)sizeof(pending)) {
-                            pending[pending_len++] = ' ';
+                            pending[pending_len++] =
+                                last == '}' && starts_word(lt, "else") ?
+                                ' ' : '\n';
                             pending[pending_len] = '\0';
                         }
                         strncat(pending, lt,
@@ -5363,6 +5386,11 @@ parse_source(const char *path, const char *root, const char *source,
            !(mode == TOP && looks_like_function_header(t)))
             die_at(Span(rel, line_no, 1),
                    "#procedure_name() requires a procedure scope");
+        if(mode != FUNCTION &&
+           contains_source_directive(t, "#caller_location") &&
+           !(mode == TOP && looks_like_function_header(t)))
+            die_at(Span(rel, line_no, 1),
+                   "#caller_location is only valid as a parameter default");
         if(contains_source_directive(t, "#slot"))
             die_at(Span(rel, line_no, 1),
                    "#slot is not Jai syntax; use a procedure type and a named function");

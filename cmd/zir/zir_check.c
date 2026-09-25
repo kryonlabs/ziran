@@ -2265,6 +2265,9 @@ check_type_declarations(ZirModule *module)
         if(record->name[0] == '#')
             return record_declaration_error(record,
                 "retired compiler-generated type", NULL);
+        if(BuiltinType(record->name) != NULL)
+            return record_declaration_error(record,
+                "built-in type cannot be redeclared", NULL);
         for(int previous = 0; previous < i; previous++) {
             const ZirType *other = &module->types[previous];
             if(strcmp(record->name, other->name) == 0 &&

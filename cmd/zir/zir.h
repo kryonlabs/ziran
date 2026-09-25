@@ -233,6 +233,7 @@ int VecElementType(const struct ZirModule *module, const char *type,
 typedef struct ZirModule {
     char name[ZIR_NAME_MAX];
     char source_path[ZIR_PATH_MAX];
+    char source_root[ZIR_PATH_MAX]; /* source-only path for call-site defaults */
     char lookup_path[ZIR_PATH_MAX]; /* checker context; never serialized */
     ZirSourceSpan span;
     ZirGlobal *globals;
@@ -270,7 +271,8 @@ int ResolveFunctionAt(const ZirModule *module, const char *name,
                       const ZirFunction **function);
 /* Runtime contracts are parsed from embedded declaration sources. */
 const ZirType *FindType(const ZirModule *module, const char *name,
-                          const ZirModule **owner);
+                        const ZirModule **owner);
+const ZirType *BuiltinType(const char *name);
 int ResolveEnumMember(const ZirModule *module, const char *name,
                          const ZirModule **owner, const ZirType **type);
 

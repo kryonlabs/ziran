@@ -338,6 +338,17 @@ ResolveFunction(const ZirModule *module, const char *name,
 }
 
 const ZirType *
+BuiltinType(const char *name)
+{
+    static const ZirType location = {
+        .name = "Source_Code_Location",
+        .body = "fully_pathed_filename: string;\nline_number: s64;\n",
+        .is_public = 1
+    };
+    return strcmp(name, location.name) == 0 ? &location : NULL;
+}
+
+const ZirType *
 FindType(const ZirModule *module, const char *name, const ZirModule **owner)
 {
     const ZirType *found = NULL;
@@ -412,6 +423,11 @@ FindType(const ZirModule *module, const char *name, const ZirModule **owner)
     }
     if(owner)
         *owner = scope;
+    if(found != NULL)
+        return found;
+    found = BuiltinType(name);
+    if(found != NULL && owner != NULL)
+        *owner = module;
     return found;
 }
 

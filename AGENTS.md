@@ -13,5 +13,9 @@ do not import a UI library.
   native targets, and portable VM behavior aligned.
 - Use the current Ziran syntax directly. Do not add legacy Kryon/KIR/KRB
   compatibility paths.
+- Do not preserve old source spellings, command flags, binary formats, or
+  runtime entry points for backward compatibility. Remove executable legacy
+  paths when replacing them; keep rejection tests that enforce the current
+  language rules.
 - Run relevant checks with `DISPLAY` and `WAYLAND_DISPLAY` removed. Any test
   that needs a display must use a private Xvfb/Xephyr display.

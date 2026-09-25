@@ -24,6 +24,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 - Jai `#compile_time` evaluates to true in supported compile-time procedure
   execution and false in C, C++, Go, and portable runtime code. It is a
   boolean expression, not a declaration constant or direct `#if` condition.
+- Jai `#caller_location` in a parameter default supplies the calling file's
+  full path and physical line as a `Source_Code_Location` record. Inferred and
+  explicitly typed defaults work through imports, polymorphic calls, and
+  `#load`; explicit arguments override the default. Source and saved IR agree
+  in C, C++, Go, and portable builds. Compile-time calls consuming this record
+  remain outside the current `#run` evaluator.
 - Jai `#string DELIMITER` raw multiline literals preserve their body bytes,
   including whitespace and the newline before the closing delimiter. Source
   and saved IR execute identically on the portable runner, C, C++, and Go.

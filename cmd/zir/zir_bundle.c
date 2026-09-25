@@ -650,6 +650,8 @@ mark_type(const ZirProgram *program, const ZirModule *scope,
         return mark_type(program, scope, element, keep_types, changed);
     const ZirModule *owner = NULL;
     const ZirType *type = FindType(scope, name, &owner);
+    if(type != NULL && type == BuiltinType(name))
+        return 1;
     return type == NULL ||
            mark_type_pointer(program, owner, type, keep_types, changed);
 }

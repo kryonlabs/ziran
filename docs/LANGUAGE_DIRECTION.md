@@ -75,8 +75,10 @@ including inferred `value := expression` defaults and defaults before required
 parameters. Inferred defaults use the checked expression type, including
 imported constants and procedure results. A missing default expression is
 evaluated after the caller's explicit argument expressions. Defaults on
-procedure-type values and call-site directives such as `#caller_location`
-remain unsupported. Concrete procedure defaults use declaration-scope name
+procedure-type values remain unsupported. `#caller_location` is a parameter
+default of type `Source_Code_Location`; omitted arguments receive the calling
+source file and physical line, including through imports and `#load`. Concrete
+procedure defaults use declaration-scope name
 resolution. Polymorphic defaults with a concrete expression type also use a
 checked helper in the declaring module. Scope-independent literals retain
 their call context for type inference. Literal record defaults such as
@@ -180,6 +182,11 @@ bodies, including files introduced by `#load`.
 `#file` yields the full source filename and `#filepath` its containing
 directory. `#procedure_name()` yields the enclosing procedure's declared name
 as a string, including when used in a default or a `#run` call.
+`#caller_location` is valid as a procedure parameter default. It supplies a
+`Source_Code_Location` record with `fully_pathed_filename` and `line_number`
+from the call site; an explicit argument overrides the default. The record is
+available on C, C++, Go, and portable builds. Compile-time `#run` execution of
+procedures that consume this record remains outside the current evaluator.
 ASCII byte characters use `#char "A"` and infer `s64`, as integer literals
 do; single-quoted character literals are rejected.
 Jai raw multiline strings use `#string END` followed by their exact text and
