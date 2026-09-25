@@ -114,18 +114,6 @@ static const ZirModule *module_constant_owner(const ZirModule *module,
 static int
 go_type(const char *type, char *dst, size_t dst_size)
 {
-    struct {
-        const char *source;
-        const char *go;
-    } map[] = {
-        {"float", "float32"},
-        {"bool", "bool"}, {"string", "string"},
-        {"byte", "byte"},
-        {"int8", "int8"}, {"int16", "int16"}, {"int32", "int32"},
-        {"int64", "int64"}, {"float32", "float32"}, {"float64", "float64"},
-        {"void", ""},
-        {NULL, NULL}
-    };
     char t[ZIR_GO_NAME_MAX];
     size_t n;
 
@@ -183,12 +171,6 @@ go_type(const char *type, char *dst, size_t dst_size)
             return 1;
         }
         return 0;
-    }
-    for(int i = 0; map[i].source != NULL; i++) {
-        if(strcmp(t, map[i].source) == 0) {
-            snprintf(dst, dst_size, "%s", map[i].go);
-            return 1;
-        }
     }
     /* A name alone is not evidence that a type exists. */
     {

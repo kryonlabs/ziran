@@ -181,8 +181,6 @@ typedef struct ZirDefine {
 typedef struct ZirAssert {
     char condition[ZIR_TEXT_MAX]; /* compile-time Ziran expression */
     char message[ZIR_TEXT_MAX];
-    int known;                    /* condition resolved by Ziran frontend */
-    int value;                    /* boolean value when known */
     ZirSourceSpan span;
 } ZirAssert;
 
@@ -299,8 +297,8 @@ void ModuleAddStatic(ZirModule *module, const char *name, const char *type,
                         const char *init, ZirSourceSpan span);
 ZirDefine *ModuleAddDefine(ZirModule *module, const char *name,
                               const char *value, ZirSourceSpan span);
-ZirAssert *ModuleAddAssert(ZirModule *module, const char *condition,
-                              const char *message, ZirSourceSpan span);
+int ModuleAddAssert(ZirModule *module, const char *condition,
+                    const char *message, ZirSourceSpan span);
 ZirType *ModuleAddType(ZirModule *module, const char *name,
                           ZirSourceSpan span);
 ZirStmt *FunctionAddStmt(ZirFunction *fn, ZirStmtKind kind,

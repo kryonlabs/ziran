@@ -4220,7 +4220,6 @@ parse_compile_check(ZirModule *module, const char *path, int line_no,
     char cond[ZIR_TEXT_MAX];
     char raw[ZIR_TEXT_MAX];
     char msg[ZIR_TEXT_MAX];
-    ZirAssert *a;
 
     if(strncmp(line, "#assert", 7) == 0 &&
        (line[7] == '\0' || isspace((unsigned char)line[7]))) {
@@ -4254,11 +4253,9 @@ parse_compile_check(ZirModule *module, const char *path, int line_no,
                 copy_text(cond, sizeof(cond), value ? "1" : "0");
             else
                 copy_text(cond, sizeof(cond), raw);
-            a = ModuleAddAssert(module, cond, msg, Span(path, line_no, 1));
-            if(a != NULL) {
-                a->known = known;
-                a->value = value != 0;
-            }
+            if(!ModuleAddAssert(module, cond, msg, Span(path, line_no, 1)))
+                die_at(Span(path, line_no, 1),
+                       "out of memory while recording #assert");
         }
         return 1;
     }

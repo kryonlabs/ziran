@@ -329,7 +329,7 @@ if "$ziran" check --root "$work" "$work/assert-forged.zir" \
     echo 'saved IR accepted a falsified compile-time assertion' >&2
     exit 1
 fi
-rg -q '#assert result disagrees with its condition' "$work/assert-forged.err"
+rg -q '#assert failed' "$work/assert-forged.err"
 for input in "$work/assert_selected.zi" "$work/assert-ir/assert_selected.zir"; do
     case "$input" in
         *.zi) root=$work; suffix=source ;;

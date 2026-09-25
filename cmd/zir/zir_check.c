@@ -4544,16 +4544,9 @@ CheckPrograms(ZirProgram **programs, int count)
                     }
                     value = literal[0] == '1';
                 }
-                if(assertion->known && assertion->value != (value != 0)) {
-                    Diagnostic(assertion->span, "check.assert",
-                               "#assert result disagrees with its condition");
-                    return 0;
-                }
-                assertion->known = 1;
-                assertion->value = value != 0;
                 snprintf(assertion->condition,
-                         sizeof(assertion->condition), "%d", assertion->value);
-                if(!assertion->value) {
+                         sizeof(assertion->condition), "%d", value != 0);
+                if(!value) {
                     Diagnostic(assertion->span, "check.assert",
                                "#assert failed: %s", assertion->message);
                     return 0;

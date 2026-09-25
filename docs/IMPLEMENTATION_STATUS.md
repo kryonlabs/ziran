@@ -136,7 +136,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.krb` are rejected by the shared loader. Kryon owns the UI test fixtures;
   Ziran keeps a non-UI array and UTF-8 byte law fixture that runs from source
   and saved IR through native C, C++, and Go.
-- `zi2zir` writes experimental binary `.zir` version 31 after checking all
+- `zi2zir` writes experimental binary `.zir` version 32 after checking all
   input modules together. C, C++, and Go can read saved modules without reparsing
   `.zi`; their imports are relinked from serialized module identities. The
   reader rejects malformed headers, versions, truncated data, invalid
@@ -154,7 +154,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   portable linker reject reachable unions until those targets have overlapping
   storage semantics.
 - `zi2zib bundle --root DIR --entry module:function -o FILE` builds an
-  experimental version 19 `.zib` from source or saved IR. `zi2zib run FILE`
+  experimental version 20 `.zib` from source or saved IR. `zi2zib run FILE`
   loads and executes the validated scalar, plain record, enum, and fixed-array
   subset without a
   display or Kryon.

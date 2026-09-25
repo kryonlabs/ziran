@@ -647,7 +647,7 @@ ModuleAddDefine(ZirModule *module, const char *name, const char *value,
     return d;
 }
 
-ZirAssert *
+int
 ModuleAddAssert(ZirModule *module, const char *condition,
                    const char *message, ZirSourceSpan span)
 {
@@ -655,18 +655,18 @@ ModuleAddAssert(ZirModule *module, const char *condition,
     ZirAssert *a;
 
     if(module == NULL)
-        return NULL;
+        return 0;
     asserts = realloc_array(module->asserts, &module->assert_cap,
                                 module->assert_count, sizeof(ZirAssert));
     if(asserts == NULL)
-        return NULL;
+        return 0;
     module->asserts = asserts;
     a = &module->asserts[module->assert_count++];
     memset(a, 0, sizeof(*a));
     copy_text(a->condition, sizeof(a->condition), condition);
     copy_text(a->message, sizeof(a->message), message);
     a->span = span;
-    return a;
+    return 1;
 }
 
 ZirType *
@@ -881,8 +881,8 @@ ProgramDump(const ZirProgram *program, FILE *out)
         for(j = 0; j < m->assert_count; j++) {
             const ZirAssert *a = &m->asserts[j];
 
-            fprintf(out, "  assert condition %s known %d value %d message %s span ",
-                    a->condition, a->known, a->value, a->message);
+            fprintf(out, "  assert condition %s message %s span ",
+                    a->condition, a->message);
             dump_span(out, a->span);
             fprintf(out, "\n");
         }

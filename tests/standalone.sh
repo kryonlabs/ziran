@@ -37,7 +37,7 @@ python3 - "$work/ir/hello.zir" <<'PY'
 from pathlib import Path
 import sys
 data = Path(sys.argv[1]).read_bytes()
-assert data[:8] == b'ZIR\0\x1f\0\0\0', data[:8]
+assert data[:8] == b'ZIR\0\x20\0\0\0', data[:8]
 PY
 "$ziran" build --target=c --root "$work" -o "$work/c" "$work/hello.zi"
 test -s "$work/c/hello.c"
@@ -798,10 +798,10 @@ python3 - "$work/app.zib" "$work/bad-bundle.zib" "$work/old-bundle.zib" <<'PY'
 from pathlib import Path
 import sys
 data = Path(sys.argv[1]).read_bytes()
-assert data[:8] == b'ZIB\0\x13\0\0\0', data[:8]
+assert data[:8] == b'ZIB\0\x14\0\0\0', data[:8]
 Path(sys.argv[2]).write_bytes(data[:17])
 old = bytearray(data)
-old[4] = 1
+old[4] = 19
 Path(sys.argv[3]).write_bytes(old)
 PY
 if "$ziran" run "$work/bad-bundle.zib" 2> "$work/bad-bundle.err"; then
@@ -949,7 +949,7 @@ python3 - "$work/blocks-ir/blockapp.zir" "$work/version.zir" <<'PY'
 from pathlib import Path
 import sys
 data = bytearray(Path(sys.argv[1]).read_bytes())
-data[4] = 1
+data[4] = 31
 Path(sys.argv[2]).write_bytes(data)
 PY
 if "$ziran" build --target=c --root "$work" -o "$work/version-out" \
