@@ -202,8 +202,10 @@ runs, not only one-shot calls.
 ### 9. Owned storage and standard-library usability
 
 `Vec(T)` has checked push, indexing, clear, free, swap, `VecPop`/`VecGet`
-through `Option(T)`, and a `Vec(u8)` string builder, but cannot be
-copied, passed, or returned. Implement the move/drop and live-borrow rules in
+through `Option(T)`, a `Vec(u8)` string builder, and move/drop rules for
+assignment, argument passing, and return, including use-after-move, leak, and
+double-drop rejection with `defer`-based cleanup. Add Vec borrows and an
+explicit clone to finish
 [Owned values](OWNED_VALUES.md). Match C/C++/Go and VM behavior on failure and
 destruction; document
 where Go cannot recover from physical allocation failure. This is needed for

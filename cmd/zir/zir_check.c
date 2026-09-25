@@ -21,6 +21,7 @@ typedef struct Binding {
     int is_using_namespace;
     int is_enum_namespace;
     int root_index;
+    int moved;
 } Binding;
 
 typedef struct SpecializationRequest {
@@ -43,6 +44,14 @@ typedef struct Checker {
     int count, capacity, depth, errors, failed;
     int inference_only;
     int using_rewritten;
+    int assign_destination;
+    int destination_was_moved;
+    struct {
+        int at;
+        int count;
+        unsigned char *flags;
+    } restores[64];
+    int restore_count;
     SpecializationRequest *specializations;
     int specialization_count, specialization_capacity;
 } Checker;
@@ -697,7 +706,8 @@ bind(Checker *c, const char *name, const char *type, ZirSourceSpan span)
     c->bindings[c->count].depth = c->depth;
     c->bindings[c->count].is_using_namespace = 0;
     c->bindings[c->count].is_enum_namespace = 0;
-    c->bindings[c->count++].root_index = -1;
+    c->bindings[c->count].root_index = -1;
+    c->bindings[c->count++].moved = 0;
 }
 
 static void
@@ -1181,6 +1191,63 @@ lookup(Checker *c, const char *name)
     if(resolved > 0)
         return type->name;
     return "";
+}
+
+/* Owned Vec bindings move on assignment, argument passing, return, VecFree,
+ * and BuilderFinish. A moved binding is empty storage; the checker rejects
+ * any further use so every value is dropped exactly once. */
+static int
+owned_vec_binding_type(Checker *c, const char *type)
+{
+    return VecElementType(c->module, type, NULL, 0);
+}
+
+static Binding *
+lexical_vec_binding(Checker *c, int index)
+{
+    const ZirExpr *e;
+    if(index < 0 || index >= c->fn->expr_count)
+        return NULL;
+    e = &c->fn->exprs[index];
+    if(e->kind != ZIR_EXPR_IDENT || e->is_this ||
+       !strcmp(e->name, "true") || !strcmp(e->name, "false") ||
+       !strcmp(e->name, "null"))
+        return NULL;
+    for(int i = c->count - 1; i >= 0; i--)
+        if(!c->bindings[i].is_using_namespace &&
+           !strcmp(c->bindings[i].name, e->name) &&
+           owned_vec_binding_type(c, c->bindings[i].type))
+            return &c->bindings[i];
+    return NULL;
+}
+
+/* Only local bindings move. A global keeps shared module state, so moving it
+ * would leave every other function reading transferred storage. */
+static int
+global_vec_source(Checker *c, int index)
+{
+    const ZirExpr *e;
+    const ZirGlobal *global;
+    if(index < 0 || index >= c->fn->expr_count)
+        return 0;
+    e = &c->fn->exprs[index];
+    if(e->kind != ZIR_EXPR_IDENT || *lookup_lexical(c, e->name))
+        return 0;
+    global = global_binding(c, e->name);
+    return global != NULL && contains_vec(c->module, global->type, 0);
+}
+
+static void
+check_vec_drops(Checker *c, ZirSourceSpan span)
+{
+    for(int i = 0; i < c->count; i++) {
+        if(c->bindings[i].is_using_namespace ||
+           !owned_vec_binding_type(c, c->bindings[i].type) ||
+           c->bindings[i].moved)
+            continue;
+        error(c, span, "Vec must be freed or moved before leaving scope",
+              c->bindings[i].name);
+    }
 }
 
 static int
@@ -2323,6 +2390,14 @@ expression_type(Checker *c, int index)
             type = lookup(c, e->name);
             e->is_global_value = !*lookup_lexical(c, e->name) &&
                                   global_binding(c, e->name) != NULL;
+            for(int i = c->count - 1; i >= 0; i--)
+                if(!c->bindings[i].is_using_namespace &&
+                   !strcmp(c->bindings[i].name, e->name)) {
+                    if(c->bindings[i].moved && !c->assign_destination)
+                        error(c, e->span, "Vec binding is used after moving",
+                              e->name);
+                    break;
+                }
         }
         if(!*type) {
             char literal[ZIR_TEXT_MAX];
@@ -2594,9 +2669,17 @@ expression_type(Checker *c, int index)
                 copy_text(c->expected_type, sizeof(c->expected_type),
                           skip_ws(expected_type + 1));
             const char *arg_type = expression_type(c, child);
-            if(contains_vec(c->module, arg_type, 0))
+            if(contains_vec(c->module, arg_type, 0) &&
+               c->fn->exprs[child].kind != ZIR_EXPR_IDENT &&
+               c->fn->exprs[child].kind != ZIR_EXPR_CALL)
                 error(c, c->fn->exprs[child].span,
-                      "Vec values cannot be copied", display_name);
+                      "Vec arguments move a binding or pass a call result",
+                      display_name);
+            if(contains_vec(c->module, arg_type, 0) &&
+               global_vec_source(c, child))
+                error(c, c->fn->exprs[child].span,
+                      "global Vec storage cannot move; use a local",
+                      c->fn->exprs[child].name);
             copy_text(c->expected_type, sizeof(c->expected_type), saved_expected);
             if(args && parameter >= 0 && parameter < expected) {
                 char *colon = strchr(parts[parameter], ':');
@@ -3180,6 +3263,25 @@ branch_returns(const ZirFunction *fn, int begin, int end, int *last)
     return 0;
 }
 
+/* True when every explicit arm of the if chain at `begin` returns. The
+ * fall-through state of such a chain is the state before it. */
+static int
+all_arms_return(const ZirFunction *fn, int begin, int *last)
+{
+    int arms = 0;
+    int index = begin;
+    while(index < fn->stmt_count && fn->stmts[index].kind == ZIR_STMT_IF &&
+          (arms == 0 || fn->stmts[index].is_else)) {
+        int close = return_block_end(fn, index, fn->stmt_count);
+        if(close <= index + 1 || !sequence_returns(fn, index + 2, close))
+            return 0;
+        *last = close;
+        index = close + 1;
+        arms++;
+    }
+    return arms > 0;
+}
+
 static int
 sequence_returns(const ZirFunction *fn, int begin, int end)
 {
@@ -3726,6 +3828,43 @@ discarded_must_call(Checker *c, int index)
 }
 
 static int
+vec_primitive_name(const char *name)
+{
+    return !strcmp(name, "VecPush") || !strcmp(name, "VecClear") ||
+           !strcmp(name, "VecFree") || !strcmp(name, "VecSwap") ||
+           !strcmp(name, "VecPop") || !strcmp(name, "VecGet") ||
+           !strcmp(name, "BuilderAppend") || !strcmp(name, "BuilderFinish");
+}
+
+/* Mark bindings whose ownership transfers in this statement: VecFree and
+ * BuilderFinish consume their place, and an owned Vec passed as an ordinary
+ * call argument moves into the callee. Runs after the statement checked
+ * cleanly so erroneous calls cannot poison later statements. */
+static void
+mark_expr_moves(Checker *c, int index)
+{
+    const ZirExpr *e;
+    int primitive;
+    if(index < 0 || index >= c->fn->expr_count)
+        return;
+    e = &c->fn->exprs[index];
+    primitive = e->kind == ZIR_EXPR_CALL && vec_primitive_name(e->name);
+    for(int child = e->first_child; child >= 0;
+        child = c->fn->exprs[child].next_sibling) {
+        Binding *binding = lexical_vec_binding(c, child);
+        if(binding == NULL)
+            continue;
+        if(!primitive || !strcmp(e->name, "VecFree") ||
+           !strcmp(e->name, "BuilderFinish"))
+            binding->moved = 1;
+        mark_expr_moves(c, child);
+    }
+    mark_expr_moves(c, e->left);
+    mark_expr_moves(c, e->right);
+    mark_expr_moves(c, e->third);
+}
+
+static int
 check_function(Checker *c, ZirFunction *fn)
 {
     int errors_before = c->errors;
@@ -3734,8 +3873,8 @@ check_function(Checker *c, ZirFunction *fn)
     char params[64][ZIR_TEXT_MAX];
     int n;
     c->fn = fn;
-    if(contains_vec(c->module, fn->return_type, 0))
-        error(c, fn->span, "Vec returns require move support", fn->name);
+    if(contains_vec(c->module, fn->return_type, 0) && fn->is_extern)
+        error(c, fn->span, "Vec cannot cross an extern signature", fn->name);
     select_lookup_file(c->module, fn->span);
     const ZirType *return_slot = FindType(c->module, c->fn->return_type, NULL);
     if(return_slot != NULL && return_slot->is_record_template) {
@@ -3750,6 +3889,8 @@ check_function(Checker *c, ZirFunction *fn)
     if(!c->fn->from_ir)
         StructureFunction(c->fn, c->module);
 restart:
+    while(c->restore_count > 0)
+        free(c->restores[--c->restore_count].flags);
     c->count = 0; c->depth = 0;
     c->using_rewritten = 0;
     if(!fn->from_ir || fn->is_specialization)
@@ -3777,8 +3918,8 @@ restart:
                 return 0;
             }
             has_slots |= parameter_type != NULL && parameter_type->is_procedure_type;
-            if(contains_vec(c->module, colon, 0))
-                error(c, fn->span, "Vec parameters require move support", params[a]);
+            if(contains_vec(c->module, colon, 0) && fn->is_extern)
+                error(c, fn->span, "Vec cannot cross an extern signature", params[a]);
             has_arrays |= ArrayValueType(colon) || SliceElementType(colon, NULL, 0);
             bind(c, params[a], colon, c->fn->span);
             if((!fn->from_ir || fn->is_specialization) &&
@@ -3786,12 +3927,50 @@ restart:
                 activate_using(c, params[a], fn->span);
         } else error(c, c->fn->span, "parameters require name: type", params[a]);
     }
+    c->restore_count = 0;
     for(int i = 0; i < c->fn->stmt_count; i++) {
         ZirStmt *st = &c->fn->stmts[i];
+        int errors_at_statement;
         c->current_stmt = st;
         const char *type;
+        if(st->kind == ZIR_STMT_IF && c->restore_count < 64) {
+            /* Moves inside an if whose every arm returns never reach the
+             * join; the state after it is the state before it. */
+            int last = i;
+            if(all_arms_return(fn, i, &last)) {
+                unsigned char *flags = malloc((size_t)(c->count > 0 ?
+                                                       c->count : 1));
+                if(flags != NULL) {
+                    for(int b = 0; b < c->count; b++)
+                        flags[b] = (unsigned char)c->bindings[b].moved;
+                    c->restores[c->restore_count].at = last;
+                    c->restores[c->restore_count].count = c->count;
+                    c->restores[c->restore_count].flags = flags;
+                    c->restore_count++;
+                }
+            }
+        }
+        for(int r = 0; r < c->restore_count; r++) {
+            if(c->restores[r].at != i)
+                continue;
+            for(int b = 0; b < c->restores[r].count && b < c->count; b++)
+                c->bindings[b].moved = c->restores[r].flags[b] != 0;
+            free(c->restores[r].flags);
+            c->restores[r] = c->restores[c->restore_count - 1];
+            c->restore_count--;
+            r--;
+        }
         if(st->kind == ZIR_STMT_BLOCK_CLOSE) {
-            while(c->count && c->bindings[c->count - 1].depth == c->depth) c->count--;
+            while(c->count && c->bindings[c->count - 1].depth == c->depth) {
+                Binding *popping = &c->bindings[c->count - 1];
+                if(!popping->is_using_namespace &&
+                   owned_vec_binding_type(c, popping->type) &&
+                   !popping->moved)
+                    error(c, st->span,
+                          "Vec must be freed or moved before leaving scope",
+                          popping->name);
+                c->count--;
+            }
             if(c->depth) c->depth--;
         }
         if((!fn->from_ir || fn->is_specialization) &&
@@ -3816,11 +3995,15 @@ restart:
             copy_text(c->expected_type, sizeof(c->expected_type), st->type);
         else if(st->kind == ZIR_STMT_RETURN)
             copy_text(c->expected_type, sizeof(c->expected_type), c->fn->return_type);
-        else if(st->kind == ZIR_STMT_ASSIGN && st->lhs_root >= 0)
+        else if(st->kind == ZIR_STMT_ASSIGN && st->lhs_root >= 0) {
+            c->assign_destination = 1;
             copy_text(c->expected_type, sizeof(c->expected_type),
                       expression_type(c, st->lhs_root));
+            c->assign_destination = 0;
+        }
         type = expression_type(c, st->expr_root);
         c->expected_type[0] = '\0';
+        errors_at_statement = c->errors;
         if(st->kind == ZIR_STMT_EXPR || st->kind == ZIR_STMT_UNUSED) {
             int discarded = discarded_must_call(c, st->expr_root);
             if(discarded >= 0) {
@@ -3846,6 +4029,32 @@ restart:
             StructureFunction(fn, c->module);
             goto restart;
         }
+        c->destination_was_moved = -1;
+        if(st->kind == ZIR_STMT_ASSIGN && st->lhs_root >= 0) {
+            Binding *destination = lexical_vec_binding(c, st->lhs_root);
+            c->destination_was_moved = destination != NULL && destination->moved;
+        }
+        if(c->errors == errors_at_statement && st->expr_root >= 0) {
+            Binding *moved_from = lexical_vec_binding(c, st->expr_root);
+            if(moved_from != NULL &&
+               (st->kind == ZIR_STMT_DECL || st->kind == ZIR_STMT_ASSIGN ||
+                st->kind == ZIR_STMT_RETURN)) {
+                moved_from->moved = 1;
+            }
+            mark_expr_moves(c, st->expr_root);
+            /* An assignment into a moved-from Vec binding re-owns it with
+             * the transferred or fresh value. The handoff form
+             * `v = Take(v)` also re-owns: the right side moved this binding
+             * into the call and stores the result back into it. */
+            if(st->kind == ZIR_STMT_ASSIGN && st->lhs_root >= 0) {
+                Binding *destination = lexical_vec_binding(c, st->lhs_root);
+                if(destination != NULL) {
+                    if(destination->moved)
+                        c->destination_was_moved = 1;
+                    destination->moved = 0;
+                }
+            }
+        }
         if(st->kind == ZIR_STMT_DECL) {
             if(!*st->type) copy_text(st->type, sizeof(st->type),
                 !strcmp(type, "integer") ? "s64" : !strcmp(type, "real") ? "float64" : type);
@@ -3870,15 +4079,50 @@ restart:
                 }
             }
             if(st->expr_root >= 0 &&
-               contains_vec(c->module, st->type, 0))
-                error(c, st->span, "Vec values cannot be copied", st->name);
+               contains_vec(c->module, st->type, 0) &&
+               c->fn->exprs[st->expr_root].kind != ZIR_EXPR_IDENT &&
+               c->fn->exprs[st->expr_root].kind != ZIR_EXPR_CALL)
+                error(c, st->span,
+                      "Vec initialization moves a binding or takes a call result",
+                      st->name);
+            if(st->expr_root >= 0 &&
+               contains_vec(c->module, st->type, 0) &&
+               global_vec_source(c, st->expr_root))
+                error(c, st->span,
+                      "global Vec storage cannot move; use a local",
+                      st->name);
             bind(c, st->name, st->type, st->span);
             if((!fn->from_ir || fn->is_specialization) && st->is_using)
                 activate_using(c, st->name, st->span);
         } else if(st->kind == ZIR_STMT_ASSIGN) {
+            c->assign_destination = 1;
             const char *lhs = expression_type(c, st->lhs_root);
-            if(contains_vec(c->module, lhs, 0))
-                error(c, st->span, "Vec values cannot be copied", st->text);
+            c->assign_destination = 0;
+            if(contains_vec(c->module, lhs, 0)) {
+                if(c->fn->exprs[st->lhs_root].kind != ZIR_EXPR_IDENT)
+                    error(c, st->span,
+                          "Vec assignment requires a simple binding destination",
+                          st->text);
+                else if(lexical_vec_binding(c, st->lhs_root) == NULL)
+                    error(c, st->span,
+                          "global Vec assignment is not supported; move it into a local first",
+                          st->text);
+                else if(st->expr_root >= 0 &&
+                        c->fn->exprs[st->expr_root].kind != ZIR_EXPR_IDENT &&
+                        c->fn->exprs[st->expr_root].kind != ZIR_EXPR_CALL)
+                    error(c, st->span,
+                          "Vec assignment moves a binding or takes a call result",
+                          st->text);
+                else if(st->expr_root >= 0 &&
+                        global_vec_source(c, st->expr_root))
+                    error(c, st->span,
+                          "global Vec storage cannot move; use a local",
+                          st->text);
+                else if(c->destination_was_moved == 0)
+                    error(c, st->span,
+                          "assignment over an owned Vec leaks it; free or move it first",
+                          c->fn->exprs[st->lhs_root].name);
+            }
             const ZirType *destination = FindType(c->module, lhs, NULL);
             if(lhs[0] == '[' && strcmp(st->assignment_op, "="))
                 error(c, st->span, "array compound assignment is not supported", st->assignment_op);
@@ -3903,6 +4147,13 @@ restart:
             if(!compatible_checked(c, c->fn->return_type, type)) error(c, st->span, "return type mismatch", c->fn->name);
             if((st->expr_root < 0) != !strcmp(c->fn->return_type, "void"))
                 error(c, st->span, "return value does not match function signature", c->fn->name);
+            if(contains_vec(c->module, c->fn->return_type, 0) &&
+               global_vec_source(c, st->expr_root))
+                error(c, st->span,
+                      "global Vec storage cannot move; use a local",
+                      c->fn->exprs[st->expr_root].name);
+            if(c->errors == errors_at_statement)
+                check_vec_drops(c, st->span);
         } else if(st->kind == ZIR_STMT_IF || st->kind == ZIR_STMT_WHILE) {
             if(st->expr_root < 0 &&
                (st->kind == ZIR_STMT_WHILE || !st->is_else ||
@@ -3916,6 +4167,7 @@ restart:
            st->kind == ZIR_STMT_WHILE || st->kind == ZIR_STMT_FOR)
             c->depth++;
     }
+    check_vec_drops(c, fn->span);
     for(int i = 0; i < fn->expr_count; i++) {
         const ZirExpr *call = &fn->exprs[i];
         has_arrays |= SliceElementType(call->type, NULL, 0);

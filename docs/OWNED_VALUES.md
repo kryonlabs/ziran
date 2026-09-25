@@ -6,13 +6,15 @@ portable VM), checked indexing, fallible `VecPush`, `VecClear`, `VecFree`,
 `VecSwap`, `VecPop` and `VecGet` results carried as `Option(T)` records, and a
 `Vec(u8)` string builder through `BuilderAppend` and `BuilderFinish`, in C99,
 C++, Go, and the portable VM. A vector can live in a local, global, or record
-field. The checker rejects value
-copies, parameters, returns, and nested vectors until move and drop rules are
-implemented. Go can report capacity overflow but its runtime may terminate on
-physical allocation failure; this is not yet the full recoverable failure
-contract below. Code that creates a local vector must call `VecFree` before
-leaving its scope. `VecPop` and `VecGet` require the `Option` record template
-from `std/option.zi` to be visible in the using module.
+field, and moves on assignment, argument passing, and return. The checker
+rejects use after a move, assignment over an owned vector, a leaked local or
+parameter at any return or scope exit, moving nested record storage, and
+moving a global. Go can report capacity overflow but its runtime may terminate
+on physical allocation failure; this is not yet the full recoverable failure
+contract below. A local vector must be freed or moved on every exit path;
+`defer { VecFree(v) }` covers them all because deferred cleanup runs before
+every rewritten return. `VecPop` and `VecGet` require the `Option` record
+template from `std/option.zi` to be visible in the using module.
 
 `BuilderFinish` consumes the builder: the returned `string` keeps the builder's
 bytes without copying them. C99 and C++ detach the buffer instead of freeing
@@ -31,10 +33,18 @@ respectively.
 
 Scalars, immutable strings, and aggregates whose members are copyable retain
 value-copy semantics. An owned value, including `Vec[T]`, moves on assignment,
-argument passing, and return. The checker rejects use after move and rejects a
-move while a live view borrows the value. An explicit `clone` may allocate and
-therefore returns a recoverable result. Every path drops each owned value once;
-native output and the portable VM must agree on this rule.
+argument passing, and return. A move source must be a local binding or a fresh
+call result: the checker rejects moving nested record storage and moving a
+global, because both keep shared storage that other code can reach. The
+checker rejects use after move, assignment over an owned vector, and a leaked
+local or parameter at any return or scope exit; moves inside an `if` whose
+every arm returns do not reach the join. Deferred cleanup runs before each
+rewritten return, so `defer { VecFree(v) }` satisfies the drop rule on every
+path, and an explicit drop plus a deferred drop of the same binding is
+rejected as a double drop. Vec borrows and an explicit `clone` remain to be
+added; no view borrows a vector yet, so live-borrow rejection has no case to
+check. Native output and the portable VM agree on the observable value of
+every moved binding: the source is unreachable after the move.
 
 ## Recoverable errors
 
@@ -56,7 +66,7 @@ string builder owns UTF-8 bytes in a `Vec[u8]`; `BuilderAppend` can fail, and
 `BuilderFinish` consumes the builder without copying its bytes. Immutable
 `string` values remain unchanged.
 
-The parser, checker, checked `.zir`, C/C++/Go emitters, portable verifier and
-VM, and host boundary implement these observable ownership and error
-behaviors for the supported subset; move and automatic drop rules remain the
-open part of this contract.
+The parser, checker, checked `.zir`, C/C++/Go emitters, portable verifier,
+VM, and host boundary implement these observable ownership, move, and drop
+behaviors for the supported subset; automatic drop insertion beyond `defer`,
+Vec borrows, and an explicit `clone` remain the open parts of this contract.

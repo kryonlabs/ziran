@@ -1530,7 +1530,8 @@ emit_vec_call(Emitter *e, const ZirExpr *expr, char *out, size_t size)
         }
         if(e->target == ZIR_GO) {
             if(get)
-                line(e, "if %s >= 0 && %s < %s.Count {", index, index, vector);
+                line(e, "if %s >= 0 && int64(%s) < %s.Count {", index, index,
+                     vector);
             else
                 line(e, "if %s.Count > 0 {", vector);
             e->indent++;

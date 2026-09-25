@@ -24,34 +24,33 @@ PopDrain :: () -> s32 {
     VecPush(values, 30)
     result: s32 = 0
     popped: Option(s32) = VecPop(values)
-    if !popped.has_value { return -10 }
+    if !popped.has_value { VecFree(values); return -10 }
     result += popped.value
     found: Option(s32) = VecGet(values, 0)
-    if !found.has_value { return -11 }
+    if !found.has_value { VecFree(values); return -11 }
     result += found.value
     missing: Option(s32) = VecGet(values, 9)
-    if missing.has_value { return -12 }
+    if missing.has_value { VecFree(values); return -12 }
     while values.count > 0 {
         tail: Option(s32) = VecPop(values)
-        if !tail.has_value { return -13 }
+        if !tail.has_value { VecFree(values); return -13 }
         result += tail.value
     }
     drained: Option(s32) = VecPop(values)
-    if drained.has_value { return -14 }
+    if drained.has_value { VecFree(values); return -14 }
     VecFree(values)
     return result
 }
 
 BuiltText :: () -> s32 {
     builder: Vec(u8)
-    if !BuilderAppend(builder, "hello, ") { return -20 }
-    if !BuilderAppend(builder, "ziran") { return -21 }
+    if !BuilderAppend(builder, "hello, ") { VecFree(builder); return -20 }
+    if !BuilderAppend(builder, "ziran") { VecFree(builder); return -21 }
     text: string = BuilderFinish(builder)
     if text.count != 12 { return -22 }
-    if builder.count != 0 || builder.capacity != 0 { return -23 }
-    if !BuilderAppend(builder, "") { return -24 }
-    if BuilderFinish(builder).count != 0 { return -25 }
-    VecFree(builder)
+    empty: Vec(u8)
+    if !BuilderAppend(empty, "") { VecFree(empty); return -24 }
+    if BuilderFinish(empty).count != 0 { return -25 }
     total: s64 = 0
     index: s64 = 0
     while index < text.count {
@@ -71,14 +70,61 @@ RecordPop :: () -> s32 {
     entry.label = "six"
     VecPush(entries, entry)
     taken: Option(Item) = VecPop(entries)
-    if !taken.has_value { return -30 }
-    if taken.value.value != 6 { return -31 }
-    if taken.value.label.count != 3 { return -32 }
+    if !taken.has_value { VecFree(entries); return -30 }
+    if taken.value.value != 6 { VecFree(entries); return -31 }
+    if taken.value.label.count != 3 { VecFree(entries); return -32 }
     first: Option(Item) = VecGet(entries, 0)
-    if !first.has_value { return -33 }
-    if first.value.label.count != 4 { return -34 }
+    if !first.has_value { VecFree(entries); return -33 }
+    if first.value.label.count != 4 { VecFree(entries); return -34 }
     VecFree(entries)
     return first.value.value + taken.value.value
+}
+
+ConsumeAll :: (values: Vec(s32)) -> s32 {
+    total: s32 = 0
+    while values.count > 0 {
+        tail: Option(s32) = VecPop(values)
+        if !tail.has_value { VecFree(values); return -40 }
+        total += tail.value
+    }
+    VecFree(values)
+    return total
+}
+
+MakeValues :: () -> Vec(s32) {
+    fresh: Vec(s32)
+    VecPush(fresh, 5)
+    VecPush(fresh, 6)
+    return fresh
+}
+
+Handoff :: (values: Vec(s32)) -> Vec(s32) {
+    VecPush(values, 100)
+    return values
+}
+
+DeferredWork :: () -> s32 {
+    values: Vec(s32)
+    defer { VecFree(values) }
+    VecPush(values, 3)
+    VecPush(values, 4)
+    if values.count != 2 { return -50 }
+    if VecGet(values, 1).value != 4 { return -51 }
+    return 7
+}
+
+Moves :: () -> s32 {
+    made: Vec(s32) = MakeValues()
+    VecPush(made, 1)
+    result: s32 = ConsumeAll(made)
+    refill: Vec(s32) = MakeValues()
+    VecPush(refill, 2)
+    transferred: Vec(s32) = refill
+    result += ConsumeAll(transferred)
+    batch: Vec(s32) = MakeValues()
+    batch = Handoff(batch)
+    result += ConsumeAll(batch)
+    return result
 }
 
 #program_export
@@ -107,6 +153,8 @@ Answer :: () -> s32 {
     if PopDrain() != 70 { return -6 }
     if BuiltText() != 1156 { return -7 }
     if RecordPop() != 11 { return -8 }
+    if Moves() != 136 { return -9 }
+    if DeferredWork() != 7 { return -10 }
     return result
 }
 ZI
@@ -187,10 +235,90 @@ Bad :: () -> s32 {
 ZI
 if "$ziran" check --root "$work" --module-path "$repo/std" \
     "$work/copy.zi" 2> "$work/copy.err"; then
-    echo 'Vec copy was accepted' >&2
+    echo 'moving a global Vec was accepted' >&2
     exit 1
 fi
-rg -q 'Vec values cannot be copied' "$work/copy.err"
+rg -q 'global Vec storage cannot move' "$work/copy.err"
+
+cat > "$work/usemove.zi" <<'ZI'
+#import "vec"
+Consume :: (values: Vec(s32)) -> s32 {
+    VecFree(values)
+    return 0
+}
+#program_export
+Bad :: () -> s32 {
+    values: Vec(s32)
+    VecPush(values, 1)
+    Consume(values)
+    return cast(s32)values.count
+}
+ZI
+if "$ziran" check --root "$work" --module-path "$repo/std" \
+    "$work/usemove.zi" 2> "$work/usemove.err"; then
+    echo 'use after move was accepted' >&2
+    exit 1
+fi
+rg -q 'used after moving' "$work/usemove.err"
+
+cat > "$work/leak.zi" <<'ZI'
+#import "vec"
+#program_export
+Bad :: () -> s32 {
+    values: Vec(s32)
+    VecPush(values, 1)
+    return 0
+}
+ZI
+if "$ziran" check --root "$work" --module-path "$repo/std" \
+    "$work/leak.zi" 2> "$work/leak.err"; then
+    echo 'a leaked local Vec was accepted' >&2
+    exit 1
+fi
+rg -q 'before leaving scope' "$work/leak.err"
+
+cat > "$work/owned.zi" <<'ZI'
+#import "vec"
+#program_export
+Bad :: () -> s32 {
+    a: Vec(s32)
+    b: Vec(s32)
+    VecPush(a, 1)
+    a = b
+    VecFree(a)
+    VecFree(b)
+    return 0
+}
+ZI
+if "$ziran" check --root "$work" --module-path "$repo/std" \
+    "$work/owned.zi" 2> "$work/owned.err"; then
+    echo 'assignment over an owned Vec was accepted' >&2
+    exit 1
+fi
+rg -q 'leaks it' "$work/owned.err"
+
+cat > "$work/nested.zi" <<'ZI'
+#import "vec"
+Holder :: struct {
+    items: Vec(s32)
+}
+Consume :: (values: Vec(s32)) -> s32 {
+    VecFree(values)
+    return 0
+}
+#program_export
+Bad :: () -> s32 {
+    holder: Holder
+    VecPush(holder.items, 1)
+    return Consume(holder.items)
+}
+ZI
+if "$ziran" check --root "$work" --module-path "$repo/std" \
+    "$work/nested.zi" 2> "$work/nested.err"; then
+    echo 'moving nested Vec storage was accepted' >&2
+    exit 1
+fi
+rg -q 'move a binding' "$work/nested.err"
 
 cat > "$work/count.zi" <<'ZI'
 #import "vec"

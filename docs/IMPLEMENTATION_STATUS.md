@@ -511,8 +511,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.zib`, with
   checked indexing, push, clear, free, swap, `VecPop` and `VecGet` results as
   `Option(T)` records, and a `Vec(u8)` string builder through `BuilderAppend`
-  and `BuilderFinish`. The checker rejects copies and
-  value passing. Move and automatic drop
+  and `BuilderFinish`. Vectors move on assignment, argument passing, and
+  return: the checker rejects use after move, assignment over an owned vector,
+  a leaked local or parameter at any return or scope exit, moving nested
+  record storage, and moving a global, while `defer { VecFree(v) }` satisfies
+  the drop rule on every path. Vec borrows and an explicit clone
   remain to complete the owned-value model. Go cannot recover from
   physical allocation failure. The intended
   [owned-value contract](OWNED_VALUES.md) records those semantics.
