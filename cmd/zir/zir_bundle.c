@@ -1054,16 +1054,6 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
                        !mark_type(program, module, expression->name,
                                   keep_types, &changed))
                         goto failed;
-                    if(expression->kind == ZIR_EXPR_IDENT) {
-                        const ZirModule *owner = NULL;
-                        const ZirType *type = NULL;
-                        int resolved = ResolveEnumMember(module,
-                            expression->name, &owner, &type);
-                        if(resolved > 0 &&
-                            !mark_type_pointer(program, owner, type,
-                                               keep_types, &changed))
-                            goto failed;
-                    }
                 }
             }
             for(int t = 0; t < module->type_count; t++) {

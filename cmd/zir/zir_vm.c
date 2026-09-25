@@ -1054,11 +1054,7 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
            binding_index(bindings, binding_count, expression->name) >= 0 ||
            find_global_declaration(module, expression->name) != NULL)
             return 1;
-        const ZirType *enumeration = NULL;
-        int64_t number;
-        return ResolveEnumMember(module, expression->name,
-                                 &owner, &enumeration) == 1 &&
-               EnumMemberValue(enumeration, expression->name, &number);
+        return 0;
     }
     case ZIR_EXPR_UNARY:
         return (strcmp(expression->op, "+") == 0 ||
@@ -2098,14 +2094,6 @@ eval(Frame *frame, int index, int depth)
         if(global != NULL)
             return coerce_expression(frame->vm, frame->module,
                                      *global, expression->type);
-        const ZirModule *owner = NULL;
-        const ZirType *enumeration = NULL;
-        int64_t number;
-        if(ResolveEnumMember(frame->module, expression->name,
-                             &owner, &enumeration) == 1 &&
-           EnumMemberValue(enumeration, expression->name, &number))
-            return coerce(frame->vm, frame->module,
-                          int_value(number), expression->type);
         frame->vm->failed = 1;
         break;
     }

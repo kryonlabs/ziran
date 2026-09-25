@@ -39,6 +39,7 @@ ChoiceEnum :: enum {
 }
 #program_export
 Answer :: () -> s32 {
+    using ChoiceEnum;
     result: s32 = Value()
     choice: Choice
     choice.value = 1

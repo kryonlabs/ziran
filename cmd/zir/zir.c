@@ -171,27 +171,6 @@ VecElementType(const ZirModule *module, const char *name,
 }
 
 static int
-enum_has_member(const ZirType *type, const char *name)
-{
-    if(!type->is_enum)
-        return 0;
-    const char *cursor = type->body;
-    while(*cursor) {
-        while(isspace((unsigned char)*cursor) || *cursor == ',')
-            cursor++;
-        const char *start = cursor;
-        while(isalnum((unsigned char)*cursor) || *cursor == '_')
-            cursor++;
-        if((size_t)(cursor - start) == strlen(name) &&
-           strncmp(start, name, (size_t)(cursor - start)) == 0)
-            return 1;
-        while(*cursor && *cursor != ',' && *cursor != '\n')
-            cursor++;
-    }
-    return 0;
-}
-
-static int
 file_scope_visible(const ZirModule *module, int is_file_private,
                    ZirSourceSpan span)
 {
@@ -205,54 +184,6 @@ file_scope_visible_at(const char *source_path, int is_file_private,
 {
     return !is_file_private || source_path == NULL || !source_path[0] ||
            strcmp(source_path, span.path) == 0;
-}
-
-int
-ResolveEnumMember(const ZirModule *module, const char *name,
-                     const ZirModule **owner, const ZirType **type)
-{
-    *owner = NULL;
-    *type = NULL;
-    /* An empty identifier is never a member reference. */
-    if(!*name)
-        return 0;
-    /* Local declarations shadow imports, just as functions and types do. */
-    for(int pass = 0; pass < 2; pass++) {
-        int count = pass == 0 ? 1 : module->import_count;
-        for(int i = 0; i < count; i++) {
-            const ZirModule *scope = module;
-            if(pass != 0) {
-                if(module->imports[i].kind != ZIR_IMPORT_OPEN)
-                    continue;
-                if(!file_scope_visible(module,
-                                       module->imports[i].is_file_private,
-                                       module->imports[i].span))
-                    continue;
-                scope = module->imports[i].resolved_module;
-            }
-            if(scope == NULL)
-                continue;
-            for(int j = 0; j < scope->type_count; j++) {
-                const ZirType *candidate = &scope->types[j];
-                if((pass != 0 && !candidate->is_public) ||
-                   (pass == 0 && !file_scope_visible(
-                       module, candidate->is_file_private, candidate->span)))
-                    continue;
-                if(!enum_has_member(candidate, name))
-                    continue;
-                if(*type != NULL && *type != candidate) {
-                    *owner = NULL;
-                    *type = NULL;
-                    return -1;
-                }
-                *owner = scope;
-                *type = candidate;
-            }
-        }
-        if(*type != NULL)
-            return 1;
-    }
-    return 0;
 }
 
 int

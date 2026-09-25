@@ -285,8 +285,6 @@ int ResolveRecordField(const ZirModule *owner, const ZirType *record,
  * `using` so source and saved modules agree on promotion. */
 int RecordFieldPathType(const ZirModule *owner, const ZirType *record,
                         const char *path, char *type, size_t type_size);
-int ResolveEnumMember(const ZirModule *module, const char *name,
-                         const ZirModule **owner, const ZirType **type);
 
 ZirProgram *ProgramNew(void);
 void ProgramFree(ZirProgram *program);

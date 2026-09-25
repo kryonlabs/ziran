@@ -17,6 +17,7 @@ cat > "$work/app.zi" <<'ZI'
 #import "modes"
 calls: s32;
 Next :: () -> Mode {
+    using Mode;
     calls += 1
     return cast(Mode)On
 }
@@ -32,6 +33,7 @@ Value :: (mode: Mode) -> s32 {
     }
 }
 Nested :: (mode: Mode) -> s32 {
+    using Mode;
     selected: Mode = cast(Mode) On
     if #complete mode == {
         case Mode.Off;
@@ -61,6 +63,7 @@ Once :: () -> s32 {
 }
 #program_export
 Answer :: () -> s32 {
+    using Mode;
     if ~(cast(s32) 0) != cast(s32) -1 { return 0 }
     return Value(cast(Mode)Off) + Value(cast(Mode)On) + Value(cast(Mode)Later) + Nested(cast(Mode)Off) + Once()
 }
@@ -157,6 +160,7 @@ Value :: (mode: Mode) -> s32 {
     return total
 }
 DeferredCase :: () -> s32 {
+    using Mode;
     total: s32 = 0
     if cast(Mode)First == {
         case .First;
@@ -174,6 +178,7 @@ DeferredCase :: () -> s32 {
     return total
 }
 ReturnThrough :: () -> s32 {
+    using Mode;
     if #complete cast(Mode)First == {
         case .First;
             marker: s32 = 0
@@ -188,6 +193,7 @@ ReturnThrough :: () -> s32 {
 }
 #program_export
 Answer :: () -> s32 {
+    using Mode;
     if Value(cast(Mode)First) != 7 ||
        Value(cast(Mode)Second) != 6 ||
        Value(cast(Mode)Third) != 4 ||
@@ -523,6 +529,7 @@ cat > "$work/inline.zi" <<'ZI'
 Mode :: enum { Off :: -1; On :: 1; }
 #program_export
 Answer :: () -> s32 {
+    using Mode;
     if #complete cast(Mode)On == {
         case Mode.Off;
             return 0
@@ -594,7 +601,7 @@ grep -Fq 'match is not Jai syntax' "$work/old_match.err"
         printf '    Item%d :: %d;\n' "$index" "$index"
         index=$((index + 1))
     done
-    printf '}\n#program_export\nAnswer :: () -> s32 {\n    if #complete cast(Many)Item69 == {\n'
+    printf '}\n#program_export\nAnswer :: () -> s32 {\n    using Many;\n    if #complete cast(Many)Item69 == {\n'
     index=0
     while test "$index" -lt 70; do
         printf '        case Many.Item%d;\n            return %d\n' "$index" "$index"

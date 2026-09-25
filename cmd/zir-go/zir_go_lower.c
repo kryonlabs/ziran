@@ -294,9 +294,7 @@ typedef struct {
     int direct_go;
 } ZirGoExtern;
 
-/* One enum member visible to expressions (bare source name -> qualified Go const). */
 typedef struct {
-    char source[ZIR_GO_NAME_MAX];
     char go[ZIR_GO_NAME_MAX * 2];
     char val[ZIR_GO_TEXT_MAX];        /* explicit value text, or "" */
 } ZirGoEnumMember;
@@ -309,14 +307,11 @@ typedef struct {
 } ZirGoEnum;
 
 /* Lowering is single-threaded and per-module sequential: one cached context. */
-static const ZirModule *g_mod;
 static char g_guard[ZIR_GO_NAME_MAX];
 static ZirGoExtern g_externs[64];
 static int g_extern_count;
 static ZirGoEnum g_enums[32];
 static int g_enum_count;
-static ZirGoEnumMember *g_const_table[512];
-static int g_const_count;
 
 static int
 go_extern_index(const char *name, size_t len)
@@ -327,17 +322,6 @@ go_extern_index(const char *name, size_t len)
             return i;
     }
     return -1;
-}
-
-static ZirGoEnumMember *
-go_const_entry(const char *name, size_t len)
-{
-    for(int i = 0; i < g_const_count; i++) {
-        if(strlen(g_const_table[i]->source) == len &&
-           strncmp(g_const_table[i]->source, name, len) == 0)
-            return g_const_table[i];
-    }
-    return NULL;
 }
 
 /* "a: int, b: char*" -> parameter names/types on ex. */
@@ -570,18 +554,15 @@ parse_enum(const ZirType *t)
             continue;
         ZirGoEnumMember *m = &e->members[e->count++];
         memset(m, 0, sizeof(*m));
-        snprintf(m->source, sizeof(m->source), "%s", name);
         if(e->prefix[0] != '\0' &&
-           strncmp(m->source, e->prefix, strlen(e->prefix)) == 0)
-            camel_ident(m->source, m->go, sizeof(m->go));
+           strncmp(name, e->prefix, strlen(e->prefix)) == 0)
+            camel_ident(name, m->go, sizeof(m->go));
         else if(e->prefix[0] != '\0')
-            snprintf(m->go, sizeof(m->go), "%s%s", e->prefix, m->source);
+            snprintf(m->go, sizeof(m->go), "%s%s", e->prefix, name);
         else
-            camel_ident(m->source, m->go, sizeof(m->go));
+            camel_ident(name, m->go, sizeof(m->go));
         if(val != NULL)
             snprintf(m->val, sizeof(m->val), "%s", val);
-        if(g_const_count < 512)
-            g_const_table[g_const_count++] = m;
     }
 }
 
@@ -590,11 +571,9 @@ parse_enum(const ZirType *t)
 static void
 go_set_module(const ZirModule *m, const char *guard)
 {
-    g_mod = m;
     snprintf(g_guard, sizeof(g_guard), "%s", guard);
     g_extern_count = 0;
     g_enum_count = 0;
-    g_const_count = 0;
     for(int i = 0; i < m->import_count; i++) {
         if(m->imports[i].kind == ZIR_IMPORT_EXTERN)
             parse_extern_import(&m->imports[i]);
@@ -1000,38 +979,6 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                         dst[dn++] = '(';
                     }
                     p = skip_ws(q) + 1;
-                    continue;
-                }
-            }
-            /* enum members: bare ALL_CAPS name -> qualified Go const */
-            {
-                const ZirModule *owner = NULL;
-                const ZirType *type = NULL;
-                if(ResolveEnumMember(g_mod, ident, &owner, &type) == 1 && owner != g_mod) {
-                    char prefix[ZIR_GO_NAME_MAX] = "";
-                    char member[ZIR_GO_NAME_MAX];
-                    copy_text(member, sizeof(member), ident);
-                    camel_ident(type->name, prefix, sizeof(prefix));
-                    /* The definition side (parse_enum) keeps members that
-                     * already carry the enum prefix flat; mirror that
-                     * here so references match the emitted constants. */
-                    if(prefix[0] != '\0' &&
-                       strncmp(member, prefix, strlen(prefix)) == 0)
-                        prefix[0] = '\0';
-                    dn += (size_t)snprintf(dst + dn, dst_size - dn, "%s%s", prefix, member);
-                    p = q;
-                    continue;
-                }
-                ZirGoEnumMember *mem = go_const_entry(ident, il);
-
-                if(mem != NULL) {
-                    size_t gl = strlen(mem->go);
-
-                    if(dn + gl + 1 < dst_size) {
-                        memcpy(dst + dn, mem->go, gl);
-                        dn += gl;
-                    }
-                    p = q;
                     continue;
                 }
             }

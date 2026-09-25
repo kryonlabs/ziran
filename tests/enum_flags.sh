@@ -36,11 +36,20 @@ Has :: (flags: Mask) -> bool { return (flags & .B) == .B }
 IsHigh :: (small: Small) -> bool { return small == .High }
 Pick :: () -> Small { return .Low }
 Shadow :: () -> s32 {
+    using Prefixed;
     PrefixedFirst: s32 = 9
     return PrefixedFirst
 }
 #program_export
 Answer :: () -> s32 {
+    using Prefixed;
+    using Shared;
+    using Mask;
+    using Small;
+    using Default;
+    using Specified;
+    using SpecifiedDefault;
+    using SpecifiedFlags;
     if PrefixedFirst != 1 || PrefixedSecond != 2 { return 0 }
     prefixed: Prefixed = Prefixed.PrefixedSecond
     if prefixed != Prefixed.PrefixedSecond { return 0 }
@@ -148,6 +157,62 @@ EOF
         fi
     done
 done
+
+cat > "$work/bare_enum.zi" <<'ZI'
+Direction :: enum { North :: 1; }
+Bad :: () -> s64 { return North }
+ZI
+if "$ziran" check --root "$work" "$work/bare_enum.zi" \
+    2> "$work/bare_enum.err"; then
+    echo 'bare enum member without using was accepted' >&2
+    exit 1
+fi
+grep -Fq 'unresolved name: North' "$work/bare_enum.err"
+
+cat > "$work/bare_global_enum.zi" <<'ZI'
+Direction :: enum { North :: 1; }
+value: Direction = North;
+ZI
+if "$ziran" check --root "$work" "$work/bare_global_enum.zi" \
+    2> "$work/bare_global_enum.err"; then
+    echo 'bare file-scope enum member without using was accepted' >&2
+    exit 1
+fi
+grep -Fq 'enum member needs a type qualifier or using: North' \
+    "$work/bare_global_enum.err"
+
+cat > "$work/scoped_enum.zi" <<'ZI'
+Direction :: enum { North :: 1; }
+Bad :: () -> s64 {
+    {
+        using Direction;
+        if North != 1 { return 0 }
+    }
+    return North
+}
+ZI
+if "$ziran" check --root "$work" "$work/scoped_enum.zi" \
+    2> "$work/scoped_enum.err"; then
+    echo 'enum using escaped its lexical block' >&2
+    exit 1
+fi
+grep -Fq 'unresolved name: North' "$work/scoped_enum.err"
+
+cat > "$work/ambiguous_enum.zi" <<'ZI'
+One :: enum { Value :: 1; }
+Two :: enum { Value :: 2; }
+Bad :: () -> s64 {
+    using One;
+    using Two;
+    return Value
+}
+ZI
+if "$ziran" check --root "$work" "$work/ambiguous_enum.zi" \
+    2> "$work/ambiguous_enum.err"; then
+    echo 'ambiguous opened enum member was accepted' >&2
+    exit 1
+fi
+grep -Fq 'ambiguous using enum member: Value' "$work/ambiguous_enum.err"
 
 cat > "$work/too_wide.zi" <<'EOF'
 Bad :: enum u8 { TooWide :: 256; }

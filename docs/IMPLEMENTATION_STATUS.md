@@ -289,7 +289,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   bitwise operations, equality, and corresponding compound assignments.
   Portable execution and C, C++, and Go output agree on these operations.
   Regular enum members also have typed `Type.Member` and contextual `.Member`
-  expressions, including call arguments and returns. Enum and scalar
+  expressions. Within a procedure, `using Enum;` opens enum members for bare
+  lookup with lexical scope. Bare members without `using` are rejected in
+  procedure bodies and file-scope global initializers; checked IR lowers
+  opened members to values before native or portable execution. Top-level
+  enum `using` declarations remain unsupported.
+  Call arguments and returns accept typed and contextual members. Enum and scalar
   `if`/`case` arms support terminal `#through;` with source, saved IR,
   portable, C, C++, and Go agreement. Integer, boolean, floating, and string
   cases accept a final `case;` default. Deferred actions run at case boundaries

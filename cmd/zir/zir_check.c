@@ -19,6 +19,7 @@ typedef struct Binding {
     char using_path[ZIR_NAME_MAX];
     int depth;
     int is_using_namespace;
+    int is_enum_namespace;
     int root_index;
 } Binding;
 
@@ -137,6 +138,97 @@ check_file_private_expression(const ZirModule *module, const char *source,
         previous = current;
         current = next;
         next = LexerNext(&lexer);
+    }
+    return 1;
+}
+
+static int
+file_scope_symbol_visible(const ZirModule *module, const char *name)
+{
+    for(int pass = 0; pass < 2; pass++) {
+        int count = pass == 0 ? 1 : module->import_count;
+        for(int i = 0; i < count; i++) {
+            const ZirModule *scope = module;
+            if(pass != 0) {
+                const ZirImport *import = &module->imports[i];
+                if(import->kind != ZIR_IMPORT_OPEN ||
+                   !in_lookup_file(module, import->is_file_private,
+                                   import->span)) continue;
+                scope = import->resolved_module;
+            }
+            if(scope == NULL) continue;
+            for(int g = 0; g < scope->global_count; g++)
+                if((pass == 0 || (!scope->globals[g].is_static &&
+                                  !scope->globals[g].is_file_private)) &&
+                   (pass != 0 || in_lookup_file(module,
+                       scope->globals[g].is_file_private,
+                       scope->globals[g].span)) &&
+                   strcmp(scope->globals[g].name, name) == 0) return 1;
+            for(int d = 0; d < scope->define_count; d++)
+                if((pass == 0 || scope->defines[d].is_public) &&
+                   (pass != 0 || in_lookup_file(module,
+                       scope->defines[d].is_file_private,
+                       scope->defines[d].span)) &&
+                   strcmp(scope->defines[d].name, name) == 0) return 1;
+            for(int f = 0; f < scope->function_count; f++)
+                if((pass == 0 || scope->functions[f].is_public) &&
+                   (pass != 0 || in_lookup_file(module,
+                       scope->functions[f].is_file_private,
+                       scope->functions[f].span)) &&
+                   strcmp(scope->functions[f].name, name) == 0) return 1;
+            for(int t = 0; t < scope->type_count; t++)
+                if((pass == 0 || scope->types[t].is_public) &&
+                   (pass != 0 || in_lookup_file(module,
+                       scope->types[t].is_file_private,
+                       scope->types[t].span)) &&
+                   strcmp(scope->types[t].name, name) == 0) return 1;
+        }
+    }
+    for(int i = 0; i < module->import_count; i++)
+        if(module->imports[i].kind == ZIR_IMPORT_MODULE &&
+           in_lookup_file(module, module->imports[i].is_file_private,
+                          module->imports[i].span) &&
+           strcmp(module->imports[i].name, name) == 0) return 1;
+    return 0;
+}
+
+static int
+check_file_scope_enum_names(const ZirModule *module,
+                            const ZirFunction *expression,
+                            ZirSourceSpan span)
+{
+    for(int e = 0; e < expression->expr_count; e++) {
+        const ZirExpr *node = &expression->exprs[e];
+        if(node->kind != ZIR_EXPR_IDENT || !node->name[0] ||
+           node->name[0] == '.' || strchr(node->name, '.') != NULL ||
+           file_scope_symbol_visible(module, node->name)) continue;
+        for(int pass = 0; pass < 2; pass++) {
+            int count = pass == 0 ? 1 : module->import_count;
+            for(int i = 0; i < count; i++) {
+                const ZirModule *scope = module;
+                if(pass != 0) {
+                    const ZirImport *import = &module->imports[i];
+                    if(import->kind != ZIR_IMPORT_OPEN ||
+                       !in_lookup_file(module, import->is_file_private,
+                                       import->span)) continue;
+                    scope = import->resolved_module;
+                }
+                if(scope == NULL) continue;
+                for(int t = 0; t < scope->type_count; t++) {
+                    const ZirType *type = &scope->types[t];
+                    int64_t value;
+                    if((pass != 0 && !type->is_public) ||
+                       (pass == 0 && !in_lookup_file(module,
+                            type->is_file_private, type->span)) ||
+                       !type->is_enum ||
+                       !EnumMemberValue(type, node->name, &value)) continue;
+                    Diagnostic(span, "check.enum_scope",
+                               "enum member needs a type qualifier or using: %s",
+                               node->name);
+                    return 0;
+                }
+            }
+        }
     }
     return 1;
 }
@@ -519,6 +611,7 @@ bind(Checker *c, const char *name, const char *type, ZirSourceSpan span)
     c->bindings[c->count].using_path[0] = '\0';
     c->bindings[c->count].depth = c->depth;
     c->bindings[c->count].is_using_namespace = 0;
+    c->bindings[c->count].is_enum_namespace = 0;
     c->bindings[c->count++].root_index = -1;
 }
 
@@ -546,6 +639,27 @@ activate_using(Checker *c, const char *path, ZirSourceSpan span)
     if(binding_type == NULL) {
         const ZirGlobal *global = global_binding(c, root);
         if(global != NULL) binding_type = global->type;
+    }
+    if(binding_type == NULL) {
+        const ZirType *enumeration = FindType(c->module, path, NULL);
+        if(enumeration != NULL && enumeration->is_enum) {
+            if(c->count == c->capacity) {
+                int size = c->capacity ? c->capacity * 2 : 32;
+                Binding *next = realloc(c->bindings,
+                    (size_t)size * sizeof(*next));
+                if(!next) { c->errors++; c->failed = 1; return; }
+                c->bindings = next; c->capacity = size;
+            }
+            Binding *namespace = &c->bindings[c->count++];
+            copy_text(namespace->name, sizeof(namespace->name), path);
+            copy_text(namespace->type, sizeof(namespace->type), path);
+            namespace->using_path[0] = '\0';
+            namespace->depth = c->depth;
+            namespace->is_using_namespace = 1;
+            namespace->is_enum_namespace = 1;
+            namespace->root_index = -1;
+            return;
+        }
     }
     if(binding_type == NULL) {
         error(c, span, "using requires a local, parameter, or global binding", root);
@@ -611,7 +725,27 @@ activate_using(Checker *c, const char *path, ZirSourceSpan span)
     copy_text(namespace->using_path, sizeof(namespace->using_path), using_path);
     namespace->depth = c->depth;
     namespace->is_using_namespace = 1;
+    namespace->is_enum_namespace = 0;
     namespace->root_index = root_index;
+}
+
+static int
+resolve_using_enum(Checker *c, const char *name,
+                   const ZirType **enumeration)
+{
+    *enumeration = NULL;
+    for(int i = c->count - 1; i >= 0; i--) {
+        const Binding *binding = &c->bindings[i];
+        if(!binding->is_enum_namespace) continue;
+        const ZirType *candidate = FindType(c->module, binding->type, NULL);
+        int64_t value;
+        if(candidate == NULL ||
+           !EnumMemberValue(candidate, name, &value)) continue;
+        if(*enumeration != NULL && *enumeration != candidate)
+            return -1;
+        *enumeration = candidate;
+    }
+    return *enumeration != NULL;
 }
 
 static void
@@ -638,7 +772,8 @@ promote_using_member(Checker *c, int index)
     int selected = -1;
     for(int i = c->count - 1; i >= 0; i--) {
         const Binding *binding = &c->bindings[i];
-        if(!binding->is_using_namespace) continue;
+        if(!binding->is_using_namespace || binding->is_enum_namespace)
+            continue;
         int visible_root = -1;
         for(int j = c->count - 1; j >= 0; j--)
             if(!c->bindings[j].is_using_namespace &&
@@ -952,15 +1087,14 @@ lookup(Checker *c, const char *name)
         return lexical;
     const ZirGlobal *global = global_binding(c, name);
     if(global != NULL) return global->type;
-    const ZirModule *owner = NULL;
     const ZirType *type = NULL;
-    int resolved = ResolveEnumMember(c->module, name, &owner, &type);
+    int resolved = resolve_using_enum(c, name, &type);
     if(resolved < 0) {
         error(c, c->fn->span, "ambiguous enum member", name);
         c->failed = 1;
     }
     if(resolved > 0)
-        return "integer";
+        return type->name;
     return "";
 }
 
@@ -1972,16 +2106,17 @@ expression_type(Checker *c, int index)
         if(!strcmp(e->name, "true") || !strcmp(e->name, "false")) type = "bool";
         else if(!strcmp(e->name, "null")) type = "null";
         else {
-            const ZirModule *owner = NULL;
             const ZirType *enumeration = NULL;
             int enum_member = !*lookup_lexical(c, e->name) &&
                               global_binding(c, e->name) == NULL ?
-                ResolveEnumMember(c->module, e->name, &owner, &enumeration) : 0;
+                resolve_using_enum(c, e->name, &enumeration) : 0;
+            if(enum_member < 0) {
+                error(c, e->span, "ambiguous using enum member", e->name);
+                break;
+            }
             if(enum_member == 1) {
                 if(!lower_enum_reference(c, e, enumeration, e->name))
                     break;
-                /* Bare members have the same integer type they had before
-                 * lowering; qualified members keep their enum type. */
                 type = "integer";
                 break;
             }
@@ -4905,6 +5040,11 @@ CheckPrograms(ZirProgram **programs, int count)
                                                global->init, global->span);
                 int valid = root >= 0 &&
                     expression.exprs[root].kind != ZIR_EXPR_UNKNOWN;
+                if(valid && !check_file_scope_enum_names(module, &expression,
+                                                         global->span)) {
+                    free(expression.exprs);
+                    return 0;
+                }
                 free(expression.exprs);
                 if(!valid) {
                     Diagnostic(global->span, "check.global",

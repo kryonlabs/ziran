@@ -29,6 +29,7 @@ host_api :: #system_library "host_api";
 TransformHost :: (packet: Packet) -> Packet #foreign host_api;
 #program_export
 Answer :: () -> s32 {
+    using Tone;
     packet: Packet
     packet.point.x = 40
     packet.point.y = 1

@@ -550,6 +550,7 @@ cat > "$work/mode_app.zi" <<'EOF'
 #import "modes"
 #program_export
 Answer :: () -> s32 {
+    using Mode;
     if Off != -1 || On != 0 || Later != 4 { return 0 }
     settings: Settings = Settings.{mode = cast(Mode)Later, number = 40}
     updated: Settings = Bump(settings)
@@ -576,6 +577,7 @@ Step :: enum {
 }
 #program_export
 Answer :: () -> s32 {
+    using Step;
     return Last
 }
 EOF
