@@ -567,7 +567,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   lowering still needs a typed representation.
 - Extend the `.zib` linker and verifier beyond the current subset: remaining
   control flow, enum initializer expressions, unresolved array bounds,
-  slice storage in aggregates, host slice returns and record slice parameters,
+  record slice parameters,
   state, and all checked expressions. Extend host capabilities to portable handles, arrays, and
   equivalent behavior
   for all supported language features. The current bundle embeds checked
