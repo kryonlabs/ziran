@@ -112,8 +112,20 @@ VALUE :: 1 ? 42 : 0
 #program_export
 Answer :: () -> s32 { return VALUE }
 ZI
+cat > "$work/c_multiline_ternary.zi" <<'ZI'
+Answer :: () -> s32 {
+    return true ? 42
+        : 0
+}
+ZI
+cat > "$work/c_adjacent_strings.zi" <<'ZI'
+Answer :: () -> string {
+    return "a"
+           "b"
+}
+ZI
 
-for feature in variant anon_enum match postfix guard switch goto default_label label state c_local raw_c slot_decl slot_body block_call c_global_literal c_constant_ternary; do
+for feature in variant anon_enum match postfix guard switch goto default_label label state c_local raw_c slot_decl slot_body block_call c_global_literal c_constant_ternary c_multiline_ternary c_adjacent_strings; do
     if "$ziran" check --root "$work" "$work/$feature.zi" \
         2> "$work/$feature.err"; then
         echo "non-Jai $feature syntax was accepted" >&2
@@ -135,6 +147,8 @@ for feature in variant anon_enum match postfix guard switch goto default_label l
         block_call) message='block calls are not Jai syntax' ;;
         c_global_literal) message='C-style cast or literal is not valid Jai syntax' ;;
         c_constant_ternary) message='C-style conditional is not valid Jai syntax' ;;
+        c_multiline_ternary) message='C-style conditional is not valid Jai syntax' ;;
+        c_adjacent_strings) message='statement is not supported by language checking' ;;
     esac
     grep -Fq "$message" "$work/$feature.err"
     for target in c cpp go; do

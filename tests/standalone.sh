@@ -37,7 +37,7 @@ python3 - "$work/ir/hello.zir" <<'PY'
 from pathlib import Path
 import sys
 data = Path(sys.argv[1]).read_bytes()
-assert data[:8] == b'ZIR\0\x1d\0\0\0', data[:8]
+assert data[:8] == b'ZIR\0\x1e\0\0\0', data[:8]
 PY
 "$ziran" build --target=c --root "$work" -o "$work/c" "$work/hello.zi"
 test -s "$work/c/hello.c"
@@ -798,7 +798,7 @@ python3 - "$work/app.zib" "$work/bad-bundle.zib" "$work/old-bundle.zib" <<'PY'
 from pathlib import Path
 import sys
 data = Path(sys.argv[1]).read_bytes()
-assert data[:8] == b'ZIB\0\x11\0\0\0', data[:8]
+assert data[:8] == b'ZIB\0\x12\0\0\0', data[:8]
 Path(sys.argv[2]).write_bytes(data[:17])
 old = bytearray(data)
 old[4] = 1

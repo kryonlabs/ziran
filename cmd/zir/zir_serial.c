@@ -36,7 +36,7 @@ typedef struct Reader {
 #define SPAN_FIELD(type, name) \
     {offsetof(type, name), sizeof(((type *)0)->name), FIELD_SPAN}
 #define FIELD_COUNT(fields) (sizeof(fields) / sizeof((fields)[0]))
-#define ZIR_FORMAT_VERSION 29u
+#define ZIR_FORMAT_VERSION 30u
 
 static const Field import_fields[] = {
     INTEGER_FIELD(ZirImport, kind), INTEGER_FIELD(ZirImport, extern_kind),
@@ -73,6 +73,7 @@ static const Field function_fields[] = {
     STRING_FIELD(ZirFunction, default_args),
     STRING_FIELD(ZirFunction, return_type), INTEGER_FIELD(ZirFunction, must_use),
     INTEGER_FIELD(ZirFunction, exported),
+    STRING_FIELD(ZirFunction, export_symbol),
     INTEGER_FIELD(ZirFunction, is_extern), INTEGER_FIELD(ZirFunction, extern_kind),
     INTEGER_FIELD(ZirFunction, is_public),
     INTEGER_FIELD(ZirFunction, is_file_private),
@@ -450,6 +451,20 @@ reference_valid(int index, int count)
 }
 
 static int
+export_symbol_valid(const char *symbol)
+{
+    if(!symbol[0])
+        return 1;
+    if(!isalpha((unsigned char)symbol[0]) && symbol[0] != '_')
+        return 0;
+    for(const unsigned char *cursor = (const unsigned char *)symbol + 1;
+        *cursor; cursor++)
+        if(!isalnum(*cursor) && *cursor != '_')
+            return 0;
+    return 1;
+}
+
+static int
 validate_program(const ZirProgram *program)
 {
     for(int m = 0; m < program->module_count; m++) {
@@ -524,6 +539,8 @@ validate_program(const ZirProgram *program)
             const ZirFunction *function = &module->functions[f];
             if(!function->name[0] ||
                !default_signature_valid(function) ||
+               !export_symbol_valid(function->export_symbol) ||
+               (function->export_symbol[0] && !function->exported) ||
                (function->must_use != 0 && function->must_use != 1) ||
                (function->must_use &&
                 !strcmp(function->return_type, "void")) ||

@@ -3,7 +3,7 @@
 This describes the target contract and the experimental subset that ships now.
 See [Implementation status](IMPLEMENTATION_STATUS.md) for the remaining work.
 
-## Experimental version 17
+## Experimental version 18
 
 `zi2zib bundle --root DIR [--module-path DIR] [--bind caller:capability=provider:function] --entry module:function -o FILE file.zi|file.zir ...`
 loads explicit inputs and their extensionless imports, then links reachable
@@ -24,7 +24,7 @@ or `-`; other constant expressions remain outside this subset. The bundle is
 `ZIB` plus a zero byte, a little-endian version, length-prefixed entry module
 and function names, a host capability count and its required module/function
 names, and a
-length-prefixed version 29 `.zir` payload. The current linker follows direct
+length-prefixed version 30 `.zir` payload. The current linker follows direct
 function calls from the entry, keeps record and enum declarations used by
 those functions (including types from imported modules and nested record
 fields), and removes unreachable functions, modules, types, and imports before
@@ -60,7 +60,7 @@ procedure type aliases with imported named functions run from
 source and saved IR. Fixed arrays with numeric or resolved integer
 constant-expression capacities support defaults,
 positional literals, element reads and writes, and value copies, including
-nested arrays and `u8` arrays inside imported records. Indexing is bounds-checked. Version 17 is
+nested arrays and `u8` arrays inside imported records. Indexing is bounds-checked. Version 18 is
 experimental and has no compatibility promise. Host calls with pointers,
 arrays, or slots remain unsupported. Default-initialized module globals of
 portable value types work within one `BundleRun`; each call starts with fresh

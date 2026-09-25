@@ -230,8 +230,11 @@ Conditions in unreachable nested arms and arms after a selected branch are
 not evaluated.
 The older `#else_if` and `#else` spellings are rejected. Conditional fields
 and enum members are also selected while parsing a declaration.
-Exported native symbols use Jai's standalone `#program_export` immediately
-before a function declaration. The old `#export` signature modifier is rejected.
+Exported native symbols use Jai's `#program_export` before a procedure,
+either on its own line or inline. A quoted symbol such as
+`#program_export "entry" Start :: () { ... }` selects the C/C++ linker name;
+the Go target reports that symbol override as unsupported. The old `#export`
+signature modifier is rejected.
 File-scope variables use `name: Type;` or `name: Type = value;`. The old
 `name :: Type #global` and C-style `static name: Type` forms are rejected.
 Visibility for following declarations uses Jai's `#scope_file`,

@@ -1140,6 +1140,12 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
     char ret[ZIR_GO_NAME_MAX];
     int saved_local_count = zir_go_local_count;
 
+    if(fn->export_symbol[0]) {
+        Diagnostic(fn->span, "zir_go.export",
+                   "quoted #program_export symbol requires the C or C++ target");
+        exit(1);
+    }
+
     zir_go_local_count = 0;
     camel_ident(fn->name, fname, sizeof(fname));
     /* signature: converted arguments */

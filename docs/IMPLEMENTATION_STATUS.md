@@ -5,8 +5,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 
 ## Working now
 
-- Jai-style `#program_export` on its own line exports the next procedure's
-  native symbol, and file-scope variables use `name: Type` declarations.
+- Jai-style `#program_export` on its own line or inline exports a procedure's
+  native symbol. A quoted linker name works in C/C++; Go reports that override
+  as unsupported. File-scope variables use `name: Type` declarations.
   `#export`, `#global`, and C-style `static` source forms are rejected. Source
   and saved IR retain these exports and globals across native and portable
   builds.
@@ -15,7 +16,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   expressions are rejected there before native output, including from saved
   IR. The C++ and Go backends no longer carry C-style compound-literal
   rewrites; Go also no longer translates C casts, `NULL`, or C scalar type
-  aliases in file-scope expressions.
+  aliases in file-scope expressions. The source reader no longer joins C-style
+  adjacent string literals or multi-line `?:` fragments.
 - Jai `#must` after a procedure result type requires callers to use the
   result. The checker enforces it for ordinary, imported, polymorphic, and
   foreign procedures in source and saved IR.
@@ -131,7 +133,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.krb` are rejected by the shared loader. Kryon owns the UI test fixtures;
   Ziran keeps a non-UI array and UTF-8 byte law fixture that runs from source
   and saved IR through native C, C++, and Go.
-- `zi2zir` writes experimental binary `.zir` version 29 after checking all
+- `zi2zir` writes experimental binary `.zir` version 30 after checking all
   input modules together. C, C++, and Go can read saved modules without reparsing
   `.zi`; their imports are relinked from serialized module identities. The
   reader rejects malformed headers, versions, truncated data, invalid
@@ -149,7 +151,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   portable linker reject reachable unions until those targets have overlapping
   storage semantics.
 - `zi2zib bundle --root DIR --entry module:function -o FILE` builds an
-  experimental version 17 `.zib` from source or saved IR. `zi2zib run FILE`
+  experimental version 18 `.zib` from source or saved IR. `zi2zib run FILE`
   loads and executes the validated scalar, plain record, enum, and fixed-array
   subset without a
   display or Kryon.

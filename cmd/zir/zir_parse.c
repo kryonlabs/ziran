@@ -1067,6 +1067,34 @@ function_must_use(const char *line, const char *return_type,
     return count;
 }
 
+/* Return 1 for a standalone directive and 2 for an inline declaration. */
+static int
+strip_program_export(char *line, char *symbol, size_t symbol_size,
+                     ZirSourceSpan span)
+{
+    const char *cursor;
+    const char *end;
+
+    symbol[0] = '\0';
+    if(!starts_word(line, "#program_export"))
+        return 0;
+    cursor = skip_ws(line + strlen("#program_export"));
+    if(*cursor == '"') {
+        end = strchr(cursor + 1, '"');
+        if(end == NULL || (size_t)(end - cursor - 1) >= symbol_size)
+            die_at(span, "#program_export requires a valid quoted symbol");
+        memcpy(symbol, cursor + 1, (size_t)(end - cursor - 1));
+        symbol[end - cursor - 1] = '\0';
+        if(!is_c_ident(symbol))
+            die_at(span, "#program_export symbol must be an identifier");
+        cursor = skip_ws(end + 1);
+    }
+    if(*cursor == '\0')
+        return 1;
+    memmove(line, cursor, strlen(cursor) + 1);
+    return 2;
+}
+
 static void
 separate_parameter_defaults(char *args, size_t capacity,
                             char *defaults, size_t defaults_capacity,
@@ -4914,6 +4942,7 @@ parse_source(const char *path, const char *root, const char *source,
     int in_block_comment = 0;
     int program_export = 0;
     int program_export_line = 0;
+    char program_export_symbol[ZIR_NAME_MAX] = "";
     int scope_public = 1;
     int scope_file = 0;
     char foreign_library_names[32][ZIR_NAME_MAX];
@@ -5150,15 +5179,9 @@ parse_source(const char *path, const char *root, const char *source,
                     pl--;
                 last = pl > 0 ? pending[pl - 1] : '\0';
                 prev = pl > 1 ? pending[pl - 2] : '\0';
-                /* Continuation operators: ',','=','%','/' always; '+','-','*',
-                 * '<','>' only in binary position (prev is space — excludes
-                 * 'char*','x++' handled below,'<stdlib.h>'); '&','|' when
-                 * doubled ('&&','||') or space-preceded; ':' only with an
-                 * open ternary ('?' pending) — 'case 1:' and goto labels
-                 * ('fail:') end their statement. */
+                /* Continue after a binary operator or comma. The previous
+                 * character distinguishes an operator from a postfix form. */
                 if(last == ',' || last == '=' || last == '%' ||
-                   (last == ':' && prev != ':' &&
-                    strchr(pending, '?') != NULL) ||
                    (last == '/' && prev != '>'))
                     continue;
                 if((last == '+' || last == '-' || last == '*' ||
@@ -5169,28 +5192,11 @@ parse_source(const char *path, const char *root, const char *source,
                 if((last == '&' || last == '|') &&
                    (prev == last || prev == ' ' || prev == '\t'))
                     continue;
-                /* Look ahead: a next line starting with a continuation
-                 * token ('?' / ':' ternary branches, '.', ',', leading
-                 * binary operators) continues this statement. Skipped for queued one-liner
-                 * parts and while a stash is pending: their "next line" is
-                 * not the next physical source line, and reading ahead here
-                 * would overwrite/lose the stashed one. */
+                /* Look ahead for Jai continuation tokens. Skipped for queued
+                 * one-liner parts and while a stash is pending: their "next
+                 * line" is not the next physical source line. */
                 if(!from_queue && !have_look) {
                     char la[SOURCE_LINE_MAX];
-                    int pend_str;
-
-                    /* C adjacent-literal concatenation: a statement whose
-                     * last token closes a string ("...") continues when the
-                     * next line opens a new literal ("...") — otherwise each
-                     * fragment becomes its own orphan expression statement. */
-                    {
-                        int pl2 = (int)strlen(pending);
-
-                        while(pl2 > 0 && (pending[pl2 - 1] == ' ' ||
-                                          pending[pl2 - 1] == '\t'))
-                            pl2--;
-                        pend_str = pl2 > 0 && pending[pl2 - 1] == '"';
-                    }
 
                     /* Keep consuming lookahead lines while they continue this
                      * statement; the first non-continuation line is stashed
@@ -5218,7 +5224,6 @@ parse_source(const char *path, const char *root, const char *source,
                         }
                         cont =
                             (last == '}' && starts_word(lt, "else")) ||
-                            *lt == '?' || (*lt == ':' && lt[1] != ':') ||
                             *lt == '.' || *lt == ',' || *lt == '+' ||
                             *lt == '/' || *lt == '%' ||
                             (*lt == '-' && lt[1] != '>') ||
@@ -5227,8 +5232,7 @@ parse_source(const char *path, const char *root, const char *source,
                              (*lt == '=' && lt[1] == '=') ||
                              (*lt == '!' && lt[1] == '=') ||
                              (*lt == '<' && lt[1] == '=') ||
-                             (*lt == '>' && lt[1] == '=')) ||
-                            (*lt == '"' && pend_str);
+                             (*lt == '>' && lt[1] == '='));
                         if(!cont) {
                             snprintf(lookahead, sizeof(lookahead), "%s", la);
                             have_look = 1;
@@ -5244,21 +5248,13 @@ parse_source(const char *path, const char *root, const char *source,
                                 sizeof(pending) - pending_len - 1);
                         pending_len = (int)strlen(pending);
                         line_no++;
-                        /* the joined statement now ends with whatever this
-                         * fragment ended with */
-                        {
-                            int pl2 = pending_len;
-
-                            while(pl2 > 0 && (pending[pl2 - 1] == ' ' ||
-                                              pending[pl2 - 1] == '\t'))
-                                pl2--;
-                            pend_str = pl2 > 0 && pending[pl2 - 1] == '"';
-                        }
                     }
                 }
             }
         }
         t = pending;
+        int export_directive = 0;
+        char export_directive_symbol[ZIR_NAME_MAX] = "";
         {
             static char logical[SOURCE_LINE_MAX * 4];
 
@@ -5277,6 +5273,13 @@ parse_source(const char *path, const char *root, const char *source,
                 else
                     separator[1] = '\0'; /* Keep declaration terminators. */
                 trim_in_place(logical);
+            }
+            if(mode == TOP) {
+                export_directive = strip_program_export(logical,
+                    export_directive_symbol,
+                    sizeof(export_directive_symbol),
+                    Span(rel, line_no, 1));
+                t = logical;
             }
             /* One-line control block: keep the header as this logical line
              * and queue the body + closer for the next iterations (nested
@@ -5360,8 +5363,21 @@ parse_source(const char *path, const char *root, const char *source,
         } else if(mode == TOP && tframe_count > 0 &&
                   !tframes[tframe_count - 1].active) {
             continue;
-        } else if(mode == TOP &&
-                  parse_compile_check(module, rel, line_no, t, &consts)) {
+        }
+        if(mode == TOP && export_directive) {
+            if(program_export)
+                die_at(Span(rel, line_no, 1),
+                       "#program_export must precede exactly one function");
+            program_export = 1;
+            program_export_line = line_no;
+            copy_text(program_export_symbol,
+                      sizeof(program_export_symbol),
+                      export_directive_symbol);
+            if(export_directive == 1)
+                continue;
+        }
+        if(mode == TOP &&
+           parse_compile_check(module, rel, line_no, t, &consts)) {
             continue;
         } else if(mode == TOP &&
                   (strcmp(t, "#scope_file") == 0 ||
@@ -5369,13 +5385,6 @@ parse_source(const char *path, const char *root, const char *source,
                    strcmp(t, "#scope_export") == 0)) {
             scope_public = strcmp(t, "#scope_export") == 0;
             scope_file = strcmp(t, "#scope_file") == 0;
-            continue;
-        } else if(mode == TOP && strcmp(t, "#program_export") == 0) {
-            if(program_export)
-                die_at(Span(rel, line_no, 1),
-                       "#program_export must precede exactly one function");
-            program_export = 1;
-            program_export_line = line_no;
             continue;
         } else if(mode == TOP && program_export &&
                   !looks_like_function_header(t)) {
@@ -5668,10 +5677,13 @@ parse_source(const char *path, const char *root, const char *source,
                                "#program_export requires a concrete procedure");
                     fn->is_template = 1;
                 }
-                /* Jai's standalone #program_export keeps the plain symbol
-                 * for native callers. */
+                /* Preserve the Jai source name and optional linker symbol. */
                 fn->exported = program_export;
+                copy_text(fn->export_symbol,
+                          sizeof(fn->export_symbol),
+                          program_export_symbol);
                 program_export = 0;
+                program_export_symbol[0] = '\0';
                 /* Public functions are emitted in headers. */
                 fn->is_public = scope_public;
                 fn->is_file_private = scope_file;

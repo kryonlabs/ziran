@@ -135,6 +135,7 @@ typedef struct ZirFunction {
     char return_type[ZIR_NAME_MAX];
     int must_use; /* #must requires callers to keep the result */
     int exported;
+    char export_symbol[ZIR_NAME_MAX]; /* optional #program_export linker name */
     int is_extern;
     ZirExternKind extern_kind;
     int is_public;  /* function emitted in generated interfaces */

@@ -393,9 +393,10 @@ function_c_name(const ZirModule *m, const ZirFunction *fn,
 {
     char mod[LOWER_NAME_MAX];
     size_t n = 0;
-    /* '#program_export' keeps the plain name for native callers. */
+    /* '#program_export' selects the externally visible linker name. */
     if(fn->exported) {
-        snprintf(dst, dst_size, "%s", fn->name);
+        snprintf(dst, dst_size, "%s",
+                 fn->export_symbol[0] ? fn->export_symbol : fn->name);
         return;
     }
     if(m->name[0] != '\0' && strcmp(m->name, "main") != 0) {
