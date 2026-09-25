@@ -270,6 +270,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   initializers, `#run`, `#assert`, `#if`, and `#ifx`; the operand is not run.
   Standalone `type_of` values and forward or imported file-scope queries remain
   unsupported. Foreign-record size queries still require their Jai layouts.
+  Jai `#line` resolves to the physical source line before checking and remains
+  stable through saved IR, native targets, and `.zib`, including `#load` files.
   Untyped integer locals inferred with `:=` now use `s64` storage, including
   when their values exceed 32 bits, across saved IR and all supported targets.
   Source, saved IR, native targets, and `.zib` agree on both success and error

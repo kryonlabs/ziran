@@ -4230,10 +4230,10 @@ strip_block_comments(char *s, int *comment_depth)
     *w = '\0';
 }
 
-/* Canonicalize Jai's scalar aliases before parsing declarations. Quoted text
- * and comments are left intact. Historical type names remain invalid input. */
+/* Canonicalize Jai's scalar aliases and source-position expressions before
+ * parsing declarations. Quoted text and comments are left intact. */
 static void
-normalize_jai_type_names(char *line, const char *path, int line_no)
+normalize_jai_source_tokens(char *line, const char *path, int line_no)
 {
     static const struct { const char *jai, *internal; } names[] = {
         {"int", "s64"}, {"float", "float32"}
@@ -4270,6 +4270,18 @@ normalize_jai_type_names(char *line, const char *path, int line_no)
                     break;
                 }
             }
+            continue;
+        }
+        if(strncmp(p, "#line", 5) == 0 &&
+           !isalnum((unsigned char)p[5]) && p[5] != '_') {
+            int written = snprintf(normalized + used,
+                                   sizeof(normalized) - used, "%d", line_no);
+            if(written < 0 ||
+               (size_t)written >= sizeof(normalized) - used)
+                die_at(Span(path, line_no, 1),
+                       "source line exceeds size limit");
+            used += (size_t)written;
+            p += 5;
             continue;
         }
         if(isalpha((unsigned char)*p) || *p == '_') {
@@ -4698,6 +4710,7 @@ typedef struct LoadFrame {
     char rel[SOURCE_PATH_MAX];
     char lookahead[SOURCE_LINE_MAX];
     int line_no;
+    int physical_line_no;
     int have_look;
     int scope_public;
     int scope_file;
@@ -4717,6 +4730,7 @@ parse_source(const char *path, const char *root, const char *source,
     char module_name[ZIR_NAME_MAX];
     char rel[SOURCE_PATH_MAX];
     int line_no = 0;
+    int physical_line_no = 0;
     enum { TOP, TYPE, FUNCTION } mode = TOP;
     int depth = 0;
     char pending[SOURCE_LINE_MAX * 4];
@@ -4810,12 +4824,15 @@ parse_source(const char *path, const char *root, const char *source,
             copy_text(rel, sizeof(rel), frame->rel);
             copy_text(lookahead, sizeof(lookahead), frame->lookahead);
             line_no = frame->line_no;
+            physical_line_no = frame->physical_line_no;
             have_look = frame->have_look;
             scope_public = frame->scope_public;
             scope_file = frame->scope_file;
             in_block_comment = frame->in_block_comment;
             continue;
         }
+        if(!have_look && onelineq_count == 0)
+            physical_line_no++;
         char raw[SOURCE_LINE_MAX];
         char *t;
         int from_lookahead = 0;
@@ -4844,7 +4861,7 @@ parse_source(const char *path, const char *root, const char *source,
             die_at(Span(rel, line_no, 1),
                    "Jai compile-time branches use 'else #if' or 'else', not #else_if/#else");
         if(!from_queue && !from_lookahead)
-            normalize_jai_type_names(line, rel, line_no);
+            normalize_jai_source_tokens(line, rel, physical_line_no);
         snprintf(raw, sizeof(raw), "%s", line);
         {
             char *trimmed = trim(raw);
@@ -5032,12 +5049,14 @@ parse_source(const char *path, const char *root, const char *source,
                         const char *lt;
                         int cont;
 
+                        physical_line_no++;
                         strip_block_comments(la, &in_block_comment);
                         if(contains_source_directive(la, "#else_if") ||
                            contains_source_directive(la, "#else"))
                             die_at(Span(rel, line_no + 1, 1),
                                    "Jai compile-time branches use 'else #if' or 'else', not #else_if/#else");
-                        normalize_jai_type_names(la, rel, line_no + 1);
+                        normalize_jai_source_tokens(la, rel,
+                                                    physical_line_no);
                         /* trim in place: the lookahead is appended verbatim,
                          * and a raw fgets line would carry its '\n' into the
                          * joined statement text. */
@@ -5247,6 +5266,7 @@ parse_source(const char *path, const char *root, const char *source,
             copy_text(frame->rel, sizeof(frame->rel), rel);
             copy_text(frame->lookahead, sizeof(frame->lookahead), lookahead);
             frame->line_no = line_no;
+            frame->physical_line_no = physical_line_no;
             frame->have_look = have_look;
             frame->scope_public = scope_public;
             frame->scope_file = scope_file;
@@ -5258,6 +5278,7 @@ parse_source(const char *path, const char *root, const char *source,
             source = owned_source;
             copy_text(rel, sizeof(rel), relative_path(root, path));
             line_no = 0;
+            physical_line_no = 0;
             have_look = 0;
             lookahead[0] = '\0';
             scope_public = 1;

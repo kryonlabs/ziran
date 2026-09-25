@@ -166,6 +166,9 @@ declared same-module expressions in constants, globals, and compile-time
 directives. Standalone `type_of` values and forward or imported file-scope
 queries remain unsupported. `size_of` for foreign records still needs their
 Jai layouts.
+Jai `#line` is an integer expression containing its physical source line.
+It works in declarations, compile-time conditions, defaults, and procedure
+bodies, including files introduced by `#load`.
 ASCII byte characters use `#char "A"` and infer `s64`, as integer literals
 do; single-quoted character literals are rejected.
 Jai raw multiline strings use `#string END` followed by their exact text and
