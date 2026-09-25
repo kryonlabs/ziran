@@ -137,6 +137,11 @@ expression_origin(BorrowCheck *check, int index)
         return merge(expression_origin(check, expression->right),
                      expression_origin(check, expression->third));
     case ZIR_EXPR_CALL:
+        if(!strcmp(expression->name, "VecSlice")) {
+            /* The view borrows its Vec argument's binding; the move rules
+             * keep that binding alive while the view is in scope. */
+            return expression_origin(check, expression->first_child);
+        }
         if(SliceElementType(expression->type, NULL, 0))
             return call_origin(check, expression);
         return (Origin){0, 0, 1}; /* A returned array/record is temporary storage. */

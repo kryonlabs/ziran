@@ -1300,6 +1300,8 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
            !strcmp(expression->name, "VecSwap") ||
            !strcmp(expression->name, "VecPop") ||
            !strcmp(expression->name, "VecGet") ||
+           !strcmp(expression->name, "VecClone") ||
+           !strcmp(expression->name, "VecSlice") ||
            !strcmp(expression->name, "BuilderAppend") ||
            !strcmp(expression->name, "BuilderFinish")) {
             int first = expression->first_child;
@@ -1309,6 +1311,8 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
             int swap = !strcmp(expression->name, "VecSwap");
             int pop = !strcmp(expression->name, "VecPop");
             int get = !strcmp(expression->name, "VecGet");
+            int clone = !strcmp(expression->name, "VecClone");
+            int view = !strcmp(expression->name, "VecSlice");
             int text_append = !strcmp(expression->name, "BuilderAppend");
             int text_finish = !strcmp(expression->name, "BuilderFinish");
             char element[ZIR_NAME_MAX];
@@ -1318,6 +1322,34 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
                !verify_expression(module, function, bindings, binding_count,
                                   first, depth + 1))
                 return 0;
+            if(clone)
+                return second >= 0 &&
+                       function->exprs[second].next_sibling < 0 &&
+                       assignment_root(function, second) != NULL &&
+                       strcmp(function->exprs[first].type,
+                              function->exprs[second].type) == 0 &&
+                       verify_expression(module, function, bindings,
+                                         binding_count, second, depth + 1) &&
+                       strcmp(expression->type, "bool") == 0;
+            if(view) {
+                int third = second >= 0 ?
+                    function->exprs[second].next_sibling : -1;
+                char expected[ZIR_NAME_MAX];
+                int written;
+                if(third < 0 || function->exprs[third].next_sibling >= 0 ||
+                   !integer_type(function->exprs[second].type) ||
+                   !integer_type(function->exprs[third].type) ||
+                   !verify_expression(module, function, bindings,
+                                      binding_count, second, depth + 1) ||
+                   !verify_expression(module, function, bindings,
+                                      binding_count, third, depth + 1))
+                    return 0;
+                written = snprintf(expected, sizeof(expected), "[]%s",
+                                   element);
+                return written > 0 &&
+                       (size_t)written < sizeof(expected) &&
+                       strcmp(expression->type, expected) == 0;
+            }
             if(pop || get) {
                 const ZirModule *owner = NULL;
                 const ZirType *record_type = FindType(module,
@@ -2392,6 +2424,8 @@ eval(Frame *frame, int index, int depth)
            !strcmp(expression->name, "VecSwap") ||
            !strcmp(expression->name, "VecPop") ||
            !strcmp(expression->name, "VecGet") ||
+           !strcmp(expression->name, "VecClone") ||
+           !strcmp(expression->name, "VecSlice") ||
            !strcmp(expression->name, "BuilderAppend") ||
            !strcmp(expression->name, "BuilderFinish")) {
             int first = expression->first_child;
@@ -2417,6 +2451,104 @@ eval(Frame *frame, int index, int depth)
                 *vec = *other;
                 *other = saved;
                 value = (Value){.kind = VALUE_VOID};
+                break;
+            }
+            if(!strcmp(expression->name, "VecClone")) {
+                int second = frame->function->exprs[first].next_sibling;
+                Value *source = assignment_slot(frame, second, depth + 1);
+                Value *dest_data, *dest_count, *dest_capacity;
+                Value *src_data, *src_count, *src_capacity;
+                Array *copy = NULL;
+                if(source == NULL || source->kind != VALUE_RECORD ||
+                   source->record->type != vec->record->type) {
+                    frame->vm->failed = 1;
+                    break;
+                }
+                dest_data = record_field(vec->record, "data");
+                dest_count = record_field(vec->record, "count");
+                dest_capacity = record_field(vec->record, "capacity");
+                src_data = record_field(source->record, "data");
+                src_count = record_field(source->record, "count");
+                src_capacity = record_field(source->record, "capacity");
+                if(dest_data == NULL || dest_count == NULL ||
+                   dest_capacity == NULL || src_data == NULL ||
+                   src_count == NULL || src_capacity == NULL ||
+                   src_count->kind != VALUE_INT || src_count->integer < 0 ||
+                   src_capacity->kind != VALUE_INT ||
+                   src_capacity->integer < src_count->integer ||
+                   dest_count->kind != VALUE_INT) {
+                    frame->vm->failed = 1;
+                    break;
+                }
+                if(src_count->integer > 0) {
+                    copy = allocate_array_try(frame->vm, frame->module,
+                                              element, (int)src_count->integer,
+                                              0);
+                    if(copy == NULL) {
+                        value = int_value(0);
+                        break;
+                    }
+                    for(int i = 0; i < src_count->integer && !frame->vm->failed;
+                        i++) {
+                        Value *entry = src_data->kind == VALUE_ARRAY ?
+                            &src_data->array->elements[i] : NULL;
+                        if(entry == NULL) {
+                            frame->vm->failed = 1;
+                            break;
+                        }
+                        copy->elements[i] = coerce(frame->vm, frame->module,
+                                                   *entry, element);
+                    }
+                    if(frame->vm->failed)
+                        break;
+                    if(dest_data->kind == VALUE_ARRAY && dest_data->array != NULL)
+                        retire_value(*dest_data, 0);
+                } else if(dest_data->kind == VALUE_ARRAY &&
+                          dest_data->array != NULL) {
+                    retire_value(*dest_data, 0);
+                }
+                *dest_data = copy != NULL ?
+                    (Value){.kind = VALUE_ARRAY, .array = copy} :
+                    (Value){.kind = VALUE_ARRAY};
+                *dest_count = int_value(src_count->integer);
+                *dest_capacity = int_value(src_count->integer);
+                value = int_value(1);
+                break;
+            }
+            if(!strcmp(expression->name, "VecSlice")) {
+                int second = frame->function->exprs[first].next_sibling;
+                int third = frame->function->exprs[second].next_sibling;
+                Value low = eval(frame, second, depth + 1);
+                Value high;
+                Value *data = record_field(vec->record, "data");
+                Value *count = record_field(vec->record, "count");
+                int64_t from, to;
+                if(frame->vm->failed || low.kind != VALUE_INT ||
+                   (!low.unsigned64 && low.integer < 0)) {
+                    frame->vm->failed = 1;
+                    break;
+                }
+                high = eval(frame, third, depth + 1);
+                if(frame->vm->failed || high.kind != VALUE_INT ||
+                   (!high.unsigned64 && high.integer < 0)) {
+                    frame->vm->failed = 1;
+                    break;
+                }
+                from = (int64_t)integer_bits(low);
+                to = (int64_t)integer_bits(high);
+                if(data == NULL || count == NULL || count->kind != VALUE_INT ||
+                   from > to || to > count->integer) {
+                    frame->vm->failed = 1;
+                    break;
+                }
+                if(to == from || data->kind != VALUE_ARRAY ||
+                   data->array == NULL)
+                    value = (Value){.kind = VALUE_SLICE};
+                else
+                    value = (Value){.kind = VALUE_SLICE,
+                                    .array = data->array,
+                                    .offset = (size_t)from,
+                                    .length = (size_t)(to - from)};
                 break;
             }
             if(!strcmp(expression->name, "VecPop") ||

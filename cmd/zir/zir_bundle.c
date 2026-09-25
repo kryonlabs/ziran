@@ -449,6 +449,7 @@ vec_operation(const char *name)
     return !strcmp(name, "VecPush") || !strcmp(name, "VecClear") ||
            !strcmp(name, "VecFree") || !strcmp(name, "VecSwap") ||
            !strcmp(name, "VecPop") || !strcmp(name, "VecGet") ||
+           !strcmp(name, "VecClone") || !strcmp(name, "VecSlice") ||
            !strcmp(name, "BuilderAppend") || !strcmp(name, "BuilderFinish");
 }
 
@@ -593,6 +594,10 @@ prune_record_fields(ZirProgram *program, const char *entry_module,
                                       expr->name, uses, use_count);
                 else if(expr->kind == ZIR_EXPR_COMPOUND)
                     mark_all_fields(module, expr->name, uses, use_count);
+                else if(expr->kind == ZIR_EXPR_CALL &&
+                        (!strcmp(expr->name, "VecPop") ||
+                         !strcmp(expr->name, "VecGet")))
+                    mark_all_fields(module, expr->type, uses, use_count);
             }
         }
     }

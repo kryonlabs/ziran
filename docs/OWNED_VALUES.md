@@ -3,8 +3,10 @@
 This is the target contract for owned `Vec[T]` and a string builder. A scoped
 `Vec(T)` subset now supports default initialization (including locals in the
 portable VM), checked indexing, fallible `VecPush`, `VecClear`, `VecFree`,
-`VecSwap`, `VecPop` and `VecGet` results carried as `Option(T)` records, and a
-`Vec(u8)` string builder through `BuilderAppend` and `BuilderFinish`, in C99,
+`VecSwap`, `VecPop` and `VecGet` results carried as `Option(T)` records, a
+`Vec(u8)` string builder through `BuilderAppend` and `BuilderFinish`, an
+explicit `VecClone(dest, src)` with a recoverable failure result, and
+`VecSlice(values, low, high)` borrowed views, in C99,
 C++, Go, and the portable VM. A vector can live in a local, global, or record
 field, and moves on assignment, argument passing, and return. The checker
 rejects use after a move, assignment over an owned vector, a leaked local or
@@ -41,9 +43,14 @@ local or parameter at any return or scope exit; moves inside an `if` whose
 every arm returns do not reach the join. Deferred cleanup runs before each
 rewritten return, so `defer { VecFree(v) }` satisfies the drop rule on every
 path, and an explicit drop plus a deferred drop of the same binding is
-rejected as a double drop. Vec borrows and an explicit `clone` remain to be
-added; no view borrows a vector yet, so live-borrow rejection has no case to
-check. Native output and the portable VM agree on the observable value of
+rejected as a double drop. A view declared as `[]T` from
+`VecSlice(values, low, high)` borrows its source binding until the view's
+scope closes: moving or mutating the source, including `VecPush`, `VecPop`,
+`VecClear`, `VecFree`, `VecSwap`, and the string builder operations, is
+rejected while the view is live; `VecGet` and `VecClone` sources stay
+readable. `VecClone(dest, src)` requires a fresh or moved-from destination
+and returns `false` on allocation failure without changing the source.
+Native output and the portable VM agree on the observable value of
 every moved binding: the source is unreachable after the move.
 
 ## Recoverable errors
@@ -67,6 +74,6 @@ string builder owns UTF-8 bytes in a `Vec[u8]`; `BuilderAppend` can fail, and
 `string` values remain unchanged.
 
 The parser, checker, checked `.zir`, C/C++/Go emitters, portable verifier,
-VM, and host boundary implement these observable ownership, move, and drop
-behaviors for the supported subset; automatic drop insertion beyond `defer`,
-Vec borrows, and an explicit `clone` remain the open parts of this contract.
+VM, and host boundary implement these observable ownership, move, drop,
+clone, and borrow behaviors for the supported subset. Automatic drop
+insertion beyond `defer` remains the open part of this contract.

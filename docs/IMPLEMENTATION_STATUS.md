@@ -515,8 +515,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   return: the checker rejects use after move, assignment over an owned vector,
   a leaked local or parameter at any return or scope exit, moving nested
   record storage, and moving a global, while `defer { VecFree(v) }` satisfies
-  the drop rule on every path. Vec borrows and an explicit clone
-  remain to complete the owned-value model. Go cannot recover from
+  the drop rule on every path. `VecClone(dest, src)` copies into a fresh or
+  moved-from destination with a recoverable failure result, and
+  `VecSlice(values, low, high)` declares a borrowed `[]T` view whose live
+  scope blocks moving or mutating its source. Automatic drop insertion beyond
+  `defer` remains to complete the owned-value model. Go cannot recover from
   physical allocation failure. The intended
   [owned-value contract](OWNED_VALUES.md) records those semantics.
 - Audit parser, checker, IR, and backend paths for remaining UI assumptions.

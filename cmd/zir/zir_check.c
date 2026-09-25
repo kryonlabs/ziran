@@ -22,6 +22,9 @@ typedef struct Binding {
     int is_enum_namespace;
     int root_index;
     int moved;
+    int touched;
+    int borrow_count;
+    int borrows_index;
 } Binding;
 
 typedef struct SpecializationRequest {
@@ -46,6 +49,7 @@ typedef struct Checker {
     int using_rewritten;
     int assign_destination;
     int destination_was_moved;
+    char vec_slice_type[ZIR_NAME_MAX];
     struct {
         int at;
         int count;
@@ -707,7 +711,10 @@ bind(Checker *c, const char *name, const char *type, ZirSourceSpan span)
     c->bindings[c->count].is_using_namespace = 0;
     c->bindings[c->count].is_enum_namespace = 0;
     c->bindings[c->count].root_index = -1;
-    c->bindings[c->count++].moved = 0;
+    c->bindings[c->count].moved = 0;
+    c->bindings[c->count].touched = 0;
+    c->bindings[c->count].borrow_count = 0;
+    c->bindings[c->count++].borrows_index = -1;
 }
 
 static void
@@ -2393,6 +2400,7 @@ expression_type(Checker *c, int index)
             for(int i = c->count - 1; i >= 0; i--)
                 if(!c->bindings[i].is_using_namespace &&
                    !strcmp(c->bindings[i].name, e->name)) {
+                    c->bindings[i].touched = 1;
                     if(c->bindings[i].moved && !c->assign_destination)
                         error(c, e->span, "Vec binding is used after moving",
                               e->name);
@@ -2435,6 +2443,7 @@ expression_type(Checker *c, int index)
         if(!strcmp(e->name, "VecPush") || !strcmp(e->name, "VecClear") ||
            !strcmp(e->name, "VecFree") || !strcmp(e->name, "VecSwap") ||
            !strcmp(e->name, "VecPop") || !strcmp(e->name, "VecGet") ||
+           !strcmp(e->name, "VecClone") || !strcmp(e->name, "VecSlice") ||
            !strcmp(e->name, "BuilderAppend") ||
            !strcmp(e->name, "BuilderFinish")) {
             for(int child = e->first_child; child >= 0;
@@ -2454,7 +2463,12 @@ expression_type(Checker *c, int index)
             int byte_builder = text_append || text_finish;
             char element[ZIR_NAME_MAX];
             char option_type[ZIR_NAME_MAX];
+            Binding *first_binding = lexical_vec_binding(c, first);
+            int first_touched = first_binding != NULL &&
+                                first_binding->touched;
             const char *vector_type = expression_type(c, first);
+            int clone = !strcmp(e->name, "VecClone");
+            int view = !strcmp(e->name, "VecSlice");
             if(first < 0 || !VecElementType(c->module, vector_type,
                                            element, sizeof(element)) ||
                !(get || assignable(c, first)))
@@ -2463,6 +2477,11 @@ expression_type(Checker *c, int index)
             if(byte_builder && strcmp(element, "u8"))
                 error(c, e->span,
                       "string builder requires a Vec(u8) place", element);
+            if(first_binding != NULL && first_binding->borrow_count > 0 &&
+               !get && !view)
+                error(c, e->span,
+                      "cannot mutate a Vec with a live borrowed view",
+                      e->name);
             if(push) {
                 if(contains_vec(c->module, element, 0))
                     error(c, e->span, "nested Vec elements are not supported", element);
@@ -2504,6 +2523,55 @@ expression_type(Checker *c, int index)
                 else if(strcmp(expression_type(c, second), "string"))
                     error(c, e->span, "BuilderAppend requires string text",
                           expression_type(c, second));
+            } else if(clone) {
+                int third = second >= 0 ?
+                    c->fn->exprs[second].next_sibling : -1;
+                if(second < 0 || third >= 0)
+                    error(c, e->span, "VecClone requires a source Vec", e->name);
+                else {
+                    const char *source_type = expression_type(c, second);
+                    if(!VecElementType(c->module, source_type, NULL, 0) ||
+                       strcmp(vector_type, source_type))
+                        error(c, e->span,
+                              "VecClone requires a matching Vec source",
+                              e->name);
+                    else {
+                        Binding *destination = lexical_vec_binding(c, first);
+                        if(c->fn->exprs[first].kind != ZIR_EXPR_IDENT)
+                            error(c, e->span,
+                                  "VecClone requires a simple binding destination",
+                                  e->name);
+                        else if(destination == NULL)
+                            error(c, e->span,
+                                  "global Vec storage cannot clone; use a local",
+                                  e->name);
+                        else if(destination->borrow_count > 0)
+                            error(c, e->span,
+                                  "cannot mutate a Vec with a live borrowed view",
+                                  e->name);
+                        else if(first_touched && !destination->moved)
+                            error(c, e->span,
+                                  "clone destination must be fresh or moved-from",
+                                  destination->name);
+                    }
+                }
+            } else if(view) {
+                int third = second >= 0 ?
+                    c->fn->exprs[second].next_sibling : -1;
+                Binding *source = lexical_vec_binding(c, first);
+                if(source == NULL)
+                    error(c, e->span,
+                          "VecSlice requires a local Vec binding", e->name);
+                if(second < 0 || third < 0 ||
+                   c->fn->exprs[third].next_sibling >= 0)
+                    error(c, e->span, "VecSlice requires low and high bounds",
+                          e->name);
+                else {
+                    if(!integer_type(expression_type(c, second)) ||
+                       !integer_type(expression_type(c, third)))
+                        error(c, e->span,
+                              "VecSlice requires integer bounds", e->name);
+                }
             } else if(second >= 0)
                 error(c, e->span, "Vec operation takes one argument", e->name);
             if(pop) {
@@ -2518,7 +2586,13 @@ expression_type(Checker *c, int index)
                     type = option_type;
                 else
                     type = "";
-            } else if(push || text_append)
+            } else if(view) {
+                if(snprintf(c->vec_slice_type, sizeof(c->vec_slice_type),
+                            "[]%s", element) < (int)sizeof(c->vec_slice_type))
+                    type = c->vec_slice_type;
+                else
+                    type = "";
+            } else if(push || text_append || clone)
                 type = "bool";
             else if(text_finish)
                 type = "string";
@@ -3833,6 +3907,7 @@ vec_primitive_name(const char *name)
     return !strcmp(name, "VecPush") || !strcmp(name, "VecClear") ||
            !strcmp(name, "VecFree") || !strcmp(name, "VecSwap") ||
            !strcmp(name, "VecPop") || !strcmp(name, "VecGet") ||
+           !strcmp(name, "VecClone") || !strcmp(name, "VecSlice") ||
            !strcmp(name, "BuilderAppend") || !strcmp(name, "BuilderFinish");
 }
 
@@ -3855,8 +3930,13 @@ mark_expr_moves(Checker *c, int index)
         if(binding == NULL)
             continue;
         if(!primitive || !strcmp(e->name, "VecFree") ||
-           !strcmp(e->name, "BuilderFinish"))
+           !strcmp(e->name, "BuilderFinish")) {
+            if(binding->borrow_count > 0)
+                error(c, e->span,
+                      "cannot move a Vec with a live borrowed view",
+                      binding->name);
             binding->moved = 1;
+        }
         mark_expr_moves(c, child);
     }
     mark_expr_moves(c, e->left);
@@ -3963,6 +4043,9 @@ restart:
         if(st->kind == ZIR_STMT_BLOCK_CLOSE) {
             while(c->count && c->bindings[c->count - 1].depth == c->depth) {
                 Binding *popping = &c->bindings[c->count - 1];
+                if(popping->borrows_index >= 0 &&
+                   popping->borrows_index < c->count - 1)
+                    c->bindings[popping->borrows_index].borrow_count--;
                 if(!popping->is_using_namespace &&
                    owned_vec_binding_type(c, popping->type) &&
                    !popping->moved)
@@ -4039,6 +4122,10 @@ restart:
             if(moved_from != NULL &&
                (st->kind == ZIR_STMT_DECL || st->kind == ZIR_STMT_ASSIGN ||
                 st->kind == ZIR_STMT_RETURN)) {
+                if(moved_from->borrow_count > 0)
+                    error(c, st->span,
+                          "cannot move a Vec with a live borrowed view",
+                          moved_from->name);
                 moved_from->moved = 1;
             }
             mark_expr_moves(c, st->expr_root);
@@ -4092,6 +4179,26 @@ restart:
                       "global Vec storage cannot move; use a local",
                       st->name);
             bind(c, st->name, st->type, st->span);
+            /* A declared VecSlice view borrows its source until the view's
+             * scope closes; the source cannot move or mutate meanwhile. */
+            if(st->expr_root >= 0 &&
+               c->fn->exprs[st->expr_root].kind == ZIR_EXPR_CALL &&
+               !strcmp(c->fn->exprs[st->expr_root].name, "VecSlice") &&
+               SliceElementType(st->type, NULL, 0)) {
+                int vector = c->fn->exprs[st->expr_root].first_child;
+                if(vector >= 0 &&
+                   c->fn->exprs[vector].kind == ZIR_EXPR_IDENT) {
+                    for(int b = c->count - 2; b >= 0; b--)
+                        if(!c->bindings[b].is_using_namespace &&
+                           !strcmp(c->bindings[b].name,
+                                   c->fn->exprs[vector].name) &&
+                           owned_vec_binding_type(c, c->bindings[b].type)) {
+                            c->bindings[c->count - 1].borrows_index = b;
+                            c->bindings[b].borrow_count++;
+                            break;
+                        }
+                }
+            }
             if((!fn->from_ir || fn->is_specialization) && st->is_using)
                 activate_using(c, st->name, st->span);
         } else if(st->kind == ZIR_STMT_ASSIGN) {

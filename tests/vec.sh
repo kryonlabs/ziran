@@ -103,6 +103,30 @@ Handoff :: (values: Vec(s32)) -> Vec(s32) {
     return values
 }
 
+ClonesAndViews :: () -> s32 {
+    original: Vec(s32)
+    VecPush(original, 4)
+    VecPush(original, 5)
+    VecPush(original, 6)
+    copy: Vec(s32)
+    if !VecClone(copy, original) { VecFree(original); VecFree(copy); return -60 }
+    total: s32 = 0
+    good: bool = true
+    {
+        view: []s32 = VecSlice(original, 1, 3)
+        if view.count != 2 { good = false }
+        if good { total += view[0] + view[1] }
+        if good && VecGet(original, 0).value != 4 { good = false }
+    }
+    if !good { VecFree(original); VecFree(copy); return -61 }
+    VecPush(copy, 7)
+    if original.count != 3 || copy.count != 4 { VecFree(original); VecFree(copy); return -62 }
+    total += copy[3] + original[0]
+    VecFree(original)
+    VecFree(copy)
+    return total
+}
+
 DeferredWork :: () -> s32 {
     values: Vec(s32)
     defer { VecFree(values) }
@@ -155,6 +179,7 @@ Answer :: () -> s32 {
     if RecordPop() != 11 { return -8 }
     if Moves() != 136 { return -9 }
     if DeferredWork() != 7 { return -10 }
+    if ClonesAndViews() != 22 { return -11 }
     return result
 }
 ZI
@@ -319,6 +344,67 @@ if "$ziran" check --root "$work" --module-path "$repo/std" \
     exit 1
 fi
 rg -q 'move a binding' "$work/nested.err"
+
+cat > "$work/badborrow.zi" <<'ZI'
+#import "vec"
+Consume :: (values: Vec(s32)) -> s32 {
+    VecFree(values)
+    return 0
+}
+#program_export
+Bad :: () -> s32 {
+    values: Vec(s32)
+    VecPush(values, 1)
+    view: []s32 = VecSlice(values, 0, 1)
+    return Consume(values)
+}
+ZI
+if "$ziran" check --root "$work" --module-path "$repo/std" \
+    "$work/badborrow.zi" 2> "$work/badborrow.err"; then
+    echo 'moving a borrowed Vec was accepted' >&2
+    exit 1
+fi
+rg -q 'live borrowed view' "$work/badborrow.err"
+
+cat > "$work/badpush.zi" <<'ZI'
+#import "vec"
+#program_export
+Bad :: () -> s32 {
+    values: Vec(s32)
+    VecPush(values, 1)
+    view: []s32 = VecSlice(values, 0, 1)
+    VecPush(values, 2)
+    VecFree(values)
+    return 0
+}
+ZI
+if "$ziran" check --root "$work" --module-path "$repo/std" \
+    "$work/badpush.zi" 2> "$work/badpush.err"; then
+    echo 'mutating a borrowed Vec was accepted' >&2
+    exit 1
+fi
+rg -q 'live borrowed view' "$work/badpush.err"
+
+cat > "$work/badclone.zi" <<'ZI'
+#import "vec"
+#program_export
+Bad :: () -> s32 {
+    a: Vec(s32)
+    VecPush(a, 1)
+    b: Vec(s32)
+    VecPush(b, 2)
+    VecClone(a, b)
+    VecFree(a)
+    VecFree(b)
+    return 0
+}
+ZI
+if "$ziran" check --root "$work" --module-path "$repo/std" \
+    "$work/badclone.zi" 2> "$work/badclone.err"; then
+    echo 'cloning into an owned Vec was accepted' >&2
+    exit 1
+fi
+rg -q 'fresh or moved-from' "$work/badclone.err"
 
 cat > "$work/count.zi" <<'ZI'
 #import "vec"

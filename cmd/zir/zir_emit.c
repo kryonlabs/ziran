@@ -70,6 +70,8 @@ ModuleUsesVecOperations(const ZirModule *module)
                 !strcmp(expr->name, "VecSwap") ||
                 !strcmp(expr->name, "VecPop") ||
                 !strcmp(expr->name, "VecGet") ||
+                !strcmp(expr->name, "VecClone") ||
+                !strcmp(expr->name, "VecSlice") ||
                 !strcmp(expr->name, "BuilderAppend") ||
                 !strcmp(expr->name, "BuilderFinish")))
                 return 1;
@@ -524,7 +526,8 @@ supported_expression(const ZirModule *module, const ZirFunction *fn, int index)
     case ZIR_EXPR_BINARY: case ZIR_EXPR_CONDITIONAL: break;
     case ZIR_EXPR_UNARY: break;
     case ZIR_EXPR_CAST:
-        if(!TargetType(e->name, ZIR_C) && !enum_type(module, e->name)) return 0;
+        if(e->name[0] != '*' && !TargetType(e->name, ZIR_C) &&
+           !enum_type(module, e->name)) return 0;
         break;
     case ZIR_EXPR_CALL: if(!e->name[0]) return 0; break;
     default: return 0;
@@ -1574,6 +1577,73 @@ emit_vec_call(Emitter *e, const ZirExpr *expr, char *out, size_t size)
         e->pure = 1;
         return;
     }
+    if(!strcmp(expr->name, "VecClone")) {
+        int second = e->fn->exprs[first].next_sibling;
+        char source[ZIR_TEXT_MAX], grown[ZIR_NAME_MAX];
+        if(second < 0) fatal(expr, "VecClone requires a source Vec");
+        emit_destination(e, second, source, sizeof(source));
+        fresh(e, result_name);
+        declare(e, result_name, "bool", "false");
+        if(e->target == ZIR_GO) {
+            line(e, "%s.Data = append(%s.Data, %s.Data...)",
+                 vector, vector, source);
+            line(e, "%s.Count = int64(len(%s.Data))", vector, vector);
+            line(e, "%s.Capacity = int64(cap(%s.Data))", vector, vector);
+            line(e, "%s = true", result_name);
+        } else {
+            const char *scalar = TargetType(element, e->target);
+            if(scalar != NULL)
+                copy_text(mapped, sizeof(mapped), scalar);
+            else
+                e->resolve(e->context, element, mapped, sizeof(mapped));
+            fresh(e, grown);
+            line(e, "if ((%s).count > 0) {", source);
+            e->indent++;
+            line(e, "void *%s = ZirVecReserve((void *)(%s).data, &(%s).capacity, (%s).count, (%s).count, sizeof(*(%s).data));",
+                 grown, vector, vector, vector, source, vector);
+            line(e, "if (%s != NULL) {", grown);
+            e->indent++;
+            line(e, "(%s).data = (%s *)%s;", vector, mapped, grown);
+            line(e, "memcpy((%s).data, (%s).data, (size_t)(%s).count * sizeof(*(%s).data));",
+                 vector, source, source, vector);
+            line(e, "(%s).count = (%s).count;", vector, source);
+            line(e, "%s = true;", result_name);
+            e->indent--;
+            line(e, "}");
+            e->indent--;
+            line(e, "} else {");
+            e->indent++;
+            line(e, "%s = true;", result_name);
+            e->indent--;
+            line(e, "}");
+        }
+        copy_text(out, size, result_name);
+        e->pure = 1;
+        return;
+    }
+    if(!strcmp(expr->name, "VecSlice")) {
+        int second = e->fn->exprs[first].next_sibling;
+        int third = second >= 0 ? e->fn->exprs[second].next_sibling : -1;
+        char low[ZIR_TEXT_MAX], high[ZIR_TEXT_MAX];
+        char view[ZIR_NAME_MAX];
+        if(second < 0 || third < 0)
+            fatal(expr, "VecSlice requires low and high bounds");
+        emit_expr(e, second, "s64", low, sizeof(low));
+        emit_expr(e, third, "s64", high, sizeof(high));
+        fresh(e, view);
+        if(e->target == ZIR_GO) {
+            line(e, "if %s < 0 || %s < %s || %s > %s.Count { panic(\"slice range out of bounds\") }",
+                 low, high, low, high, vector);
+            format(out, size, "%s.Data[%s:%s]", vector, low, high);
+        } else {
+            line(e, "Slice %s = {(%s).data, (%s).count};", view, vector,
+                 vector);
+            format(out, size, "SliceRange(%s, %s, %s, sizeof(*(%s).data))",
+                   view, low, high, vector);
+        }
+        e->pure = 1;
+        return;
+    }
     if(!strcmp(expr->name, "BuilderAppend")) {
         int second = e->fn->exprs[first].next_sibling;
         char text[ZIR_TEXT_MAX];
@@ -1915,6 +1985,8 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
            !strcmp(expr->name, "VecSwap") ||
            !strcmp(expr->name, "VecPop") ||
            !strcmp(expr->name, "VecGet") ||
+           !strcmp(expr->name, "VecClone") ||
+           !strcmp(expr->name, "VecSlice") ||
            !strcmp(expr->name, "BuilderAppend") ||
            !strcmp(expr->name, "BuilderFinish")) {
             emit_vec_call(e, expr, out, size);
@@ -2038,8 +2110,12 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
                 number(e,type,b,"0",0,result,sizeof(result));
             } else number(e,type,a,"0",0,result,sizeof(result));
         }
-        else if(e->target==ZIR_GO) format(result,sizeof(result),"%s(%s)",TargetType(type,e->target),a);
-        else format(result,sizeof(result),"(%s)(%s)",TargetType(type,e->target),a);
+        else {
+            char cast_native[ZIR_NAME_MAX];
+            slot_native_type(type, e->target, cast_native, sizeof(cast_native));
+            if(e->target==ZIR_GO) format(result,sizeof(result),"%s(%s)",cast_native,a);
+            else format(result,sizeof(result),"(%s)(%s)",cast_native,a);
+        }
         type = declared_type;
         break;
     }

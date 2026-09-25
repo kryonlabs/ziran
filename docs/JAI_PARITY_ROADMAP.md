@@ -204,8 +204,9 @@ runs, not only one-shot calls.
 `Vec(T)` has checked push, indexing, clear, free, swap, `VecPop`/`VecGet`
 through `Option(T)`, a `Vec(u8)` string builder, and move/drop rules for
 assignment, argument passing, and return, including use-after-move, leak, and
-double-drop rejection with `defer`-based cleanup. Add Vec borrows and an
-explicit clone to finish
+double-drop rejection with `defer`-based cleanup, an explicit `VecClone`, and
+`VecSlice` borrowed views with live-borrow rejection. Automatic drop insertion
+beyond `defer` remains to finish
 [Owned values](OWNED_VALUES.md). Match C/C++/Go and VM behavior on failure and
 destruction; document
 where Go cannot recover from physical allocation failure. This is needed for
