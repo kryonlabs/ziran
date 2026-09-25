@@ -26,8 +26,8 @@ complete Kryon `make all` build passes checked `.zir`, C, C++, and Go generation
 and native backend compilation with the current Ziran compiler. Platform host
 integration and application behavior gates remain incomplete. Inbe has moved
 its application sources to `.zi` and is migrating its native services, but its
-full source gate and app build do not pass yet. Inbe still pins the earlier
-Kryon and Ziran revisions while this syntax migration proceeds.
+full source gate and app build do not pass yet. Inbe now pins the current
+verified local Kryon and Ziran revisions while its source migration proceeds.
 
 1. Finish generic Ziran imports, typed blocks and slots, laws, saved `.zir`,
    and the `.zib` capability contract without importing Kryon.
