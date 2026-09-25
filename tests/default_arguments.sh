@@ -45,6 +45,16 @@ ChooseImported :: (first: $T,
                    second: T = T.{value = Dependency.Other()}) -> T {
     return second
 }
+ProcedureName :: () -> string { return #procedure_name() }
+DefaultName :: (name: string = #procedure_name()) -> string {
+    return name
+}
+ChooseName :: (first: $T, name: string = #procedure_name()) -> string {
+    return name
+}
+GenericBodyName :: (first: $T) -> string {
+    return #procedure_name()
+}
 ZI
 cat > "$work/app.zi" <<'ZI'
 #import "lib"
@@ -53,6 +63,8 @@ Embedded :: #import, string "Defaulted :: (value := 42) -> s64 { return value }"
 Base :: () -> s32 { return 2 }
 FROM_RUN :: #run Offset(extra = 2);
 #assert FROM_RUN == 42
+NAME_FROM_RUN :: #run Library.ProcedureName();
+#assert NAME_FROM_RUN == "ProcedureName"
 calls: s32;
 Next :: () -> s32 {
     calls += 1
@@ -115,6 +127,13 @@ Answer :: () -> s32 {
     pair: PairBox = PairBox.{first = 0, second = 0}
     if ChoosePairScoped(pair).first != 40 ||
        Library.ChoosePairScoped(pair).second != 42 { return 0 }
+    if ProcedureName() != "ProcedureName" ||
+       Library.ProcedureName() != "ProcedureName" ||
+       DefaultName() != "DefaultName" ||
+       Library.DefaultName() != "DefaultName" ||
+       ChooseName(typed) != "ChooseName" ||
+       Library.ChooseName(typed) != "ChooseName" ||
+       Library.GenericBodyName(typed) != "GenericBodyName" { return 0 }
     if Inferred() != 42 || Inferred(value = 41) != 43 { return 0 }
     if InferredBeforeRequired(extra = 2) != 42 { return 0 }
     if InferredCall() != 7 || !InferredBool() { return 0 }
@@ -188,6 +207,17 @@ if "$ziran" check --root "$work" "$work/missing.zi" \
     exit 1
 fi
 grep -Fq 'argument count mismatch' "$work/missing.err"
+
+cat > "$work/procedure_name_outside.zi" <<'ZI'
+NAME :: #procedure_name();
+ZI
+if "$ziran" check --root "$work" "$work/procedure_name_outside.zi" \
+    2> "$work/procedure_name_outside.err"; then
+    echo 'accepted #procedure_name() outside a procedure' >&2
+    exit 1
+fi
+grep -Fq '#procedure_name() requires a procedure scope' \
+    "$work/procedure_name_outside.err"
 
 cat > "$work/invalid_default.zi" <<'ZI'
 Broken :: (value: s32 = Missing()) -> s32 { return value }

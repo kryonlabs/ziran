@@ -103,3 +103,67 @@ ZI
 "$ziran" bundle --root "$work" --entry raw_line:Answer \
     -o "$work/raw_line.zib" "$work/raw_line.zi"
 test "$("$ziran" run "$work/raw_line.zib")" = 7
+
+cat > "$work/file_meta.zi" <<'ZI'
+LOADED_FILE :: #file;
+LOADED_DIR :: #filepath;
+ZI
+cat > "$work/file_path.zi" <<ZI
+#load "file_meta.zi";
+FILE :: #file;
+DIR :: #filepath;
+TEXT :: "#file #filepath";
+#program_export
+Answer :: () -> s64 {
+    if FILE != "$work/file_path.zi" || DIR != "$work" { return 0 }
+    if LOADED_FILE != "$work/file_meta.zi" || LOADED_DIR != "$work" { return 0 }
+    if TEXT != "#file #filepath" { return 0 }
+    return 42
+}
+ZI
+"$ziran" ir --root "$work" -o "$work/file_ir" "$work/file_path.zi"
+"$ziran" bundle --root "$work" --entry file_path:Answer \
+    -o "$work/file_source.zib" "$work/file_path.zi"
+"$ziran" bundle --root "$work/file_ir" --entry file_path:Answer \
+    -o "$work/file_saved.zib" "$work/file_ir/file_path.zir"
+cmp "$work/file_source.zib" "$work/file_saved.zib"
+test "$("$ziran" run "$work/file_source.zib")" = 42
+for input in source saved; do
+    if test "$input" = source; then
+        root=$work
+        file=$work/file_path.zi
+    else
+        root=$work/file_ir
+        file=$work/file_ir/file_path.zir
+    fi
+    for target in c cpp go; do
+        out=$work/file-$target-$input
+        if test "$target" = go; then
+            "$ziran" build --target=go --pkg main --root "$root" \
+                -o "$out" "$file"
+            cat > "$out/main.go" <<'GO'
+package main
+func main() { if FilePath_Answer() != 42 { panic("#file") } }
+GO
+            GO111MODULE=off go run "$out"/*.go
+        elif test "$target" = c; then
+            "$ziran" build --target=c --root "$root" -o "$out" "$file"
+            cat > "$out/main.c" <<'C'
+#include "file_path.h"
+int main(void) { return Answer() == 42 ? 0 : 1; }
+C
+            "${CC:-cc}" -std=c11 -I"$repo/include" -I"$out" \
+                "$out"/*.c -o "$out/app"
+            "$out/app"
+        else
+            "$ziran" build --target=cpp --root "$root" -o "$out" "$file"
+            cat > "$out/main.cpp" <<'CPP'
+#include "file_path.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+CPP
+            "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$out" \
+                "$out"/*.cpp -o "$out/app"
+            "$out/app"
+        fi
+    done
+done

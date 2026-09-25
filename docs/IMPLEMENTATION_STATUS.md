@@ -272,6 +272,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   unsupported. Foreign-record size queries still require their Jai layouts.
   Jai `#line` resolves to the physical source line before checking and remains
   stable through saved IR, native targets, and `.zib`, including `#load` files.
+  `#file` and `#filepath` resolve to the full source filename and containing
+  directory, including in loaded files. `#procedure_name()` resolves to the
+  declared procedure name in bodies, defaults, and pure `#run` calls; source
+  use outside a procedure is rejected.
   Untyped integer locals inferred with `:=` now use `s64` storage, including
   when their values exceed 32 bits, across saved IR and all supported targets.
   Source, saved IR, native targets, and `.zib` agree on both success and error

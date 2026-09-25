@@ -958,6 +958,25 @@ split_oneline_block(const char *t, char *head, size_t hsz,
     return 1;
 }
 
+static const char *
+closing_parenthesis(const char *open)
+{
+    int depth = 0;
+    if(open == NULL || *open != '(') return NULL;
+    for(const char *cursor = open; *cursor; cursor++) {
+        if(*cursor == '"' || *cursor == '\'') {
+            char quote = *cursor++;
+            while(*cursor && *cursor != quote) {
+                if(*cursor == '\\' && cursor[1]) cursor++;
+                cursor++;
+            }
+            if(!*cursor) return NULL;
+        } else if(*cursor == '(') depth++;
+        else if(*cursor == ')' && --depth == 0) return cursor;
+    }
+    return NULL;
+}
+
 static void
 parse_function_header(char *name, size_t name_size, char *args,
                       size_t args_size, char *ret, size_t ret_size,
@@ -981,17 +1000,7 @@ parse_function_header(char *name, size_t name_size, char *args,
         name[n] = '\0';
     }
     p = strchr(line, '(');
-    q = NULL;
-    if(p != NULL) {
-        int depth = 0;
-        for(const char *cursor = p; *cursor; cursor++) {
-            if(*cursor == '(') depth++;
-            else if(*cursor == ')' && --depth == 0) {
-                q = cursor;
-                break;
-            }
-        }
-    }
+    q = closing_parenthesis(p);
     if(p != NULL && q != NULL && q > p) {
         n = (size_t)(q - p - 1);
         if(n >= args_size)
@@ -1077,6 +1086,53 @@ default_is_scope_independent(const char *expression, const char *path)
         }
         previous = token;
     }
+}
+
+static int
+lower_procedure_name_expression(char *part, size_t capacity,
+                                const ZirFunction *function)
+{
+    ZirLexer lexer;
+    char lowered[ZIR_TEXT_MAX];
+    size_t copied = 0, used = 0;
+    int changed = 0;
+    LexerInit(&lexer, part, function->span.path);
+    for(;;) {
+        ZirToken token = LexerNext(&lexer);
+        if(token.kind == ZIR_TOKEN_EOF) break;
+        size_t start = lexer.pos - strlen(token.text);
+        if(token.kind == ZIR_TOKEN_OPERATOR &&
+           strcmp(token.text, "/") == 0 && part[start + 1] == '/')
+            break;
+        if(token.kind != ZIR_TOKEN_DIRECTIVE ||
+           strcmp(token.text, "#procedure_name") != 0)
+            continue;
+        ZirToken open = LexerNext(&lexer);
+        ZirToken close = LexerNext(&lexer);
+        if(strcmp(open.text, "(") || strcmp(close.text, ")"))
+            die_at(function->span,
+                   "#procedure_name() requires empty parentheses");
+        char literal[ZIR_NAME_MAX + 3];
+        int written = snprintf(literal, sizeof(literal), "\"%s\"",
+                               function->name);
+        if(written < 0 || (size_t)written >= sizeof(literal) ||
+           start < copied || used + start - copied + (size_t)written >=
+           sizeof(lowered))
+            die_at(function->span, "procedure name expression is too long");
+        memcpy(lowered + used, part + copied, start - copied);
+        used += start - copied;
+        memcpy(lowered + used, literal, (size_t)written);
+        used += (size_t)written;
+        copied = lexer.pos;
+        changed = 1;
+    }
+    if(!changed) return 0;
+    size_t rest = strlen(part + copied);
+    if(used + rest >= sizeof(lowered) || used + rest >= capacity)
+        die_at(function->span, "procedure name expression is too long");
+    memcpy(lowered + used, part + copied, rest + 1);
+    copy_text(part, capacity, lowered);
+    return 1;
 }
 
 static int
@@ -1208,6 +1264,10 @@ add_default_helpers(ZirProgram *program, ZirModule *module,
                            sizeof(defaults[0])) != count)
             die_at(function->span, "invalid default parameter signature");
         int inferred = 0;
+        for(int i = 0; i < count; i++)
+            if(lower_procedure_name_expression(defaults[i],
+                                               sizeof(defaults[i]), function))
+                inferred = 1;
         unsigned char contextual[64] = {0};
         for(int i = 0; i < count; i++) {
             char *assignment = top_level_assignment(defaults[i]);
@@ -2060,6 +2120,7 @@ eval_body_expression(EvalBody *body, const char *source, long *value)
         input[length - 1] = '\0';
         trim_in_place(input);
     }
+    lower_procedure_name_expression(input, sizeof(input), body->fn);
     expand_compile_expr(expanded, sizeof(expanded), &body->names,
                         input, body->fn->span.path);
     if(strstr(expanded, "#ifx") != NULL ||
@@ -3216,7 +3277,10 @@ static int
 typed_body_expression(TypedBody *body, const char *source,
                       CompileValue *value)
 {
-    return evaluate_typed_expression(body->module, &body->names, source,
+    char lowered[ZIR_TEXT_MAX];
+    copy_text(lowered, sizeof(lowered), source);
+    lower_procedure_name_expression(lowered, sizeof(lowered), body->fn);
+    return evaluate_typed_expression(body->module, &body->names, lowered,
                                      body->fn->span.path, body->depth + 1,
                                      body->fuel, value);
 }
@@ -4233,7 +4297,8 @@ strip_block_comments(char *s, int *comment_depth)
 /* Canonicalize Jai's scalar aliases and source-position expressions before
  * parsing declarations. Quoted text and comments are left intact. */
 static void
-normalize_jai_source_tokens(char *line, const char *path, int line_no)
+normalize_jai_source_tokens(char *line, const char *path,
+                            const char *physical_path, int line_no)
 {
     static const struct { const char *jai, *internal; } names[] = {
         {"int", "s64"}, {"float", "float32"}
@@ -4272,16 +4337,58 @@ normalize_jai_source_tokens(char *line, const char *path, int line_no)
             }
             continue;
         }
-        if(strncmp(p, "#line", 5) == 0 &&
-           !isalnum((unsigned char)p[5]) && p[5] != '_') {
-            int written = snprintf(normalized + used,
-                                   sizeof(normalized) - used, "%d", line_no);
+        const char *directive = NULL;
+        size_t directive_length = 0;
+        if(strncmp(p, "#filepath", 9) == 0) {
+            directive = "#filepath";
+            directive_length = 9;
+        } else if(strncmp(p, "#file", 5) == 0) {
+            directive = "#file";
+            directive_length = 5;
+        } else if(strncmp(p, "#line", 5) == 0) {
+            directive = "#line";
+            directive_length = 5;
+        }
+        if(directive != NULL &&
+           !isalnum((unsigned char)p[directive_length]) &&
+           p[directive_length] != '_') {
+            char literal[ZIR_PATH_MAX * 4 + 4];
+            int written;
+            if(strcmp(directive, "#line") == 0)
+                written = snprintf(literal, sizeof(literal), "%d", line_no);
+            else {
+                char directory[ZIR_PATH_MAX];
+                const char *value = physical_path;
+                if(strcmp(directive, "#filepath") == 0) {
+                    const char *slash = strrchr(physical_path, '/');
+                    size_t length = slash == NULL ? 0 :
+                                    slash == physical_path ? 1 :
+                                    (size_t)(slash - physical_path);
+                    if(length >= sizeof(directory))
+                        die_at(Span(path, line_no, 1),
+                               "source filepath exceeds size limit");
+                    if(length == 0)
+                        copy_text(directory, sizeof(directory), ".");
+                    else {
+                        memcpy(directory, physical_path, length);
+                        directory[length] = '\0';
+                    }
+                    value = directory;
+                }
+                literal[0] = '"';
+                size_t escaped = escape_c_string(value, literal + 1,
+                                                 sizeof(literal) - 2);
+                literal[escaped + 1] = '"';
+                literal[escaped + 2] = '\0';
+                written = (int)escaped + 2;
+            }
             if(written < 0 ||
                (size_t)written >= sizeof(normalized) - used)
                 die_at(Span(path, line_no, 1),
                        "source line exceeds size limit");
+            memcpy(normalized + used, literal, (size_t)written);
             used += (size_t)written;
-            p += 5;
+            p += directive_length;
             continue;
         }
         if(isalpha((unsigned char)*p) || *p == '_') {
@@ -4861,7 +4968,8 @@ parse_source(const char *path, const char *root, const char *source,
             die_at(Span(rel, line_no, 1),
                    "Jai compile-time branches use 'else #if' or 'else', not #else_if/#else");
         if(!from_queue && !from_lookahead)
-            normalize_jai_source_tokens(line, rel, physical_line_no);
+            normalize_jai_source_tokens(line, rel, canonical,
+                                        physical_line_no);
         snprintf(raw, sizeof(raw), "%s", line);
         {
             char *trimmed = trim(raw);
@@ -5055,7 +5163,7 @@ parse_source(const char *path, const char *root, const char *source,
                            contains_source_directive(la, "#else"))
                             die_at(Span(rel, line_no + 1, 1),
                                    "Jai compile-time branches use 'else #if' or 'else', not #else_if/#else");
-                        normalize_jai_source_tokens(la, rel,
+                        normalize_jai_source_tokens(la, rel, canonical,
                                                     physical_line_no);
                         /* trim in place: the lookahead is appended verbatim,
                          * and a raw fgets line would carry its '\n' into the
@@ -5175,6 +5283,11 @@ parse_source(const char *path, const char *root, const char *source,
         pending_len = 0;
         if(*t == '\0') continue;
         char *string_source = NULL;
+        if(mode != FUNCTION &&
+           contains_source_directive(t, "#procedure_name") &&
+           !(mode == TOP && looks_like_function_header(t)))
+            die_at(Span(rel, line_no, 1),
+                   "#procedure_name() requires a procedure scope");
         if(contains_source_directive(t, "#slot"))
             die_at(Span(rel, line_no, 1),
                    "#slot is not Jai syntax; use a procedure type and a named function");
@@ -5182,8 +5295,12 @@ parse_source(const char *path, const char *root, const char *source,
             die_at(Span(rel, line_no, 1),
                    "#private is not Jai syntax; use #scope_file");
         if(mode == TOP && looks_like_function_header(t)) {
-            const char *body_open = strchr(t, '{');
-            for(const char *modifier = strchr(t, '#');
+            const char *parameters = strchr(t, '(');
+            const char *closing = closing_parenthesis(parameters);
+            const char *body_open = closing == NULL ? NULL :
+                                    strchr(closing + 1, '{');
+            for(const char *modifier = strchr(closing == NULL ? t :
+                                              closing + 1, '#');
                 modifier != NULL &&
                 (body_open == NULL || modifier < body_open);
                 modifier = strchr(modifier + 1, '#'))

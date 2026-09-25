@@ -169,6 +169,9 @@ Jai layouts.
 Jai `#line` is an integer expression containing its physical source line.
 It works in declarations, compile-time conditions, defaults, and procedure
 bodies, including files introduced by `#load`.
+`#file` yields the full source filename and `#filepath` its containing
+directory. `#procedure_name()` yields the enclosing procedure's declared name
+as a string, including when used in a default or a `#run` call.
 ASCII byte characters use `#char "A"` and infer `s64`, as integer literals
 do; single-quoted character literals are rejected.
 Jai raw multiline strings use `#string END` followed by their exact text and

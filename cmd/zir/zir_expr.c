@@ -412,6 +412,25 @@ prefix(ExprParser *p)
         result = node(p, ZIR_EXPR_IDENT, start, p->fn->name, "", -1, -1);
         if(result >= 0)
             p->fn->exprs[result].is_this = 1;
+    } else if(take(p, "#procedure_name")) {
+        if(p->fn->name[0] == '\0') {
+            Diagnostic(p->span, "parse.procedure_name",
+                       "#procedure_name() requires a procedure scope");
+            exit(1);
+        }
+        expect(p, "(");
+        expect(p, ")");
+        result = node(p, ZIR_EXPR_STRING, start, "", "", -1, -1);
+        if(result >= 0) {
+            char literal[ZIR_NAME_MAX + 3];
+            int written = snprintf(literal, sizeof(literal), "\"%s\"",
+                                   p->fn->name);
+            if(written < 0 || (size_t)written >= sizeof(literal))
+                p->failed = 1;
+            else
+                copy_text(p->fn->exprs[result].text,
+                          sizeof(p->fn->exprs[result].text), literal);
+        }
     } else if(take(p, "#char")) {
         int value;
         if(p->token.kind != ZIR_TOKEN_STRING ||
