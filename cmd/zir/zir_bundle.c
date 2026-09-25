@@ -443,6 +443,29 @@ find_field_use(FieldUse *uses, int count, const ZirType *type)
     return NULL;
 }
 
+/* Mirrors the VM's scalar-union rule for linked bundles. */
+static int
+bundle_portable_union(const ZirModule *module, const ZirType *record)
+{
+    size_t offset = 0;
+    ZirTypeField field;
+    int status;
+    while((status = TypeNextField(record, &offset, &field)) == 1) {
+        const char *backing = field.type;
+        const ZirType *enumeration = FindType(module, field.type, NULL);
+        if(enumeration != NULL && enumeration->is_enum)
+            backing = enumeration->enum_backing;
+        if(strcmp(backing, "s8") && strcmp(backing, "u8") &&
+           strcmp(backing, "bool") && strcmp(backing, "s16") &&
+           strcmp(backing, "u16") && strcmp(backing, "s32") &&
+           strcmp(backing, "u32") && strcmp(backing, "float32") &&
+           strcmp(backing, "s64") && strcmp(backing, "u64") &&
+           strcmp(backing, "float64"))
+            return 0;
+    }
+    return status == 0;
+}
+
 static int
 vec_operation(const char *name)
 {
@@ -1174,9 +1197,10 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
         for(int t = 0; t < source->type_count; t++) {
             if(!keep_types[m][t])
                 continue;
-            if(source->types[t].is_union) {
+            if(source->types[t].is_union &&
+               !bundle_portable_union(source, &source->types[t])) {
                 Diagnostic(source->types[t].span, "zib.union",
-                           "portable union storage is not supported");
+                           "portable unions support scalar fields only");
                 goto failed;
             }
             kept_types++;

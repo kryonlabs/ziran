@@ -134,6 +134,9 @@ struct Frame {
     Local locals[VM_MAX_LOCALS];
     int local_count;
     int control_target;
+    /* Set while a union member is the assignment destination. */
+    Record *union_write_record;
+    const char *union_write_type;
 };
 
 static const ZirImport *
@@ -220,6 +223,43 @@ scalar_type(const char *type)
     return value_kind(type) != VALUE_INVALID;
 }
 
+
+/* Portable unions overlap scalar storage: every field reads and writes the
+ * same bytes at offset zero. */
+static size_t
+vm_union_field_width(const ZirModule *module, const char *type)
+{
+    const ZirType *enumeration = FindType(module, type, NULL);
+    const char *backing = type;
+    if(enumeration != NULL && enumeration->is_enum)
+        backing = enumeration->enum_backing;
+    if(!strcmp(backing, "s8") || !strcmp(backing, "u8") ||
+       !strcmp(backing, "bool"))
+        return 1;
+    if(!strcmp(backing, "s16") || !strcmp(backing, "u16"))
+        return 2;
+    if(!strcmp(backing, "s32") || !strcmp(backing, "u32") ||
+       !strcmp(backing, "float32"))
+        return 4;
+    if(!strcmp(backing, "s64") || !strcmp(backing, "u64") ||
+       !strcmp(backing, "float64") || !strcmp(backing, "integer"))
+        return 8;
+    return 0;
+}
+
+static int
+portable_union(const ZirModule *module, const ZirType *record)
+{
+    size_t offset = 0;
+    ZirTypeField field;
+    int status;
+    if(record == NULL || !record->is_union)
+        return 0;
+    while((status = TypeNextField(record, &offset, &field)) == 1)
+        if(vm_union_field_width(module, field.type) == 0)
+            return 0;
+    return status == 0;
+}
 
 static int
 portable_type_at(const ZirModule *module, const char *type, int depth)
@@ -1737,9 +1777,10 @@ VmVerify(const ZirProgram *program, const char *entry_module,
                 return 0;
             }
         for(int t = 0; t < module->type_count; t++)
-            if(module->types[t].is_union) {
+            if(module->types[t].is_union &&
+               !portable_union(module, &module->types[t])) {
                 Diagnostic(module->types[t].span, "zib.union",
-                           "portable union storage is not supported");
+                           "portable unions support scalar fields only");
                 return 0;
             }
         for(int i = 0; i < module->import_count; i++) {
@@ -1886,6 +1927,84 @@ record_field_path(Record *record, const char *path)
            record_field_path(field->record, dot + 1) : NULL;
 }
 
+/* Union storage keeps raw bits in the first field slot; every access
+ * reinterprets those bytes through the named field's declared type. */
+static Value
+union_member_read(Vm *vm, Record *record, const char *field_type)
+{
+    const ZirType *enumeration = FindType(record->owner, field_type, NULL);
+    const char *backing = field_type;
+    uint64_t bits;
+    Value result = int_value(0);
+    if(record->field_count < 1) {
+        vm->failed = 1;
+        return result;
+    }
+    if(enumeration != NULL && enumeration->is_enum)
+        backing = enumeration->enum_backing;
+    bits = integer_bits(record->fields[0].value);
+    if(!strcmp(backing, "bool"))
+        return int_value(bits != 0);
+    if(!strcmp(backing, "u8"))
+        return uint_value(bits & UINT64_C(0xff));
+    if(!strcmp(backing, "u16"))
+        return uint_value(bits & UINT64_C(0xffff));
+    if(!strcmp(backing, "u32"))
+        return uint_value(bits & UINT64_C(0xffffffff));
+    if(!strcmp(backing, "u64"))
+        return uint_value(bits);
+    if(!strcmp(backing, "s8"))
+        return int_value((int64_t)(int8_t)(bits & UINT64_C(0xff)));
+    if(!strcmp(backing, "s16"))
+        return int_value((int64_t)(int16_t)(bits & UINT64_C(0xffff)));
+    if(!strcmp(backing, "s32"))
+        return int_value((int64_t)(int32_t)(bits & UINT64_C(0xffffffff)));
+    if(!strcmp(backing, "s64"))
+        return int_value(signed64(bits));
+    if(!strcmp(backing, "float32")) {
+        uint32_t narrow = (uint32_t)(bits & UINT64_C(0xffffffff));
+        float number;
+        memcpy(&number, &narrow, sizeof(number));
+        return real_value(number);
+    }
+    if(!strcmp(backing, "float64")) {
+        double number;
+        memcpy(&number, &bits, sizeof(number));
+        return real_value(number);
+    }
+    if(enumeration != NULL && enumeration->is_enum)
+        return enum_value(enumeration, signed64(bits));
+    vm->failed = 1;
+    return result;
+}
+
+static int
+union_member_write(Vm *vm, Record *record, const char *field_type, Value value)
+{
+    const ZirType *enumeration = FindType(record->owner, field_type, NULL);
+    const char *backing = field_type;
+    uint64_t bits = 0;
+    if(record->field_count < 1)
+        return 0;
+    if(enumeration != NULL && enumeration->is_enum)
+        backing = enumeration->enum_backing;
+    if(!strcmp(backing, "float32")) {
+        float number = (float)(value.kind == VALUE_REAL ? value.real :
+                                as_real(value));
+        uint32_t narrow;
+        memcpy(&narrow, &number, sizeof(narrow));
+        bits = narrow;
+    } else if(!strcmp(backing, "float64")) {
+        double number = as_real(value);
+        memcpy(&bits, &number, sizeof(bits));
+    } else if(!strcmp(backing, "bool"))
+        bits = truthy(value) ? 1 : 0;
+    else
+        bits = integer_bits(value);
+    record->fields[0].value = uint_value(bits);
+    return 1;
+}
+
 static Value *
 indexed_element(Value base, uint64_t index)
 {
@@ -1943,6 +2062,13 @@ assignment_slot(Frame *frame, int index, int depth)
     Value *base = assignment_slot(frame, expression->left, depth + 1);
     if(base == NULL || base->kind != VALUE_RECORD)
         return NULL;
+    if(base->record->type != NULL && base->record->type->is_union) {
+        /* Union writes land in the shared bit slot; the assignment layer
+         * reinterprets through the declared field type. */
+        frame->union_write_record = base->record;
+        frame->union_write_type = expression->type;
+        return &base->record->fields[0].value;
+    }
     return record_field_path(base->record, expression->name);
 }
 
@@ -2318,6 +2444,9 @@ eval(Frame *frame, int index, int depth)
                        record_field_path(left.record, expression->name) : NULL;
         if(field == NULL)
             frame->vm->failed = 1;
+        else if(left.record->type != NULL && left.record->type->is_union)
+            value = union_member_read(frame->vm, left.record,
+                                      expression->type);
         else
             value = *field;
         break;
@@ -2865,7 +2994,15 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
             break;
         }
         case ZIR_STMT_ASSIGN: {
+            Record *union_record = NULL;
+            const char *union_type = NULL;
             Value *slot = assignment_slot(frame, statement->lhs_root, 0);
+            if(frame->union_write_record != NULL) {
+                union_record = frame->union_write_record;
+                union_type = frame->union_write_type;
+                frame->union_write_record = NULL;
+                frame->union_write_type = NULL;
+            }
             if(slot == NULL)
                 return FLOW_ERROR;
             Value right = eval(frame, statement->expr_root, 0);
@@ -2876,14 +3013,23 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
                     statement->assignment_op);
                 if(operation == NULL)
                     return FLOW_ERROR;
-                right = binary_value(vm, operation, *slot, right,
+                Value current = union_record != NULL ?
+                    union_member_read(vm, union_record, union_type) : *slot;
+                right = binary_value(vm, operation, current, right,
                     function->exprs[statement->lhs_root].type,
                     function->exprs[statement->expr_root].type);
             }
-            Value replacement = coerce(vm, frame->module, right,
-                                       function->exprs[statement->lhs_root].type);
+            Value replacement = union_record != NULL ? right :
+                coerce(vm, frame->module, right,
+                       function->exprs[statement->lhs_root].type);
             if(vm->failed)
                 return FLOW_ERROR;
+            if(union_record != NULL) {
+                if(!union_member_write(vm, union_record, union_type,
+                                       replacement))
+                    return FLOW_ERROR;
+                break;
+            }
             Value previous = *slot;
             if(previous.kind == VALUE_ARRAY && previous.array != NULL &&
                replacement.kind == VALUE_ARRAY && replacement.array != NULL &&

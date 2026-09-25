@@ -180,9 +180,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   C build runs.
 - Jai `union` declarations, including generic unions, retain their shared
   field storage and maximum-field layout in checked `.zir`. C and C++ compile
-  source and saved IR unions with overlapping fields. Go generation and the
-  portable linker reject reachable unions until those targets have overlapping
-  storage semantics.
+  source and saved IR unions with overlapping fields. Unions whose fields are
+  all scalars or enums also build and run on Go, through an aligned byte
+  backing with `unsafe` typed access, and in portable bundles, where the VM
+  keeps raw bits in one slot and reinterprets every member read, write, and
+  compound assignment through the declared field type. Unions with string,
+  record, array, or pointer fields remain C/C++-only.
 - `zi2zib bundle --root DIR --entry module:function -o FILE` builds an
   experimental version 20 `.zib` from source or saved IR. `zi2zib run FILE`
   loads and executes the validated scalar, plain record, enum, and fixed-array

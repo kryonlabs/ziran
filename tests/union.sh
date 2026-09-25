@@ -31,7 +31,35 @@ Answer :: () -> s32 {
 }
 ZI
 
+cat > "$work/scalar.zi" <<'ZI'
+Scalar :: union {
+    narrow: u8
+    wide: u64
+    real: float64
+}
+
+#program_export
+Overlap :: () -> s32 {
+    cell: Scalar
+    cell.narrow = cast(u8)255
+    if cell.wide != 255 { return 1 }
+    other: Scalar
+    other.wide = cast(u64)513
+    if other.narrow != 1 { return 2 }
+    cell.wide = cast(u64)10
+    cell.wide += cast(u64)32
+    if cell.narrow != 42 { return 3 }
+    stored: Scalar
+    stored.real = 2.0
+    if stored.real != 2.0 { return 4 }
+    return 42
+}
+ZI
+
 "$ziran" ir --root "$work" -o "$work/ir" "$work/overlay.zi"
+"$ziran" ir --root "$work" -o "$work/scalar-ir" "$work/scalar.zi"
+mkdir -p "$work/ir"
+cp "$work/scalar-ir/scalar.zir" "$work/ir/scalar.zir" 2>/dev/null || true
 for input in source saved; do
     if test "$input" = source; then
         module=$work/overlay.zi
@@ -69,16 +97,42 @@ CPP
         fi
         "$out/app"
     done
-    if "$ziran" build --target=go --root "$root" \
-        -o "$work/go-$input" "$module" 2> "$work/go-$input.err"; then
-        echo 'Go emitted incorrect struct storage for a union' >&2
-        exit 1
+    if test "$input" = source; then
+        scalar=$work/scalar.zi
+        scalar_root=$work
+    else
+        scalar=$work/ir/scalar.zir
+        scalar_root=$work/ir
     fi
-    grep -Fq 'union storage is not supported by the Go target' \
-        "$work/go-$input.err"
-    if "$ziran" bundle --root "$root" --entry overlay:Answer \
-        -o "$work/$input.zib" "$module" 2> "$work/zib-$input.err"; then
-        echo 'portable bundle accepted an unsupported union' >&2
-        exit 1
-    fi
+    "$ziran" build --target=go --pkg main --entry scalar:Overlap \
+        --root "$scalar_root" -o "$work/go-$input" "$scalar"
+    cat > "$work/go-$input/main.go" <<'GO'
+package main
+func main() { if Scalar_Overlap() != 42 { panic("union overlap go") } }
+GO
+    GO111MODULE=off go run "$work/go-$input"/*.go
+    "$ziran" bundle --root "$scalar_root" --entry scalar:Overlap \
+        -o "$work/overlap-$input.zib" "$scalar"
+    test "$("$ziran" run "$work/overlap-$input.zib")" = 42
 done
+cmp "$work/overlap-source.zib" "$work/overlap-saved.zib"
+
+cat > "$work/badunion.zi" <<'ZI'
+BadUnion :: union {
+    text: string
+    value: s32
+}
+#program_export
+Bad :: () -> s32 {
+    u: BadUnion
+    return 0
+}
+ZI
+if "$ziran" bundle --root "$work" --entry badunion:Bad \
+    -o "$work/badunion.zib" "$work/badunion.zi" \
+    2> "$work/badunion.err"; then
+    echo 'portable bundle accepted a non-scalar union field' >&2
+    exit 1
+fi
+grep -Fq 'portable unions support scalar fields only' \
+    "$work/badunion.err"

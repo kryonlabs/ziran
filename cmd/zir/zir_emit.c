@@ -394,6 +394,37 @@ emit_field_path(const ZirModule *module, ZirTarget target,
         memcpy(name, part, length);
         name[length] = '\0';
         const ZirType *record = field_record(module, current_type);
+        if(target == ZIR_GO && record != NULL && record->is_union) {
+            /* Unions keep a byte backing; every Go access reinterprets it
+             * through the field's declared type. */
+            const char *field_type = NULL;
+            size_t find = 0;
+            ZirTypeField found;
+            while(TypeNextField(record, &find, &found) == 1)
+                if(strcmp(found.name, name) == 0) {
+                    field_type = found.type;
+                    break;
+                }
+            if(field_type != NULL) {
+                const ZirType *enumeration = FindType(module, field_type, NULL);
+                const char *backing = enumeration != NULL &&
+                                      enumeration->is_enum ?
+                    enumeration->enum_backing : field_type;
+                const char *go_type = TargetType(backing, ZIR_GO);
+                if(go_type == NULL && enumeration != NULL &&
+                   enumeration->is_enum)
+                    go_type = field_type;
+                if(go_type != NULL) {
+                    format(next, sizeof(next),
+                           "*(*%s)(unsafe.Pointer(&%s.data[0]))", go_type,
+                           result);
+                    copy_text(result, sizeof(result), next);
+                    if(dot == NULL) break;
+                    part = dot + 1;
+                    continue;
+                }
+            }
+        }
         if(target == ZIR_GO)
             go_field_ident(name, mapped, sizeof(mapped));
         else
