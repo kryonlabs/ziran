@@ -506,10 +506,9 @@ prefix(ExprParser *p)
         Diagnostic(p->span, "parse.jai_syntax",
                    "Jai has no increment or decrement operators; use += 1 or -= 1");
         exit(1);
-    } else if(is(p, "<<")) {
-        Diagnostic(p->span, "parse.jai_syntax",
-                   "prefix << dereference is not Jai syntax; use pointer.*");
-        exit(1);
+    } else if(take(p, "<<")) {
+        int right = prefix(p);
+        result = node(p, ZIR_EXPR_UNARY, start, "", "*", -1, right);
     } else if(is(p, "+") || is(p, "-") || is(p, "!") || is(p, "~") ||
               is(p, "*")) {
         int right;

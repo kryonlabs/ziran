@@ -26,13 +26,20 @@ Choose :: (use_value: bool, value: *s32) -> *s32 {
 #program_export
 Answer :: () -> s32 {
     pointer: *s32 = null
-    value: s32 = 41
+    value: s32 = 40
     pointer = *value
     pointer.* = pointer.* + 1
+    <<pointer = <<pointer + 1
+    if false then <<pointer = 0
     if value != 42 { return 0 }
+    if <<pointer != 42 { return 0 }
+    if <<*value != 42 { return 0 }
     pointer_pointer: **s32 = *pointer
     if pointer_pointer.*.* != 42 { return 0 }
+    if << <<pointer_pointer != 42 { return 0 }
     if Choose(true, pointer).* != 42 { return 0 }
+    if <<Choose(true, pointer) != 42 { return 0 }
+    if (1 << 1) != 2 { return 0 }
     pointer = null
     cell: Cell
     cell.value = 41
@@ -178,16 +185,15 @@ grep -Fq 'dereference requires a pointer' "$work/invalid.err"
 cat > "$work/invalid.zi" <<'EOF'
 Wrong :: () -> s32 {
     value: s32 = 42
-    pointer: *s32 = *value
-    return <<pointer
+    return <<value
 }
 EOF
 if "$ziran" check --root "$work" "$work/invalid.zi" \
     2> "$work/invalid.err"; then
-    echo 'legacy prefix pointer dereference was accepted' >&2
+    echo 'prefix dereference of a scalar was accepted' >&2
     exit 1
 fi
-grep -Fq 'prefix << dereference is not Jai syntax' "$work/invalid.err"
+grep -Fq 'dereference requires a pointer' "$work/invalid.err"
 
 for increment in 'value++' '++value' 'value--' '--value'; do
     cat > "$work/invalid.zi" <<EOF

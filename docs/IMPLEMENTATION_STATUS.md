@@ -385,8 +385,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   comparisons, assignments, calls, and pointer-returning conditionals. The
   checker rejects untyped `null` bindings and scalar assignments.
   Native pointer expressions use Jai `*value`
-  for address-of and `pointer.*` for dereference, including writes through a
-  pointer. Prefix `<<pointer` and `++`/`--` are rejected. The checker rejects
+  for address-of and `pointer.*` or prefix `<<pointer` for dereference,
+  including writes through a pointer. `++`/`--` are rejected. The checker rejects
   addresses of temporaries and dereferences of non-pointers. Raw pointers
   remain outside `.zib`.
 - The shared checker resolves `record_pointer.field` against declared record

@@ -186,10 +186,10 @@ are rejected. An unclosed block comment is a source error, including in a
 loaded file.
 Raw pointer null values use Jai `null`; the old `nil` source spelling is
 rejected.
-Pointer expressions use Jai `*value` to take an address and `pointer.*` to
-read or write through a pointer. The older prefix `<<pointer` and C-style
-`&value` forms are rejected; binary `<<` and `&` remain shift and bitwise
-operations. Jai has no `++` or `--` increment/decrement operators; use
+Pointer expressions use Jai `*value` to take an address and `pointer.*` or
+prefix `<<pointer` to read or write through a pointer. C-style `&value` is
+rejected; binary `<<` and `&` remain shift and bitwise operations. Jai has no
+`++` or `--` increment/decrement operators; use
 `+= 1` or `-= 1`.
 Member access through a record pointer uses `pointer.field`, with an implicit
 dereference. C-style `pointer->field` is rejected.
