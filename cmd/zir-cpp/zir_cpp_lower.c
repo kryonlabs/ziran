@@ -892,6 +892,13 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
                     memcpy(name, raw, nl2);
                     name[nl2] = '\0';
                     trim_in_place(name);
+                    if(strncmp(name, "using", 5) == 0 &&
+                       isspace((unsigned char)name[5])) {
+                        const char *field_name = name + 5;
+                        while(isspace((unsigned char)*field_name))
+                            field_name++;
+                        memmove(name, field_name, strlen(field_name) + 1);
+                    }
                     TargetFieldName(ty, ZIR_CPP, name, mapped, sizeof(mapped));
                     snprintf(type, sizeof(type), "%s", ty2);
                     trim_in_place(type);

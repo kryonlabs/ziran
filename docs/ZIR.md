@@ -66,6 +66,10 @@ retained-state fields, and unused statement callee/argument text are absent
 from the IR schema.
 Generic record templates retain their parameter and field declarations. Explicit
 specializations are stored as ordinary concrete types.
+Record bodies retain `using` on contained fields. A checked member expression
+that names a promoted field records its concrete contained-field path; the
+reader verifies each intermediate field is a `using` field. Native backends
+and the portable runtime follow that path through the stored record layout.
 Union types preserve their shared-storage flag. C and C++ use that flag for
 native declarations; Go and the portable linker currently reject union storage.
 Polymorphic procedures retain their `$T` signature and structured body.

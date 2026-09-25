@@ -33,6 +33,14 @@ TypeNextField(const ZirType *record, size_t *offset, ZirTypeField *field)
             end--;
         if(start == end)
             continue;
+        if((size_t)(end - start) >= 6 &&
+           strncmp(start, "using", 5) == 0 &&
+           isspace((unsigned char)start[5])) {
+            field->is_using = 1;
+            start += 5;
+            while(start < end && isspace((unsigned char)*start))
+                start++;
+        }
         colon = memchr(start, ':', (size_t)(end - start));
         if(colon == NULL)
             return -1;
@@ -429,6 +437,118 @@ FindType(const ZirModule *module, const char *name, const ZirModule **owner)
     if(found != NULL && owner != NULL)
         *owner = module;
     return found;
+}
+
+static int
+direct_record_field(const ZirType *record, const char *name,
+                    ZirTypeField *found)
+{
+    size_t offset = 0;
+    ZirTypeField field;
+    int status;
+    while((status = TypeNextField(record, &offset, &field)) == 1)
+        if(strcmp(field.name, name) == 0) {
+            *found = field;
+            return 1;
+        }
+    return status < 0 ? -1 : 0;
+}
+
+static const ZirType *
+using_field_record(const ZirModule *owner, const char *type,
+                   const ZirModule **next_owner)
+{
+    while(isspace((unsigned char)*type)) type++;
+    if(*type == '*') {
+        type++;
+        while(isspace((unsigned char)*type)) type++;
+    }
+    const ZirType *record = FindType(owner, type, next_owner);
+    return record != NULL && !record->is_enum &&
+           !record->is_procedure_type && !record->is_record_template ?
+           record : NULL;
+}
+
+static int
+resolve_record_field(const ZirModule *owner, const ZirType *record,
+                     const char *name, char *path, size_t path_size,
+                     char *type, size_t type_size, int depth)
+{
+    if(depth > 16 || record == NULL) return -1;
+    ZirTypeField direct;
+    int status = direct_record_field(record, name, &direct);
+    if(status != 0) {
+        if(status < 0 || strlen(name) >= path_size ||
+           strlen(direct.type) >= type_size)
+            return -1;
+        copy_text(path, path_size, name);
+        copy_text(type, type_size, direct.type);
+        return 1;
+    }
+    int matches = 0;
+    size_t offset = 0;
+    ZirTypeField field;
+    while((status = TypeNextField(record, &offset, &field)) == 1) {
+        if(!field.is_using) continue;
+        const ZirModule *nested_owner = NULL;
+        const ZirType *nested = using_field_record(owner, field.type,
+                                                    &nested_owner);
+        if(nested == NULL) return -1;
+        char tail[ZIR_NAME_MAX], leaf[ZIR_NAME_MAX];
+        int found = resolve_record_field(nested_owner, nested, name,
+                                         tail, sizeof(tail), leaf,
+                                         sizeof(leaf), depth + 1);
+        if(found < 0) return -1;
+        if(found == 0) continue;
+        if(matches++) return -1;
+        int written = snprintf(path, path_size, "%s.%s", field.name, tail);
+        if(written < 0 || (size_t)written >= path_size ||
+           strlen(leaf) >= type_size)
+            return -1;
+        copy_text(type, type_size, leaf);
+    }
+    return status < 0 ? -1 : matches;
+}
+
+int
+ResolveRecordField(const ZirModule *owner, const ZirType *record,
+                   const char *name, char *path, size_t path_size,
+                   char *type, size_t type_size)
+{
+    if(owner == NULL || record == NULL || name == NULL ||
+       path == NULL || type == NULL || !path_size || !type_size)
+        return -1;
+    return resolve_record_field(owner, record, name, path, path_size,
+                                type, type_size, 0);
+}
+
+int
+RecordFieldPathType(const ZirModule *owner, const ZirType *record,
+                    const char *path, char *type, size_t type_size)
+{
+    if(owner == NULL || record == NULL || path == NULL ||
+       type == NULL || !type_size)
+        return 0;
+    const char *dot = strchr(path, '.');
+    size_t length = dot == NULL ? strlen(path) : (size_t)(dot - path);
+    if(length == 0 || length >= ZIR_NAME_MAX) return 0;
+    char name[ZIR_NAME_MAX];
+    memcpy(name, path, length);
+    name[length] = '\0';
+    ZirTypeField field;
+    if(direct_record_field(record, name, &field) != 1) return 0;
+    if(dot == NULL) {
+        if(strlen(field.type) >= type_size) return 0;
+        copy_text(type, type_size, field.type);
+        return 1;
+    }
+    if(!field.is_using) return 0;
+    const ZirModule *nested_owner = NULL;
+    const ZirType *nested = using_field_record(owner, field.type,
+                                                &nested_owner);
+    return nested != NULL &&
+           RecordFieldPathType(nested_owner, nested, dot + 1,
+                               type, type_size);
 }
 
 static void *

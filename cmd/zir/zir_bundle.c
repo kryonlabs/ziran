@@ -488,16 +488,24 @@ static void
 mark_member_field(const ZirModule *module, const char *record_type,
                   const char *field_name, FieldUse *uses, int use_count)
 {
-    const ZirType *type = FindType(module, record_name(record_type), NULL);
+    const ZirModule *owner = NULL;
+    const ZirType *type = FindType(module, record_name(record_type), &owner);
     FieldUse *use = find_field_use(uses, use_count, type);
     if(use == NULL)
         return;
+    const char *dot = strchr(field_name, '.');
+    size_t name_length = dot == NULL ? strlen(field_name) :
+                         (size_t)(dot - field_name);
     size_t offset = 0;
     ZirTypeField field;
     int index = 0;
     while(TypeNextField(type, &offset, &field) == 1 && index < use->count) {
-        if(strcmp(field.name, field_name) == 0) {
+        if(strlen(field.name) == name_length &&
+           strncmp(field.name, field_name, name_length) == 0) {
             use->fields[index] = 1;
+            if(dot != NULL && field.is_using)
+                mark_member_field(owner, field.type, dot + 1,
+                                  uses, use_count);
             return;
         }
         index++;
@@ -596,7 +604,9 @@ prune_record_fields(ZirProgram *program, const char *entry_module,
         while(TypeNextField(use->type, &offset, &field) == 1) {
             if(use->fields[index]) {
                 int written = snprintf(body + length, sizeof(body) - length,
-                                       "%s: %s\n", field.name, field.type);
+                                       "%s%s: %s\n",
+                                       field.is_using ? "using " : "",
+                                       field.name, field.type);
                 if(written < 0 || (size_t)written >= sizeof(body) - length)
                     goto failed;
                 length += (size_t)written;

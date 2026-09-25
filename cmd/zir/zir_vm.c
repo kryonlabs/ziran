@@ -1204,19 +1204,19 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
                    verify_expression(module, function, bindings, binding_count,
                                      expression->left, depth + 1);
         }
-        const ZirType *record = FindType(module, base->type, NULL);
-        size_t offset = 0;
-        ZirTypeField field;
+        const ZirModule *owner = NULL;
+        const ZirType *record = FindType(module, base->type, &owner);
+        char field_type[ZIR_NAME_MAX];
         if(record == NULL || record->is_enum || record->is_procedure_type ||
            !verify_expression(module, function, bindings, binding_count,
                               expression->left, depth + 1))
             return 0;
-        while(TypeNextField(record, &offset, &field) == 1)
-            if(strcmp(field.name, expression->name) == 0)
-                return strcmp(field.type, expression->type) == 0 ||
-                       (ScalarType(field.type)[0] != 0 &&
-                        strcmp(ScalarType(field.type), expression->type) == 0);
-        return 0;
+        if(!RecordFieldPathType(owner, record, expression->name,
+                                field_type, sizeof(field_type)))
+            return 0;
+        return strcmp(field_type, expression->type) == 0 ||
+               (ScalarType(field_type)[0] != 0 &&
+                strcmp(ScalarType(field_type), expression->type) == 0);
     }
     case ZIR_EXPR_SLICE: {
         char element[ZIR_NAME_MAX];
@@ -1781,6 +1781,21 @@ record_field(Record *record, const char *name)
 }
 
 static Value *
+record_field_path(Record *record, const char *path)
+{
+    const char *dot = strchr(path, '.');
+    if(dot == NULL) return record_field(record, path);
+    size_t length = (size_t)(dot - path);
+    if(length == 0 || length >= ZIR_NAME_MAX) return NULL;
+    char name[ZIR_NAME_MAX];
+    memcpy(name, path, length);
+    name[length] = '\0';
+    Value *field = record_field(record, name);
+    return field != NULL && field->kind == VALUE_RECORD ?
+           record_field_path(field->record, dot + 1) : NULL;
+}
+
+static Value *
 indexed_element(Value base, uint64_t index)
 {
     if(base.kind == VALUE_RECORD && base.record != NULL &&
@@ -1837,7 +1852,7 @@ assignment_slot(Frame *frame, int index, int depth)
     Value *base = assignment_slot(frame, expression->left, depth + 1);
     if(base == NULL || base->kind != VALUE_RECORD)
         return NULL;
-    return record_field(base->record, expression->name);
+    return record_field_path(base->record, expression->name);
 }
 
 static Value
@@ -2211,7 +2226,7 @@ eval(Frame *frame, int index, int depth)
             break;
         }
         Value *field = left.kind == VALUE_RECORD ?
-                       record_field(left.record, expression->name) : NULL;
+                       record_field_path(left.record, expression->name) : NULL;
         if(field == NULL)
             frame->vm->failed = 1;
         else

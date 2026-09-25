@@ -103,8 +103,12 @@ rejected. Record values use `Type.{field = value}` in ordinary calls.
 parameter declaration, makes that record's direct fields available by name
 within the lexical scope. These references become ordinary checked member
 accesses in saved IR. Explicit locals shadow promoted fields, and ambiguous
-promotions are errors. Struct-field `using`, nested paths, import re-exports,
-polymorphic `using` bodies, `#as`, and `using` modifiers remain language gaps.
+promotions are errors. A struct field declared `using field: Record` exposes
+that record's fields while preserving the contained storage; nested and
+generic record applications keep the same behavior. Native targets also
+accept pointer-backed `using` fields. Nested imperative `using` paths, import
+re-exports, polymorphic `using` bodies, `#as`, and `using` modifiers remain
+language gaps.
 A procedure type can be named with `Child :: #type (s32) -> ();` or
 `Compute :: #type (s32) -> s32;` and passed a named
 function value. Capture-free procedure values can be stored in records, fixed

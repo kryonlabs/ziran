@@ -369,6 +369,52 @@ field_record(const ZirModule *module, const char *type)
     return FindType(module, base, NULL);
 }
 
+static void
+emit_field_path(const ZirModule *module, ZirTarget target,
+                const char *base_type, const char *path,
+                const char *base_expression, char *out, size_t size)
+{
+    char result[ZIR_TEXT_MAX], current_type[ZIR_NAME_MAX];
+    copy_text(result, sizeof(result), base_expression);
+    copy_text(current_type, sizeof(current_type), base_type);
+    for(const char *part = path; *part;) {
+        const char *dot = strchr(part, '.');
+        size_t length = dot == NULL ? strlen(part) : (size_t)(dot - part);
+        char name[ZIR_NAME_MAX], mapped[ZIR_NAME_MAX], next[ZIR_TEXT_MAX];
+        if(length == 0 || length >= sizeof(name)) {
+            fprintf(stderr, "invalid checked record field path\n");
+            exit(1);
+        }
+        memcpy(name, part, length);
+        name[length] = '\0';
+        const ZirType *record = field_record(module, current_type);
+        if(target == ZIR_GO)
+            go_field_ident(name, mapped, sizeof(mapped));
+        else
+            TargetFieldName(record, target, name, mapped, sizeof(mapped));
+        const char *base = skip_ws(current_type);
+        format(next, sizeof(next), "(%s)%s%s", result,
+               target != ZIR_GO && *base == '*' ? "->" : ".", mapped);
+        copy_text(result, sizeof(result), next);
+        if(dot == NULL) break;
+        size_t offset = 0;
+        ZirTypeField field;
+        int found = 0;
+        while(record != NULL && TypeNextField(record, &offset, &field) == 1)
+            if(strcmp(field.name, name) == 0) {
+                copy_text(current_type, sizeof(current_type), field.type);
+                found = 1;
+                break;
+            }
+        if(!found) {
+            fprintf(stderr, "invalid checked record field path\n");
+            exit(1);
+        }
+        part = dot + 1;
+    }
+    copy_text(out, size, result);
+}
+
 void
 EmitStringType(FILE *out)
 {
@@ -925,20 +971,16 @@ emit_destination(Emitter *e, int index, char *out, size_t size)
         return;
     }
     if(expr->kind == ZIR_EXPR_MEMBER || expr->kind == ZIR_EXPR_POINTER_MEMBER) {
-        char base[ZIR_TEXT_MAX], field[ZIR_NAME_MAX];
+        char base[ZIR_TEXT_MAX];
         if(expr->kind == ZIR_EXPR_POINTER_MEMBER &&
            !member_path(e->fn, expr->left))
             emit_expr(e, expr->left, e->fn->exprs[expr->left].type,
                       base, sizeof(base));
         else
             emit_destination(e, expr->left, base, sizeof(base));
-        if(e->target == ZIR_GO) go_field_ident(expr->name, field, sizeof(field));
-        else TargetFieldName(field_record(e->module,
-                    e->fn->exprs[expr->left].type), e->target,
-                    expr->name, field, sizeof(field));
-        format(out, size, "(%s)%s%s", base,
-               expr->kind == ZIR_EXPR_POINTER_MEMBER && e->target != ZIR_GO ? "->" : ".",
-               field);
+        emit_field_path(e->module, e->target,
+                        e->fn->exprs[expr->left].type, expr->name,
+                        base, out, size);
         e->pure = 1;
         return;
     }
@@ -1518,7 +1560,6 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
     }
     case ZIR_EXPR_MEMBER:
     case ZIR_EXPR_POINTER_MEMBER: {
-        char field[ZIR_NAME_MAX];
         int base_pure;
         /* Reading a field needs a snapshot of that field, not a copy of every
          * enclosing record. Calls and other computed bases still evaluate once. */
@@ -1550,12 +1591,8 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             pure = base_pure;
             break;
         }
-        if(e->target == ZIR_GO) go_field_ident(expr->name, field, sizeof(field));
-        else TargetFieldName(field_record(e->module, base_type), e->target,
-                             expr->name, field, sizeof(field));
-        format(result, sizeof(result), "(%s)%s%s", a,
-               expr->kind == ZIR_EXPR_POINTER_MEMBER && e->target != ZIR_GO ? "->" : ".",
-               field);
+        emit_field_path(e->module, e->target, base_type, expr->name,
+                        a, result, sizeof(result));
         pure = base_pure;
         break;
     }

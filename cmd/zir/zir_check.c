@@ -1778,15 +1778,23 @@ expression_type(Checker *c, int index)
             break;
         }
         if(record != NULL && !record->is_enum) {
-            size_t offset = 0;
-            ZirTypeField field;
-            while(TypeNextField(record, &offset, &field) == 1) {
-                if(!strcmp(field.name, e->name)) {
-                    copy_text(member_type, sizeof(member_type), field.type);
-                    normalize_array(record_owner, member_type, sizeof(member_type));
-                    break;
-                }
+            if(strchr(e->name, '.') != NULL) {
+                if(!RecordFieldPathType(record_owner, record, e->name,
+                                        member_type, sizeof(member_type)))
+                    error(c, e->span, "invalid promoted record field path",
+                          e->name);
+            } else {
+                char path[ZIR_NAME_MAX];
+                int found = ResolveRecordField(record_owner, record, e->name,
+                                               path, sizeof(path), member_type,
+                                               sizeof(member_type));
+                if(found < 0)
+                    error(c, e->span, "ambiguous using record field", e->name);
+                else if(found > 0)
+                    copy_text(e->name, sizeof(e->name), path);
             }
+            if(*member_type)
+                normalize_array(record_owner, member_type, sizeof(member_type));
         }
         if(!*member_type)
             error(c, e->span, "unknown record field", e->name);
@@ -2571,6 +2579,15 @@ check_type_declarations(ZirModule *module)
                 return record_declaration_error(record, "slice descriptors cannot be stored in aggregates", field.name);
             if(strcmp(field.type, "void") == 0)
                 return record_declaration_error(record, "record field cannot have void type", field.name);
+            if(field.is_using) {
+                const char *nested_name = skip_ws(field.type);
+                if(*nested_name == '*') nested_name = skip_ws(nested_name + 1);
+                const ZirType *nested = FindType(module, nested_name, NULL);
+                if(nested == NULL || nested->is_enum ||
+                   nested->is_procedure_type || nested->is_record_template)
+                    return record_declaration_error(record,
+                        "using field requires a concrete record type", field.name);
+            }
             while(TypeNextField(record, &previous_offset, &previous) == 1 &&
                   previous_offset < offset) {
                 if(strcmp(previous.name, field.name) == 0)
@@ -2622,7 +2639,8 @@ normalize_record_arrays(ZirModule *module)
         while((status = TypeNextField(record, &offset, &field)) == 1) {
             normalize_array(module, field.type, sizeof(field.type));
             int length = snprintf(body + used, sizeof(body) - used,
-                                  "%s: %s\n", field.name, field.type);
+                                  "%s%s: %s\n", field.is_using ? "using " : "",
+                                  field.name, field.type);
             if(length < 0 || (size_t)length >= sizeof(body) - used) {
                 Diagnostic(record->span, "check.record", "normalized record is too large: %s",
                            record->name);

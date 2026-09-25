@@ -215,6 +215,7 @@ typedef struct ZirType {
 typedef struct ZirTypeField {
     char name[ZIR_NAME_MAX];
     char type[ZIR_NAME_MAX];
+    int is_using;
 } ZirTypeField;
 
 /* Start offset at zero. Returns 1 for a field, 0 at end, -1 for malformed
@@ -275,6 +276,15 @@ int ResolveFunctionAt(const ZirModule *module, const char *name,
 const ZirType *FindType(const ZirModule *module, const char *name,
                         const ZirModule **owner);
 const ZirType *BuiltinType(const char *name);
+/* Resolve a record member, including fields promoted by `using`.
+ * Returns 1 for a unique member, 0 if absent, -1 if ambiguous or too deep. */
+int ResolveRecordField(const ZirModule *owner, const ZirType *record,
+                       const char *name, char *path, size_t path_size,
+                       char *type, size_t type_size);
+/* Check a concrete member path in checked IR; intermediate fields must use
+ * `using` so source and saved modules agree on promotion. */
+int RecordFieldPathType(const ZirModule *owner, const ZirType *record,
+                        const char *path, char *type, size_t type_size);
 int ResolveEnumMember(const ZirModule *module, const char *name,
                          const ZirModule **owner, const ZirType **type);
 

@@ -4835,8 +4835,8 @@ InstantiateGenericRecord(ZirType *instance, const ZirType *generic)
                                    params, actual, parameter_count))
             return 0;
         int length = snprintf(instance->body + used,
-            sizeof(instance->body) - used, "%s: %s\n",
-            field.name, type);
+            sizeof(instance->body) - used, "%s%s: %s\n",
+            field.is_using ? "using " : "", field.name, type);
         if(length < 0 || (size_t)length >= sizeof(instance->body) - used)
             return 0;
         used += (size_t)length;
