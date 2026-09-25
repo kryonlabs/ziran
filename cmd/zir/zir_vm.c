@@ -821,7 +821,7 @@ parse_parameters(const ZirModule *module, const ZirFunction *function,
     while(*cursor != 0) {
         const char *start;
         size_t length;
-        while(*cursor == ' ' || *cursor == '\t')
+        while(*cursor != '\0' && isspace((unsigned char)*cursor))
             cursor++;
         if(*cursor == 0)
             break;
@@ -838,11 +838,11 @@ parse_parameters(const ZirModule *module, const ZirFunction *function,
             return -1;
         memcpy(parameters[count].name, start, length);
         parameters[count].name[length] = 0;
-        while(*cursor == ' ' || *cursor == '\t')
+        while(*cursor != '\0' && isspace((unsigned char)*cursor))
             cursor++;
         if(*cursor++ != ':')
             return -1;
-        while(*cursor == ' ' || *cursor == '\t')
+        while(*cursor != '\0' && isspace((unsigned char)*cursor))
             cursor++;
         start = cursor;
         if(*cursor == '[') {
@@ -865,7 +865,7 @@ parse_parameters(const ZirModule *module, const ZirFunction *function,
            strcmp(parameters[count].type, "void") == 0)
             return -1;
         count++;
-        while(*cursor == ' ' || *cursor == '\t')
+        while(*cursor != '\0' && isspace((unsigned char)*cursor))
             cursor++;
         if(*cursor == 0)
             break;

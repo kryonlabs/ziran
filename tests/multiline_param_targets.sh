@@ -8,7 +8,8 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 cat > "$work/params.zi" <<'ZI'
 #program_export
 Combine :: (
-    first: float32, second: float32
+    first: float32,
+    second: float32
 ) -> float32 {
     return first + second
 }
@@ -22,6 +23,12 @@ ZI
 
 "$ziran" check --root "$work" "$work/params.zi"
 "$ziran" ir --root "$work" -o "$work/ir" "$work/params.zi"
+"$ziran" bundle --root "$work" --entry params:Answer \
+    -o "$work/source.zib" "$work/params.zi"
+"$ziran" bundle --root "$work" --entry params:Answer \
+    -o "$work/ir.zib" "$work/ir/params.zir"
+cmp "$work/source.zib" "$work/ir.zib"
+test "$("$ziran" run "$work/source.zib")" = 42
 for input in "$work/params.zi" "$work/ir/params.zir"; do
     go_output="$work/go-$(basename "$input")"
     "$ziran" build --target=go --pkg main --root "$work" \
