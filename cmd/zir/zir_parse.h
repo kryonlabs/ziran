@@ -33,9 +33,11 @@ int ParseExprTyped(ZirFunction *fn, const ZirModule *module,
                const char *expected_type);
 int EvaluateCompileExpression(const ZirModule *module, const char *source,
                               ZirSourceSpan span, int executing, long *value);
+/* Aggregate results also return their declaring module as a borrowed pointer. */
 int EvaluateCompileLiteral(const ZirModule *module, const char *source,
                            ZirSourceSpan span, int executing, char *literal,
-                           size_t literal_size);
+                           size_t literal_size,
+                           const ZirModule **type_owner);
 
 /* Finish compile-time expressions whose conditions depend on linked imports.
  * With allow_deferred, unresolved conditions remain for a later pass. */

@@ -1881,6 +1881,22 @@ lower_compound_global(const ZirModule *module, const ZirGlobal *global,
     return ok;
 }
 
+static void
+compound_qualifier_for_global(CompoundConstant *compound,
+                              const char *expected_type)
+{
+    char current[ZIR_NAME_MAX], element[ZIR_NAME_MAX];
+    copy_text(current, sizeof(current), expected_type);
+    while(ArrayElementType(current, element, sizeof(element), NULL))
+        copy_text(current, sizeof(current), element);
+    const char *dot = strchr(current, '.');
+    if(dot == NULL || (size_t)(dot - current) >=
+                      sizeof(compound->qualifier)) return;
+    memcpy(compound->qualifier, current,
+           (size_t)(dot - current));
+    compound->qualifier[dot - current] = '\0';
+}
+
 static int
 bound_compound_constant(const ZirModule *module, const char *name, int depth,
                         CompoundConstant *result)
@@ -6610,7 +6626,8 @@ CheckPrograms(ZirProgram **programs, int count)
                         char literal[ZIR_TEXT_MAX];
                         if(!EvaluateCompileLiteral(module, expression,
                                                    definition->span, 1, literal,
-                                                   sizeof(literal))) continue;
+                                                   sizeof(literal), NULL))
+                            continue;
                         copy_text(definition->value,
                                   sizeof(definition->value), literal);
                     }
@@ -6652,7 +6669,7 @@ CheckPrograms(ZirProgram **programs, int count)
                     char literal[ZIR_TEXT_MAX];
                     if(!EvaluateCompileLiteral(module,
                             assertion->condition, assertion->span, 0,
-                            literal, sizeof(literal)) ||
+                            literal, sizeof(literal), NULL) ||
                        (strcmp(literal, "0") && strcmp(literal, "1"))) {
                         Diagnostic(assertion->span, "check.assert",
                                    "#assert requires a compile-time constant condition");
@@ -6675,6 +6692,8 @@ CheckPrograms(ZirProgram **programs, int count)
                 ZirFunction raw = {0};
                 int raw_root = ParseExpr(&raw, module, global->init,
                                          global->span);
+                int literal_initializer = raw_root >= 0 &&
+                    raw.exprs[raw_root].kind == ZIR_EXPR_COMPOUND;
                 char constant_name[ZIR_NAME_MAX] = "";
                 if(raw_root >= 0 &&
                    raw.exprs[raw_root].kind == ZIR_EXPR_IDENT)
@@ -6710,9 +6729,44 @@ CheckPrograms(ZirProgram **programs, int count)
                         }
                         copy_text(global->init, sizeof(global->init),
                                   lowered);
+                        literal_initializer = 1;
                     }
                 }
                 free(raw.exprs);
+                char folded[ZIR_TEXT_MAX];
+                const ZirModule *folded_owner = NULL;
+                if(!literal_initializer &&
+                   EvaluateCompileLiteral(module, global->init,
+                        global->span, 0, folded, sizeof(folded),
+                        &folded_owner)) {
+                    if(folded_owner != NULL) {
+                        CompoundConstant compound = {0};
+                        copy_text(compound.literal,
+                                  sizeof(compound.literal), folded);
+                        compound.owner = folded_owner;
+                        compound_qualifier_for_global(&compound,
+                                                      global->type);
+                        if(!lower_compound_global(module, global, &compound,
+                                                  folded, sizeof(folded))) {
+                            Diagnostic(global->span, "check.constant_type",
+                                       "aggregate initializer type is unavailable or mismatched: %s",
+                                       global->init);
+                            return 0;
+                        }
+                    } else if(!strcmp(global->type, "bool")) {
+                        if(!strcmp(folded, "0"))
+                            copy_text(folded, sizeof(folded), "false");
+                        else if(!strcmp(folded, "1"))
+                            copy_text(folded, sizeof(folded), "true");
+                        else {
+                            Diagnostic(global->span, "check.constant_type",
+                                       "boolean initializer is not a boolean constant: %s",
+                                       global->init);
+                            return 0;
+                        }
+                    }
+                    copy_text(global->init, sizeof(global->init), folded);
+                }
                 ZirFunction expression = {0};
                 int root = ParseExprTyped(&expression, module,
                                           global->init, global->span,

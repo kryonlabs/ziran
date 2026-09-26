@@ -48,7 +48,7 @@ the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 | Names and scopes | Local/field record `using`; local/data enum `using`; imported record globals in procedures; named imports | File-scope record lookup, full imported type ownership, order independence |
 | Values and expressions | Record literals, nonempty typed arrays, direct generic calls, `ifx` in typed expressions and call arguments | True empty arrays, broader lazy-expression audit, fuller type queries |
 | Procedures | Named values, defaults, named arguments, direct polymorphism | Overload/variadic/operator and broader procedure-form audit |
-| Compile time | Bounded pure scalars, strings, floats, and record/array results used at compile time and in checked runtime expressions, including public imports | Larger file-scope aggregate expressions, verified effect rules |
+| Compile time | Bounded pure scalars, strings, floats, and record/array results used at compile time, in checked runtime expressions, and in selected file-scope initializers, including public imports | Full file-scope initialization semantics, verified effect rules |
 | Native output | C/C++/Go checked body graphs; C/C++ unions | Declaration lowering, whole-program names, Go union layout |
 | Portable output | Verified `.zib` scalar/record/array subset and host calls | Globals, aggregates, pointers/handles, unions, host shapes |
 | Ownership | Scoped `Vec(T)` operations | Move, drop, pop, lookup, builder, borrowing across calls |
@@ -206,7 +206,11 @@ rejects a conflicting consumer record name while native C still emits
 colliding tags. `tests/compile_values.sh` and
 `tests/imported_aggregate_constants.sh` check source and saved IR across
 all four targets, including imported record fields and array elements in
-`#run`, `#assert`, and `#if`. Aggregate uses inside larger file-scope expressions,
+`#run`, `#assert`, `#if`, and pure file-scope initializers. File-scope field
+selection, indexing, scalar arithmetic, and `#ifx` selection fold to typed
+literals before native or portable output. Bounded pure procedure calls also
+fold in globals; runtime-dependent calls remain unsupported by the portable
+bundle. General file-scope initialization,
 effects, and general metaprogramming remain open.
 `#caller_location` parameters in compile-time calls are also missing. Integer
 conditions now send procedure calls through the typed evaluator, and the old
@@ -214,8 +218,7 @@ integer-only procedure interpreter has been removed. The integer expression
 parser remains for `#if` predicates and compiler-host probes such as
 `defined`; `tests/compile_run.sh` covers overflow, defaults, imports,
 recursion, and one work budget shared by nested calls. Continue consolidating
-expression rules, then extend aggregate constants through larger file-scope
-expressions and add
+expression rules, then extend file-scope initialization and add
 supported metaprogramming features with explicit effect and
 resource limits. Avoid leaving two subtly different language interpreters.
 
@@ -252,8 +255,8 @@ carry raw pointers as opaque host handles that can be stored, compared, and
 passed across host capabilities. They still reject slices inside globals or
 records, reachable unions, and several host shapes. Literal scalar, string,
 record, and fixed-array global initializers run portably, including nested
-record and array literals across native targets. Procedure calls in
-initializers remain open.
+record and array literals across native targets. Bounded pure procedure calls
+in initializers fold before output; runtime-dependent calls remain open.
 Host calls support scalar, string,
 plain-record, pointer, and selected synchronous slice arguments; array, slot,
 slice-return, and record-slice shapes remain open. Implement each boundary as

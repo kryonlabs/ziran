@@ -3397,13 +3397,63 @@ compile_compound_index(const CompileValue *compound, long index,
 }
 
 static int
+local_value_name_visible(const ZirModule *module, const char *path,
+                         const char *name)
+{
+    for(int i = 0; i < module->define_count; i++)
+        if(!strcmp(module->defines[i].name, name) &&
+           (!module->defines[i].is_file_private ||
+            !strcmp(module->defines[i].span.path, path))) return 1;
+    for(int i = 0; i < module->global_count; i++)
+        if(!strcmp(module->globals[i].name, name) &&
+           (!module->globals[i].is_file_private ||
+            !strcmp(module->globals[i].span.path, path))) return 1;
+    for(int i = 0; i < module->type_count; i++)
+        if(!strcmp(module->types[i].name, name) &&
+           (!module->types[i].is_file_private ||
+            !strcmp(module->types[i].span.path, path))) return 1;
+    for(int i = 0; i < module->function_count; i++)
+        if(!strcmp(module->functions[i].name, name) &&
+           (!module->functions[i].is_file_private ||
+            !strcmp(module->functions[i].span.path, path))) return 1;
+    return 0;
+}
+
+static const ZirDefine *
+find_open_imported_define(const ZirModule *module, const char *path,
+                          const char *name, const ZirModule **owner_out)
+{
+    const ZirDefine *definition = NULL;
+    if(local_value_name_visible(module, path, name)) return NULL;
+    for(int i = 0; i < module->import_count; i++) {
+        const ZirImport *import = &module->imports[i];
+        if((import->kind != ZIR_IMPORT_OPEN &&
+            !(import->kind == ZIR_IMPORT_MODULE && import->is_using)) ||
+           (import->is_file_private &&
+            strcmp(import->span.path, path) != 0) ||
+           import->resolved_module == NULL) continue;
+        const ZirModule *owner = import->resolved_module;
+        for(int j = 0; j < owner->define_count; j++) {
+            const ZirDefine *candidate = &owner->defines[j];
+            if(!candidate->is_public || candidate->is_file_private ||
+               strcmp(candidate->name, name)) continue;
+            if(definition != NULL && definition != candidate) return NULL;
+            definition = candidate;
+            *owner_out = owner;
+        }
+    }
+    return definition;
+}
+
+static int
 evaluate_imported_typed_define(const ZirModule *module, const char *path,
                                const char *name, int depth, int *fuel,
                                CompileValue *result)
 {
     const ZirModule *owner = NULL;
-    const ZirDefine *definition = find_imported_define(
-        module, path, name, strlen(name), &owner);
+    const ZirDefine *definition = strchr(name, '.') != NULL ?
+        find_imported_define(module, path, name, strlen(name), &owner) :
+        find_open_imported_define(module, path, name, &owner);
     ZirConsts names = {0};
     int ok;
     if(definition == NULL || depth >= 32) return 0;
@@ -3476,7 +3526,8 @@ evaluate_typed_node(const ZirFunction *probe, int index,
             result->integer = !strcmp(expression->name, "true");
             return compile_value_literal(result);
         }
-        return 0;
+        return evaluate_imported_typed_define(module, path,
+                    expression->name, depth + 1, fuel, result);
     case ZIR_EXPR_SIZE_OF: {
         size_t size, alignment;
         if(!TypeLayout(module, expression->name, &size, &alignment) ||
@@ -4135,7 +4186,8 @@ EvaluateCompileExpression(const ZirModule *module, const char *source,
 int
 EvaluateCompileLiteral(const ZirModule *module, const char *source,
                        ZirSourceSpan span, int executing, char *literal,
-                       size_t literal_size)
+                       size_t literal_size,
+                       const ZirModule **type_owner)
 {
     ZirConsts constants = {0};
     CompileValue value = {0};
@@ -4162,7 +4214,10 @@ EvaluateCompileLiteral(const ZirModule *module, const char *source,
                                        &fuel, &value) &&
              value.kind != COMPILE_INVALID &&
              strlen(value.literal) < literal_size;
-    if(ok) copy_text(literal, literal_size, value.literal);
+    if(ok) {
+        copy_text(literal, literal_size, value.literal);
+        if(type_owner != NULL) *type_owner = value.type_owner;
+    }
     free(constants.items);
     return ok;
 }

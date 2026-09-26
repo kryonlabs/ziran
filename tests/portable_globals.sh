@@ -22,6 +22,8 @@ base :: 5
 limit: s64 = 7;
 scale: s32 = 3;
 factor: s32 = base + 2;
+computed: s32 = MakeThree();
+MakeThree :: () -> s32 { return 3 }
 ratio: float32 = 2.5;
 name: string = "zi\u0072an";
 flag: bool = true;
@@ -46,6 +48,7 @@ InitChecks :: () -> s32 {
     if limit != 7 { return 0 }
     if scale != 3 { return 0 }
     if factor != 7 { return 0 }
+    if computed != 3 { return 0 }
     if ratio != 2.5 { return 0 }
     if flag != true { return 0 }
     if name.count != 5 { return 0 }
@@ -191,8 +194,9 @@ CPP
 done
 
 cat > "$work/invalid.zi" <<'ZI'
+counter: s32;
 initial: s32 = compute();
-compute :: () -> s32 { return 3 }
+compute :: () -> s32 { counter += 1; return counter }
 #program_export
 Answer :: () -> s32 {
     return initial

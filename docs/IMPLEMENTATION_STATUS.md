@@ -325,7 +325,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   field selection, a later named import in `#if`, private visibility, and source/saved IR
   across the same targets. A conflicting consumer record name is rejected
   during checking because native C still emits colliding record tags.
-  Aggregate references inside larger file-scope expressions remain open;
+  Pure file-scope initializers now fold imported record-field and fixed-array
+  selections, scalar expressions built from them, and tested `#ifx` selections
+  before native or portable output. Bounded pure procedure calls also fold in
+  globals, including a call declared after the global; effectful calls are
+  rejected by the portable bundle. Named, open, and using imports retain the
+  aggregate type owner. General file-scope initialization remains open;
   effects, unbounded execution, and general metaprogramming are unsupported.
   Integer conditions and typed expressions use the same bounded procedure
   evaluator, including a shared instruction budget across nested calls; the
