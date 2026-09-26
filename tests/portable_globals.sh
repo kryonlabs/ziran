@@ -23,21 +23,23 @@ limit: s64 = 7;
 scale: s32 = 3;
 factor: s32 = base + 2;
 ratio: float32 = 2.5;
-name: string = "zi\x72an";
+name: string = "zi\u0072an";
 flag: bool = true;
 origin: Cell = Cell.{.value = 9};
 Track :: struct {
     title: string
     weight: s32
 }
-tracks: [3]Track = .[Track.{.title = "fir\x73t", .weight = 3}, Track.{.title = "second", .weight = 5}, Track.{.title = "third", .weight = 7}];
+tracks: [3]Track = .[Track.{.title = "fir\u0073t", .weight = 3}, Track.{.title = "second", .weight = 5}, Track.{.title = "third", .weight = 7}];
 marks: [4]s32 = .[2, 4, 6, 8];
 Shelf :: struct {
     first: Track
     labels: [2]string
     count: s32
 }
-shelf: Shelf = Shelf.{.count = 2, .first = Track.{.weight = 11, .title = "nes\x74ed"}, .labels = string.["one", "tw\x6f"]};
+shelf: Shelf = Shelf.{.count = 2, .first = Track.{.weight = 11, .title = "nes\u0074ed"}, .labels = string.["one", "tw\u006f"]};
+emoji: string = "\U0001F642";
+zero: string = "a\x00b";
 
 #program_export
 InitChecks :: () -> s32 {
@@ -56,6 +58,8 @@ InitChecks :: () -> s32 {
     if shelf.first.title != "nested" || shelf.first.weight != 11 { return 0 }
     if shelf.labels[0] != "one" || shelf.labels[1] != "two" { return 0 }
     if shelf.count != 2 { return 0 }
+    if emoji.count != 4 || emoji != "\U0001F642" { return 0 }
+    if zero.count != 3 || zero != "a\x00b" { return 0 }
     return 1
 }
 

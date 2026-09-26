@@ -195,11 +195,13 @@ than treating native C arrays as proof of layout parity. Add focused cases to
 
 `#run`, `#if`, `#ifx`, and `#assert` currently evaluate a bounded pure subset.
 Effects, aggregate results, and general metaprogramming are outside it.
-`#caller_location` parameters in compile-time calls are also missing. The
-parser contains an integer-only procedure evaluator and a typed evaluator;
-both are active. Consolidate them only after tests prove equal behavior for
-integer overflow, short-circuiting, defaults, imports, recursion limits, and
-compile-time phase handling. Then extend the one evaluator to aggregate
+`#caller_location` parameters in compile-time calls are also missing. Integer
+conditions now send procedure calls through the typed evaluator, and the old
+integer-only procedure interpreter has been removed. The integer expression
+parser remains for `#if` predicates and compiler-host probes such as
+`defined`; `tests/compile_run.sh` covers overflow, defaults, imports,
+recursion, and one work budget shared by nested calls. Continue consolidating
+expression rules, then extend the evaluator to aggregate
 constants and supported metaprogramming features with explicit effect and
 resource limits. Avoid leaving two subtly different language interpreters.
 

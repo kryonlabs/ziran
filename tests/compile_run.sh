@@ -267,6 +267,26 @@ if "$ziran" check --root "$work" "$work/unbounded_loop.zi" \
 fi
 rg -q '#run expression is not a constant' "$work/unbounded_loop.err"
 
+cat > "$work/shared_fuel.zi" <<'ZI'
+Spin :: (limit: s64) -> s64 {
+    i: s64 = 0
+    while i < limit { i += 1 }
+    return i
+}
+Single :: #run Spin(600);
+ZI
+"$ziran" check --root "$work" "$work/shared_fuel.zi"
+cat >> "$work/shared_fuel.zi" <<'ZI'
+Pair :: () -> s64 { return Spin(600) + Spin(600) }
+Combined :: #run Pair();
+ZI
+if "$ziran" check --root "$work" "$work/shared_fuel.zi" \
+    2> "$work/shared_fuel.err"; then
+    echo 'nested compile-time calls reset the work limit' >&2
+    exit 1
+fi
+rg -q '#run expression is not a constant' "$work/shared_fuel.err"
+
 cat > "$work/impure_assert.zi" <<'ZI'
 counter: s64;
 Touch :: () -> s64 {

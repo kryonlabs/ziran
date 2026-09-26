@@ -2485,6 +2485,7 @@ typedef struct ZirEval {
     const ZirConsts *consts;
     const char *lookup_path;
     int depth;
+    int *fuel;
 } ZirEval;
 
 static void
@@ -2504,16 +2505,15 @@ static int eval_const_condition(const char *src, long *value,
                                 const ZirModule *module,
                                 const ZirConsts *consts,
                                 const char *lookup_path, int depth);
-
-typedef struct {
-    ZirEval *call;
-    const ZirModule *module;
-    const ZirFunction *fn;
-    ZirConsts names;
-    int local_count;
-    int capacity;
-    int fuel;
-} EvalBody;
+static int eval_const_condition_with_fuel(const char *src, long *value,
+                                const ZirModule *module,
+                                const ZirConsts *consts,
+                                const char *lookup_path, int depth,
+                                int *fuel);
+static int evaluate_typed_integer_function(
+    ZirEval *ev, const char *name, const long *values,
+    const char argument_names[][ZIR_NAME_MAX], int argument_count,
+    long *result);
 
 static int compile_size_of_ready(const ZirModule *module, char *condition);
 
@@ -2535,73 +2535,6 @@ eval_integer_type(const char *type, long value)
 }
 
 static int
-eval_body_expression(EvalBody *body, const char *source, long *value)
-{
-    char input[ZIR_TEXT_MAX];
-    char expanded[ZIR_TEXT_MAX];
-    copy_text(input, sizeof(input), source);
-    trim_in_place(input);
-    size_t length = strlen(input);
-    if(length && input[length - 1] == ';') {
-        input[length - 1] = '\0';
-        trim_in_place(input);
-    }
-    lower_procedure_name_expression(input, sizeof(input), body->fn);
-    expand_compile_expr(expanded, sizeof(expanded), &body->names,
-                        input, body->fn->span.path);
-    if(strstr(expanded, "#ifx") != NULL ||
-       !compile_size_of_ready(body->module, expanded)) return 0;
-    if(strstr(expanded, "size_of") != NULL)
-        lower_size_of_value(expanded, sizeof(expanded), body->module,
-                            body->fn->span);
-    return eval_const_condition(expanded, value, body->module,
-                                &body->names, body->fn->span.path,
-                                body->call->depth + 1);
-}
-
-static int
-eval_local(EvalBody *body, const char *name)
-{
-    for(int i = 0; i < body->local_count; i++)
-        if(!strcmp(body->names.items[i].name, name)) return i;
-    return -1;
-}
-
-static int
-eval_add_local(EvalBody *body, const char *name, const char *type,
-               long value, int initialized)
-{
-    if(!is_identifier_text(name) ||
-       !eval_integer_type(type, value) ||
-       body->names.count >= body->capacity)
-        return 0;
-    memmove(body->names.items + 1, body->names.items,
-            (size_t)body->names.count * sizeof(*body->names.items));
-    ZirConst *local = &body->names.items[0];
-    memset(local, 0, sizeof(*local));
-    copy_text(local->name, sizeof(local->name), name);
-    copy_text(local->type, sizeof(local->type), type);
-    copy_text(local->path, sizeof(local->path), body->fn->span.path);
-    if(initialized)
-        snprintf(local->expr, sizeof(local->expr), "%ld", value);
-    body->local_count++;
-    body->names.count++;
-    return 1;
-}
-
-static void
-eval_leave_scope(EvalBody *body, int local_count)
-{
-    int removed = body->local_count - local_count;
-    if(removed <= 0) return;
-    memmove(body->names.items, body->names.items + removed,
-            (size_t)(body->names.count - removed) *
-                sizeof(*body->names.items));
-    body->names.count -= removed;
-    body->local_count = local_count;
-}
-
-static int
 eval_close(const ZirFunction *fn, int opening, int stop)
 {
     int depth = 1;
@@ -2614,324 +2547,6 @@ eval_close(const ZirFunction *fn, int opening, int stop)
             return i;
     }
     return -1;
-}
-
-static int
-eval_header_condition(EvalBody *body, const char *header,
-                      const char *word, long *value)
-{
-    char condition[ZIR_TEXT_MAX];
-    const char *source = skip_ws(header + strlen(word));
-    copy_text(condition, sizeof(condition), source);
-    trim_in_place(condition);
-    size_t length = strlen(condition);
-    if(length == 0 || condition[length - 1] != '{') return 0;
-    condition[--length] = '\0';
-    trim_in_place(condition);
-    length = strlen(condition);
-    if(length >= 4 && !strcmp(condition + length - 4, "then") &&
-       (length == 4 || isspace((unsigned char)condition[length - 5]))) {
-        condition[length - 4] = '\0';
-        trim_in_place(condition);
-    }
-    return condition[0] && eval_body_expression(body, condition, value);
-}
-
-/* Flow: 0 continues, 1 returns, 2 breaks, 3 continues a loop. */
-static int
-eval_body_statements(EvalBody *body, int start, int stop,
-                     int *flow, long *result)
-{
-    int saved_locals = body->local_count;
-    for(int i = start; i < stop && !*flow; i++) {
-        const ZirStmt *statement = &body->fn->stmts[i];
-        const char *source = skip_ws(statement->text);
-        if(--body->fuel < 0) goto failed;
-        if(statement->kind == ZIR_STMT_IF) {
-            int taken = 0;
-            for(;;) {
-                const ZirStmt *arm = &body->fn->stmts[i];
-                const char *header = skip_ws(arm->text);
-                int close = eval_close(body->fn, i, stop);
-                long condition = 1;
-                if(close < 0) goto failed;
-                if(starts_word(header, "else if")) {
-                    if(!taken && !*flow &&
-                       !eval_header_condition(body, header, "else if",
-                                              &condition)) goto failed;
-                } else if(starts_word(header, "if")) {
-                    if(!taken && !*flow &&
-                       !eval_header_condition(body, header, "if",
-                                              &condition)) goto failed;
-                } else if(!starts_word(header, "else")) goto failed;
-                if(!taken && condition) {
-                    if(!eval_body_statements(body, i + 1, close,
-                                             flow, result)) goto failed;
-                    taken = 1;
-                }
-                i = close;
-                if(i + 1 >= stop ||
-                   body->fn->stmts[i + 1].kind != ZIR_STMT_IF ||
-                   !starts_word(skip_ws(body->fn->stmts[i + 1].text),
-                                "else")) break;
-                i++;
-            }
-            continue;
-        }
-        if(statement->kind == ZIR_STMT_WHILE) {
-            int close = eval_close(body->fn, i, stop);
-            if(close < 0) goto failed;
-            for(;;) {
-                long condition = 0;
-                if(--body->fuel < 0 ||
-                   !eval_header_condition(body, source, "while",
-                                          &condition)) goto failed;
-                if(!condition) break;
-                if(!eval_body_statements(body, i + 1, close,
-                                         flow, result)) goto failed;
-                if(*flow == 2) { *flow = 0; break; }
-                if(*flow == 3) *flow = 0;
-                if(*flow == 1) break;
-            }
-            i = close;
-            continue;
-        }
-        if(statement->kind == ZIR_STMT_BLOCK_OPEN) {
-            int close = eval_close(body->fn, i, stop);
-            if(close < 0 ||
-               !eval_body_statements(body, i + 1, close,
-                                     flow, result)) goto failed;
-            i = close;
-            continue;
-        }
-        if(statement->kind == ZIR_STMT_RETURN) {
-            char expression[ZIR_TEXT_MAX];
-            copy_text(expression, sizeof(expression), skip_ws(source + 6));
-            trim_in_place(expression);
-            size_t length = strlen(expression);
-            if(length && expression[length - 1] == ';')
-                expression[length - 1] = '\0';
-            if(!expression[0] ||
-               !eval_body_expression(body, expression, result)) goto failed;
-            *flow = 1;
-            break;
-        }
-        if(statement->kind == ZIR_STMT_DECL) {
-            char text[ZIR_TEXT_MAX];
-            copy_text(text, sizeof(text), source);
-            char *colon = strchr(text, ':');
-            if(colon == NULL) goto failed;
-            *colon++ = '\0';
-            trim_in_place(text);
-            char *equals = strchr(colon, '=');
-            if(equals != NULL) *equals++ = '\0';
-            trim_in_place(colon);
-            size_t type_length = strlen(colon);
-            if(type_length && colon[type_length - 1] == ';') {
-                colon[type_length - 1] = '\0';
-                trim_in_place(colon);
-            }
-            const char *type = colon[0] ? colon : "s64";
-            long value = 0;
-            if(equals != NULL) {
-                trim_in_place(equals);
-                if(!eval_body_expression(body, equals, &value)) goto failed;
-            }
-            if(!eval_add_local(body, text, type, value,
-                               equals != NULL)) goto failed;
-            continue;
-        }
-        if(statement->kind == ZIR_STMT_ASSIGN) {
-            char text[ZIR_TEXT_MAX];
-            copy_text(text, sizeof(text), source);
-            char *equals = strchr(text, '=');
-            if(equals == NULL) goto failed;
-            char op = equals > text ? equals[-1] : '\0';
-            if(op && strchr("+-*/%", op) != NULL) equals[-1] = '\0';
-            else op = '\0';
-            *equals++ = '\0';
-            trim_in_place(text);
-            int local_index = eval_local(body, text);
-            if(local_index < 0) goto failed; /* never mutate globals */
-            long value = 0;
-            if(op) {
-                char combined[ZIR_TEXT_MAX];
-                int written = snprintf(combined, sizeof(combined),
-                                       "%s %c (%s)",
-                                       body->names.items[local_index].expr,
-                                       op, equals);
-                if(written < 0 || (size_t)written >= sizeof(combined) ||
-                   !eval_body_expression(body, combined, &value)) goto failed;
-            } else if(!eval_body_expression(body, equals, &value)) goto failed;
-            if(!eval_integer_type(body->names.items[local_index].type,
-                                  value)) goto failed;
-            snprintf(body->names.items[local_index].expr,
-                     sizeof(body->names.items[local_index].expr),
-                     "%ld", value);
-            continue;
-        }
-        if(statement->kind == ZIR_STMT_EXPR) {
-            long ignored = 0;
-            if(!eval_body_expression(body, source, &ignored)) goto failed;
-            continue;
-        }
-        if(statement->kind == ZIR_STMT_BREAK ||
-           statement->kind == ZIR_STMT_CONTINUE) {
-            char control[ZIR_TEXT_MAX];
-            copy_text(control, sizeof(control), source);
-            trim_in_place(control);
-            size_t length = strlen(control);
-            if(length && control[length - 1] == ';')
-                control[length - 1] = '\0';
-            if(strcmp(control, statement->kind == ZIR_STMT_BREAK ?
-                       "break" : "continue") != 0) goto failed;
-            *flow = statement->kind == ZIR_STMT_BREAK ? 2 : 3;
-            break;
-        }
-        goto failed;
-    }
-    eval_leave_scope(body, saved_locals);
-    return 1;
-failed:
-    eval_leave_scope(body, saved_locals);
-    return 0;
-}
-
-/* The parser only executes a bounded, pure integer/boolean subset. Every
- * statement and nested call must stay in this evaluator's whitelist. */
-static int
-eval_const_function(ZirEval *ev, const char *name, const long *values,
-                    const char argument_names[][ZIR_NAME_MAX],
-                    int argument_count, long *result)
-{
-    const ZirFunction *fn = NULL;
-    const ZirModule *owner = NULL;
-    char parameters[16][ZIR_TEXT_MAX];
-    long ordered[16];
-    unsigned used = 0;
-    EvalBody body = {0};
-    int expected;
-    int flow = 0, ok;
-
-    if(ev->module == NULL || ev->consts == NULL || ev->depth >= 16)
-        return 0;
-    if(ResolveFunctionAt(ev->module, name, ev->lookup_path,
-                         &owner, &fn) != 1 ||
-       fn == NULL || fn->is_extern || fn->stmt_count == 0 ||
-       fn->is_template)
-        return 0;
-    if(!eval_integer_type(fn->return_type, 0))
-        return 0;
-    expected = *skip_ws(fn->args) ?
-        split_top_level(fn->args, parameters[0], 16,
-                        sizeof(parameters[0])) : 0;
-    if(argument_count > expected || expected < 0)
-        return 0;
-    for(int argument = 0; argument < argument_count; argument++) {
-        int position = -1;
-        if(argument_names[argument][0]) {
-            size_t length = strlen(argument_names[argument]);
-            for(int i = 0; i < expected; i++) {
-                const char *start = skip_ws(parameters[i]);
-                const char *colon = strchr(start, ':');
-                if(colon == NULL) continue;
-                const char *end = colon;
-                while(end > start && isspace((unsigned char)end[-1])) end--;
-                if((size_t)(end - start) == length &&
-                   !strncmp(start, argument_names[argument], length)) {
-                    position = i;
-                    break;
-                }
-            }
-        } else {
-            for(int i = 0; i < expected; i++)
-                if(!(used & (1u << i))) { position = i; break; }
-        }
-        if(position < 0 || (used & (1u << position)))
-            return 0;
-        used |= 1u << position;
-        ordered[position] = values[argument];
-    }
-    if(used != ((1u << expected) - 1u)) {
-        char defaults[16][ZIR_TEXT_MAX];
-        int count = fn->default_args[0] ?
-            split_top_level(fn->default_args, defaults[0], 16,
-                            sizeof(defaults[0])) : 0;
-        if(count != expected) return 0;
-        for(int i = 0; i < expected; i++) {
-            if(used & (1u << i)) continue;
-            char *assignment = top_level_assignment(defaults[i]);
-            if(assignment == NULL ||
-               !eval_const_condition(skip_ws(assignment + 1), &ordered[i],
-                                     owner, ev->consts, fn->span.path,
-                                     ev->depth + 1))
-                return 0;
-            used |= 1u << i;
-        }
-    }
-    int inherited_count = 0;
-    if(owner == ev->module) {
-        for(int i = 0; i < ev->consts->count; i++)
-            if(ev->consts->items[i].type[0] == '\0')
-                inherited_count++;
-    } else {
-        inherited_count = owner->define_count;
-    }
-    body.capacity = expected + inherited_count + fn->stmt_count + 1;
-    body.names.items = calloc((size_t)body.capacity,
-                              sizeof(*body.names.items));
-    if(body.names.items == NULL)
-        die("out of memory evaluating #run procedure");
-    body.call = ev;
-    body.module = owner;
-    body.fn = fn;
-    body.fuel = 10000;
-    for(int i = 0; i < expected; i++) {
-        char *part = trim(parameters[i]);
-        char *colon = strchr(part, ':');
-        char *type;
-        if(colon == NULL) { free(body.names.items); return 0; }
-        *colon = '\0';
-        trim_in_place(part);
-        type = trim(colon + 1);
-        if(!is_identifier_text(part) ||
-           !eval_integer_type(type, ordered[i])) {
-            free(body.names.items);
-            return 0;
-        }
-        copy_text(body.names.items[i].name,
-                  sizeof(body.names.items[i].name), part);
-        copy_text(body.names.items[i].type,
-                  sizeof(body.names.items[i].type), type);
-        snprintf(body.names.items[i].expr, sizeof(body.names.items[i].expr),
-                 "%ld", ordered[i]);
-        copy_text(body.names.items[i].path,
-                  sizeof(body.names.items[i].path),
-                  fn->span.path);
-    }
-    if(owner == ev->module) {
-        int target = expected;
-        for(int i = 0; i < ev->consts->count; i++)
-            if(ev->consts->items[i].type[0] == '\0')
-                body.names.items[target++] = ev->consts->items[i];
-    } else for(int i = 0; i < inherited_count; i++) {
-        const ZirDefine *definition = &owner->defines[i];
-        ZirConst *constant = &body.names.items[expected + i];
-        copy_text(constant->name, sizeof(constant->name), definition->name);
-        copy_text(constant->expr, sizeof(constant->expr),
-                  definition->value);
-        copy_text(constant->path, sizeof(constant->path),
-                  definition->span.path);
-        constant->is_file_private = definition->is_file_private;
-    }
-    body.local_count = expected;
-    body.names.count = expected + inherited_count;
-    ok = eval_body_statements(&body, 0, fn->stmt_count, &flow, result);
-    free(body.names.items);
-    if(!ok || flow != 1 ||
-       !eval_integer_type(fn->return_type, *result))
-        return 0;
-    return 1;
 }
 
 static const ZirDefine *
@@ -3012,8 +2627,9 @@ eval_imported_integer_define(ZirEval *ev, const char *name, size_t length,
     if(strstr(expanded, "size_of") != NULL)
         lower_size_of_value(expanded, sizeof(expanded), owner,
                             definition->span);
-    known = eval_const_condition(expanded, value, owner, &names,
-                                 definition->span.path, ev->depth + 1);
+    known = eval_const_condition_with_fuel(
+        expanded, value, owner, &names, definition->span.path,
+        ev->depth + 1, ev->fuel);
     free(names.items);
     return known;
 }
@@ -3024,6 +2640,10 @@ eval_primary(ZirEval *ev)
     char *end;
     long value;
 
+    if(ev->fuel != NULL && --*ev->fuel < 0) {
+        ev->known = 0;
+        return 0;
+    }
     eval_skip(ev);
     if(starts_word(ev->p, "#compile_time")) {
         ev->p += strlen("#compile_time");
@@ -3173,8 +2793,9 @@ eval_primary(ZirEval *ev)
                     return 0;
                 }
                 ev->p++;
-                if(!eval_const_function(ev, name, arguments,
-                                        argument_names, count, &value))
+                if(!evaluate_typed_integer_function(ev, name, arguments,
+                                                     argument_names, count,
+                                                     &value))
                     ev->known = 0;
                 return ev->known ? value : 0;
             }
@@ -3485,9 +3106,9 @@ contains_compile_time_directive(const char *source, const char *path)
 }
 
 static int
-eval_const_condition(const char *src, long *value,
+eval_const_condition_with_fuel(const char *src, long *value,
                      const ZirModule *module, const ZirConsts *consts,
-                     const char *lookup_path, int depth)
+                     const char *lookup_path, int depth, int *fuel)
 {
     ZirEval ev;
 
@@ -3499,6 +3120,7 @@ eval_const_condition(const char *src, long *value,
     ev.consts = consts;
     ev.lookup_path = lookup_path;
     ev.depth = depth;
+    ev.fuel = fuel;
     ev.value = eval_or(&ev);
     eval_skip(&ev);
     if(*ev.p != '\0')
@@ -3506,6 +3128,16 @@ eval_const_condition(const char *src, long *value,
     if(value != NULL)
         *value = ev.value;
     return ev.known;
+}
+
+static int
+eval_const_condition(const char *src, long *value,
+                     const ZirModule *module, const ZirConsts *consts,
+                     const char *lookup_path, int depth)
+{
+    int fuel = 10000;
+    return eval_const_condition_with_fuel(src, value, module, consts,
+                                          lookup_path, depth, &fuel);
 }
 
 typedef enum {
@@ -3890,8 +3522,8 @@ evaluate_typed_expression(const ZirModule *module, const ZirConsts *names,
     if(!input[0]) return 0;
     if(names == NULL) names = &empty;
     expand_compile_expr(expanded, sizeof(expanded), names, input, path);
-    if(eval_const_condition(expanded, &integer, module, names,
-                            path, depth)) {
+    if(eval_const_condition_with_fuel(expanded, &integer, module, names,
+                                     path, depth, fuel)) {
         result->kind = COMPILE_INTEGER;
         result->integer = integer;
         return compile_value_literal(result);
@@ -4248,6 +3880,32 @@ evaluate_typed_function(const ZirModule *module, const char *name,
 done:
     free(body.names.items);
     return ok;
+}
+
+static int
+evaluate_typed_integer_function(ZirEval *ev, const char *name,
+                                const long *values,
+                                const char argument_names[][ZIR_NAME_MAX],
+                                int argument_count, long *result)
+{
+    CompileValue arguments[16] = {{0}}, value = {0};
+    char names[16][ZIR_NAME_MAX] = {{0}};
+    int local_fuel = 10000;
+    int *fuel = ev->fuel != NULL ? ev->fuel : &local_fuel;
+    if(ev->module == NULL || argument_count < 0 || argument_count > 16 ||
+       ev->depth >= 16) return 0;
+    for(int i = 0; i < argument_count; i++) {
+        arguments[i].kind = COMPILE_INTEGER;
+        arguments[i].integer = values[i];
+        if(!compile_value_literal(&arguments[i])) return 0;
+        copy_text(names[i], sizeof(names[i]), argument_names[i]);
+    }
+    if(!evaluate_typed_function(ev->module, name, ev->lookup_path,
+                                arguments, names, argument_count,
+                                ev->depth + 1, fuel, &value) ||
+       value.kind != COMPILE_INTEGER) return 0;
+    *result = value.integer;
+    return 1;
 }
 
 static int

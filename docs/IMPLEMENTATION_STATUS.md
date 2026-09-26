@@ -313,6 +313,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   exclusion are checked from source and saved IR on C, C++, Go, and `.zib` by
   `tests/imported_typed_constants.sh`. Effects, unbounded execution, aggregate
   results, and general metaprogramming are unsupported.
+  Integer conditions and typed expressions use the same bounded procedure
+  evaluator, including a shared instruction budget across nested calls; the
+  separate integer-only procedure interpreter has been removed.
   One-line function bodies are parsed as ordinary statements instead of
   being silently skipped.
   Jai `#if ... else #if ... else` selects file-scope declarations and function
