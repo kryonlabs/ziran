@@ -49,6 +49,20 @@ MethodToken :: (value: string) -> bool {
     return true
 }
 
+HeaderName :: (value: string) -> bool {
+    if value.count == 0 || value.count >= 256 { return false }
+    index: s64 = 0
+    while index < cast(s64)value.count {
+        byte := value[index]
+        if !((byte >= cast(u8)65 && byte <= cast(u8)90) ||
+            (byte >= cast(u8)97 && byte <= cast(u8)122) ||
+            (byte >= cast(u8)48 && byte <= cast(u8)57) ||
+            byte == cast(u8)45) { return false }
+        index += 1
+    }
+    return true
+}
+
 CurlResult :: struct {
     status: s32
     length: s64
@@ -152,6 +166,33 @@ AddCurlHeader :: (headers: **void, prefix: string, value: string,
     return true
 }
 
+AddNamedHeader :: (headers: **void, name: string, value: string,
+    buffer: []u8) -> bool {
+    if !HeaderName(name) || name.count + 2 >= buffer.count ||
+    value.count >= buffer.count - name.count - 2 { return false }
+    index: s64 = 0
+    while index < cast(s64)name.count {
+        buffer[index] = name[index]
+        index += 1
+    }
+    buffer[index] = cast(u8)58
+    buffer[index + 1] = cast(u8)32
+    offset: s64 = 0
+    while offset < cast(s64)value.count {
+        byte := value[offset]
+        if byte == cast(u8)0 || byte == cast(u8)10 || byte == cast(u8)13 {
+            return false
+        }
+        buffer[index + 2 + offset] = byte
+        offset += 1
+    }
+    buffer[index + 2 + offset] = cast(u8)0
+    next := curl_slist_append(headers.*, *buffer[0])
+    if next == null { return false }
+    headers.* = next
+    return true
+}
+
 // The caller owns output. It remains NUL terminated, including on failure.
 // HTTP errors retain their status and body for protocol-level decisions.
 #program_export
@@ -212,6 +253,14 @@ SendCurl :: (request: HttpRequest, output: []u8) -> CurlResult {
     if configured && request.content_type.count > 0 {
         configured = AddCurlHeader(*headers, "Content-Type: ",
             request.content_type, header[:])
+    }
+    if configured && request.headers.count > 32 { configured = false }
+    index: s64 = 0
+    while configured && index < cast(s64)request.headers.count {
+        item := request.headers[index]
+        configured = AddNamedHeader(*headers, item.name, item.value,
+            header[:])
+        index += 1
     }
     if configured && headers != null {
         configured = curl_easy_setopt(handle, CurlHeaders, headers) == 0

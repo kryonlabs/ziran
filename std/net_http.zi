@@ -3,6 +3,11 @@ host_api :: #system_library "host_api";
 // Authorization header when token is nonempty. It must not log that token.
 // The request and response records have the same meaning in native targets
 // and portable bundles.
+HttpHeader :: struct {
+    name: string
+    value: string
+}
+
 HttpRequest :: struct {
     method: string
     url: string
@@ -10,6 +15,7 @@ HttpRequest :: struct {
     accept: string
     content_type: string
     body: string
+    headers: []HttpHeader
 }
 
 HttpResponse :: struct {

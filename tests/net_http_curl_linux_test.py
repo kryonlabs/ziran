@@ -41,6 +41,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.headers.get("Authorization") == "Bearer secret" and
                 self.headers.get("Accept") == "application/json" and
                 self.headers.get("Content-Type") == "application/json" and
+                self.headers.get("X-Daochi-User") == "account" and
                 body == b'{"value":42}'):
             self.respond(201, b"accepted")
         else:

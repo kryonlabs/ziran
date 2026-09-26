@@ -32,6 +32,11 @@ main(int argc, char **argv)
     request.accept = StringLiteral("application/json");
     request.content_type = StringLiteral("application/json");
     request.body = StringLiteral("{\"value\":42}");
+    HttpHeader extra = {
+        .name = StringLiteral("X-Daochi-User"),
+        .value = StringLiteral("account"),
+    };
+    request.headers = (Slice){.data = &extra, .length = 1};
     result = SendCurl(request, buffer);
     assert(result.code == 0 && result.status == 201);
     assert(strcmp(output, "accepted") == 0);
@@ -42,6 +47,7 @@ main(int argc, char **argv)
     request.accept = StringLiteral("");
     request.content_type = StringLiteral("");
     request.body = StringLiteral("");
+    request.headers = (Slice){0};
     result = SendCurl(request, buffer);
     assert(result.code == 0 && result.status == 401);
     assert(strcmp(output, "denied") == 0);
