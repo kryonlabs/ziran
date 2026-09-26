@@ -230,8 +230,10 @@ size, alignment, field overlap, and copy tests.
 The portable verifier and VM support a useful scalar/record/array subset, and
 carry raw pointers as opaque host handles that can be stored, compared, and
 passed across host capabilities. They still reject slices inside globals or
-records, reachable unions, and several host shapes. Explicit global
-initializers are not executed portably. Host calls support scalar, string,
+records, reachable unions, and several host shapes. Literal scalar, string,
+record, and fixed-array global initializers run portably; procedure calls in
+initializers and nested record lowering across native targets remain open.
+Host calls support scalar, string,
 plain-record, pointer, and selected synchronous slice arguments; array, slot,
 slice-return, and record-slice shapes remain open. Implement each boundary as
 a versioned checked contract in `cmd/zir/zir_bundle.c`, `cmd/zir/zir_vm.c`, and

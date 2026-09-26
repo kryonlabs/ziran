@@ -433,6 +433,23 @@ literal_string(Vm *vm, const ZirExpr *expression)
 }
 
 static Value
+global_literal_string(Vm *vm, const char *source)
+{
+    size_t capacity = strlen(source);
+    StringLiteral *item = malloc(sizeof(*item) + capacity + 1);
+    if(item == NULL || !DecodeStringLiteral(source, item->data,
+                                              capacity + 1, &item->length)) {
+        free(item);
+        vm->failed = 1;
+        return string_value((const unsigned char *)"", 0);
+    }
+    item->expression = NULL;
+    item->next = vm->strings;
+    vm->strings = item;
+    return string_value(item->data, item->length);
+}
+
+static Value
 enum_value(const ZirType *type, int64_t integer)
 {
     Value value = {.kind = VALUE_ENUM, .integer = integer,
@@ -3706,14 +3723,30 @@ free_strings(Vm *vm)
 /* Fold one parsed initializer expression into a global's storage slot.
  * Types come from the declared global, never the probe expression (parsed
  * standalone, so it carries no inferred types). Scalars, string literals,
- * and nested record compounds are supported; anything else reports failure
- * so the caller can reject the module. */
+ * records, and arrays recurse through the declared storage shape. */
 static int
 fold_global_element(Vm *vm, const ZirModule *module, const ZirFunction *probe,
                     int index, Value *target, const char *type,
                     ZirSourceSpan span)
 {
     const ZirExpr *expr = &probe->exprs[index];
+    if(expr->kind == ZIR_EXPR_COMPOUND && target->kind == VALUE_ARRAY) {
+        char element[ZIR_NAME_MAX];
+        int position = 0;
+        if(!ArrayElementType(type, element, sizeof(element), NULL))
+            return 0;
+        for(int child = expr->first_child; child >= 0;
+            child = probe->exprs[child].next_sibling) {
+            const ZirExpr *entry = &probe->exprs[child];
+            if(entry->right < 0 || position >= target->array->length ||
+               !fold_global_element(vm, module, probe, entry->right,
+                                    &target->array->elements[position],
+                                    element, span))
+                return 0;
+            position++;
+        }
+        return 1;
+    }
     if(expr->kind == ZIR_EXPR_COMPOUND && target->kind == VALUE_RECORD) {
         const ZirType *record = FindType(module, type, NULL);
         int matched = record != NULL;
@@ -3726,12 +3759,13 @@ fold_global_element(Vm *vm, const ZirModule *module, const ZirFunction *probe,
             size_t offset = 0;
             ZirTypeField decl;
             if(field == NULL || entry->right < 0)
-                continue;
+                return 0;
             while(TypeNextField(record, &offset, &decl) == 1)
                 if(!strcmp(decl.name, entry->name)) {
                     copy_text(field_type, sizeof(field_type), decl.type);
                     break;
                 }
+            if(field_type[0] == '\0') return 0;
             matched = fold_global_element(vm, module, probe,
                                           entry->right, field, field_type,
                                           span);
@@ -3739,27 +3773,8 @@ fold_global_element(Vm *vm, const ZirModule *module, const ZirFunction *probe,
         return matched;
     }
     if(target->kind == VALUE_STRING) {
-        char literal[ZIR_TEXT_MAX];
-        unsigned char bytes[ZIR_TEXT_MAX];
-        size_t used = 0;
-        int quoted;
-        copy_text(literal, sizeof(literal), expr->text);
-        quoted = literal[0] == '"';
-        for(const char *p = quoted ? literal + 1 : literal;
-            *p && used < sizeof(bytes); p++) {
-            if(quoted) {
-                if(*p == '\\' && p[1]) p++;
-                else if(*p == '"') break;
-            }
-            bytes[used++] = (unsigned char)*p;
-        }
-        unsigned char *heap = used ? malloc(used) : NULL;
-        if(used > 0 && heap == NULL)
-            return 0;
-        for(size_t i = 0; i < used; i++)
-            heap[i] = bytes[i];
-        *target = string_value(heap, used);
-        return 1;
+        *target = global_literal_string(vm, expr->text);
+        return !vm->failed;
     }
     {
         int64_t folded = 0;
@@ -3770,7 +3785,8 @@ fold_global_element(Vm *vm, const ZirModule *module, const ZirFunction *probe,
         }
         char *end = NULL;
         double number = strtod(expr->text, &end);
-        if(end != expr->text && target->kind == VALUE_REAL) {
+        if(end != expr->text && *skip_ws(end) == '\0' &&
+           isfinite(number) && target->kind == VALUE_REAL) {
             *target = real_value(number);
             return 1;
         }
@@ -3803,122 +3819,27 @@ initialize_globals(Vm *vm, const ZirProgram *program)
                                         slot->declaration->type, 0);
             if(!vm->failed && slot->declaration->init[0]) {
                 const char *init = skip_ws(slot->declaration->init);
-                char element[ZIR_NAME_MAX];
-                if(slot->value.kind == VALUE_ARRAY &&
-                   ArrayElementType(slot->declaration->type, element,
-                                    sizeof(element), NULL)) {
+                if(slot->value.kind == VALUE_ARRAY ||
+                   slot->value.kind == VALUE_RECORD) {
                     ZirFunction probe = {0};
-                    int root = ParseExprTyped(&probe, module,
-                                             slot->declaration->init,
-                                             slot->declaration->span,
-                                             slot->declaration->type);
+                    int root = slot->value.kind == VALUE_ARRAY ?
+                        ParseExprTyped(&probe, module,
+                                       slot->declaration->init,
+                                       slot->declaration->span,
+                                       slot->declaration->type) :
+                        ParseExprNoDefaults(&probe, module,
+                                            slot->declaration->init,
+                                            slot->declaration->span);
                     int matched = root >= 0 &&
-                        probe.exprs[root].kind == ZIR_EXPR_COMPOUND;
-                    int index = 0;
-                    for(int child = matched ?
-                            probe.exprs[root].first_child : -1;
-                        child >= 0 && matched;
-                        child = probe.exprs[child].next_sibling) {
-                        const ZirExpr *entry = &probe.exprs[child];
-                        if(entry->right < 0)
-                            continue;
-                        if(index >= slot->value.array->length) {
-                            matched = 0;
-                            break;
-                        }
-                        matched = fold_global_element(vm, module, &probe,
-                            entry->right,
-                            &slot->value.array->elements[index], element,
-                            slot->declaration->span);
-                        index++;
-                    }
-                    free(probe.exprs);
-                    if(!matched)
-                        vm->failed = 1;
-                } else if(strchr(slot->declaration->type, '[') == NULL &&
-                   FindType(module, slot->declaration->type, NULL) != NULL) {
-                    ZirFunction probe = {0};
-                    int root = ParseExprNoDefaults(&probe, module,
-                                                   slot->declaration->init,
-                                                   slot->declaration->span);
-                    int matched = 0;
-                    if(root >= 0 && probe.exprs[root].kind ==
-                                    ZIR_EXPR_COMPOUND) {
-                        const ZirType *record = FindType(
-                            module, slot->declaration->type, NULL);
-                        int fields = 0;
-                        size_t offset = 0;
-                        ZirTypeField field;
-                        if(record != NULL)
-                            while(TypeNextField(record, &offset, &field) == 1)
-                                fields++;
-                        matched = fields > 0 &&
-                            probe.exprs[root].first_child >= 0;
-                        for(int child = probe.exprs[root].first_child;
-                            child >= 0 && matched;
-                            child = probe.exprs[child].next_sibling) {
-                            const ZirExpr *entry = &probe.exprs[child];
-                            Value *target = entry->name[0] ?
-                                record_field(slot->value.record,
-                                             entry->name) : NULL;
-                            if(target == NULL || entry->right < 0) {
-                                continue;
-                            }
-                            {
-                                int64_t folded = 0;
-                                if(target->kind == VALUE_STRING) {
-                                    const char *text =
-                                        probe.exprs[entry->right].text;
-                                    size_t length = strlen(text);
-                                    unsigned char *bytes = length ?
-                                        malloc(length) : NULL;
-                                    if(length > 0 && bytes == NULL) {
-                                        matched = 0;
-                                        break;
-                                    }
-                                    for(size_t i = 0; i < length; i++)
-                                        bytes[i] = (unsigned char)text[i];
-                                    *target = string_value(bytes, length);
-                                } else if(EvaluateCompileExpression(
-                                    module, probe.exprs[entry->right].text,
-                                    slot->declaration->span, 0, &folded)) {
-                                    int64_t previous = 0;
-                                    if(target->kind == VALUE_REAL)
-                                        previous = 1;
-                                    *target = previous ?
-                                        real_value((double)folded) :
-                                        int_value(folded);
-                                } else {
-                                    char *end = NULL;
-                                    double number = strtod(
-                                        probe.exprs[entry->right].text, &end);
-                                    if(end != probe.exprs[entry->right].text)
-                                        *target = real_value(number);
-                                    else
-                                        matched = 0;
-                                }
-                            }
-                        }
-                    }
+                        fold_global_element(vm, module, &probe, root,
+                                            &slot->value,
+                                            slot->declaration->type,
+                                            slot->declaration->span);
                     free(probe.exprs);
                     if(!matched)
                         vm->failed = 1;
                 } else if(!strcmp(slot->declaration->type, "string")) {
-                    char literal[ZIR_TEXT_MAX];
-                    char decoded[ZIR_TEXT_MAX];
-                    copy_text(literal, sizeof(literal), init);
-                    if(literal[0] == '"') {
-                        size_t used = 0;
-                        for(const char *p = literal + 1; *p && *p != '"';
-                            p++) {
-                            if(*p == '\\' && p[1]) p++;
-                            if(used + 1 < sizeof(decoded))
-                                decoded[used++] = *p;
-                        }
-                        decoded[used] = '\0';
-                        slot->value = string_value(
-                            (const unsigned char *)decoded, used);
-                    }
+                    slot->value = global_literal_string(vm, init);
                 } else {
                     int64_t folded = 0;
                     if(EvaluateCompileExpression(module, init,

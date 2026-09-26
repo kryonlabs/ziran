@@ -23,14 +23,14 @@ limit: s64 = 7;
 scale: s32 = 3;
 factor: s32 = base + 2;
 ratio: float32 = 2.5;
-name: string = "ziran";
+name: string = "zi\x72an";
 flag: bool = true;
 origin: Cell = Cell.{.value = 9};
 Track :: struct {
     title: string
     weight: s32
 }
-tracks: [3]Track = .[Track.{.title = "first", .weight = 3}, Track.{.title = "second", .weight = 5}, Track.{.title = "third", .weight = 7}];
+tracks: [3]Track = .[Track.{.title = "fir\x73t", .weight = 3}, Track.{.title = "second", .weight = 5}, Track.{.title = "third", .weight = 7}];
 marks: [4]s32 = .[2, 4, 6, 8];
 
 #program_export
@@ -41,10 +41,12 @@ InitChecks :: () -> s32 {
     if ratio != 2.5 { return 0 }
     if flag != true { return 0 }
     if name.count != 5 { return 0 }
+    if name != "ziran" { return 0 }
     if origin.value != 9 { return 0 }
     if marks[0] != 2 || marks[3] != 8 { return 0 }
     if tracks[0].weight != 3 || tracks[2].weight != 7 { return 0 }
     if tracks[1].title.count != 6 { return 0 }
+    if tracks[0].title != "first" { return 0 }
     return 1
 }
 
@@ -106,6 +108,35 @@ ZI
 cmp "$work/source.zib" "$work/saved.zib"
 test "$("$ziran" run "$work/source.zib")" = 42
 test "$("$ziran" run "$work/saved.zib")" = 42
+cat > "$work/global_instance.c" <<'C'
+#include "ziran_host.h"
+#include <assert.h>
+
+int main(int argc, char **argv)
+{
+    assert(argc == 2);
+    Bundle *bundle = BundleOpen(argv[1]);
+    assert(bundle != NULL);
+    for(int i = 0; i < 2; i++) {
+        BundleInstance *instance = BundleInstantiate(bundle, NULL, 0);
+        assert(instance != NULL);
+        for(int run = 0; run < 2; run++) {
+            long long value = 0;
+            int has_value = 0;
+            assert(BundleInstanceRun(instance, &value, &has_value));
+            assert(has_value && value == 42);
+        }
+        BundleInstanceClose(instance);
+    }
+    BundleClose(bundle);
+    return 0;
+}
+C
+"${CC:-cc}" ${VM_CFLAGS:-} -std=c11 -I"$repo/include" \
+    "$work/global_instance.c" "$ziran_lib" ${VM_LDFLAGS:-} \
+    -o "$work/global_instance"
+"$work/global_instance" "$work/source.zib"
+"$work/global_instance" "$work/saved.zib"
 
 for input in source saved; do
     if test "$input" = source; then

@@ -444,14 +444,16 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   mutable initialized globals across calls and byte-identical source and
   saved-IR bundles; C, C++, and Go emit the same initializers natively
   (designated initializers in C, positional in C++, struct literals in Go).
-  Initializers that call procedures or contain nested record literals stay
-  rejected. The VM reads and writes them across
+  String globals and string fields in record and array initializers decode
+  escapes and retain their bytes for the instance lifetime. Tests compare
+  contents across repeated runs and fresh instances. Initializers that call
+  procedures remain rejected; nested record global literals still need native
+  lowering. The VM reads and writes globals across
   imported function calls, and reclaims replaced values without losing
   globals reached by a caller. Source and saved `.zir`, `.zib`, C, C++, and Go
   tests cover value isolation and repeated mutation. Each `BundleRun` starts
   fresh; `BundleInstantiate` preserves globals across repeated
-  `BundleInstanceRun` calls on one instance. Explicit initializers remain
-  unsupported.
+  `BundleInstanceRun` calls on one instance.
 - Portable execution borrows read-only record and array parameters and
   reclaims temporary values after ordinary function calls while retaining
   copied results. A repeated nested call over a 4,096-record array checks
