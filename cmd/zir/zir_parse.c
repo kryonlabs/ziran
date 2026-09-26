@@ -1970,6 +1970,30 @@ paren_params_are_typed(const char *body)
     return strchr(inner, ':') != NULL;
 }
 
+/* Does a brace appear outside string/char literals? String values may
+ * carry JSON or SQL text with braces. */
+static int
+brace_outside_literals(const char *text)
+{
+    int in_string = 0, in_char = 0, escaped = 0;
+    for(const char *p = text; *p; p++) {
+        if(escaped) { escaped = 0; continue; }
+        if(*p == '\\') { escaped = 1; continue; }
+        if(in_string) {
+            if(*p == '"') in_string = 0;
+            continue;
+        }
+        if(in_char) {
+            if(*p == '\'') in_char = 0;
+            continue;
+        }
+        if(*p == '"') { in_string = 1; continue; }
+        if(*p == '\'') { in_char = 1; continue; }
+        if(*p == '{') return 1;
+    }
+    return 0;
+}
+
 static int
 looks_like_function_header(const char *line)
 {
@@ -6248,7 +6272,7 @@ parse_source(const char *path, const char *root, const char *source,
             die_at(Span(rel, line_no, 1),
                    "use Jai-style type application: Name :: Generic(Type)");
         } else if(mode == TOP && strstr(t, "::") != NULL &&
-                  strchr(t, '{') == NULL &&
+                  !brace_outside_literals(t) &&
                   !starts_word(skip_ws(strstr(t, "::") + 2), "struct") &&
                   !starts_word(skip_ws(strstr(t, "::") + 2), "union") &&
                   !starts_word(skip_ws(strstr(t, "::") + 2), "enum") &&
