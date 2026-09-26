@@ -158,6 +158,8 @@ bundle and through native C, C++, and Go mocks.
 Native Linux C builds can import `std/file_linux.zi` for positional byte I/O,
 `std/binary_linux.zi` for little-endian numbers, `std/date_time_linux.zi` for
 Unix time, and `std/byte_text_linux.zi` for borrowed byte-to-text views.
+The file module can create a private file exclusively, sync its contents, and
+publish it through a hard link that fails if the destination already exists.
 `std/byte_text_linux.zi` also borrows caller-owned C strings and byte buffers;
 the caller must keep their memory alive. `std/mapped_file_linux.zi` maps a file
 privately for bounded byte parsing without copying it. Its borrowed slice is
