@@ -590,6 +590,59 @@ signature_error(Checker *c, ZirSourceSpan span,
 /* Keep children in source order. Their checked indices select the callee
  * parameter while native emission and the VM evaluate them in that order. */
 static int
+bind_varargs_call(Checker *c, ZirExpr *call,
+                  char parts[][ZIR_TEXT_MAX], int fixed,
+                  const char *display_name)
+{
+    unsigned char used[64] = {0};
+    int next_extra = fixed;
+    for(int child = call->first_child; child >= 0;
+        child = c->fn->exprs[child].next_sibling) {
+        ZirExpr *argument = &c->fn->exprs[child];
+        int index = -1;
+        if(argument->argument_name[0]) {
+            size_t wanted = strlen(argument->argument_name);
+            for(int i = 0; i < fixed; i++) {
+                const char *start = skip_ws(parts[i]);
+                const char *colon = strchr(start, ':');
+                if(colon == NULL) continue;
+                const char *end = colon;
+                while(end > start && isspace((unsigned char)end[-1])) end--;
+                if((size_t)(end - start) == wanted &&
+                   !strncmp(start, argument->argument_name, wanted)) {
+                    index = i;
+                    break;
+                }
+            }
+            if(index < 0) {
+                signature_error(c, argument->span,
+                                "unknown named argument", argument->argument_name);
+                return 0;
+            }
+        } else {
+            for(int i = 0; i < fixed; i++)
+                if(!used[i]) { index = i; break; }
+            if(index < 0) {
+                if(next_extra >= 64) {
+                    signature_error(c, argument->span,
+                                    "argument count mismatch", display_name);
+                    return 0;
+                }
+                index = next_extra++;
+            }
+        }
+        if(used[index]) {
+            signature_error(c, argument->span,
+                            "duplicate call argument", argument->argument_name);
+            return 0;
+        }
+        used[index] = 1;
+        argument->argument_index = index;
+    }
+    return 1;
+}
+
+static int
 bind_call_arguments(Checker *c, ZirExpr *call,
                     char parts[][ZIR_TEXT_MAX], int expected,
                     const char *display_name, const char *default_args)
@@ -2834,6 +2887,7 @@ expression_type(Checker *c, int index)
                                   callee ? callee->return_type : "";
         char (*parts)[ZIR_TEXT_MAX] = calloc(64, sizeof(*parts));
         int actual = 0, expected;
+        int varargs = 0;
         if(!parts) { c->errors++; c->failed=1; break; }
         if(*binding && slot == NULL)
             error(c, e->span, "binding is not a callable function", e->name);
@@ -2844,7 +2898,9 @@ expression_type(Checker *c, int index)
                !strcmp(imp->name, e->name)) {
                 if(imp->extern_kind == ZIR_EXTERN_HOST)
                     c->fn->uses_host = 1;
-                args = imp->args; return_type = imp->return_type; break;
+                args = imp->args; return_type = imp->return_type;
+                varargs = imp->is_varargs;
+                break;
             }
         }
         /* Calling a procedure-typed record field (value.is_active(app)) or a
@@ -2893,14 +2949,23 @@ expression_type(Checker *c, int index)
             }
         }
         expected = args && *skip_ws(args) ? split_top_level(args, parts[0], 64, sizeof(parts[0])) : 0;
-        if(args && !bind_call_arguments(c, e, parts, expected, display_name,
+        int fixed = varargs && expected > 0 ? expected - 1 : expected;
+        if(varargs && expected > 0) {
+            /* bind_call_arguments assigns slots from the fixed parameters;
+             * variadic extras take the next sequential slots. */
+            if(!bind_varargs_call(c, e, parts, fixed, display_name)) {
+                free(parts);
+                break;
+            }
+        } else if(args && !bind_call_arguments(c, e, parts, expected, display_name,
                                        callee ? callee->default_args : NULL)) {
             free(parts);
             break;
         }
         for(int child = e->first_child; child >= 0; child = c->fn->exprs[child].next_sibling) {
             int parameter = c->fn->exprs[child].argument_index;
-            const char *expected_type = parameter >= 0 && parameter < expected ?
+            const char *expected_type = parameter >= 0 && parameter < expected &&
+                parameter < fixed ?
                 strchr(parts[parameter], ':') : NULL;
             char saved_expected[ZIR_NAME_MAX];
             copy_text(saved_expected, sizeof(saved_expected), c->expected_type);
@@ -2922,7 +2987,7 @@ expression_type(Checker *c, int index)
                       "global Vec storage cannot move; use a local",
                       c->fn->exprs[child].name);
             copy_text(c->expected_type, sizeof(c->expected_type), saved_expected);
-            if(args && parameter >= 0 && parameter < expected) {
+            if(args && parameter >= 0 && parameter < fixed) {
                 char *colon = strchr(parts[parameter], ':');
                 if(colon && !compatible_checked(c, skip_ws(colon + 1), arg_type)) {
                     const char *converted = try_conversion(c, child,
@@ -2948,7 +3013,7 @@ expression_type(Checker *c, int index)
                 copy_text(e->type, sizeof(e->type), specialized_return);
                 type = e->type;
             }
-            if(actual != expected && !c->inference_only)
+            if(actual < fixed && !c->inference_only)
                 signature_error(c, e->span, "argument count mismatch", display_name);
         } else
             error(c, e->span, "unresolved function", e->name);

@@ -90,6 +90,7 @@ typedef struct ZirImport {
     char args[ZIR_TEXT_MAX];       /* parsed extern parameters */
     char return_type[ZIR_NAME_MAX];
     int must_use;
+    int is_varargs; /* trailing `..any` extern parameter accepts extra call arguments */
     int required;
     int is_using; /* `using Alias :: #import` re-exports public names */
     ZirSourceSpan span;

@@ -1912,6 +1912,21 @@ parse_foreign_line(ZirModule *module, const char *path, int line_no,
         imp->extern_kind = extern_kind;
         snprintf(imp->extern_symbol, sizeof(imp->extern_symbol), "%s",
                  symbol);
+        /* A trailing `..any` parameter marks a variadic C ABI: calls may
+         * pass any number of extra arguments after the fixed ones. */
+        {
+            char parameters[8][ZIR_TEXT_MAX];
+            int parameter_count = *skip_ws(imp->args) ?
+                split_top_level(imp->args, parameters[0], 8,
+                                sizeof(parameters[0])) : 0;
+            if(parameter_count > 0) {
+                const char *last = skip_ws(parameters[parameter_count - 1]);
+                const char *colon = strchr(last, ':');
+                const char *tail = colon != NULL ? skip_ws(colon + 1) : last;
+                if(!strcmp(tail, "..any") || !strcmp(last, "..any"))
+                    imp->is_varargs = 1;
+            }
+        }
     }
     return 1;
 }
