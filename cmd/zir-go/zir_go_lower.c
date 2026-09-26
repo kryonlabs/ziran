@@ -522,7 +522,7 @@ parse_extern_import(const ZirImport *imp)
 /* Parse enum body members. The parser may deliver them newline-separated or
  * comma-joined on one line ('A = 0, B, C'), so split on both. */
 static void
-parse_enum(const ZirType *t)
+parse_enum(const ZirModule *owner, const ZirType *t)
 {
     ZirGoEnum *e;
     const char *p = t->body;
@@ -531,7 +531,10 @@ parse_enum(const ZirType *t)
         return;
     e = &g_enums[g_enum_count++];
     memset(e, 0, sizeof(*e));
-    camel_ident(t->name, e->go_type, sizeof(e->go_type));
+    if(t->native_name_collision)
+        NativeTypeName(owner, t, e->go_type, sizeof(e->go_type));
+    else
+        camel_ident(t->name, e->go_type, sizeof(e->go_type));
     camel_ident(t->name, e->prefix, sizeof(e->prefix));
     while(*p != '\0') {
         char line[ZIR_GO_TEXT_MAX];
@@ -580,13 +583,15 @@ parse_enum(const ZirType *t)
             continue;
         ZirGoEnumMember *m = &e->members[e->count++];
         memset(m, 0, sizeof(*m));
-        if(e->prefix[0] != '\0' &&
-           strncmp(name, e->prefix, strlen(e->prefix)) == 0)
-            camel_ident(name, m->go, sizeof(m->go));
-        else if(e->prefix[0] != '\0')
-            snprintf(m->go, sizeof(m->go), "%s%s", e->prefix, name);
-        else
-            camel_ident(name, m->go, sizeof(m->go));
+        if(!NativeEnumMemberName(owner, t, name, m->go, sizeof(m->go))) {
+            if(e->prefix[0] != '\0' &&
+               strncmp(name, e->prefix, strlen(e->prefix)) == 0)
+                camel_ident(name, m->go, sizeof(m->go));
+            else if(e->prefix[0] != '\0')
+                snprintf(m->go, sizeof(m->go), "%s%s", e->prefix, name);
+            else
+                camel_ident(name, m->go, sizeof(m->go));
+        }
         if(val != NULL)
             snprintf(m->val, sizeof(m->val), "%s", val);
     }
@@ -617,7 +622,7 @@ go_set_module(const ZirModule *m, const char *guard)
     }
     for(int i = 0; i < m->type_count; i++) {
         if(m->types[i].is_enum)
-            parse_enum(&m->types[i]);
+            parse_enum(m, &m->types[i]);
     }
 }
 
@@ -828,7 +833,8 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
             if(*q == '.' &&
                (isalpha((unsigned char)q[1]) || q[1] == '_') &&
                go_local_name_for(ident) == NULL) {
-                const ZirType *enumeration = FindType(m, ident, NULL);
+                const ZirModule *enum_owner = NULL;
+                const ZirType *enumeration = FindType(m, ident, &enum_owner);
                 const char *member = q + 1;
                 const char *end = member;
                 while(is_ident_char((unsigned char)*end)) end++;
@@ -842,15 +848,20 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                     memcpy(source_name, member, length);
                     source_name[length] = '\0';
                     if(EnumMemberValue(enumeration, source_name, &value)) {
-                        camel_ident(enumeration->name, prefix,
-                                    sizeof(prefix));
-                        if(prefix[0] &&
-                           strncmp(source_name, prefix,
-                                   strlen(prefix)) == 0)
-                            camel_ident(source_name, mapped, sizeof(mapped));
-                        else
-                            snprintf(mapped, sizeof(mapped), "%s%s",
-                                     prefix, source_name);
+                        if(enum_owner == NULL ||
+                           !NativeEnumMemberName(enum_owner, enumeration,
+                                                 source_name, mapped,
+                                                 sizeof(mapped))) {
+                            camel_ident(enumeration->name, prefix,
+                                        sizeof(prefix));
+                            if(prefix[0] &&
+                               strncmp(source_name, prefix,
+                                       strlen(prefix)) == 0)
+                                camel_ident(source_name, mapped, sizeof(mapped));
+                            else
+                                snprintf(mapped, sizeof(mapped), "%s%s",
+                                         prefix, source_name);
+                        }
                         length = strlen(mapped);
                         if(dn + length >= dst_size) {
                             Diagnostic(enumeration->span, "zir_go.enum",

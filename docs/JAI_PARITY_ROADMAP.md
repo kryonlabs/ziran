@@ -40,7 +40,7 @@ including `#enum`, `variant`, postfix `?`, `#global`, `#export`, `#private`,
 `#extern`, C pointer suffixes, C conditional expressions, and old Kryon file
 extensions. The rejection tests should stay.
 
-The full local `make check` suite has 101 checks. Re-run it after any change to
+The full local `make check` suite has 102 checks. Re-run it after any change to
 the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 
 | Area | Current subset | Next proof of parity |
@@ -49,7 +49,7 @@ the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 | Values and expressions | Record literals, nonempty typed arrays, direct generic calls, `ifx` in typed expressions and call arguments | True empty arrays, broader lazy-expression audit, fuller type queries |
 | Procedures | Named values, defaults, named arguments, direct polymorphism | Overload/variadic/operator and broader procedure-form audit |
 | Compile time | Bounded pure scalars, strings, floats, and record/array results used at compile time, in checked runtime expressions, and in selected file-scope initializers, including public imports | Full file-scope initialization semantics, verified effect rules |
-| Native output | C/C++/Go checked body graphs; C/C++ unions; colliding imported record and union type names | Declaration lowering, remaining whole-program names, Go union layout |
+| Native output | C/C++/Go checked body graphs; C/C++ unions; colliding imported record, union, and enum names | Declaration lowering, remaining whole-program names, Go union layout |
 | Portable output | Verified `.zib` scalar/record/array subset and host calls | Globals, aggregates, pointers/handles, unions, host shapes |
 | Ownership | Scoped `Vec(T)` operations | Move, drop, pop, lookup, builder, borrowing across calls |
 
@@ -79,6 +79,8 @@ declaring module for imported record types even when the consumer has a
 same-named type. Verify the exact record and union rules with Jai before
 claiming syntax parity. Keep
 visibility and ambiguity diagnostics consistent with local `using`.
+Qualified imported enum type annotations now lower across native targets, but
+`Module.Enum.Member` expressions still fail checker resolution.
 
 ### 2. Declaration-order-independent compile-time lookup
 

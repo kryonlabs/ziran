@@ -6576,8 +6576,8 @@ CheckPrograms(ZirProgram **programs, int count)
             ZirModule *module = &programs[p]->modules[m];
             for(int t = 0; t < module->type_count; t++) {
                 ZirType *type = &module->types[t];
-                if(type->is_enum || type->is_procedure_type ||
-                   type->is_record_template || type->is_extern) continue;
+                if(type->is_procedure_type || type->is_record_template ||
+                   type->is_extern) continue;
                 for(int q = p; q < count; q++)
                     for(int n = q == p ? m : 0;
                         n < programs[q]->module_count; n++) {
@@ -6585,7 +6585,7 @@ CheckPrograms(ZirProgram **programs, int count)
                         for(int u = q == p && n == m ? t + 1 : 0;
                             u < other_module->type_count; u++) {
                             ZirType *other = &other_module->types[u];
-                            if(other->is_enum || other->is_procedure_type ||
+                            if(other->is_procedure_type ||
                                other->is_record_template || other->is_extern ||
                                strcmp(type->name, other->name)) continue;
                             type->native_name_collision = 1;

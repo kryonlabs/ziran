@@ -264,12 +264,18 @@ rewrite_body2(const ZirModule *m, const ZirCModuleSyms *restab,
                     if(!EnumMemberValue(enumeration, member_name, &value))
                         continue;
                     char mapped[LOWER_TEXT_MAX];
-                    int prefixed = strncmp(member_name, enumeration->name,
-                                           strlen(enumeration->name)) == 0;
-                    int written = prefixed ?
-                        snprintf(mapped, sizeof(mapped), "%s", member_name) :
-                        snprintf(mapped, sizeof(mapped), "%s_%s",
-                                 enumeration->name, member_name);
+                    int written;
+                    if(NativeEnumMemberName(m, enumeration, member_name,
+                                            mapped, sizeof(mapped)))
+                        written = (int)strlen(mapped);
+                    else {
+                        int prefixed = strncmp(member_name, enumeration->name,
+                                               strlen(enumeration->name)) == 0;
+                        written = prefixed ?
+                            snprintf(mapped, sizeof(mapped), "%s", member_name) :
+                            snprintf(mapped, sizeof(mapped), "%s_%s",
+                                     enumeration->name, member_name);
+                    }
                     if(written < 0 || (size_t)written >= sizeof(mapped) ||
                        n + (size_t)written >= dst_size) return 0;
                     memcpy(dst + n, mapped, (size_t)written);
@@ -881,7 +887,7 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
                 Diagnostic(ty->span, "zir_c.enum", "invalid enum backing type");
                 exit(1);
             }
-            fprintf(h, "typedef %s %s;\n", backing, ty->name);
+            fprintf(h, "typedef %s %s;\n", backing, native);
         }
     }
     for(i = 0; i < m->type_count; i++) {
@@ -934,13 +940,23 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
                                            "invalid enum member declaration");
                                 exit(1);
                             }
-                            int prefixed = member_length >= strlen(ty->name) &&
-                                strncmp(raw, ty->name, strlen(ty->name)) == 0;
-                            fprintf(h, "    %s%s%.*s%s,\n",
-                                    prefixed ? "" : ty->name,
-                                    prefixed ? "" : "_",
-                                    (int)member_length, raw,
-                                    raw + member_length);
+                            char member[LOWER_TEXT_MAX];
+                            memcpy(member, raw, member_length);
+                            member[member_length] = '\0';
+                            char mapped[LOWER_TEXT_MAX];
+                            if(NativeEnumMemberName(m, ty, member, mapped,
+                                                    sizeof(mapped)))
+                                fprintf(h, "    %s%s,\n", mapped,
+                                        raw + member_length);
+                            else {
+                                int prefixed = member_length >= strlen(ty->name) &&
+                                    strncmp(raw, ty->name, strlen(ty->name)) == 0;
+                                fprintf(h, "    %s%s%.*s%s,\n",
+                                        prefixed ? "" : ty->name,
+                                        prefixed ? "" : "_",
+                                        (int)member_length, raw,
+                                        raw + member_length);
+                            }
                         }
                     }
                     line = nl ? nl + 1 : NULL;

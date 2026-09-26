@@ -344,10 +344,21 @@ NativeTypeAtUse(const ZirModule *module, const char *type,
     const ZirModule *owner = NULL;
     const ZirType *declared = FindType(module, type, &owner);
     if(declared == NULL || owner == NULL || declared->is_extern ||
-       !declared->native_name_collision ||
+       (!declared->native_name_collision && strchr(type, '.') == NULL) ||
        BuiltinType(declared->name) == declared) return 0;
     NativeTypeName(owner, declared, out, size);
     return out[0] != '\0';
+}
+
+int
+NativeEnumMemberName(const ZirModule *owner, const ZirType *type,
+                     const char *member, char *out, size_t size)
+{
+    if(!type->is_enum || !type->native_name_collision) return 0;
+    char native[ZIR_NAME_MAX * 2];
+    NativeTypeName(owner, type, native, sizeof(native));
+    format(out, size, "%s_%s", native, member);
+    return 1;
 }
 
 static void
@@ -1034,7 +1045,8 @@ declare(Emitter *e, const char *name, const char *type, const char *value)
         if(e->target == ZIR_GO)
             line(e, "var %s %s = %s(%s)", name, target_type, target_type, value);
         else
-            line(e, "%s %s = (%s)(%s);", type, name, type, value);
+            line(e, "%s %s = (%s)(%s);", target_type, name, target_type,
+                 value);
         return;
     }
     if(e->target == ZIR_GO) line(e, "var %s %s = %s", name, target_type, value);
@@ -2484,7 +2496,9 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         literal(e,expr,type,0,result,sizeof(result));
         if(e->target == ZIR_CPP && enum_type(e->module, type)) {
             copy_text(a, sizeof(a), result);
-            format(result, sizeof(result), "(%s)(%s)", type, a);
+            char native[ZIR_NAME_MAX * 2];
+            e->resolve(e->context, type, native, sizeof(native));
+            format(result, sizeof(result), "(%s)(%s)", native, a);
         }
         pure=1;
         break;

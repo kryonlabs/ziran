@@ -11,6 +11,8 @@ void NativeTypeName(const ZirModule *owner, const ZirType *type,
                     char *out, size_t size);
 int NativeTypeAtUse(const ZirModule *module, const char *type,
                     char *out, size_t size);
+int NativeEnumMemberName(const ZirModule *owner, const ZirType *type,
+                         const char *member, char *out, size_t size);
 int ScalarLiteral(const char *type, const char *text, ZirTarget target,
                       ZirSourceSpan span, char *out, size_t size);
 typedef int (*ZirGlobalScalarRewrite)(const ZirModule *module,
