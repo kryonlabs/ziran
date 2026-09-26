@@ -15,7 +15,7 @@ HEADERS := $(wildcard cmd/zir/*.h) $(wildcard include/*.h)
 LIB_SOURCES := $(FRONTEND) $(PORTABLE) cmd/zir/zir_host.c
 LIB_OBJECTS := $(patsubst cmd/zir/%.c,$(BUILD_DIR)/obj/%.o,$(LIB_SOURCES))
 
-.PHONY: all check clean
+.PHONY: all check curl-http-test clean
 CHECK_JOBS ?= 4
 all: $(BIN_DIR)/ziran $(BIN_DIR)/zi-fmt $(BIN_DIR)/zi2zir $(BIN_DIR)/zi-inspect $(BIN_DIR)/zi2c $(BIN_DIR)/zi2go $(BIN_DIR)/zi2cpp $(BIN_DIR)/zi2zib $(BUILD_DIR)/libziran.a
 
@@ -74,6 +74,9 @@ $(BIN_DIR)/slice-host-test: tests/host_slice_test.c $(BUILD_DIR)/libziran.a | $(
 
 check: all $(BIN_DIR)/bundle-link-test $(BIN_DIR)/host-capability-test $(BIN_DIR)/record-host-test $(BIN_DIR)/slice-host-test $(BIN_DIR)/process-host-test
 	python3 tests/run_check.py --bin-dir $(BIN_DIR) --jobs $(CHECK_JOBS)
+
+curl-http-test: $(BIN_DIR)/zi2c
+	python3 tests/net_http_curl_linux_test.py $(BIN_DIR)/zi2c
 
 clean:
 	rm -rf $(BUILD_DIR)

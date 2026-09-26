@@ -1,0 +1,242 @@
+#import "net_http"
+#import "byte_text_linux"
+#import "c_string"
+
+curl :: #system_library "curl";
+curl_global_init :: (flags: s64) -> s32 #foreign curl;
+curl_global_cleanup :: () #foreign curl;
+curl_easy_init :: () -> *void #foreign curl;
+curl_easy_cleanup :: (handle: *void) #foreign curl;
+curl_easy_setopt :: (handle: *void, option: s32, args: ..any) -> s32 #foreign curl;
+curl_easy_perform :: (handle: *void) -> s32 #foreign curl;
+curl_easy_getinfo :: (handle: *void, option: s32, args: ..any) -> s32 #foreign curl;
+curl_slist_append :: (list: *void, value: *u8) -> *void #foreign curl;
+curl_slist_free_all :: (list: *void) #foreign curl;
+
+CurlUrl :: 10002
+CurlMethod :: 10036
+CurlWriteData :: 10001
+CurlWriteFunction :: 20011
+CurlHeaders :: 10023
+CurlPostFields :: 10015
+CurlPostSize :: 30120
+CurlTimeoutMs :: 155
+CurlConnectTimeoutMs :: 156
+CurlNoSignal :: 99
+CurlResponseCode :: 2097154
+
+StartsWith :: (value: string, prefix: string) -> bool {
+    if value.count < prefix.count { return false }
+    index: s64 = 0
+    while index < cast(s64)prefix.count {
+        if value[index] != prefix[index] { return false }
+        index += 1
+    }
+    return true
+}
+
+MethodToken :: (value: string) -> bool {
+    if value.count == 0 || value.count >= 32 { return false }
+    index: s64 = 0
+    while index < cast(s64)value.count {
+        byte := value[index]
+        if !((byte >= cast(u8)65 && byte <= cast(u8)90) ||
+            (byte >= cast(u8)97 && byte <= cast(u8)122) ||
+            (byte >= cast(u8)48 && byte <= cast(u8)57) ||
+            byte == cast(u8)45) { return false }
+        index += 1
+    }
+    return true
+}
+
+CurlResult :: struct {
+    status: s32
+    length: s64
+    code: s32
+    truncated: bool
+}
+
+CurlOutput :: struct {
+    data: *u8
+    capacity: s64
+    length: s64
+    truncated: bool
+}
+
+CurlWriteCallback64 :: #type (data: *u8, size: u64,
+    count: u64, user: *void) -> u64 #c_call;
+CurlWriteCallback32 :: #type (data: *u8, size: u32,
+    count: u32, user: *void) -> u32 #c_call;
+
+AppendCurlOutput :: (data: *u8, size: u64, count: u64,
+    context: *CurlOutput) -> u64 {
+    if context == null || size == 0 || count == 0 { return 0 }
+    if size > cast(u64)9223372036854775807 / count {
+        context.truncated = true
+        return 0
+    }
+    bytes := size * count
+    if context.length < 0 || context.capacity < 1 ||
+    bytes > cast(u64)(context.capacity - context.length - 1) {
+        context.truncated = true
+        return 0
+    }
+    index: u64 = 0
+    while index < bytes {
+        context.data[context.length + cast(s64)index] = data[index]
+        index += 1
+    }
+    context.length += cast(s64)bytes
+    context.data[context.length] = cast(u8)0
+    return bytes
+}
+
+CurlWrite64 :: (data: *u8, size: u64, count: u64, user: *void) -> u64 {
+    return AppendCurlOutput(data, size, count, cast(*CurlOutput)user)
+}
+
+CurlWrite32 :: (data: *u8, size: u32, count: u32, user: *void) -> u32 {
+    return cast(u32)AppendCurlOutput(data, cast(u64)size,
+        cast(u64)count, cast(*CurlOutput)user)
+}
+
+SetCurlLong :: (handle: *void, option: s32, value: s32) -> bool {
+    if size_of(type_of(handle)) == 8 {
+        return curl_easy_setopt(handle, option, cast(s64)value) == 0
+    }
+    return curl_easy_setopt(handle, option, value) == 0
+}
+
+ReadCurlStatus :: (handle: *void) -> s32 {
+    if size_of(type_of(handle)) == 8 {
+        code: s64 = 0
+        if curl_easy_getinfo(handle, CurlResponseCode, *code) == 0 {
+            return cast(s32)code
+        }
+    } else {
+        code: s32 = 0
+        if curl_easy_getinfo(handle, CurlResponseCode, *code) == 0 {
+            return code
+        }
+    }
+    return 0
+}
+
+HeaderText :: (prefix: string, value: string, output: []u8) -> bool {
+    if prefix.count >= output.count ||
+    value.count >= output.count - prefix.count { return false }
+    index: s64 = 0
+    while index < cast(s64)prefix.count {
+        output[index] = prefix[index]
+        index += 1
+    }
+    offset: s64 = 0
+    while offset < cast(s64)value.count {
+        byte := value[offset]
+        if byte == cast(u8)0 || byte == cast(u8)10 || byte == cast(u8)13 {
+            return false
+        }
+        output[index + offset] = byte
+        offset += 1
+    }
+    output[index + offset] = cast(u8)0
+    return true
+}
+
+AddCurlHeader :: (headers: **void, prefix: string, value: string,
+    buffer: []u8) -> bool {
+    if !HeaderText(prefix, value, buffer) { return false }
+    next := curl_slist_append(headers.*, *buffer[0])
+    if next == null { return false }
+    headers.* = next
+    return true
+}
+
+// The caller owns output. It remains NUL terminated, including on failure.
+// HTTP errors retain their status and body for protocol-level decisions.
+#program_export
+SendCurl :: (request: HttpRequest, output: []u8) -> CurlResult {
+    result: CurlResult
+    result.code = -1
+    if output.count == 0 { return result }
+    output[0] = cast(u8)0
+    url: [2048]u8
+    method: [32]u8
+    if request.url.count >= url.count ||
+    request.method.count >= method.count ||
+    !(StartsWith(request.url, "http://") ||
+        StartsWith(request.url, "https://")) ||
+    !MethodToken(request.method) ||
+    !CopyCString(request.url, url[:]) ||
+    !CopyCString(request.method, method[:]) { return result }
+    if curl_global_init(3) != 0 { return result }
+    handle := curl_easy_init()
+    if handle == null {
+        curl_global_cleanup()
+        return result
+    }
+
+    context: CurlOutput
+    context.data = *output[0]
+    context.capacity = cast(s64)output.count
+    context.length = 0
+    context.truncated = false
+    headers: *void = null
+    configured := curl_easy_setopt(handle, CurlUrl, *url[0]) == 0 &&
+    curl_easy_setopt(handle, CurlMethod, *method[0]) == 0 &&
+    curl_easy_setopt(handle, CurlWriteData, *context) == 0 &&
+    SetCurlLong(handle, CurlTimeoutMs, 20000) &&
+    SetCurlLong(handle, CurlConnectTimeoutMs, 10000) &&
+    SetCurlLong(handle, CurlNoSignal, 1)
+    if configured {
+        if size_of(type_of(handle)) == 8 {
+            writer: CurlWriteCallback64 = CurlWrite64
+            configured = curl_easy_setopt(handle, CurlWriteFunction,
+                writer) == 0
+        } else {
+            writer: CurlWriteCallback32 = CurlWrite32
+            configured = curl_easy_setopt(handle, CurlWriteFunction,
+                writer) == 0
+        }
+    }
+
+    header: [4300]u8
+    if configured && request.token.count > 0 {
+        configured = AddCurlHeader(*headers, "Authorization: Bearer ",
+            request.token, header[:])
+    }
+    if configured && request.accept.count > 0 {
+        configured = AddCurlHeader(*headers, "Accept: ",
+            request.accept, header[:])
+    }
+    if configured && request.content_type.count > 0 {
+        configured = AddCurlHeader(*headers, "Content-Type: ",
+            request.content_type, header[:])
+    }
+    if configured && headers != null {
+        configured = curl_easy_setopt(handle, CurlHeaders, headers) == 0
+    }
+
+    if configured && (request.body.count > 0 || request.method == "POST") {
+        empty: [1]u8
+        empty[0] = cast(u8)0
+        body_text := request.body
+        descriptor := cast(*TextDescriptor)(*body_text)
+        body: *u8 = *empty[0]
+        if request.body.count > 0 { body = descriptor.data }
+        configured = body != null &&
+        curl_easy_setopt(handle, CurlPostFields, body) == 0 &&
+        curl_easy_setopt(handle, CurlPostSize,
+            cast(s64)request.body.count) == 0
+    }
+    if configured {
+        result.code = curl_easy_perform(handle)
+        result.status = ReadCurlStatus(handle)
+    }
+    result.length = context.length
+    result.truncated = context.truncated
+    if headers != null { curl_slist_free_all(headers) }
+    curl_easy_cleanup(handle)
+    curl_global_cleanup()
+    return result
+}
