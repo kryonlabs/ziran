@@ -1740,37 +1740,227 @@ literal_compound_graph(const ZirFunction *expression)
     return 1;
 }
 
+typedef struct CompoundConstant {
+    char literal[ZIR_TEXT_MAX];
+    char qualifier[ZIR_NAME_MAX];
+    const ZirModule *owner;
+} CompoundConstant;
+
+static int
+compound_type_at_use(const ZirModule *module,
+                     const CompoundConstant *compound, const char *source,
+                     char *target, size_t size)
+{
+    char element[ZIR_NAME_MAX];
+    if(ArrayElementType(source, element, sizeof(element), NULL)) {
+        const char *close = strchr(source, ']');
+        char qualified[ZIR_NAME_MAX];
+        if(close == NULL ||
+           !compound_type_at_use(module, compound, element, qualified,
+                                 sizeof(qualified))) return 0;
+        int written = snprintf(target, size, "%.*s%s",
+                               (int)(close - source + 1), source, qualified);
+        return written >= 0 && (size_t)written < size;
+    }
+    const ZirModule *declaring = NULL;
+    const ZirType *declared = FindType(compound->owner, source, &declaring);
+    if(declared == NULL) {
+        copy_text(target, size, source);
+        return strlen(source) < size;
+    }
+    if(compound->owner == module) {
+        copy_text(target, size, source);
+        return strlen(source) < size;
+    }
+    const ZirType *visible = FindType(module, source, NULL);
+    if(visible != NULL && visible != declared)
+        return 0;
+    if(visible == declared) {
+        copy_text(target, size, source);
+        return strlen(source) < size;
+    }
+    if(declaring == compound->owner && compound->qualifier[0]) {
+        int written = snprintf(target, size, "%s.%s",
+                               compound->qualifier, source);
+        return written >= 0 && (size_t)written < size &&
+               FindType(module, target, NULL) == declared;
+    }
+    if(FindType(module, source, NULL) != declared)
+        return 0;
+    copy_text(target, size, source);
+    return strlen(source) < size;
+}
+
+static int
+record_field_type_at_use(const ZirModule *module,
+                         const ZirModule *record_owner,
+                         const char *record_name, char *field_type,
+                         size_t size)
+{
+    CompoundConstant context = {0};
+    context.owner = record_owner;
+    const char *dot = strchr(record_name, '.');
+    if(dot != NULL && (size_t)(dot - record_name) <
+                       sizeof(context.qualifier)) {
+        memcpy(context.qualifier, record_name,
+               (size_t)(dot - record_name));
+        context.qualifier[dot - record_name] = '\0';
+    }
+    char qualified[ZIR_NAME_MAX];
+    if(!compound_type_at_use(module, &context, field_type, qualified,
+                             sizeof(qualified)) ||
+       strlen(qualified) >= size) return 0;
+    copy_text(field_type, size, qualified);
+    return 1;
+}
+
+static int
+append_compound_text(char *out, size_t size, size_t *used,
+                     const char *part)
+{
+    size_t length = strlen(part);
+    if(length >= size - *used) return 0;
+    memcpy(out + *used, part, length);
+    *used += length;
+    out[*used] = '\0';
+    return 1;
+}
+
+static int
+render_compound_at_use(const ZirFunction *expression, int index,
+                       char *out, size_t size, size_t *used, int depth)
+{
+    if(index < 0 || index >= expression->expr_count || depth > 64)
+        return 0;
+    const ZirExpr *node = &expression->exprs[index];
+    if(node->kind != ZIR_EXPR_COMPOUND)
+        return append_compound_text(out, size, used, node->text);
+    int array = node->name[0] == '[';
+    if(!append_compound_text(out, size, used,
+                             array ? ".[" : ".{")) return 0;
+    int ordinal = 0;
+    for(int child = node->first_child; child >= 0;
+        child = expression->exprs[child].next_sibling) {
+        const ZirExpr *entry = &expression->exprs[child];
+        if(ordinal++ && !append_compound_text(out, size, used, ", "))
+            return 0;
+        if(!array && !strcmp(entry->op, "=")) {
+            if(!append_compound_text(out, size, used, ".") ||
+               !append_compound_text(out, size, used, entry->name) ||
+               !append_compound_text(out, size, used, " = "))
+                return 0;
+        }
+        if(!render_compound_at_use(expression, entry->right, out, size,
+                                   used, depth + 1)) return 0;
+    }
+    return append_compound_text(out, size, used, array ? "]" : "}");
+}
+
+static int
+lower_compound_global(const ZirModule *module, const ZirGlobal *global,
+                      const CompoundConstant *compound,
+                      char *result, size_t size)
+{
+    ZirFunction expression = {0};
+    int root = ParseExpr(&expression, compound->owner, compound->literal,
+                         global->span);
+    int ok = 0;
+    if(root >= 0 && expression.exprs[root].kind == ZIR_EXPR_COMPOUND &&
+       literal_compound_graph(&expression)) {
+        char actual[ZIR_NAME_MAX];
+        if(compound_type_at_use(module, compound,
+                expression.exprs[root].name, actual, sizeof(actual)) &&
+           !strcmp(actual, global->type)) {
+            size_t used = 0;
+            result[0] = '\0';
+            ok = render_compound_at_use(&expression, root, result,
+                                        size, &used, 0);
+        }
+    }
+    free(expression.exprs);
+    return ok;
+}
+
 static int
 bound_compound_constant(const ZirModule *module, const char *name, int depth,
-                        char *literal, size_t size)
+                        CompoundConstant *result)
 {
     if(depth > 128) return -1;
     const ZirDefine *definition = NULL;
-    for(int i = 0; i < module->define_count; i++) {
-        const ZirDefine *candidate = &module->defines[i];
-        if(strcmp(candidate->name, name) ||
-           !in_lookup_file(module, candidate->is_file_private,
-                           candidate->span)) continue;
-        if(definition != NULL) return -1;
-        definition = candidate;
+    const ZirModule *owner = NULL;
+    const ZirImport *selected_import = NULL;
+    const char *dot = strchr(name, '.');
+    const char *symbol = dot == NULL ? name : dot + 1;
+    for(int pass = 0; pass < 2; pass++) {
+        if(dot != NULL && pass == 0) continue;
+        int count = pass == 0 ? 1 : module->import_count;
+        for(int i = 0; i < count; i++) {
+            const ZirImport *import = pass == 0 ? NULL :
+                                      &module->imports[i];
+            if(import != NULL) {
+                if(!in_lookup_file(module, import->is_file_private,
+                                   import->span)) continue;
+                if(dot == NULL && import->kind != ZIR_IMPORT_OPEN &&
+                   !(import->kind == ZIR_IMPORT_MODULE &&
+                     import->is_using)) continue;
+                if(dot != NULL &&
+                   (import->kind != ZIR_IMPORT_MODULE ||
+                    strlen(import->name) != (size_t)(dot - name) ||
+                    strncmp(import->name, name,
+                            (size_t)(dot - name)) != 0)) continue;
+            }
+            const ZirModule *scope = import == NULL ? module :
+                                     import->resolved_module;
+            if(scope == NULL) continue;
+            for(int j = 0; j < scope->define_count; j++) {
+                const ZirDefine *candidate = &scope->defines[j];
+                if((import != NULL && !candidate->is_public) ||
+                   (import == NULL && !in_lookup_file(module,
+                       candidate->is_file_private, candidate->span)) ||
+                   strcmp(candidate->name, symbol)) continue;
+                if(definition != NULL && definition != candidate)
+                    return -1;
+                definition = candidate;
+                owner = scope;
+                selected_import = import;
+            }
+        }
+        if(definition != NULL) break;
     }
     if(definition == NULL) return 0;
     ZirFunction expression = {0};
-    int root = ParseExpr(&expression, module, definition->value,
+    int root = ParseExpr(&expression, owner, definition->value,
                          definition->span);
     int status = 0;
     if(root < 0) status = -1;
     else if(expression.exprs[root].kind == ZIR_EXPR_COMPOUND &&
             literal_compound_graph(&expression)) {
-        if(strlen(definition->value) >= size) status = -1;
+        if(strlen(definition->value) >= sizeof(result->literal)) status = -1;
         else {
-            copy_text(literal, size, definition->value);
+            copy_text(result->literal, sizeof(result->literal),
+                      definition->value);
+            result->owner = owner;
+            result->qualifier[0] = '\0';
+            if(selected_import != NULL &&
+               selected_import->kind == ZIR_IMPORT_MODULE)
+                copy_text(result->qualifier,
+                          sizeof(result->qualifier),
+                          selected_import->name);
             status = 1;
         }
-    } else if(expression.exprs[root].kind == ZIR_EXPR_IDENT)
-        status = bound_compound_constant(module,
+    } else if(expression.exprs[root].kind == ZIR_EXPR_IDENT) {
+        status = bound_compound_constant(owner,
                     expression.exprs[root].name, depth + 1,
-                    literal, size);
+                    result);
+        if(status == 1 && owner != module) {
+            if(result->owner != owner) status = 0;
+            else if(selected_import != NULL &&
+                    selected_import->kind == ZIR_IMPORT_MODULE)
+                copy_text(result->qualifier,
+                          sizeof(result->qualifier),
+                          selected_import->name);
+        }
+    }
     free(expression.exprs);
     return status;
 }
@@ -2273,13 +2463,22 @@ reserve_compound_constants(const ZirModule *module, ZirFunction *fn)
     size_t needed = (size_t)fn->expr_count;
     for(int i = 0; i < fn->expr_count; i++) {
         const ZirExpr *node = &fn->exprs[i];
-        if(node->kind != ZIR_EXPR_IDENT) continue;
-        char literal[ZIR_TEXT_MAX];
-        if(bound_compound_constant(module, node->name, 0,
-                                   literal, sizeof(literal)) != 1)
+        char name[ZIR_NAME_MAX];
+        if(node->kind == ZIR_EXPR_IDENT)
+            copy_text(name, sizeof(name), node->name);
+        else if(node->kind == ZIR_EXPR_MEMBER && node->left >= 0 &&
+                fn->exprs[node->left].kind == ZIR_EXPR_IDENT) {
+            int written = snprintf(name, sizeof(name), "%s.%s",
+                fn->exprs[node->left].name, node->name);
+            if(written < 0 || (size_t)written >= sizeof(name)) continue;
+        } else continue;
+        CompoundConstant compound = {0};
+        if(bound_compound_constant(module, name, 0,
+                                   &compound) != 1)
             continue;
         ZirFunction probe = {0};
-        int root = ParseExpr(&probe, module, literal, node->span);
+        int root = ParseExpr(&probe, compound.owner,
+                             compound.literal, node->span);
         if(root >= 0 && probe.expr_count > 0)
             needed += (size_t)probe.expr_count - 1;
         free(probe.exprs);
@@ -2295,15 +2494,27 @@ reserve_compound_constants(const ZirModule *module, ZirFunction *fn)
 }
 
 static int
-inline_compound_constant(Checker *c, int index, const char *literal)
+inline_compound_constant(Checker *c, int index,
+                         const CompoundConstant *compound)
 {
     ZirFunction probe = {0};
-    int root = ParseExpr(&probe, c->module, literal,
+    int root = ParseExpr(&probe, compound->owner, compound->literal,
                          c->fn->exprs[index].span);
     if(root < 0 || probe.exprs[root].kind != ZIR_EXPR_COMPOUND ||
        c->fn->expr_count + probe.expr_count - 1 > c->fn->expr_cap) {
         free(probe.exprs);
         return 0;
+    }
+    for(int i = 0; i < probe.expr_count; i++) {
+        ZirExpr *node = &probe.exprs[i];
+        if(node->kind != ZIR_EXPR_COMPOUND) continue;
+        char qualified[ZIR_NAME_MAX];
+        if(!compound_type_at_use(c->module, compound, node->name,
+                                 qualified, sizeof(qualified))) {
+            free(probe.exprs);
+            return 0;
+        }
+        copy_text(node->name, sizeof(node->name), qualified);
     }
     int *map = malloc((size_t)probe.expr_count * sizeof(*map));
     if(map == NULL) {
@@ -2555,6 +2766,12 @@ expression_type(Checker *c, int index)
             }
             if(found) {
                 normalize_array(record_owner, field.type, sizeof(field.type));
+                if(!record_field_type_at_use(c->module, record_owner,
+                                             e->name, field.type,
+                                             sizeof(field.type)))
+                    error(c, entry->span,
+                          "imported record field type is shadowed",
+                          field.name);
                 ZirExpr *initializer = &c->fn->exprs[entry->right];
                 if(initializer->kind == ZIR_EXPR_COMPOUND)
                     normalize_array(record_owner, initializer->name, sizeof(initializer->name));
@@ -2656,8 +2873,15 @@ expression_type(Checker *c, int index)
                 else if(found > 0)
                     copy_text(e->name, sizeof(e->name), path);
             }
-            if(*member_type)
+            if(*member_type) {
                 normalize_array(record_owner, member_type, sizeof(member_type));
+                if(!record_field_type_at_use(c->module, record_owner,
+                                             record_name, member_type,
+                                             sizeof(member_type)))
+                    error(c, e->span,
+                          "imported record field type is shadowed",
+                          e->name);
+            }
         }
         if(!*member_type)
             error(c, e->span, "unknown record field", e->name);
@@ -2786,10 +3010,10 @@ expression_type(Checker *c, int index)
                 }
         }
         if(!*type) {
-            char compound[ZIR_TEXT_MAX];
+            CompoundConstant compound = {0};
             if(bound_compound_constant(c->module, e->name, 0,
-                                       compound, sizeof(compound)) == 1) {
-                if(!inline_compound_constant(c, index, compound)) {
+                                       &compound) == 1) {
+                if(!inline_compound_constant(c, index, &compound)) {
                     error(c, e->span,
                           "cannot bind aggregate constant", e->name);
                     break;
@@ -6451,27 +6675,41 @@ CheckPrograms(ZirProgram **programs, int count)
                 ZirFunction raw = {0};
                 int raw_root = ParseExpr(&raw, module, global->init,
                                          global->span);
+                char constant_name[ZIR_NAME_MAX] = "";
                 if(raw_root >= 0 &&
-                   raw.exprs[raw_root].kind == ZIR_EXPR_IDENT) {
-                    char literal[ZIR_TEXT_MAX];
-                    if(bound_compound_constant(module,
-                            raw.exprs[raw_root].name, 0,
-                            literal, sizeof(literal)) == 1) {
-                        copy_text(global->init, sizeof(global->init),
-                                  literal);
-                        if(ArrayElementType(global->type, NULL, 0, NULL)) {
-                            ZirFunction candidate = {0};
-                            int candidate_root = ParseExpr(&candidate, module,
-                                                           literal,
-                                                           global->span);
-                            const char *array = strstr(literal, ".[");
-                            if(candidate_root >= 0 && array != NULL &&
-                               !strcmp(candidate.exprs[candidate_root].name,
-                                       global->type))
-                                copy_text(global->init,
-                                          sizeof(global->init), array);
-                            free(candidate.exprs);
+                   raw.exprs[raw_root].kind == ZIR_EXPR_IDENT)
+                    copy_text(constant_name, sizeof(constant_name),
+                              raw.exprs[raw_root].name);
+                else if(raw_root >= 0 &&
+                        raw.exprs[raw_root].kind == ZIR_EXPR_MEMBER &&
+                        raw.exprs[raw_root].left >= 0 &&
+                        raw.exprs[raw.exprs[raw_root].left].kind ==
+                            ZIR_EXPR_IDENT) {
+                    const ZirExpr *base =
+                        &raw.exprs[raw.exprs[raw_root].left];
+                    int written = snprintf(constant_name,
+                        sizeof(constant_name), "%s.%s", base->name,
+                        raw.exprs[raw_root].name);
+                    if(written < 0 ||
+                       (size_t)written >= sizeof(constant_name))
+                        constant_name[0] = '\0';
+                }
+                if(constant_name[0]) {
+                    CompoundConstant compound = {0};
+                    if(bound_compound_constant(module, constant_name, 0,
+                            &compound) == 1) {
+                        char lowered[ZIR_TEXT_MAX];
+                        if(!lower_compound_global(module, global, &compound,
+                                                  lowered,
+                                                  sizeof(lowered))) {
+                            Diagnostic(global->span, "check.constant_type",
+                                       "aggregate constant type is unavailable or mismatched: %s",
+                                       constant_name);
+                            free(raw.exprs);
+                            return 0;
                         }
+                        copy_text(global->init, sizeof(global->init),
+                                  lowered);
                     }
                 }
                 free(raw.exprs);

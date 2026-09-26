@@ -1343,8 +1343,42 @@ global_field(const ZirType *record, const char *name, int ordinal,
 }
 
 static int
+global_type_at_use(const ZirModule *module, const ZirModule *scope,
+                   const char *type, char *out, size_t size)
+{
+    char element[ZIR_NAME_MAX];
+    if(ArrayElementType(type, element, sizeof(element), NULL)) {
+        const char *close = strchr(type, ']');
+        char mapped[ZIR_NAME_MAX];
+        if(close == NULL ||
+           !global_type_at_use(module, scope, element, mapped,
+                               sizeof(mapped))) return 0;
+        int written = snprintf(out, size, "%.*s%s",
+                               (int)(close - type + 1), type, mapped);
+        return written >= 0 && (size_t)written < size;
+    }
+    const ZirType *declared = FindType(scope, type, NULL);
+    if(scope == module || declared == NULL ||
+       FindType(module, type, NULL) == declared) {
+        copy_text(out, size, type);
+        return strlen(type) < size;
+    }
+    for(int i = 0; i < module->import_count; i++) {
+        const ZirImport *import = &module->imports[i];
+        if(import->kind != ZIR_IMPORT_MODULE ||
+           import->resolved_module != scope) continue;
+        int written = snprintf(out, size, "%s.%s", import->name, type);
+        if(written >= 0 && (size_t)written < size &&
+           FindType(module, out, NULL) == declared)
+            return 1;
+    }
+    return 0;
+}
+
+static int
 emit_global_literal_node(GlobalLiteralEmit *emit, int index,
-                         const char *type, char *out, size_t size,
+                         const ZirModule *scope, const char *type,
+                         char *out, size_t size,
                          size_t *used, int depth)
 {
     if(index < 0 || index >= emit->probe->expr_count || depth > 32)
@@ -1353,15 +1387,19 @@ emit_global_literal_node(GlobalLiteralEmit *emit, int index,
     if(expr->kind == ZIR_EXPR_COMPOUND) {
         char element[ZIR_NAME_MAX];
         const ZirType *record = NULL;
+        const ZirModule *record_owner = NULL;
         int array = ArrayElementType(type, element, sizeof(element), NULL);
-        if(!array) record = FindType(emit->module, type, NULL);
+        if(!array) record = FindType(scope, type, &record_owner);
         if(!array && (record == NULL || record->is_enum ||
                       record->is_procedure_type || record->is_union))
             return 0;
         if(emit->target == ZIR_GO) {
             char mapped[ZIR_NAME_MAX * 2];
+            char visible[ZIR_NAME_MAX];
             if(emit->type_name == NULL ||
-               !emit->type_name(emit->module, type, mapped,
+               !global_type_at_use(emit->module, scope, type, visible,
+                                   sizeof(visible)) ||
+               !emit->type_name(emit->module, visible, mapped,
                                 sizeof(mapped), emit->context) ||
                !append_global_literal(out, size, used, "%s{", mapped))
                 return 0;
@@ -1387,7 +1425,8 @@ emit_global_literal_node(GlobalLiteralEmit *emit, int index,
                 if(field_index++ &&
                    !append_global_literal(out, size, used, ", ")) return 0;
                 if(selected >= 0) {
-                    if(!emit_global_literal_node(emit, selected, field.type,
+                    if(!emit_global_literal_node(emit, selected,
+                                                 record_owner, field.type,
                                                  out, size, used, depth + 1))
                         return 0;
                 } else if(!append_global_literal(out, size, used, "{}"))
@@ -1419,7 +1458,9 @@ emit_global_literal_node(GlobalLiteralEmit *emit, int index,
                          emit->target == ZIR_GO ? "%s: " : ".%s = ",
                          mapped)) return 0;
                 }
-                if(!emit_global_literal_node(emit, entry->right, field_type,
+                if(!emit_global_literal_node(emit, entry->right,
+                                             record != NULL ? record_owner :
+                                             scope, field_type,
                                              out, size, used, depth + 1))
                     return 0;
                 position++;
@@ -1457,7 +1498,7 @@ EmitGlobalInitializer(const ZirModule *module, const ZirGlobal *global,
     }
     GlobalLiteralEmit emit = {module, &probe, target, global->span,
                               scalar, type_name, field_name, context};
-    ok = emit_global_literal_node(&emit, root, global->type, out, size,
+    ok = emit_global_literal_node(&emit, root, module, global->type, out, size,
                                   &used, 0);
     free(probe.exprs);
     return ok ? 1 : -1;

@@ -1047,6 +1047,30 @@ assignment_binary_operator(const char *op)
 }
 
 static int
+same_verified_type(const ZirModule *declaration_module,
+                   const char *declared, const ZirModule *use_module,
+                   const char *checked)
+{
+    if(strcmp(declared, checked) == 0)
+        return 1;
+    const char *scalar = ScalarType(declared);
+    if(*scalar && strcmp(scalar, checked) == 0)
+        return 1;
+    char declared_element[ZIR_NAME_MAX], checked_element[ZIR_NAME_MAX];
+    int declared_count, checked_count;
+    if(ArrayElementType(declared, declared_element,
+                        sizeof(declared_element), &declared_count) &&
+       ArrayElementType(checked, checked_element,
+                        sizeof(checked_element), &checked_count))
+        return declared_count == checked_count &&
+               same_verified_type(declaration_module, declared_element,
+                                  use_module, checked_element);
+    const ZirType *source = FindType(declaration_module, declared, NULL);
+    const ZirType *resolved = FindType(use_module, checked, NULL);
+    return source != NULL && source == resolved;
+}
+
+static int
 verify_expression(const ZirModule *module, const ZirFunction *function,
                   const Parameter *bindings, int binding_count,
                   int index, int depth)
@@ -1224,7 +1248,9 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
             }
             return 1;
         }
-        const ZirType *record = FindType(module, expression->name, NULL);
+        const ZirModule *record_owner = NULL;
+        const ZirType *record = FindType(module, expression->name,
+                                         &record_owner);
         unsigned char seen[VM_MAX_FIELDS] = {0};
         int children = 0;
         if(record == NULL || record->is_enum || record->is_procedure_type ||
@@ -1246,9 +1272,8 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
             while(TypeNextField(record, &offset, &field) == 1) {
                 if(strcmp(field.name, initializer->name) == 0) {
                     if(seen[field_index] ||
-                       (strcmp(field.type, initializer->type) != 0 &&
-                        strcmp(ScalarType(field.type),
-                               initializer->type) != 0))
+                       !same_verified_type(record_owner, field.type,
+                                           module, initializer->type))
                         return 0;
                     seen[field_index] = 1;
                     found = 1;
@@ -1283,9 +1308,8 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         if(!RecordFieldPathType(owner, record, expression->name,
                                 field_type, sizeof(field_type)))
             return 0;
-        return strcmp(field_type, expression->type) == 0 ||
-               (ScalarType(field_type)[0] != 0 &&
-                strcmp(ScalarType(field_type), expression->type) == 0);
+        return same_verified_type(owner, field_type, module,
+                                  expression->type);
     }
     case ZIR_EXPR_SLICE: {
         char element[ZIR_NAME_MAX];
@@ -3748,7 +3772,7 @@ fold_global_element(Vm *vm, const ZirModule *module, const ZirFunction *probe,
         return 1;
     }
     if(expr->kind == ZIR_EXPR_COMPOUND && target->kind == VALUE_RECORD) {
-        const ZirType *record = FindType(module, type, NULL);
+        const ZirType *record = target->record->type;
         int matched = record != NULL;
         for(int child = expr->first_child; child >= 0 && matched;
             child = probe->exprs[child].next_sibling) {
@@ -3822,14 +3846,10 @@ initialize_globals(Vm *vm, const ZirProgram *program)
                 if(slot->value.kind == VALUE_ARRAY ||
                    slot->value.kind == VALUE_RECORD) {
                     ZirFunction probe = {0};
-                    int root = slot->value.kind == VALUE_ARRAY ?
-                        ParseExprTyped(&probe, module,
-                                       slot->declaration->init,
-                                       slot->declaration->span,
-                                       slot->declaration->type) :
-                        ParseExprNoDefaults(&probe, module,
-                                            slot->declaration->init,
-                                            slot->declaration->span);
+                    int root = ParseExprTyped(&probe, module,
+                                               slot->declaration->init,
+                                               slot->declaration->span,
+                                               slot->declaration->type);
                     int matched = root >= 0 &&
                         fold_global_element(vm, module, &probe, root,
                                             &slot->value,

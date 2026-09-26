@@ -48,7 +48,7 @@ the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 | Names and scopes | Local/field record `using`; local/data enum `using`; imported record globals in procedures; named imports | File-scope record lookup, full imported type ownership, order independence |
 | Values and expressions | Record literals, nonempty typed arrays, direct generic calls, `ifx` in typed expressions and call arguments | True empty arrays, broader lazy-expression audit, fuller type queries |
 | Procedures | Named values, defaults, named arguments, direct polymorphism | Overload/variadic/operator and broader procedure-form audit |
-| Compile time | Bounded pure scalars, strings, floats, and local record/array results used at compile time and in checked runtime expressions | Imported aggregate constants, verified effect rules |
+| Compile time | Bounded pure scalars, strings, floats, and record/array results used at compile time and in checked runtime expressions, including public imports | Larger file-scope aggregate expressions, verified effect rules |
 | Native output | C/C++/Go checked body graphs; C/C++ unions | Declaration lowering, whole-program names, Go union layout |
 | Portable output | Verified `.zib` scalar/record/array subset and host calls | Globals, aggregates, pointers/handles, unions, host shapes |
 | Ownership | Scoped `Vec(T)` operations | Move, drop, pop, lookup, builder, borrowing across calls |
@@ -197,17 +197,21 @@ than treating native C arrays as proof of layout parity. Add focused cases to
 Pure procedures can return named records and fixed arrays for compile-time
 field selection, array indexing, `.count`, and assertions. Local aggregate
 definitions now bind to checked runtime expression graphs; direct global
-initializers can use them. `tests/compile_values.sh` checks source and saved
-IR across all four targets. Imported aggregate definitions, aggregate uses
-inside larger file-scope expressions, effects, and general metaprogramming
-remain open.
+initializers can use them. Public aggregates resolve through named, open,
+and using imports with their declaring record type preserved. The compiler
+rejects a conflicting consumer record name while native C still emits
+colliding tags. `tests/compile_values.sh` and
+`tests/imported_aggregate_constants.sh` check source and saved IR across
+all four targets. Aggregate uses inside larger file-scope expressions,
+effects, and general metaprogramming remain open.
 `#caller_location` parameters in compile-time calls are also missing. Integer
 conditions now send procedure calls through the typed evaluator, and the old
 integer-only procedure interpreter has been removed. The integer expression
 parser remains for `#if` predicates and compiler-host probes such as
 `defined`; `tests/compile_run.sh` covers overflow, defaults, imports,
 recursion, and one work budget shared by nested calls. Continue consolidating
-expression rules, then extend aggregate constants across imports and add
+expression rules, then extend aggregate constants through larger file-scope
+expressions and add
 supported metaprogramming features with explicit effect and
 resource limits. Avoid leaving two subtly different language interpreters.
 

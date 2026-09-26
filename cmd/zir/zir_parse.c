@@ -6836,7 +6836,6 @@ parse_source(const char *path, const char *root, const char *source,
             die_at(Span(rel, line_no, 1),
                    "use Jai-style type application: Name :: Generic(Type)");
         } else if(mode == TOP && strstr(t, "::") != NULL &&
-                  !brace_outside_literals(t) &&
                   !starts_word(skip_ws(strstr(t, "::") + 2), "struct") &&
                   !starts_word(skip_ws(strstr(t, "::") + 2), "union") &&
                   !starts_word(skip_ws(strstr(t, "::") + 2), "enum") &&
