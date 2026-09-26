@@ -73,8 +73,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   full path and physical line as a `Source_Code_Location` record. Inferred and
   explicitly typed defaults work through imports, polymorphic calls, and
   `#load`; explicit arguments override the default. Source and saved IR agree
-  in C, C++, Go, and portable builds. Compile-time calls consuming this record
-  remain outside the current `#run` evaluator.
+  in C, C++, Go, and portable builds. Compile-time `#run`, `#assert`, and
+  local or imported `#if` calls capture the same caller path and line,
+  including nested calls and explicit overrides; `tests/caller_location.sh`
+  covers source and saved IR on all four targets.
 - Jai `#string DELIMITER` raw multiline literals preserve their body bytes,
   including whitespace and the newline before the closing delimiter. Source
   and saved IR execute identically on the portable runner, C, C++, and Go.

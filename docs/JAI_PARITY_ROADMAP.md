@@ -313,9 +313,10 @@ must not introduce UI-specific compiler branches here.
 An audit of current source paths found no executing Kryon compiler/runtime
 mode, `.kry`/`.kir`/`.krb` loader, or old directive implementation. Mentions
 of old spellings in `cmd/zir/zir_parse.c` are diagnostics that enforce their
-rejection; the corresponding tests should remain. The two active compile-time
-procedure evaluators are duplicated machinery, not proven compatibility
-shims. The next removal task is to consolidate those evaluators behind one
-typed implementation with behavior tests, then delete the unused one. Future
-audits should distinguish rejection code from executable legacy behavior and
-remove the latter in the same commit that replaces it.
+rejection; the corresponding tests should remain. Compile-time procedure
+calls now use the typed evaluator; the older integer-only procedure
+interpreter has been removed. An integer expression parser still handles
+predicates and compiler-host probes such as `defined`. Continue consolidating
+expression rules with behavior tests. Future audits should distinguish
+rejection code from executable legacy behavior and remove the latter in the
+same commit that replaces it.
