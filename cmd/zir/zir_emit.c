@@ -2596,13 +2596,16 @@ EmitParallelWorkers(FILE *out, const ZirModule *module,
         return;
     e.minify = zir_minify_output;
     fprintf(out, "#include \"ziran_parallel.h\"\n\n");
+    fprintf(out, "/* ziran: no GPU device capability; #parallel_gpu regions "
+                 "run on CPU threads. */\n\n");
     for(int i = 0; i < fn->stmt_count; i++) {
         ParallelRegion region;
         if(!parallel_region_at(fn, i, &region))
             continue;
         if(!region.forward) {
             fprintf(out, "/* ziran: reverse #parallel region keeps serial "
-                         "execution */\n");
+                         "execution%s */\n",
+                    fn->stmts[i].is_gpu ? "; GPU region on CPU" : "");
             continue;
         }
         parallel_region_captures(module, fn, &region);
@@ -2704,7 +2707,9 @@ emit_sequence(Emitter *e,int begin,int end)
             int close=block_end(e->fn,i,end);
             int labeled=0;
             if(st->is_parallel && e->target==ZIR_GO)
-                line(e,"// ziran: #parallel region downgraded to serial");
+                line(e, st->is_gpu ?
+                    "// ziran: #parallel_gpu region downgraded to serial (no GPU device)" :
+                    "// ziran: #parallel region downgraded to serial");
             if(st->is_parallel && (e->target==ZIR_C || e->target==ZIR_CPP)) {
                 ParallelRegion region;
                 if(parallel_region_at(e->fn,i,&region) && region.forward) {

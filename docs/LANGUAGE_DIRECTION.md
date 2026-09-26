@@ -116,7 +116,11 @@ Parallel execution is a target requirement. Effect classes and the
 target. Native C and C++ execute forward regions on pthreads with
 iteration-local workers and read-only captures; the portable VM and Go run
 regions serially with a reported downgrade, which the backend-duties clause
-permits. A GPU scheduler remains future work.
+permits. `#parallel_gpu for` regions enforce the GPU clause — pointer
+storage and pointer-bearing arguments are rejected before offload — and, with
+no GPU device capability in the repository, run on the CPU worker path with
+an emitted downgrade marker. Offload to a concrete GPU API remains future
+work.
 
 ## Jai source syntax
 

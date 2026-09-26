@@ -100,6 +100,7 @@ typedef struct ZirStmt {
     ZirStmtKind kind;
     int is_using; /* template namespace activation; lowered in checked bodies */
     int is_parallel; /* `#parallel for` region; serial lowering, checked rules */
+    int is_gpu; /* `#parallel_gpu for` region; pointers rejected pre-offload */
     char text[ZIR_TEXT_MAX];
     int is_else;        /* checked branch role; source text is diagnostic only */
     int loop_id;        /* checked loop identity for named control flow */

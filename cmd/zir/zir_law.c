@@ -758,6 +758,31 @@ DeriveEffectClasses(ZirProgram **programs, int count)
     }
 }
 
+/* True when the type is a pointer, a record with pointer fields, or a
+ * fixed array of such. Vec storage counts through its data pointer. */
+static int
+gpu_type_holds_pointer(const ZirModule *module, const char *type, int depth)
+{
+    const ZirType *record;
+    size_t offset = 0;
+    ZirTypeField field;
+    int status;
+    if(depth >= 16)
+        return 0;
+    type = skip_ws(type);
+    if(type[0] == '*')
+        return 1;
+    record = FindType(module, type, NULL);
+    if(record == NULL || record->is_enum || record->is_procedure_type ||
+       record->is_record_template)
+        return 0;
+    while((status = TypeNextField(record, &offset, &field)) == 1)
+        if(field.type[0] == '*' ||
+           gpu_type_holds_pointer(module, field.type, depth + 1))
+            return 1;
+    return 0;
+}
+
 /* ---- #parallel for regions ------------------------------------------- */
 
 static int
@@ -863,6 +888,51 @@ check_parallel_region(const ZirProgram *program, const ZirModule *module,
         }
     }
     scan = block_open >= 0 ? block_open + 1 : 0;
+    if(fn->stmts[while_index].is_gpu) {
+        /* A GPU offload validates before execution: pointer storage and
+         * pointer arguments cannot cross to the device, and allocator
+         * backed Vec mutation has no device heap. */
+        for(int s = scan; s <= close; s++) {
+            const ZirStmt *st = &fn->stmts[s];
+            if(st->kind == ZIR_STMT_DECL && st->type[0] != '\0' &&
+               gpu_type_holds_pointer(module, st->type, 0)) {
+                Diagnostic(st->span, "gpu.pointer",
+                           "#parallel_gpu storage cannot hold pointers: %s",
+                           st->name);
+                return 0;
+            }
+            {
+                int roots[2] = {st->expr_root, st->lhs_root};
+                for(int r = 0; r < 2; r++)
+                    for(int e = roots[r]; e >= 0 && e < fn->expr_count;
+                        e = fn->exprs[e].next_sibling) {
+                        const ZirExpr *expr = &fn->exprs[e];
+                        int child;
+                        if(expr->kind != ZIR_EXPR_CALL || !expr->name[0])
+                            continue;
+                        if(vec_operation_name(expr->name) &&
+                           strcmp(expr->name, "VecGet") != 0) {
+                            Diagnostic(st->span, "gpu.allocator",
+                                       "#parallel_gpu cannot allocate: %s",
+                                       expr->name);
+                            return 0;
+                        }
+                        child = expr->first_child;
+                        while(child >= 0 && child < fn->expr_count) {
+                            const char *arg_type = fn->exprs[child].type;
+                            if(arg_type[0] != '\0' &&
+                               gpu_type_holds_pointer(module, arg_type, 0)) {
+                                Diagnostic(st->span, "gpu.pointer",
+                                           "#parallel_gpu argument holds a pointer in %s",
+                                           expr->name);
+                                return 0;
+                            }
+                            child = fn->exprs[child].next_sibling;
+                        }
+                    }
+            }
+        }
+    }
     {
         /* The lowered tail is `if cursor == last { break; } advance;`; the
          * region drives indices itself, so leave-controls there are fine.

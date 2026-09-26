@@ -613,8 +613,13 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   files containing workers compile with `-pthread`. Reverse regions, the
   portable VM, and Go run serially with an emitted downgrade marker, as the
   backend-duties clause permits; region-leaving `return`/`break`/`continue`
-  are rejected so no schedule can skip iterations. A GPU scheduler remains
-  future work.
+  are rejected so no schedule can skip iterations. `#parallel_gpu for`
+  regions validate before offload per the GPU clause: pointer storage,
+  pointer-bearing call arguments, and allocator-backed Vec mutation are
+  rejected, and external-class calls were already barred by the region
+  rules; with no GPU device capability in this repository every GPU region
+  runs on the CPU worker path with an emitted downgrade marker. Actual
+  device offload to a GPU API remains future work.
 - Complete Kryon's moved `.zi` widget modules with platform access through
   declared interfaces. The checked Kryon archive builds all 191 maintained UI
   modules; native host integration, full renderer behavior, and downstream

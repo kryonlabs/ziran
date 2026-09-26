@@ -6449,8 +6449,18 @@ parse_source(const char *path, const char *root, const char *source,
             char *bcnd = NULL;
             int bck;
             int parallel_for = 0;
+            int parallel_gpu = 0;
             char parallel_text[SOURCE_LINE_MAX * 2];
-            if(starts_word(t, "#parallel")) {
+            if(starts_word(t, "#parallel_gpu")) {
+                const char *after = skip_ws(t + strlen("#parallel_gpu"));
+                if(!starts_word(after, "for"))
+                    die_at(Span(rel, line_no, 1),
+                           "#parallel_gpu requires a for region");
+                parallel_for = 1;
+                parallel_gpu = 1;
+                snprintf(parallel_text, sizeof(parallel_text), "%s", after);
+                t = trim(parallel_text);
+            } else if(starts_word(t, "#parallel")) {
                 const char *after = skip_ws(t + strlen("#parallel"));
                 if(!starts_word(after, "for"))
                     die_at(Span(rel, line_no, 1),
@@ -6639,6 +6649,7 @@ parse_source(const char *path, const char *root, const char *source,
                         if(kind != ZIR_STMT_FOR)
                             die_at(span, "#parallel requires a for region");
                         statement->is_parallel = 1;
+                        statement->is_gpu = parallel_gpu;
                     }
                     if(statement != NULL && using_binding) {
                         statement->is_using = 1;
