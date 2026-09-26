@@ -92,3 +92,29 @@ if "$ziran" ir --root "$work" -o "$work/escape-ir" \
     exit 1
 fi
 rg -q 'returned text view borrows local or temporary storage' "$work/escape.log"
+
+cat > "$work/global.zi" <<'ZI'
+global_bytes: [3]u8 = .[97, 98, 99];
+global_text: string;
+
+Save :: () -> string {
+    global_text = TextView(global_bytes[:])
+    return global_text
+}
+ZI
+"$ziran" ir --root "$work" -o "$work/global-ir" "$work/global.zi"
+
+cat > "$work/global_escape.zi" <<'ZI'
+global_text: string;
+
+Bad :: () {
+    bytes: [2]u8
+    global_text = TextView(bytes[:])
+}
+ZI
+if "$ziran" ir --root "$work" -o "$work/global-escape-ir" \
+    "$work/global_escape.zi" > "$work/global-escape.log" 2>&1; then
+    echo 'TextView let a local buffer escape into a global' >&2
+    exit 1
+fi
+rg -q 'text view assignment may escape its backing storage' "$work/global-escape.log"

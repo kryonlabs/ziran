@@ -262,12 +262,18 @@ check_function(BorrowCheck *check, BorrowFunction *function)
                destination->kind == ZIR_EXPR_IDENT) {
                 BorrowBinding *target = binding(check, destination->name);
                 Origin source = expression_origin(check, statement->expr_root);
-                if(target == NULL || target->captured || source.invalid || source.depth > target->depth) {
+                int global_text = target == NULL &&
+                    !strcmp(destination->type, "string") &&
+                    !source.invalid && source.depth == 0 &&
+                    source.parameters == 0;
+                if(!global_text &&
+                   (target == NULL || target->captured || source.invalid ||
+                    source.depth > target->depth)) {
                     reject(check, statement->span,
                            !strcmp(destination->type, "string") ?
                            "text view assignment may escape its backing storage" :
                            "slice assignment may escape its backing storage");
-                } else if(target->local >= 0) {
+                } else if(target != NULL && target->local >= 0) {
                     accumulate(check, &function->locals[target->local], source);
                 }
             }
