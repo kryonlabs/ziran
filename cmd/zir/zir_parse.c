@@ -2281,7 +2281,8 @@ parse_cond_start(char *line, char **condition)
 
 static void
 expand_compile_expr_depth(char *dst, size_t dst_size, const ZirConsts *consts,
-                          const char *src, const char *lookup_path, int depth)
+                          const char *src, const char *lookup_path, int depth,
+                          const ZirConst **active)
 {
     size_t n = 0;
     int in_string = 0;
@@ -2290,10 +2291,9 @@ expand_compile_expr_depth(char *dst, size_t dst_size, const ZirConsts *consts,
 
     if(dst_size == 0)
         return;
-    if(depth > 16) {
-        dst[0] = '\0';
-        return;
-    }
+    if(depth > 16)
+        die_at(Span(lookup_path, 1, 1),
+               "compile-time constant expansion exceeds 16 levels");
     for(const char *p = src; p != NULL && *p != '\0' && n + 1 < dst_size;) {
         if(in_string) {
             dst[n++] = *p;
@@ -2365,10 +2365,18 @@ expand_compile_expr_depth(char *dst, size_t dst_size, const ZirConsts *consts,
                     char expanded[ZIR_TEXT_MAX];
                     int written;
 
+                    for(int ancestor = 0; ancestor < depth; ancestor++)
+                        if(active[ancestor] == &consts->items[i])
+                            die_at(Span(consts->items[i].path,
+                                        consts->items[i].source_line, 1),
+                                   "cyclic compile-time constant: %s",
+                                   ident);
+                    active[depth] = &consts->items[i];
+
                     expand_compile_expr_depth(expanded, sizeof(expanded),
                                               consts, consts->items[i].expr,
                                               consts->items[i].path,
-                                              depth + 1);
+                                              depth + 1, active);
                     written = snprintf(dst + n, dst_size - n, "(%s)", expanded);
                     if(written < 0)
                         written = 0;
@@ -2397,7 +2405,9 @@ static void
 expand_compile_expr(char *dst, size_t dst_size, const ZirConsts *consts,
                     const char *src, const char *lookup_path)
 {
-    expand_compile_expr_depth(dst, dst_size, consts, src, lookup_path, 0);
+    const ZirConst *active[17] = {0};
+    expand_compile_expr_depth(dst, dst_size, consts, src, lookup_path, 0,
+                              active);
 }
 
 static char *
@@ -4163,7 +4173,34 @@ typedef struct CompileParseContext {
     const char *root;
     ZirCompileImportResolver resolver;
     void *resolver_context;
+    const ZirConsts *future_constants;
 } CompileParseContext;
+
+static ZirConsts
+visible_compile_constants(const ZirConsts *parsed, const ZirConsts *future)
+{
+    ZirConsts visible = {0};
+    int extra = future != NULL ? future->count : 0;
+    visible.items = calloc((size_t)parsed->count + (size_t)extra + 1,
+                           sizeof(*visible.items));
+    if(visible.items == NULL)
+        die("out of memory resolving compile-time constants");
+    for(int i = 0; i < parsed->count; i++)
+        visible.items[visible.count++] = parsed->items[i];
+    for(int i = 0; i < extra; i++) {
+        const ZirConst *candidate = &future->items[i];
+        int present = 0;
+        for(int j = 0; j < parsed->count; j++)
+            if(!strcmp(parsed->items[j].name, candidate->name) &&
+               !strcmp(parsed->items[j].path, candidate->path)) {
+                present = 1;
+                break;
+            }
+        if(!present)
+            visible.items[visible.count++] = *candidate;
+    }
+    return visible;
+}
 
 static int
 select_compile_condition(ZirModule *module, const ZirConsts *consts,
@@ -4174,6 +4211,9 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
     char expanded[ZIR_TEXT_MAX];
     long value = 0;
     int known;
+    ZirConsts visible = visible_compile_constants(consts,
+        context != NULL ? context->future_constants : NULL);
+    consts = &visible;
     expand_compile_expr(expanded, sizeof(expanded), consts, source, span.path);
     if(module->using_count > 0 && context != NULL &&
        context->resolver != NULL &&
@@ -4227,6 +4267,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
     if(!known)
         die_at(span, "#if condition is not a compile-time constant: %s",
                expanded);
+    free(visible.items);
     return value != 0;
 }
 
@@ -4927,6 +4968,81 @@ read_source_line(char *line, size_t size, const char **source,
     return line;
 }
 
+/* Discover only unconditional, single-line file constants. Conditional
+ * bodies, type bodies, and procedures are opaque here: branch selection must
+ * never gain names from a branch that may later be discarded. */
+static void
+discover_file_constants(const char *source, const char *path,
+                        const char *rel, ZirConsts *future)
+{
+    char line[SOURCE_LINE_MAX];
+    int line_no = 0;
+    int comment_depth = 0;
+    int brace_depth = 0;
+    int scope_file = 0;
+
+    while(read_source_line(line, sizeof(line), &source, path, line_no) != NULL) {
+        line_no++;
+        strip_block_comments(line, &comment_depth);
+        char *t = trim(line);
+        if(brace_depth == 0) {
+            if(!strcmp(t, "#scope_file"))
+                scope_file = 1;
+            else if(!strcmp(t, "#scope_module") ||
+                    !strcmp(t, "#scope_export"))
+                scope_file = 0;
+            else {
+                const char *colons = strstr(t, "::");
+                if(colons != NULL && !brace_outside_literals(t) &&
+                   !looks_like_function_header(t)) {
+                    char name[ZIR_NAME_MAX];
+                    size_t name_length = (size_t)(colons - t);
+                    const char *expr = skip_ws(colons + 2);
+                    size_t expr_length = strlen(expr);
+                    while(expr_length > 0 &&
+                          isspace((unsigned char)expr[expr_length - 1]))
+                        expr_length--;
+                    if((expr[0] != '#' ||
+                        starts_word(expr, "#defined")) &&
+                       name_length > 0 && name_length < sizeof(name) &&
+                       expr_length > 1 && expr[expr_length - 1] == ';' &&
+                       expr_length - 1 < ZIR_TEXT_MAX) {
+                        memcpy(name, t, name_length);
+                        name[name_length] = '\0';
+                        trim_in_place(name);
+                        if(is_identifier_text(name)) {
+                            if(future->count == future->capacity) {
+                                int capacity = future->capacity > 0 ?
+                                    future->capacity * 2 : 16;
+                                ZirConst *items = realloc(future->items,
+                                    (size_t)capacity * sizeof(*items));
+                                if(items == NULL)
+                                    die("out of memory discovering constants");
+                                future->items = items;
+                                future->capacity = capacity;
+                            }
+                            ZirConst *constant = &future->items[future->count++];
+                            memset(constant, 0, sizeof(*constant));
+                            copy_text(constant->name, sizeof(constant->name),
+                                      name);
+                            memcpy(constant->expr, expr, expr_length - 1);
+                            constant->expr[expr_length - 1] = '\0';
+                            trim_in_place(constant->expr);
+                            copy_text(constant->path, sizeof(constant->path),
+                                      rel);
+                            constant->is_file_private = scope_file;
+                            constant->source_line = line_no;
+                        }
+                    }
+                }
+            }
+        }
+        brace_depth += net_block_braces(t);
+        if(brace_depth < 0)
+            brace_depth = 0;
+    }
+}
+
 /* Jai constant declarations inside enums use 'Member :: value'. The checked
  * IR stores explicit values in the backend-neutral 'Member = value' form. */
 static void
@@ -5341,6 +5457,7 @@ parse_source(const char *path, const char *root, const char *source,
     ZirCondFrame type_frames[8];
     int type_frame_count = 0;
     ZirConsts consts;
+    ZirConsts future_constants = {0};
     int body_mdepth[8];
     int body_mselected[8];
     int body_mactive[8];
@@ -5383,6 +5500,7 @@ parse_source(const char *path, const char *root, const char *source,
     compile_context.root = root;
     compile_context.resolver = resolver;
     compile_context.resolver_context = resolver_context;
+    compile_context.future_constants = &future_constants;
 
     module = ProgramAddModule(program, module_name, rel, Span(rel, 1, 1));
     if(module == NULL)
@@ -5393,6 +5511,7 @@ parse_source(const char *path, const char *root, const char *source,
                   canonical_root != NULL ? canonical_root : root);
         free(canonical_root);
     }
+    discover_file_constants(source, path, rel, &future_constants);
 
     for(;;) {
         if(!have_look && onelineq_count == 0 &&
@@ -6026,6 +6145,7 @@ parse_source(const char *path, const char *root, const char *source,
             if(fragment == NULL) {
                 ProgramFree(program);
                 free(consts.items);
+                free(future_constants.items);
                 free(canonical);
                 return NULL;
             }
@@ -6339,13 +6459,15 @@ parse_source(const char *path, const char *root, const char *source,
                         char expanded[ZIR_TEXT_MAX];
                         long value = 0;
                         int folded;
+                        ZirConsts visible = visible_compile_constants(
+                            &consts, &future_constants);
 
                         expand_compile_expr(expanded, sizeof(expanded),
-                                            &consts, trim((char *)(expr + 4)),
+                                            &visible, trim((char *)(expr + 4)),
                                             rel);
                         folded = strstr(expanded, "size_of") == NULL &&
                                  eval_const_condition(expanded, &value, module,
-                                                      &consts, rel, 1);
+                                                     &visible, rel, 1);
                         if(folded)
                             snprintf(run_value, sizeof(run_value),
                                      "%ld", value);
@@ -6358,7 +6480,7 @@ parse_source(const char *path, const char *root, const char *source,
                                    module, path, root, expanded))
                                 die_at(Span(rel, line_no, 1),
                                        "cannot resolve imports for #run expression");
-                            if(evaluate_typed_expression(module, &consts,
+                            if(evaluate_typed_expression(module, &visible,
                                     expanded, rel, 1, &fuel, &typed) &&
                                typed.kind != COMPILE_INVALID) {
                                 copy_text(run_value, sizeof(run_value),
@@ -6376,6 +6498,7 @@ parse_source(const char *path, const char *root, const char *source,
                                        "#run expression is too long");
                             deferred_run = 1;
                         }
+                        free(visible.items);
                         expr = run_value;
                     }
                     if(!deferred_run &&
@@ -6897,12 +7020,14 @@ parse_source(const char *path, const char *root, const char *source,
                !LowerCleanup(fn)) {
                 ProgramFree(program);
                 free(consts.items);
+                free(future_constants.items);
                 free(canonical);
                 return NULL;
             }
             if(!LowerJaiFor(fn, module)) {
                 ProgramFree(program);
                 free(consts.items);
+                free(future_constants.items);
                 free(canonical);
                 return NULL;
             }
@@ -6911,6 +7036,7 @@ parse_source(const char *path, const char *root, const char *source,
         module->lookup_path[0] = '\0';
     }
     free(consts.items);
+    free(future_constants.items);
     free(canonical);
     return program;
 }

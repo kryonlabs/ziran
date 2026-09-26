@@ -172,3 +172,90 @@ if "$ziran" check --root "$work" "$work/unterminated.zi" \
     exit 1
 fi
 grep -Fq 'unterminated #if block' "$work/unterminated.err"
+
+cat > "$work/forward.zi" <<'EOF'
+#if LATER == 2 {
+Selected :: 40;
+} else {
+Selected :: MissingValue;
+}
+RUN :: #run LATER;
+LATER :: BASE + 1;
+BASE :: 1;
+#program_export
+Answer :: () -> s64 { return Selected + RUN }
+EOF
+"$ziran" ir --root "$work" -o "$work/forward-ir" "$work/forward.zi"
+if grep -aFq 'MissingValue' "$work/forward-ir/forward.zir"; then
+    echo 'unselected forward branch was saved in IR' >&2
+    exit 1
+fi
+for input in "$work/forward.zi" "$work/forward-ir/forward.zir"; do
+    case "$input" in
+        *.zi) root=$work; label=source ;;
+        *.zir) root=$work/forward-ir; label=saved ;;
+    esac
+    "$ziran" bundle --root "$root" --entry forward:Answer \
+        -o "$work/forward-$label.zib" "$input"
+    test "$("$ziran" run "$work/forward-$label.zib")" = 42
+    for target in c cpp go; do
+        out="$work/forward-$label-$target"
+        "$ziran" build "--target=$target" --root "$root" -o "$out" "$input"
+        case "$target" in
+            c)
+                printf '#include "forward.h"\nint main(void) { return Answer() == 42 ? 0 : 1; }\n' > "$work/forward-main.c"
+                ${CC:-cc} -Iinclude -I"$out" "$out"/*.c \
+                    "$work/forward-main.c" -o "$out/app"
+                "$out/app"
+                ;;
+            cpp)
+                printf '#include "forward.hpp"\nint main() { return Answer() == 42 ? 0 : 1; }\n' > "$work/forward-main.cpp"
+                ${CXX:-c++} -Iinclude -I"$out" "$out"/*.cpp \
+                    "$work/forward-main.cpp" -o "$out/app"
+                "$out/app"
+                ;;
+            go)
+                cat > "$out/forward_test.go" <<'GO'
+package ziran
+import "testing"
+func TestForward(t *testing.T) {
+    if Forward_Answer() != 42 { t.Fatal("forward constant") }
+}
+GO
+                GO111MODULE=off go test "$out"/*.go
+                ;;
+        esac
+    done
+done
+cmp "$work/forward-source.zib" "$work/forward-saved.zib"
+
+cat > "$work/inactive_constant.zi" <<'EOF'
+#if false {
+Hidden :: 1;
+}
+#if Hidden == 1 {
+Answer :: () -> s64 { return 42 }
+}
+EOF
+if "$ziran" check --root "$work" "$work/inactive_constant.zi" \
+    2> "$work/inactive_constant.err"; then
+    echo 'constant in inactive branch became visible' >&2
+    exit 1
+fi
+grep -Fq '#if condition is not a compile-time constant' \
+    "$work/inactive_constant.err"
+
+cat > "$work/cyclic_constant.zi" <<'EOF'
+#if FIRST == 1 {
+Answer :: () -> s64 { return 42 }
+}
+FIRST :: SECOND;
+SECOND :: FIRST;
+EOF
+if "$ziran" check --root "$work" "$work/cyclic_constant.zi" \
+    2> "$work/cyclic_constant.err"; then
+    echo 'cyclic forward constants were accepted' >&2
+    exit 1
+fi
+grep -Fq 'cyclic compile-time constant: FIRST' \
+    "$work/cyclic_constant.err"

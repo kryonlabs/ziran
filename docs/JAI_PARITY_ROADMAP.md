@@ -82,14 +82,17 @@ visibility and ambiguity diagnostics consistent with local `using`.
 
 ### 2. Declaration-order-independent compile-time lookup
 
-The current parser selects some `#if` branches before all later declarations
-are known. Consequently a `#if` before a later `using` cannot always see the
-opened enum members; some forward/imported compile-time queries have the same
-ordering limit. The OpenJai reference describes top-level declaration order as
-independent. Investigate Jai's actual behavior, then split top-level discovery
-from branch selection or add a bounded dependency-resolution pass. Do not
-resolve a condition by parsing code from an inactive branch or by changing
-the meaning of file-private declarations.
+The parser now discovers unconditional, single-line file constants before
+selecting `#if` branches. `#if` and file-scope `#run` can refer to these later
+constants, including chains of references; cycles report an explicit error.
+`tests/compile_if_syntax.sh` covers this on source and saved `.zir` for C,
+C++, Go, and `.zib`, and checks that names from inactive branches stay hidden.
+This is a limited first pass: a `#if` before a later `using` still cannot see
+the opened enum members, and forward/imported type queries have ordering
+limits. The OpenJai reference describes top-level declaration order as
+independent. Investigate Jai's actual behavior, then extend top-level discovery
+or add bounded dependency resolution. Do not resolve a condition by parsing
+code from an inactive branch or by changing file-private visibility.
 
 Acceptance: a forward constant, import, type, and `using` in conditions and
 `#run` resolve when legal; cycles produce an explicit diagnostic; source and
