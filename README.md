@@ -1,5 +1,8 @@
 # Ziran
 
+Website and documentation: https://ziran-lang.org/ (site source in
+`site/`).
+
 Ziran is a general-purpose language. Its source files use `.zi`, its checked
 intermediate representation uses `.zir`, and its portable linked programs use
 `.zib`. None of those formats assumes a graphical application.
