@@ -2934,38 +2934,36 @@ eval_const_function(ZirEval *ev, const char *name, const long *values,
     return 1;
 }
 
-static int
-eval_imported_integer_define(ZirEval *ev, const char *name, size_t length,
-                             long *value)
+static const ZirDefine *
+find_imported_define(const ZirModule *module, const char *lookup_path,
+                     const char *name, size_t length,
+                     const ZirModule **owner_out)
 {
     const char *dot = memchr(name, '.', length);
     const ZirImport *import = NULL;
     const ZirDefine *definition = NULL;
-    ZirConsts names = {0};
-    char expanded[ZIR_TEXT_MAX];
-    int known = 0;
-    if(ev->module == NULL || dot == NULL || ev->depth >= 16 ||
+    if(module == NULL || dot == NULL ||
        memchr(dot + 1, '.', length - (size_t)(dot + 1 - name)) != NULL)
-        return 0;
+        return NULL;
     size_t alias_length = (size_t)(dot - name);
     size_t member_length = length - alias_length - 1;
     if(alias_length == 0 || alias_length >= ZIR_NAME_MAX ||
        member_length == 0 || member_length >= ZIR_NAME_MAX)
-        return 0;
-    for(int i = 0; i < ev->module->import_count; i++) {
-        const ZirImport *candidate = &ev->module->imports[i];
+        return NULL;
+    for(int i = 0; i < module->import_count; i++) {
+        const ZirImport *candidate = &module->imports[i];
         if(candidate->kind != ZIR_IMPORT_MODULE ||
            (candidate->is_file_private &&
-            strcmp(candidate->span.path, ev->lookup_path) != 0) ||
+            strcmp(candidate->span.path, lookup_path) != 0) ||
            strlen(candidate->name) != alias_length ||
            strncmp(candidate->name, name, alias_length) != 0)
             continue;
         if(import != NULL && import != candidate)
-            return 0;
+            return NULL;
         import = candidate;
     }
     if(import == NULL || import->resolved_module == NULL)
-        return 0;
+        return NULL;
     const ZirModule *owner = import->resolved_module;
     for(int i = 0; i < owner->define_count; i++) {
         const ZirDefine *candidate = &owner->defines[i];
@@ -2974,11 +2972,27 @@ eval_imported_integer_define(ZirEval *ev, const char *name, size_t length,
            strncmp(candidate->name, dot + 1, member_length) != 0)
             continue;
         if(definition != NULL)
-            return 0;
+            return NULL;
         definition = candidate;
     }
-    if(definition == NULL)
+    if(definition != NULL) *owner_out = owner;
+    return definition;
+}
+
+static int
+eval_imported_integer_define(ZirEval *ev, const char *name, size_t length,
+                             long *value)
+{
+    const ZirModule *owner = NULL;
+    const ZirDefine *definition;
+    ZirConsts names = {0};
+    char expanded[ZIR_TEXT_MAX];
+    int known = 0;
+    if(ev->depth >= 16)
         return 0;
+    definition = find_imported_define(ev->module, ev->lookup_path, name,
+                                      length, &owner);
+    if(definition == NULL) return 0;
     names.count = owner->define_count;
     names.items = calloc((size_t)names.count + 1, sizeof(*names.items));
     if(names.items == NULL)
@@ -3599,6 +3613,38 @@ static int evaluate_typed_function(const ZirModule *module,
                                    CompileValue *result);
 
 static int
+evaluate_imported_typed_define(const ZirModule *module, const char *path,
+                               const char *name, int depth, int *fuel,
+                               CompileValue *result)
+{
+    const ZirModule *owner = NULL;
+    const ZirDefine *definition = find_imported_define(
+        module, path, name, strlen(name), &owner);
+    ZirConsts names = {0};
+    int ok;
+    if(definition == NULL || depth >= 32) return 0;
+    names.count = owner->define_count;
+    names.items = calloc((size_t)names.count + 1, sizeof(*names.items));
+    if(names.items == NULL)
+        die("out of memory evaluating imported constant");
+    for(int i = 0; i < names.count; i++) {
+        const ZirDefine *source = &owner->defines[i];
+        ZirConst *constant = &names.items[i];
+        copy_text(constant->name, sizeof(constant->name), source->name);
+        copy_text(constant->expr, sizeof(constant->expr), source->value);
+        copy_text(constant->path, sizeof(constant->path),
+                  source->span.path);
+        constant->is_file_private = source->is_file_private;
+        constant->source_line = source->span.line;
+    }
+    ok = evaluate_typed_expression(owner, &names, definition->value,
+                                   definition->span.path, depth + 1,
+                                   fuel, result);
+    free(names.items);
+    return ok;
+}
+
+static int
 evaluate_typed_node(const ZirFunction *probe, int index,
                     const ZirModule *module, const char *path,
                     int depth, int *fuel, CompileValue *result)
@@ -3750,6 +3796,16 @@ evaluate_typed_node(const ZirFunction *probe, int index,
         return isfinite(result->real) && compile_value_literal(result);
     }
     case ZIR_EXPR_MEMBER:
+        if(expression->left >= 0 &&
+           probe->exprs[expression->left].kind == ZIR_EXPR_IDENT) {
+            char qualified[ZIR_NAME_MAX];
+            if(snprintf(qualified, sizeof(qualified), "%s.%s",
+                        probe->exprs[expression->left].name,
+                        expression->name) < (int)sizeof(qualified) &&
+               evaluate_imported_typed_define(module, path, qualified,
+                                              depth + 1, fuel, result))
+                return 1;
+        }
         if(!evaluate_typed_node(probe, expression->left, module, path,
                                 depth + 1, fuel, &left)) return 0;
         if(left.kind == COMPILE_STRING &&

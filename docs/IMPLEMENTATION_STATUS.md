@@ -307,8 +307,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   parameters, work in `#run`; `#assert` can compare those results. String
   comparisons use the same escape and UTF-8 decoder as the portable runner.
   Source-selecting `#if` can use earlier `#run` definitions when their
-  procedures and imports are available while parsing. Effects, unbounded
-  execution, aggregate results, and general metaprogramming are unsupported.
+  procedures and imports are available while parsing. Named imported real
+  and string constants resolve in `#if` and `#run` even when the import
+  declaration follows the condition. Their public visibility and private
+  exclusion are checked from source and saved IR on C, C++, Go, and `.zib` by
+  `tests/imported_typed_constants.sh`. Effects, unbounded execution, aggregate
+  results, and general metaprogramming are unsupported.
   One-line function bodies are parsed as ordinary statements instead of
   being silently skipped.
   Jai `#if ... else #if ... else` selects file-scope declarations and function

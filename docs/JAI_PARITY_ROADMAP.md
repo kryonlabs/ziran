@@ -40,7 +40,7 @@ including `#enum`, `variant`, postfix `?`, `#global`, `#export`, `#private`,
 `#extern`, C pointer suffixes, C conditional expressions, and old Kryon file
 extensions. The rejection tests should stay.
 
-The full local `make check` suite has 96 checks. Re-run it after any change to
+The full local `make check` suite has 97 checks. Re-run it after any change to
 the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 
 | Area | Current subset | Next proof of parity |
@@ -106,9 +106,11 @@ their declaring file. `tests/forward_load_conditions.sh` checks source and
 saved IR on all four targets, private visibility, and inactive loads. This is
 still a limited pass: types with conditional bodies, generic instances, enum
 flags, embedded source imports, and imports in conditionally selected `#load`
-files have ordering limits. Imported
-real, string, and aggregate constants have not been covered by the integer
-evaluator. Token normalization now waits for branch selection, so obsolete
+files have ordering limits. Named imported real and string constants work in
+`#if` and `#run`, including an import declared later in the file;
+`tests/imported_typed_constants.sh` checks them on source and saved IR across
+all four targets. Aggregate constants and broader import forms remain open.
+Token normalization now waits for branch selection, so obsolete
 primitive spellings in inactive top-level, type, and procedure branches are
 ignored while selected `else #if` conditions still use Jai scalar aliases.
 `tests/compile_if_syntax.sh` covers these cases. The OpenJai reference
