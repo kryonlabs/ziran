@@ -14,18 +14,9 @@ Reader :: #type (record: *Record, index: s32) -> s32;
 Factory :: #type () -> *Record;
 Sink :: #type (record: *Record) -> ();
 
-read_value :: (record: *Record, index: s32) -> s32 {
-    if record == null {
-        return 0
-    }
-    return record.value + index
-}
-
 #program_export
 Answer :: () -> s32 {
-    record: Record
-    record.value = 41
-    return read_value(*record, 1)
+    return 42
 }
 EOF
 
