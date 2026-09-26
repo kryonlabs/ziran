@@ -722,294 +722,15 @@ emit_extern_prototype(FILE *c, const ZirModule *m, const ZirImport *imp)
 }
 
 
-/* `Type.{.a = 1}` becomes a C99/C++ compound literal so an initialized
- * file-scope record still compiles as a static initializer. */
-static void
-lower_record_literal_init(const ZirModule *m, const ZirGlobal *g,
-                          char *out, size_t size)
+static int
+rewrite_global_scalar(const ZirModule *module, const char *source,
+                      char *out, size_t size, void *context)
 {
-    const char *init = skip_ws(g->init);
-    const ZirType *record = FindType(m, g->type, NULL);
-    const char *dot = NULL;
-    size_t type_length = 0;
-    char type[ZIR_NAME_MAX];
-    if(init[0] == '\0')
-        return;
-    dot = strchr(init, '.');
-    if(dot != NULL)
-        type_length = (size_t)(dot - init);
-    if(record == NULL || dot == NULL || dot[1] != '{' ||
-       type_length == 0 || type_length >= sizeof(type)) {
-        copy_text(out, size, init);
-        return;
-    }
-    memcpy(type, init, type_length);
-    type[type_length] = '\0';
-    if(FindType(m, type, NULL) != record) {
-        copy_text(out, size, init);
-        return;
-    }
-    copy_text(out, size, "{");
-    {
-        const char *cursor = dot + 1;
-        int entry_ordinal = 0;
-        while(*cursor && *cursor != '}') {
-            const char *entry_start = cursor;
-            const char *entry_end = entry_start;
-            char name[ZIR_NAME_MAX];
-            char value[LOWER_TEXT_MAX];
-            size_t name_length = 0;
-            const char *comma;
-            int depth = 0;
-            while(*entry_start == '.' || *entry_start == '{' ||
-                  *entry_start == ' ')
-                entry_start++;
-            entry_end = entry_start;
-            while((isalnum((unsigned char)*entry_end) ||
-                   *entry_end == '_'))
-                entry_end++;
-            name_length = (size_t)(entry_end - entry_start);
-            if(name_length == 0 || name_length >= sizeof(name))
-                break;
-            (void)name;
-            (void)name_length;
-            comma = entry_end;
-            while(*comma && (depth || *comma != ',')) {
-                if(*comma == '(' || *comma == '[' || *comma == '{')
-                    depth++;
-                else if(*comma == ')' || *comma == ']' || *comma == '}')
-                    depth--;
-                comma++;
-            }
-            int last_entry = *comma == '\0';
-            {
-                size_t value_length = (size_t)(comma - entry_end);
-                const char *value_start = entry_end;
-                while(value_length > 0 &&
-                      (*value_start == ' ' || *value_start == '\t' ||
-                       *value_start == '=' )) {
-                    value_start++;
-                    value_length--;
-                }
-                while(value_length > 0 &&
-                      (value_start[value_length - 1] == ' ' ||
-                       value_start[value_length - 1] == '\t' ||
-                       value_start[value_length - 1] == '}'))
-                    value_length--;
-                if(value_length >= sizeof(value))
-                    break;
-                memcpy(value, value_start, value_length);
-                value[value_length] = '\0';
-                {
-                    char rewritten[LOWER_TEXT_MAX];
-                    char designated[LOWER_NAME_MAX + 8];
-                    char pair[LOWER_TEXT_MAX];
-                    const char *field = value;
-                    size_t offset = 0;
-                    ZirTypeField decl;
-                    int position = 0;
-                    int is_string = 0;
-                    rewrite_body2(m, NULL, 0, value, rewritten,
-                                  sizeof(rewritten));
-                    if(rewritten[0] == '\0')
-                        copy_text(rewritten, sizeof(rewritten), value);
-                    while(TypeNextField(record, &offset, &decl) == 1) {
-                        if(position == entry_ordinal) {
-                            is_string = !strcmp(decl.type, "string");
-                            break;
-                        }
-                        position++;
-                    }
-                    /* positional strings need their {data, length} pair */
-                    if(is_string && rewritten[0] == '"' &&
-                       snprintf(pair, sizeof(pair), "{%s, sizeof(%s) - 1}",
-                                rewritten, rewritten) > 0 &&
-                       strlen(pair) < sizeof(pair))
-                        copy_text(rewritten, sizeof(rewritten), pair);
-                    (void)field;
-                    snprintf(designated, sizeof(designated), "%s",
-                             rewritten);
-                    if(strlen(out) > 1)
-                        strncat(out, ", ", size - strlen(out) - 1);
-                    strncat(out, designated, size - strlen(out) - 1);
-                }
-            }
-            cursor = comma + 1;
-            entry_ordinal++;
-            if(last_entry)
-                break;
-        }
-    }
-    strncat(out, "}", size - strlen(out) - 1);
+    (void)context;
+    rewrite_body2(module, NULL, 0, source, out, size);
+    return out[0] != '\0';
 }
 
-
-/* String fields lower to a {data, length} pair; a designated entry with a
- * bare literal would leave the length zero, so expand those in place. */
-static void
-expand_designated_strings(const ZirType *record, char *text, size_t size)
-{
-    char out[LOWER_TEXT_MAX];
-    size_t used = 0;
-    const char *cursor = text;
-    if(record == NULL)
-        return;
-    while(*cursor && used + 1 < sizeof(out)) {
-        if(cursor[0] == '.' && cursor[1]) {
-            const char *name_start = cursor + 1;
-            const char *name_end = name_start;
-            while(isalnum((unsigned char)*name_end) || *name_end == '_')
-                name_end++;
-            if(name_end > name_start &&
-               strncmp(name_end, " = \"", 4) == 0) {
-                char name[ZIR_NAME_MAX];
-                size_t name_length = (size_t)(name_end - name_start);
-                size_t offset = 0;
-                ZirTypeField field;
-                int is_string = 0;
-                if(name_length < sizeof(name)) {
-                    memcpy(name, name_start, name_length);
-                    name[name_length] = '\0';
-                    while(TypeNextField(record, &offset, &field) == 1)
-                        if(!strcmp(field.name, name)) {
-                            is_string = !strcmp(field.type, "string");
-                            break;
-                        }
-                }
-                if(is_string) {
-                    const char *literal = name_end + 3;
-                    const char *scan = literal + 1;
-                    size_t literal_length;
-                    while(*scan && *scan != '"') {
-                        if(*scan == '\\' && scan[1]) scan++;
-                        scan++;
-                    }
-                    literal_length = *scan == '"' ?
-                        (size_t)(scan - literal) + 1 : 0;
-                    if(literal_length &&
-                       used + name_length + 2 * literal_length + 32 <
-                       sizeof(out)) {
-                        out[used++] = '.';
-                        memcpy(out + used, name, name_length);
-                        used += name_length;
-                        used += (size_t)snprintf(out + used,
-                                sizeof(out) - used,
-                                " = {%.*s, sizeof(%.*s) - 1}",
-                                (int)literal_length, literal,
-                                (int)literal_length, literal);
-                        cursor = scan + 1;
-                        continue;
-                    }
-                }
-            }
-        }
-        out[used++] = *cursor++;
-    }
-    out[used] = '\0';
-    copy_text(text, size, out);
-}
-
-/* Lower `.[e0, e1, ...]` file-scope array initializers. Record elements use
- * the positional record lowering; scalars pass through the body rewriter so
- * enum constants and named values resolve. */
-static void
-lower_array_literal_init(const ZirModule *m, const ZirGlobal *g,
-                         char *out, size_t size)
-{
-    const char *init = skip_ws(g->init);
-    char element[ZIR_NAME_MAX];
-    const ZirType *record = NULL;
-    if(init[0] != '.' || init[1] != '[' ||
-       !ArrayElementType(g->type, element, sizeof(element), NULL) ||
-       (record = FindType(m, element, NULL)) == NULL ||
-       record->is_enum || record->is_procedure_type) {
-        if(init[0] == '.' && init[1] == '[') {
-            /* scalar arrays: strip the dot, rewrite the body, brace it */
-            const char *close = strrchr(init + 2, ']');
-            char inner[LOWER_TEXT_MAX];
-            char rewritten[LOWER_TEXT_MAX];
-            size_t length;
-            if(close == NULL)
-                return;
-            length = (size_t)(close - (init + 2));
-            if(length >= sizeof(inner))
-                return;
-            memcpy(inner, init + 2, length);
-            inner[length] = '\0';
-            rewrite_body2(m, NULL, 0, inner, rewritten, sizeof(rewritten));
-            snprintf(out, size, "{%s}", rewritten[0] ? rewritten : inner);
-        }
-        return;
-    }
-    copy_text(out, size, "{");
-    {
-        const char *cursor = init + 2;
-        int first = 1;
-        while(*cursor && *cursor != ']') {
-            char entry[LOWER_TEXT_MAX];
-            char lowered[LOWER_TEXT_MAX];
-            const char *end = cursor;
-            int depth = 0;
-            while(*end) {
-                if(*end == '"' || *end == '\'') {
-                    char quote = *end++;
-                    while(*end && *end != quote) {
-                        if(*end == '\\' && end[1]) end++;
-                        end++;
-                    }
-                }
-                if(!*end) break;
-                if(depth == 0 && (*end == ',' || *end == ']')) break;
-                if(*end == '(' || *end == '[' || *end == '{') depth++;
-                else if(*end == ')' || *end == ']' || *end == '}') depth--;
-                end++;
-            }
-            size_t length = (size_t)(end - cursor);
-            while(length > 0 && (*cursor == ' ' || *cursor == '\t' ||
-                                 *cursor == '\n')) {
-                cursor++;
-                length--;
-            }
-            while(length > 0 &&
-                  (cursor[length - 1] == ' ' || cursor[length - 1] == '\t' ||
-                   cursor[length - 1] == '\n'))
-                length--;
-            if(length >= sizeof(entry)) {
-                out[0] = '\0';
-                return;
-            }
-            memcpy(entry, cursor, length);
-            entry[length] = '\0';
-            {
-                ZirGlobal element_global;
-                memset(&element_global, 0, sizeof(element_global));
-                copy_text(element_global.type,
-                          sizeof(element_global.type), element);
-                copy_text(element_global.init,
-                          sizeof(element_global.init), entry);
-                element_global.span = g->span;
-                lower_record_literal_init(m, &element_global, lowered,
-                                          sizeof(lowered));
-                if(lowered[0] == '{')
-                    expand_designated_strings(record, lowered,
-                                              sizeof(lowered));
-                if(lowered[0] != '{') {
-                    char rewritten[LOWER_TEXT_MAX];
-                    rewrite_body2(m, NULL, 0, entry, rewritten,
-                                  sizeof(rewritten));
-                    copy_text(lowered, sizeof(lowered),
-                              rewritten[0] ? rewritten : entry);
-                }
-            }
-            if(!first)
-                strncat(out, ", ", size - strlen(out) - 1);
-            strncat(out, lowered, size - strlen(out) - 1);
-            first = 0;
-            cursor = *end == ',' ? end + 1 : end;
-        }
-    }
-    strncat(out, "}", size - strlen(out) - 1);
-}
 static void
 lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_count, const char *out_dir)
 {
@@ -1351,13 +1072,16 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
             /* initializers carry 'null' and module-local function refs */
             if(!ScalarLiteral(g->type, g->init, ZIR_CPP, g->span, initw, sizeof(initw))) {
                 char recordw[LOWER_TEXT_MAX] = "";
-                const char *stripped = skip_ws(g->init);
-                if(stripped[0] == '.' && stripped[1] == '[') {
-                    lower_array_literal_init(m, g, recordw, sizeof(recordw));
+                int compound = EmitGlobalInitializer(m, g, ZIR_CPP,
+                    rewrite_global_scalar, NULL, NULL, NULL, recordw,
+                    sizeof(recordw));
+                if(compound < 0) {
+                    Diagnostic(g->span, "zir_cpp.global",
+                               "cannot lower compound global initializer: %s",
+                               g->name);
+                    exit(1);
                 }
-                else
-                    lower_record_literal_init(m, g, recordw, sizeof(recordw));
-                if(recordw[0] == '{')
+                if(compound > 0)
                     snprintf(initw, sizeof(initw), "%s", recordw);
                 else
                     rewrite_body2(m, NULL, 0, g->init, initw, sizeof(initw));

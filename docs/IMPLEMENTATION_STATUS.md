@@ -439,16 +439,19 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 - Portable bundles retain referenced module globals, including records and
   fixed arrays. Explicit initializers run before the first statement of
   every `BundleRun`: integer and boolean literals, compile-time constant
-  expressions over defines, float literals, string literals, and flat
-  `Type.{.field = value}` record literals fold into the global's slot, with
+  expressions over defines, float literals, string literals, and nested
+  `Type.{.field = value}` record and fixed-array literals fold into the
+  global's slot, with
   mutable initialized globals across calls and byte-identical source and
   saved-IR bundles; C, C++, and Go emit the same initializers natively
   (designated initializers in C, positional in C++, struct literals in Go).
   String globals and string fields in record and array initializers decode
   escapes and retain their bytes for the instance lifetime. Tests compare
-  contents across repeated runs and fresh instances. Initializers that call
-  procedures remain rejected; nested record global literals still need native
-  lowering. The VM reads and writes globals across
+  contents across repeated runs and fresh instances. Native C, C++, and Go
+  lower nested record and array initializers from the parsed expression tree;
+  the cross-target test covers reordered fields and string escapes.
+  Initializers that call procedures remain rejected. The VM reads and writes
+  globals across
   imported function calls, and reclaims replaced values without losing
   globals reached by a caller. Source and saved `.zir`, `.zib`, C, C++, and Go
   tests cover value isolation and repeated mutation. Each `BundleRun` starts

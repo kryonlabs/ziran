@@ -32,6 +32,12 @@ Track :: struct {
 }
 tracks: [3]Track = .[Track.{.title = "fir\x73t", .weight = 3}, Track.{.title = "second", .weight = 5}, Track.{.title = "third", .weight = 7}];
 marks: [4]s32 = .[2, 4, 6, 8];
+Shelf :: struct {
+    first: Track
+    labels: [2]string
+    count: s32
+}
+shelf: Shelf = Shelf.{.count = 2, .first = Track.{.weight = 11, .title = "nes\x74ed"}, .labels = string.["one", "tw\x6f"]};
 
 #program_export
 InitChecks :: () -> s32 {
@@ -47,6 +53,9 @@ InitChecks :: () -> s32 {
     if tracks[0].weight != 3 || tracks[2].weight != 7 { return 0 }
     if tracks[1].title.count != 6 { return 0 }
     if tracks[0].title != "first" { return 0 }
+    if shelf.first.title != "nested" || shelf.first.weight != 11 { return 0 }
+    if shelf.labels[0] != "one" || shelf.labels[1] != "two" { return 0 }
+    if shelf.count != 2 { return 0 }
     return 1
 }
 

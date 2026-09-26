@@ -212,7 +212,11 @@ with a source span; recursion and instruction limits are deterministic. Use
 ### 7. Complete checked IR and native backend equivalence
 
 Function bodies use checked expression graphs, but declaration and import
-lowering still contain target-specific text handling. Replace that with typed
+lowering still contain target-specific text handling. File-scope record and
+array initializers now share a parsed expression-tree lowering path on C,
+C++, and Go, including nested values and reordered record fields;
+`tests/portable_globals.sh` compares them with saved IR and `.zib`. Replace
+the remaining textual lowering with typed
 declaration/import nodes or a checked target-neutral lowering plan. Audit name
 mapping across an entire program: top-level types, exported procedures,
 foreign symbols, imports, target keywords, and names differing by case or
@@ -231,8 +235,9 @@ The portable verifier and VM support a useful scalar/record/array subset, and
 carry raw pointers as opaque host handles that can be stored, compared, and
 passed across host capabilities. They still reject slices inside globals or
 records, reachable unions, and several host shapes. Literal scalar, string,
-record, and fixed-array global initializers run portably; procedure calls in
-initializers and nested record lowering across native targets remain open.
+record, and fixed-array global initializers run portably, including nested
+record and array literals across native targets. Procedure calls in
+initializers remain open.
 Host calls support scalar, string,
 plain-record, pointer, and selected synchronous slice arguments; array, slot,
 slice-return, and record-slice shapes remain open. Implement each boundary as

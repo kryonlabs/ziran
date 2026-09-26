@@ -1152,134 +1152,32 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
     zir_go_local_count = saved_local_count;
 }
 
-/* Lower `.[e0, e1, ...]` file-scope array initializers to Go composite
- * literals. Record elements convert designated `.field = value` entries to
- * positional values; scalar elements pass through tx_expr. The caller
- * prefixes the mapped array type, so the body starts with '{'. */
-static void
-lower_go_array_literal(const ZirModule *m, const ZirGlobal *g,
-                       char *out, size_t size)
+static int
+rewrite_global_scalar(const ZirModule *module, const char *source,
+                      char *out, size_t size, void *context)
 {
-    const char *init = skip_ws(g->init);
-    char element[ZIR_NAME_MAX];
-    const ZirType *record = NULL;
-    const char *cursor;
-    int first = 1;
-    int records;
-    if(init[0] != '.' || init[1] != '[' ||
-       !ArrayElementType(g->type, element, sizeof(element), NULL))
-        return;
-    record = FindType(m, element, NULL);
-    records = record != NULL && !record->is_enum &&
-              !record->is_procedure_type;
-    copy_text(out, size, "{");
-    cursor = init + 2;
-    while(*cursor && *cursor != ']') {
-        char entry[ZIR_GO_TEXT_MAX];
-        char rewritten[ZIR_GO_TEXT_MAX];
-        const char *end = cursor;
-        const char *value_text;
-        int depth = 0;
-        while(*end) {
-            if(*end == '"') {
-                end++;
-                while(*end && *end != '"') {
-                    if(*end == '\\' && end[1]) end++;
-                    end++;
-                }
-            }
-            if(!*end) break;
-            if(depth == 0 && (*end == ',' || *end == ']')) break;
-            if(*end == '(' || *end == '[' || *end == '{') depth++;
-            else if(*end == ')' || *end == ']' || *end == '}') depth--;
-            end++;
-        }
-        {
-            size_t length = (size_t)(end - cursor);
-            while(length > 0 && (*cursor == ' ' || *cursor == '\t' ||
-                                 *cursor == '\n')) {
-                cursor++;
-                length--;
-            }
-            while(length > 0 &&
-                  (cursor[length - 1] == ' ' || cursor[length - 1] == '\t' ||
-                   cursor[length - 1] == '\n'))
-                length--;
-            if(length >= sizeof(entry)) {
-                out[0] = '\0';
-                return;
-            }
-            memcpy(entry, cursor, length);
-            entry[length] = '\0';
-        }
-        rewritten[0] = '\0';
-        value_text = entry;
-        if(records) {
-            const char *dot = strchr(entry, '.');
-            if(dot != NULL && dot[1] == '{')
-                value_text = dot + 2;
-            /* convert the designated entries to positional values */
-            {
-                const char *walk = value_text;
-                int value_first = 1;
-                size_t used = 0;
-                used += (size_t)snprintf(rewritten + used,
-                        sizeof(rewritten) - used, "{");
-                while(*walk && *walk != '}') {
-                    char value[ZIR_GO_TEXT_MAX];
-                    char translated[ZIR_GO_TEXT_MAX];
-                    const char *scan = walk;
-                    const char *start_value;
-                    size_t length;
-                    while(*walk && *walk != ',' && *walk != '}')
-                        walk++;
-                    start_value = scan;
-                    while(start_value < walk && *start_value != '=')
-                        start_value++;
-                    if(start_value < walk)
-                        start_value++;
-                    while(start_value < walk && *start_value == ' ')
-                        start_value++;
-                    length = (size_t)(walk - start_value);
-                    while(length > 0 &&
-                          (start_value[length - 1] == ' ' ||
-                           start_value[length - 1] == '}'))
-                        length--;
-                    if(length >= sizeof(value)) {
-                        out[0] = '\0';
-                        return;
-                    }
-                    memcpy(value, start_value, length);
-                    value[length] = '\0';
-                    translated[0] = '\0';
-                    tx_expr(m, value, translated, sizeof(translated));
-                    if(!value_first)
-                        used += (size_t)snprintf(rewritten + used,
-                                sizeof(rewritten) - used, ", ");
-                    used += (size_t)snprintf(rewritten + used,
-                            sizeof(rewritten) - used, "%s",
-                            translated[0] ? translated : value);
-                    if(used >= sizeof(rewritten)) {
-                        out[0] = '\0';
-                        return;
-                    }
-                    value_first = 0;
-                    if(*walk == ',')
-                        walk++;
-                }
-                snprintf(rewritten + used, sizeof(rewritten) - used, "}");
-            }
-        } else {
-            tx_expr(m, entry, rewritten, sizeof(rewritten));
-        }
-        if(!first)
-            strncat(out, ", ", size - strlen(out) - 1);
-        strncat(out, rewritten[0] ? rewritten : entry,
-                size - strlen(out) - 1);
-        first = 0;
-        cursor = *end == ',' ? end + 1 : end;
-    }
-    strncat(out, "}", size - strlen(out) - 1);
+    (void)context;
+    tx_expr(module, source, out, size);
+    return out[0] != '\0';
+}
+
+static int
+rewrite_global_type(const ZirModule *module, const char *source,
+                    char *out, size_t size, void *context)
+{
+    (void)module;
+    const ZirGlobal *global = context;
+    require_go_type(source, out, size, global->span);
+    return out[0] != '\0';
+}
+
+static void
+rewrite_global_field(const ZirType *record, const char *source,
+                     char *out, size_t size, void *context)
+{
+    (void)record;
+    (void)context;
+    go_field_ident(source, out, size);
 }
 
 int
@@ -1564,79 +1462,20 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 TargetGlobalName(m, ZIR_GO, g->name, gname,
                                  sizeof(gname));
                 require_go_type(g->type, gt, sizeof(gt), g->span);
-                if(!ScalarLiteral(g->type,g->init,ZIR_GO,g->span,ginit,sizeof(ginit)))
-                    tx_expr(m, g->init, ginit, sizeof(ginit));
-                {
-                    const ZirType *record = FindType(m, g->type, NULL);
-                    const char *dot;
-                    const char *stripped_init = skip_ws(g->init);
-                    if(stripped_init[0] == '.' && stripped_init[1] == '[') {
-                        char arrayw[ZIR_GO_TEXT_MAX];
-                        arrayw[0] = '\0';
-                        lower_go_array_literal(m, g, arrayw, sizeof(arrayw));
-                        if(arrayw[0] == '{')
-                            snprintf(ginit, sizeof(ginit), "%s", arrayw);
+                if(!ScalarLiteral(g->type, g->init, ZIR_GO, g->span,
+                                  ginit, sizeof(ginit))) {
+                    int compound = EmitGlobalInitializer(m, g, ZIR_GO,
+                        rewrite_global_scalar, rewrite_global_type,
+                        rewrite_global_field, (void *)g, ginit,
+                        sizeof(ginit));
+                    if(compound < 0) {
+                        Diagnostic(g->span, "zir_go.global",
+                                   "cannot lower compound global initializer: %s",
+                                   g->name);
+                        exit(1);
                     }
-                    else if(record != NULL && !record->is_enum &&
-                       !record->is_procedure_type &&
-                       (dot = strchr(g->init, '.')) != NULL &&
-                       dot[1] == '{') {
-                        char mapped_type[ZIR_GO_NAME_MAX];
-                        char body[ZIR_GO_TEXT_MAX];
-                        const char *cursor;
-                        size_t used = 0;
-                        require_go_type(g->type, mapped_type,
-                                        sizeof(mapped_type), g->span);
-                        used = (size_t)snprintf(body, sizeof(body), "%s{",
-                                                mapped_type);
-                        cursor = dot + 2;
-                        while(*cursor && *cursor != '}') {
-                            const char *entry = cursor;
-                            const char *end;
-                            char value[ZIR_GO_TEXT_MAX];
-                            char rewritten[ZIR_GO_TEXT_MAX];
-                            while(*entry == '.' || *entry == ' ')
-                                entry++;
-                            end = entry;
-                            while(*end && *end != ',' && *end != '}')
-                                end++;
-                            {
-                                const char *eq = strchr(entry, '=');
-                                size_t length = eq != NULL ?
-                                    (size_t)(end - eq - 1) : 0;
-                                eq++;
-                                while(length > 0 && (*eq == ' ' ||
-                                       eq[length - 1] == ' ' ||
-                                       eq[length - 1] == '}')) {
-                                    eq++;
-                                    length--;
-                                }
-                                if(length == 0 || length >= sizeof(value)) {
-                                    body[0] = '\0';
-                                    break;
-                                }
-                                memcpy(value, eq, length);
-                                value[length] = '\0';
-                                tx_expr(m, value, rewritten,
-                                        sizeof(rewritten));
-                                if(used > strlen(mapped_type) + 1 &&
-                                    used + 2 < sizeof(body)) {
-                                    body[used++] = ',';
-                                    body[used++] = ' ';
-                                }
-                                used += (size_t)snprintf(body + used,
-                                        sizeof(body) - used, "%s",
-                                        rewritten[0] ? rewritten : value);
-                            }
-                            cursor = *end == ',' ? end + 1 : end;
-                        }
-                        if(body[0] != '\0' &&
-                           used + 1 < sizeof(body)) {
-                            body[used++] = '}';
-                            body[used] = '\0';
-                            snprintf(ginit, sizeof(ginit), "%s", body);
-                        }
-                    }
+                    if(compound == 0)
+                        tx_expr(m, g->init, ginit, sizeof(ginit));
                 }
                 if(ginit[0] != '\0') {
                     if(ginit[0] == '{')

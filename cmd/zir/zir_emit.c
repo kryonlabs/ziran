@@ -1298,6 +1298,171 @@ ScalarLiteral(const char *type, const char *text, ZirTarget target,
     free(fn.exprs);return ok;
 }
 
+typedef struct {
+    const ZirModule *module;
+    const ZirFunction *probe;
+    ZirTarget target;
+    ZirSourceSpan span;
+    ZirGlobalScalarRewrite scalar;
+    ZirGlobalTypeRewrite type_name;
+    ZirGlobalFieldRewrite field_name;
+    void *context;
+} GlobalLiteralEmit;
+
+static int
+append_global_literal(char *out, size_t size, size_t *used,
+                      const char *format_string, ...)
+{
+    va_list ap;
+    int written;
+    if(*used >= size) return 0;
+    va_start(ap, format_string);
+    written = vsnprintf(out + *used, size - *used, format_string, ap);
+    va_end(ap);
+    if(written < 0 || (size_t)written >= size - *used) return 0;
+    *used += (size_t)written;
+    return 1;
+}
+
+static int
+global_field(const ZirType *record, const char *name, int ordinal,
+             ZirTypeField *found)
+{
+    ZirTypeField field;
+    size_t offset = 0;
+    int position = 0;
+    while(TypeNextField(record, &offset, &field) == 1) {
+        if((name[0] && !strcmp(name, field.name)) ||
+           (!name[0] && position == ordinal)) {
+            *found = field;
+            return 1;
+        }
+        position++;
+    }
+    return 0;
+}
+
+static int
+emit_global_literal_node(GlobalLiteralEmit *emit, int index,
+                         const char *type, char *out, size_t size,
+                         size_t *used, int depth)
+{
+    if(index < 0 || index >= emit->probe->expr_count || depth > 32)
+        return 0;
+    const ZirExpr *expr = &emit->probe->exprs[index];
+    if(expr->kind == ZIR_EXPR_COMPOUND) {
+        char element[ZIR_NAME_MAX];
+        const ZirType *record = NULL;
+        int array = ArrayElementType(type, element, sizeof(element), NULL);
+        if(!array) record = FindType(emit->module, type, NULL);
+        if(!array && (record == NULL || record->is_enum ||
+                      record->is_procedure_type || record->is_union))
+            return 0;
+        if(emit->target == ZIR_GO) {
+            char mapped[ZIR_NAME_MAX * 2];
+            if(emit->type_name == NULL ||
+               !emit->type_name(emit->module, type, mapped,
+                                sizeof(mapped), emit->context) ||
+               !append_global_literal(out, size, used, "%s{", mapped))
+                return 0;
+        } else if(!append_global_literal(out, size, used, "{"))
+            return 0;
+        if(record != NULL && emit->target == ZIR_CPP) {
+            ZirTypeField field;
+            size_t offset = 0;
+            int field_index = 0;
+            while(TypeNextField(record, &offset, &field) == 1) {
+                int selected = -1, entry_ordinal = 0;
+                for(int child = expr->first_child; child >= 0;
+                    child = emit->probe->exprs[child].next_sibling) {
+                    const ZirExpr *entry = &emit->probe->exprs[child];
+                    if((entry->name[0] &&
+                        !strcmp(entry->name, field.name)) ||
+                       (!entry->name[0] && entry_ordinal == field_index)) {
+                        selected = entry->right;
+                        break;
+                    }
+                    entry_ordinal++;
+                }
+                if(field_index++ &&
+                   !append_global_literal(out, size, used, ", ")) return 0;
+                if(selected >= 0) {
+                    if(!emit_global_literal_node(emit, selected, field.type,
+                                                 out, size, used, depth + 1))
+                        return 0;
+                } else if(!append_global_literal(out, size, used, "{}"))
+                    return 0;
+            }
+        } else {
+            int position = 0;
+            for(int child = expr->first_child; child >= 0;
+                child = emit->probe->exprs[child].next_sibling) {
+                const ZirExpr *entry = &emit->probe->exprs[child];
+                const char *field_type = element;
+                ZirTypeField field;
+                if(entry->right < 0 ||
+                   (record != NULL &&
+                    !global_field(record, entry->name, position, &field)))
+                    return 0;
+                if(position &&
+                   !append_global_literal(out, size, used, ", ")) return 0;
+                if(record != NULL) {
+                    char mapped[ZIR_NAME_MAX * 2];
+                    field_type = field.type;
+                    if(emit->field_name != NULL)
+                        emit->field_name(record, field.name, mapped,
+                                         sizeof(mapped), emit->context);
+                    else
+                        TargetFieldName(record, emit->target, field.name,
+                                        mapped, sizeof(mapped));
+                    if(!append_global_literal(out, size, used,
+                         emit->target == ZIR_GO ? "%s: " : ".%s = ",
+                         mapped)) return 0;
+                }
+                if(!emit_global_literal_node(emit, entry->right, field_type,
+                                             out, size, used, depth + 1))
+                    return 0;
+                position++;
+            }
+        }
+        return append_global_literal(out, size, used, "}");
+    }
+    char scalar[ZIR_TEXT_MAX * 2];
+    if(!ScalarLiteral(type, expr->text, emit->target, emit->span,
+                      scalar, sizeof(scalar))) {
+        if(emit->scalar == NULL ||
+           !emit->scalar(emit->module, expr->text, scalar,
+                         sizeof(scalar), emit->context)) return 0;
+    }
+    return append_global_literal(out, size, used, "%s", scalar);
+}
+
+int
+EmitGlobalInitializer(const ZirModule *module, const ZirGlobal *global,
+                      ZirTarget target, ZirGlobalScalarRewrite scalar,
+                      ZirGlobalTypeRewrite type_name,
+                      ZirGlobalFieldRewrite field_name, void *context,
+                      char *out, size_t size)
+{
+    ZirFunction probe = {0};
+    int root, ok;
+    size_t used = 0;
+    if(size == 0 || !global->init[0]) return 0;
+    out[0] = '\0';
+    root = ParseExprTyped(&probe, module, global->init,
+                          global->span, global->type);
+    if(root < 0 || probe.exprs[root].kind != ZIR_EXPR_COMPOUND) {
+        free(probe.exprs);
+        return 0;
+    }
+    GlobalLiteralEmit emit = {module, &probe, target, global->span,
+                              scalar, type_name, field_name, context};
+    ok = emit_global_literal_node(&emit, root, global->type, out, size,
+                                  &used, 0);
+    free(probe.exprs);
+    return ok ? 1 : -1;
+}
+
 static void
 call_parameter_type(Emitter *e, const ZirExpr *call, int ordinal,
                     char *out, size_t size)

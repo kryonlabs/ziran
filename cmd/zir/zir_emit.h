@@ -9,6 +9,22 @@ typedef void (*ZirResolveTarget)(void *context, const char *text, char *out, siz
 const char *TargetType(const char *type, ZirTarget target);
 int ScalarLiteral(const char *type, const char *text, ZirTarget target,
                       ZirSourceSpan span, char *out, size_t size);
+typedef int (*ZirGlobalScalarRewrite)(const ZirModule *module,
+                                      const char *source, char *out,
+                                      size_t size, void *context);
+typedef int (*ZirGlobalTypeRewrite)(const ZirModule *module,
+                                    const char *source, char *out,
+                                    size_t size, void *context);
+typedef void (*ZirGlobalFieldRewrite)(const ZirType *record,
+                                      const char *source, char *out,
+                                      size_t size, void *context);
+/* Return 1 for a lowered record/array initializer, 0 for a scalar expression,
+ * and -1 when a compound initializer cannot be represented on the target. */
+int EmitGlobalInitializer(const ZirModule *module, const ZirGlobal *global,
+                          ZirTarget target, ZirGlobalScalarRewrite scalar,
+                          ZirGlobalTypeRewrite type_name,
+                          ZirGlobalFieldRewrite field_name, void *context,
+                          char *out, size_t size);
 /* C/C++ private ABI names and source-shaped arguments for array values. */
 int ArrayValueType(const char *type);
 int ModuleUsesSlices(const ZirModule *module);
