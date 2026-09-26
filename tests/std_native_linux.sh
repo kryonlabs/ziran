@@ -30,6 +30,15 @@ main :: () -> s32 {
     if ReadAt(file, again[:], 0) != 16 || !CloseFile(file) ||
         ReadU64LE(again[:], 0) != 123456789 ||
         ReadF64LE(again[:], 8) != 456.25 { return 5 }
+    if !PathExists("cache/record.bin") ||
+        DirectoryExists("cache/record.bin") ||
+        !DirectoryExists("cache") ||
+        PathExists("cache/moved.bin") { return 10 }
+    if !RenamePath("cache/record.bin", "cache/moved.bin") ||
+        PathExists("cache/record.bin") ||
+        !PathExists("cache/moved.bin") ||
+        !RemoveFile("cache/moved.bin") ||
+        PathExists("cache/moved.bin") { return 11 }
     letters: [3]u8 = .[88, 77, 82]
     if TextFromBytes(letters[:]) != "XMR" { return 6 }
     args: [2]string = .["printf", "ok"]
