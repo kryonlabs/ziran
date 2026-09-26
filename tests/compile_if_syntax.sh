@@ -350,3 +350,35 @@ if "$ziran" check --root "$work" "$work/filtered_using.zi" \
 fi
 grep -Fq '#if condition is not a compile-time constant' \
     "$work/filtered_using.err"
+
+cat > "$work/inactive_tokens.zi" <<'EOF'
+#if false {
+RejectedType :: i64;
+} else #if size_of(int) == 8 {
+Selected :: 42;
+} else {
+Selected :: MissingValue;
+}
+#if true {
+Kept :: 0;
+} else #if size_of(i64) == 8 {
+Kept :: MissingValue;
+}
+#program_export
+Answer :: () -> s64 {
+    #if false {
+        bad: i64;
+    }
+    return Selected + Kept
+}
+EOF
+"$ziran" ir --root "$work" -o "$work/inactive-ir" \
+    "$work/inactive_tokens.zi"
+if grep -aFq 'RejectedType' "$work/inactive-ir/inactive_tokens.zir" ||
+   grep -aFq 'MissingValue' "$work/inactive-ir/inactive_tokens.zir"; then
+    echo 'inactive tokens were saved in IR' >&2
+    exit 1
+fi
+"$ziran" bundle --root "$work" --entry inactive_tokens:Answer \
+    -o "$work/inactive_tokens.zib" "$work/inactive_tokens.zi"
+test "$("$ziran" run "$work/inactive_tokens.zib")" = 42

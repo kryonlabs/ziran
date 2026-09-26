@@ -2297,6 +2297,15 @@ parse_cond_start(char *line, char **condition)
     return kind;
 }
 
+static int
+line_starts_compile_condition(const char *line)
+{
+    line = skip_ws(line);
+    return starts_word(line, "#if") ||
+           starts_word(line, "else #if") ||
+           starts_word(line, "} else #if");
+}
+
 static void
 expand_compile_expr_depth(char *dst, size_t dst_size, const ZirConsts *consts,
                           const char *src, const char *lookup_path, int depth,
@@ -2482,6 +2491,9 @@ eval_skip(ZirEval *ev)
 static long eval_or(ZirEval *ev);
 static void lower_size_of_value(char *value, size_t capacity,
                                 const ZirModule *module, ZirSourceSpan span);
+static void normalize_jai_source_tokens(char *line, const char *path,
+                                        const char *physical_path,
+                                        int line_no);
 static int eval_const_condition(const char *src, long *value,
                                 const ZirModule *module,
                                 const ZirConsts *consts,
@@ -4400,6 +4412,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
     module = &using_scope;
     consts = &visible;
     expand_compile_expr(expanded, sizeof(expanded), consts, source, span.path);
+    normalize_jai_source_tokens(expanded, span.path, source_path, span.line);
     if(using_scope.using_count > 0 && context != NULL &&
        context->resolver != NULL &&
        !context->resolver(context->resolver_context, context->program,
@@ -6014,7 +6027,13 @@ parse_source(const char *path, const char *root, const char *source,
            contains_source_directive(line, "#else"))
             die_at(Span(rel, line_no, 1),
                    "Jai compile-time branches use 'else #if' or 'else', not #else_if/#else");
-        if(!from_queue && !from_lookahead)
+        int compile_condition_line = line_starts_compile_condition(line);
+        int active_source =
+            (tframe_count == 0 || tframes[tframe_count - 1].active) &&
+            (type_frame_count == 0 ||
+             type_frames[type_frame_count - 1].active) &&
+            (body_mcount == 0 || body_mactive[body_mcount - 1]);
+        if(!from_queue && active_source && !compile_condition_line)
             normalize_jai_source_tokens(line, rel, canonical,
                                         physical_line_no);
         snprintf(raw, sizeof(raw), "%s", line);
@@ -6187,11 +6206,9 @@ parse_source(const char *path, const char *root, const char *source,
                            contains_source_directive(la, "#else"))
                             die_at(Span(rel, line_no + 1, 1),
                                    "Jai compile-time branches use 'else #if' or 'else', not #else_if/#else");
-                        normalize_jai_source_tokens(la, rel, canonical,
-                                                    physical_line_no);
-                        /* trim in place: the lookahead is appended verbatim,
-                         * and a raw fgets line would carry its '\n' into the
-                         * joined statement text. */
+                        /* Decide continuation from raw source. A stashed line
+                         * may become inactive after this line selects #if;
+                         * normalize it only when the parser consumes it. */
                         lt = trim(la);
                         if(lt[0] == '\0' || strncmp(lt, "//", 2) == 0) {
                             line_no++;   /* comments and blank lines still count */
@@ -6213,6 +6230,10 @@ parse_source(const char *path, const char *root, const char *source,
                             have_look = 1;
                             break;
                         }
+                        if(active_source && !compile_condition_line)
+                            normalize_jai_source_tokens(la, rel, canonical,
+                                                        physical_line_no);
+                        lt = trim(la);
                         pending_end_column = source_end_column_for_trimmed(la, lt);
                         if(pending_len > 0 &&
                            pending_len + 2 < (int)sizeof(pending)) {

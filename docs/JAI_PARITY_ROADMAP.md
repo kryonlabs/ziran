@@ -103,8 +103,10 @@ semicolons now lower the same way as inline fields. This is still a limited
 pass: types with conditional bodies, generic instances, enum flags, embedded
 source imports, and imports in `#load` files have ordering limits. Imported
 real, string, and aggregate constants have not been covered by the integer
-evaluator. Token normalization still rejects obsolete primitive spellings in
-inactive type branches before branch selection. The OpenJai reference
+evaluator. Token normalization now waits for branch selection, so obsolete
+primitive spellings in inactive top-level, type, and procedure branches are
+ignored while selected `else #if` conditions still use Jai scalar aliases.
+`tests/compile_if_syntax.sh` covers these cases. The OpenJai reference
 describes top-level declaration order as
 independent. Investigate Jai's actual behavior, then extend top-level discovery
 or add bounded dependency resolution. Do not resolve a condition by parsing

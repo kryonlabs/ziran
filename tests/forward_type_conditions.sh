@@ -84,7 +84,7 @@ grep -Fq 'size_of requires a known sized type' "$work/inactive_type.err"
 cat > "$work/inactive_field.zi" <<'ZI'
 Later :: struct {
     #if false {
-        bad: MissingType;
+        bad: i64;
     } else {
         good: s64;
     }
