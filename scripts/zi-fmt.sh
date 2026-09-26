@@ -19,9 +19,12 @@ fi
 [ $# -gt 0 ] || { usage >&2; exit 2; }
 
 status=0
+tmp=
+trap 'if [ -n "$tmp" ]; then rm -f "$tmp"; fi' 0
 for file in "$@"; do
     [ -f "$file" ] || { printf 'zi-fmt: not found: %s\n' "$file" >&2; status=1; continue; }
-    tmp=${TMPDIR:-/tmp}/zi-fmt.$$.tmp
+    tmp=$(mktemp "${TMPDIR:-/tmp}/zi-fmt.XXXXXXXX")
+    cp -p "$file" "$tmp"
     awk '
     function trim(s) {
         sub(/^[ \t\r\n]+/, "", s)
@@ -158,6 +161,7 @@ for file in "$@"; do
     else
         mv "$tmp" "$file"
     fi
+    tmp=
 done
 
 exit "$status"
