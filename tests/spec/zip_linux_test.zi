@@ -1,6 +1,8 @@
 #import "zip"
 #import "zip_linux"
 #import "file_linux"
+#import "mapped_file_linux"
+#import "byte_text_linux"
 
 Put16 :: (buffer: []u8, at: s32, value: u32) {
     buffer[at] = cast(u8)value
@@ -70,5 +72,41 @@ SelfTest :: () -> s32 {
     CloseFile(file)
     RemoveFile("zip-linux-entry-output.bin")
     if streamed { return 9 }
+    return 0
+}
+
+#program_export
+StreamingTest :: (archive_path: *u8, output_path: *u8) -> s32 {
+    input := MapPrivate(TextFromCString(archive_path))
+    if !input.valid { return 1 }
+    bytes := MappedBytes(input)
+    entry := FindZipEntry(bytes, "long")
+    if !entry.found || entry.size != 150004 {
+        UnmapFile(input)
+        return 2
+    }
+    output := OpenReplace(TextFromCString(output_path))
+    if !output.valid {
+        UnmapFile(input)
+        return 3
+    }
+    extracted := ExtractZipEntryToFile(bytes, entry, output)
+    synced := SyncFile(output)
+    closed := CloseFile(output)
+    UnmapFile(input)
+    if !extracted || !synced || !closed { return 4 }
+    output = OpenRead(TextFromCString(output_path))
+    if !output.valid { return 5 }
+    first: [4]u8
+    last: [1]u8
+    size := FileSize(output)
+    read_first := ReadAt(output, first[:], 0)
+    read_last := ReadAt(output, last[:], 150003)
+    CloseFile(output)
+    RemoveFile(TextFromCString(output_path))
+    if size != 150004 || read_first != 4 || read_last != 1 ||
+       first[0] != cast(u8)79 || first[1] != cast(u8)103 ||
+       first[2] != cast(u8)103 || first[3] != cast(u8)83 ||
+       last[0] != cast(u8)65 { return 6 }
     return 0
 }

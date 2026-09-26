@@ -111,7 +111,7 @@ ExtractZipEntryToFile :: (archive: []u8, entry: ZipEntry,
         before_out := stream.total_out
         stream.next_out = *output[0]
         stream.avail_out = 65536
-        status := ZlibInflate(*stream, 4)
+        status := ZlibInflate(*stream, 0)
         count: u32 = 65536 - stream.avail_out
         if cast(u64)count > entry.size - written {
             valid = false

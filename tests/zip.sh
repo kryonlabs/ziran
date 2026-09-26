@@ -16,14 +16,30 @@ cmp "$work/source.zib" "$work/saved.zib"
 test "$("$ziran" run "$work/source.zib")" = 0
 
 "$ziran" check --root tests/spec --module-path std tests/spec/zip_linux_test.zi
-"$tool_dir/zi2c" --root tests/spec --module-path std \
-    --entry zip_linux_test:SelfTest -o "$work/native" tests/spec/zip_linux_test.zi
+"$tool_dir/zi2c" --no-main --root tests/spec --module-path std \
+    -o "$work/native" tests/spec/zip_linux_test.zi
 "${CC:-cc}" -std=c11 -Iinclude -I"$work/native" \
     "$work/native/zip.c" "$work/native/zip_linux.c" \
     "$work/native/file_linux.c" \
     "$work/native/c_string.c" \
+    "$work/native/mapped_file_linux.c" \
+    "$work/native/byte_text_linux.c" \
     "$work/native/zip_linux_test.c" -x c - -lz -o "$work/zip-test" <<'EOF'
+#include <stdint.h>
 int SelfTest(void);
-int main(void) { return SelfTest(); }
+int StreamingTest(uint8_t *, uint8_t *);
+int main(int argc, char **argv) {
+    if (argc != 3 || SelfTest() != 0) return 1;
+    return StreamingTest((uint8_t *)argv[1], (uint8_t *)argv[2]);
+}
 EOF
-(cd "$work" && env -u DISPLAY -u WAYLAND_DISPLAY "$work/zip-test")
+python3 - "$work/large.zip" <<'PY'
+from zipfile import ZIP_DEFLATED, ZipFile
+import sys
+
+with ZipFile(sys.argv[1], "w") as archive:
+    archive.writestr("long", b"OggS" + b"A" * 150000,
+                     compress_type=ZIP_DEFLATED)
+PY
+(cd "$work" && env -u DISPLAY -u WAYLAND_DISPLAY "$work/zip-test" \
+    "$work/large.zip" "$work/large-output.bin")
