@@ -14,6 +14,8 @@ UnlinkRaw :: (path: *u8) -> s32 #foreign libc "unlink";
 LinkRaw :: (source: *u8, destination: *u8) -> s32 #foreign libc "link";
 RenameAtRaw :: (old_directory: s32, source: *u8,
     new_directory: s32, destination: *u8) -> s32 #foreign libc "renameat";
+RenameAt2Raw :: (old_directory: s32, source: *u8,
+    new_directory: s32, destination: *u8, flags: u32) -> s32 #foreign libc "renameat2";
 SyncRaw :: (fd: s32) -> s32 #foreign libc "fsync";
 
 #scope_export
@@ -91,6 +93,15 @@ RenamePath :: (source: string, destination: string) -> bool {
     if !CopyCString(source, old_name[:]) ||
     !CopyCString(destination, new_name[:]) { return false }
     return RenameAtRaw(-100, *old_name[0], -100, *new_name[0]) == 0
+}
+
+#program_export
+RenameNoReplace :: (source: string, destination: string) -> bool {
+    old_name: [4096]u8
+    new_name: [4096]u8
+    if !CopyCString(source, old_name[:]) ||
+    !CopyCString(destination, new_name[:]) { return false }
+    return RenameAt2Raw(-100, *old_name[0], -100, *new_name[0], 1) == 0
 }
 
 #program_export

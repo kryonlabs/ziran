@@ -42,6 +42,17 @@ main :: () -> s32 {
         !PathExists("cache/moved.bin") ||
         !RemoveFile("cache/moved.bin") ||
         PathExists("cache/moved.bin") { return 11 }
+    file = OpenReplace("cache/old.bin")
+    if !file.valid || !CloseFile(file) { return 13 }
+    file = OpenReplace("cache/new.bin")
+    if !file.valid || !CloseFile(file) { return 14 }
+    if RenameNoReplace("cache/old.bin", "cache/new.bin") ||
+        !PathExists("cache/old.bin") ||
+        !PathExists("cache/new.bin") { return 15 }
+    if !RemoveFile("cache/new.bin") ||
+        !RenameNoReplace("cache/old.bin", "cache/new.bin") ||
+        PathExists("cache/old.bin") ||
+        !PathExists("cache/new.bin") { return 16 }
     letters: [3]u8 = .[88, 77, 82]
     if TextFromBytes(letters[:]) != "XMR" { return 6 }
     args: [2]string = .["printf", "ok"]
