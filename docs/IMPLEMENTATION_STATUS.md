@@ -350,8 +350,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `size_of(type_of(expression))` works for previously declared same-module
   globals, record fields, and procedure calls in constants, global
   initializers, `#run`, `#assert`, `#if`, and `#ifx`; the operand is not run.
-  Standalone `type_of` values and forward or imported file-scope queries remain
-  unsupported. Foreign-record size queries still require their Jai layouts.
+  Forward and imported operands also work in tested file-scope constants,
+  global initializers, `#run`, and `#ifx`; imported operands work in `#if`.
+  `tests/file_type_of.sh` checks source and saved IR on C, C++, Go, and `.zib`.
+  Standalone `type_of` values and forward `#if` queries remain unsupported.
+  Foreign-record size queries still require their Jai layouts.
   Jai `#line` resolves to the physical source line before checking and remains
   stable through saved IR, native targets, and `.zib`, including `#load` files.
   `#file` and `#filepath` resolve to the full source filename and containing

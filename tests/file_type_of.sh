@@ -131,3 +131,77 @@ if "$ziran" check --root "$work" "$work/unknown.zi" \
     exit 1
 fi
 rg -q 'unknown|checked expression' "$work/unknown.err"
+
+cat > "$work/type_lib.zi" <<'ZI'
+Value :: struct { number: s64; }
+shared: Value;
+Read :: () -> s32 { return 3 }
+ZI
+cat > "$work/deferred_type_of.zi" <<'ZI'
+#import "type_lib"
+Lib :: #import "type_lib"
+FORWARD :: size_of(type_of(Later()));
+IMPORTED :: size_of(type_of(Read()));
+QUALIFIED :: size_of(type_of(Lib.Read()));
+FIELD :: size_of(type_of(Lib.shared.number));
+RUN :: #run size_of(type_of(Later()));
+RUN_IMPORTED :: #run size_of(type_of(Lib.Read()));
+SELECTED :: #ifx size_of(type_of(Later())) == 8 then 1 else 0;
+#if size_of(type_of(Lib.Read())) == 4 {
+SELECTED_IF :: 1;
+} else {
+SELECTED_IF :: 0;
+}
+global_size: s64 = size_of(type_of(Later()));
+#program_export
+Answer :: () -> s64 {
+    return FORWARD + IMPORTED + QUALIFIED + FIELD + RUN +
+           RUN_IMPORTED + SELECTED + SELECTED_IF + global_size + 5
+}
+Later :: () -> s64 { return 42 }
+ZI
+
+"$ziran" ir --root "$work" -o "$work/deferred-ir" \
+    "$work/deferred_type_of.zi"
+for input in source saved; do
+    if test "$input" = source; then
+        module=$work/deferred_type_of.zi
+        root=$work
+    else
+        module=$work/deferred-ir/deferred_type_of.zir
+        root=$work/deferred-ir
+    fi
+    "$ziran" bundle --root "$root" --entry deferred_type_of:Answer \
+        -o "$work/deferred-$input.zib" "$module"
+    test "$("$ziran" run "$work/deferred-$input.zib")" = 51
+    for target in c cpp go; do
+        output=$work/deferred-$target-$input
+        "$ziran" build "--target=$target" --root "$root" \
+            -o "$output" "$module"
+        case "$target" in
+            c)
+                printf '#include "deferred_type_of.h"\nint main(void) { return Answer() == 51 ? 0 : 1; }\n' > "$work/deferred-main.c"
+                "${CC:-cc}" -std=c11 -I"$repo/include" -I"$output" \
+                    "$output"/*.c "$work/deferred-main.c" -o "$output/app"
+                "$output/app"
+                ;;
+            cpp)
+                printf '#include "deferred_type_of.hpp"\nint main() { return Answer() == 51 ? 0 : 1; }\n' > "$work/deferred-main.cpp"
+                "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$output" \
+                    "$output"/*.cpp "$work/deferred-main.cpp" -o "$output/app"
+                "$output/app"
+                ;;
+            go)
+                cat > "$output/deferred_type_of_test.go" <<'GO'
+package ziran
+import "testing"
+func TestDeferredTypeOf(t *testing.T) {
+    if DeferredTypeOf_Answer() != 51 { t.Fatal("deferred type_of") }
+}
+GO
+                GO111MODULE=off go test "$output"/*.go
+                ;;
+        esac
+    done
+done
+cmp "$work/deferred-source.zib" "$work/deferred-saved.zib"

@@ -5316,6 +5316,9 @@ parse_source(const char *path, const char *root, const char *source,
     enum { TOP, TYPE, FUNCTION } mode = TOP;
     int depth = 0;
     char pending[SOURCE_LINE_MAX * 4];
+    /* Compile-time imports recurse into parse_source while this line is in
+     * use. Keep each invocation's logical source separate. */
+    char logical[SOURCE_LINE_MAX * 4];
     pending[0] = '\0';
     char lookahead[SOURCE_LINE_MAX];
     int have_look = 0;
@@ -5673,8 +5676,6 @@ parse_source(const char *path, const char *root, const char *source,
         int export_directive = 0;
         char export_directive_symbol[ZIR_NAME_MAX] = "";
         {
-            static char logical[SOURCE_LINE_MAX * 4];
-
             snprintf(logical, sizeof(logical), "%s", pending);
             t = logical;
             char *separator = statement_separator(logical);
@@ -6388,7 +6389,8 @@ parse_source(const char *path, const char *root, const char *source,
                     }
                     if(!deferred_run &&
                        find_unquoted_text(expr, "#ifx") == NULL &&
-                       find_unquoted_word(expr, "size_of") != NULL) {
+                       find_unquoted_word(expr, "size_of") != NULL &&
+                       find_unquoted_word(expr, "type_of") == NULL) {
                         if(expr != selected_value)
                             copy_text(selected_value,
                                       sizeof(selected_value), expr);
@@ -6865,7 +6867,8 @@ parse_source(const char *path, const char *root, const char *source,
                 lower_compile_ifx_value(global->init, sizeof(global->init),
                                         module, &consts, global->span, 1);
             if(find_unquoted_text(global->init, "#ifx") == NULL &&
-               find_unquoted_word(global->init, "size_of") != NULL)
+               find_unquoted_word(global->init, "size_of") != NULL &&
+               find_unquoted_word(global->init, "type_of") == NULL)
                 lower_size_of_value(global->init, sizeof(global->init),
                                     module, global->span);
         }

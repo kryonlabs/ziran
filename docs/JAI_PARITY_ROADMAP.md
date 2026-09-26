@@ -40,7 +40,7 @@ including `#enum`, `variant`, postfix `?`, `#global`, `#export`, `#private`,
 `#extern`, C pointer suffixes, C conditional expressions, and old Kryon file
 extensions. The rejection tests should stay.
 
-The full local `make check` suite has 91 checks. Re-run it after any change to
+The full local `make check` suite has 93 checks. Re-run it after any change to
 the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 
 | Area | Current subset | Next proof of parity |
@@ -134,8 +134,11 @@ procedure-type values.
 `ifx` and `#ifx` now work as positional and named call arguments in the
 tested scalar subset, including source/saved-IR builds and entry pruning.
 Audit remaining lazy-expression placements and aggregate result types.
-Standalone `type_of`, forward and
-imported file-scope `type_of`, and foreign-record `size_of` also remain open.
+Forward and imported `size_of(type_of(...))` operands now resolve in tested
+file-scope constants, global initializers, `#run`, and `#ifx`; imported
+operands also work in `#if`. `tests/file_type_of.sh` checks source and saved
+IR on C, C++, Go, and `.zib`. Standalone `type_of`, untested forward `#if`
+queries, and foreign-record `size_of` remain open.
 Put each accepted expression through source, saved IR, and all applicable
 targets. Rejection for an unavailable construct must occur in checking, not
 as a later C/Go compiler error.
