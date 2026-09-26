@@ -205,7 +205,8 @@ and using imports with their declaring record type preserved. The compiler
 rejects a conflicting consumer record name while native C still emits
 colliding tags. `tests/compile_values.sh` and
 `tests/imported_aggregate_constants.sh` check source and saved IR across
-all four targets, including imported record fields and array elements in
+all four targets, including imported record fields, array elements, and direct
+calls with record parameters or results in
 `#run`, `#assert`, `#if`, and pure file-scope initializers. File-scope field
 selection, indexing, scalar arithmetic, and `#ifx` selection fold to typed
 literals before native or portable output. Bounded pure procedure calls also

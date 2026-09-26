@@ -12,6 +12,7 @@ Wrapper :: struct { point: Point; text: string; }
 Make :: () -> Wrapper {
     return Wrapper.{.point = Point.{.value = 42}, .text = "ready"}
 }
+Read :: (point: Point) -> s64 { return point.value }
 WRAPPER :: #run Make();
 NUMBERS :: #run s64.[41, 42];
 RECORDS :: #run Point.[Point.{.value = 41}, Point.{.value = 42}];
@@ -42,7 +43,8 @@ SELECTED :: Missing();
 #program_export
 Answer :: () -> s64 {
     local: Lib.Wrapper = Lib.WRAPPER;
-    if local.text != "ready" || saved.text != "ready" || selected_point.value != 42 || selected_record.value != 42 || selected_number != 42 || selected_choice.value != 42 { return 0 }
+    via_call: Lib.Wrapper = Lib.Make();
+    if local.text != "ready" || via_call.point.value != 42 || Lib.Read(via_call.point) != 42 || saved.text != "ready" || selected_point.value != 42 || selected_record.value != 42 || selected_number != 42 || selected_choice.value != 42 { return 0 }
     return Lib.WRAPPER.point.value + local.point.value + saved.point.value + Lib.NUMBERS[1] + numbers[1] + Lib.RECORDS[1].value + records[1].value + SELECTED - 294
 }
 ZI
@@ -196,6 +198,19 @@ if "$ziran" check --root "$work" "$work/shadow.zi" \
 fi
 rg -q 'cannot bind aggregate constant|imported record field type is shadowed' \
     "$work/shadow.err"
+
+cat > "$work/call_shadow.zi" <<'ZI'
+Lib :: #import "library";
+Wrapper :: struct { decoy: s64; }
+Bad :: () -> s64 { return Lib.Make().point.value }
+ZI
+if "$ziran" check --root "$work" "$work/call_shadow.zi" \
+    2> "$work/call_shadow.err"; then
+    echo 'shadowed imported procedure result type was silently accepted' >&2
+    exit 1
+fi
+grep -Fq 'imported procedure result type is shadowed' \
+    "$work/call_shadow.err"
 
 cat > "$work/value_shadow.zi" <<'ZI'
 #import "library";

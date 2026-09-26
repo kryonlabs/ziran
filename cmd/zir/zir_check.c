@@ -3258,6 +3258,13 @@ expression_type(Checker *c, int index)
             slot = NULL;
         copy_text(e->slot_type, sizeof(e->slot_type), slot ? binding : "");
         const ZirFunction *callee = *binding ? NULL : function(c, e->name, e->span);
+        const ZirModule *callee_owner = NULL;
+        if(callee != NULL) {
+            const ZirFunction *resolved = NULL;
+            if(ResolveFunctionAt(c->module, e->name, e->span.path,
+                                 &callee_owner, &resolved) != 1 ||
+               resolved != callee) callee_owner = NULL;
+        }
         char specialized_args[ZIR_TEXT_MAX] = "";
         char specialized_return[ZIR_NAME_MAX] = "";
         if(callee != NULL && callee->is_template) {
@@ -3424,6 +3431,30 @@ expression_type(Checker *c, int index)
             }
         }
         expected = args && *skip_ws(args) ? split_top_level(args, parts[0], 64, sizeof(parts[0])) : 0;
+        if(callee_owner != NULL && callee_owner != c->module)
+            for(int parameter = 0; parameter < expected; parameter++) {
+                char *colon = strchr(parts[parameter], ':');
+                if(colon == NULL) continue;
+                char mapped[ZIR_NAME_MAX];
+                copy_text(mapped, sizeof(mapped), skip_ws(colon + 1));
+                trim_in_place(mapped);
+                if(!record_field_type_at_use(c->module, callee_owner,
+                                             e->name, mapped,
+                                             sizeof(mapped))) {
+                    error(c, e->span,
+                          "imported procedure parameter type is shadowed",
+                          e->name);
+                    continue;
+                }
+                int written = snprintf(colon + 1,
+                    sizeof(parts[parameter]) - (size_t)(colon + 1 - parts[parameter]),
+                    " %s", mapped);
+                if(written < 0 || (size_t)written >=
+                   sizeof(parts[parameter]) -
+                       (size_t)(colon + 1 - parts[parameter]))
+                    error(c, e->span, "imported parameter type is too long",
+                          e->name);
+            }
         int fixed = varargs && expected > 0 ? expected - 1 : expected;
         if(varargs && expected > 0) {
             /* bind_call_arguments assigns slots from the fixed parameters;
@@ -3486,6 +3517,17 @@ expression_type(Checker *c, int index)
             type = return_type;
             if(specialized_return[0]) {
                 copy_text(e->type, sizeof(e->type), specialized_return);
+                type = e->type;
+            }
+            if(callee_owner != NULL && callee_owner != c->module) {
+                if(type != e->type)
+                    copy_text(e->type, sizeof(e->type), type);
+                if(!record_field_type_at_use(c->module, callee_owner,
+                                             e->name, e->type,
+                                             sizeof(e->type)))
+                    error(c, e->span,
+                          "imported procedure result type is shadowed",
+                          e->name);
                 type = e->type;
             }
             if(actual < fixed && !c->inference_only)

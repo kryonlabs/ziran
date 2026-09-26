@@ -328,7 +328,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   runtime expressions and direct globals; `tests/imported_aggregate_constants.sh`
   checks nested records, arrays, compile-time `#run`, `#assert`, and `#if`
   field selection, a later named import in `#if`, private visibility, and source/saved IR
-  across the same targets. A conflicting consumer record name is rejected
+  across the same targets. Imported procedures with record parameters or
+  results map those types into the caller's namespace; the same test covers
+  direct calls and rejects a shadowed result type. A conflicting consumer
+  record name is rejected
   during checking because native C still emits colliding record tags.
   Pure file-scope initializers now fold imported record-field and fixed-array
   selections, scalar expressions built from them, and tested `#ifx` selections
