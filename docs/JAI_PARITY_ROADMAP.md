@@ -40,7 +40,7 @@ including `#enum`, `variant`, postfix `?`, `#global`, `#export`, `#private`,
 `#extern`, C pointer suffixes, C conditional expressions, and old Kryon file
 extensions. The rejection tests should stay.
 
-The full local `make check` suite has 95 checks. Re-run it after any change to
+The full local `make check` suite has 96 checks. Re-run it after any change to
 the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 
 | Area | Current subset | Next proof of parity |
@@ -99,9 +99,14 @@ and plain enum declarations with known bodies are discovered for conditions;
 `tests/forward_type_conditions.sh` covers multiline records, Jai scalar aliases,
 `size_of` in `#if` and `#run`, an enum opened by a later `using`, source/saved IR
 on all four targets, and inactive type isolation. Multiline record fields with
-semicolons now lower the same way as inline fields. This is still a limited
-pass: types with conditional bodies, generic instances, enum flags, embedded
-source imports, and imports in `#load` files have ordering limits. Imported
+semicolons now lower the same way as inline fields. Unconditional nested
+`#load` files also contribute public constants, types, `using` declarations,
+and imports to earlier conditions; file-private names remain visible only in
+their declaring file. `tests/forward_load_conditions.sh` checks source and
+saved IR on all four targets, private visibility, and inactive loads. This is
+still a limited pass: types with conditional bodies, generic instances, enum
+flags, embedded source imports, and imports in conditionally selected `#load`
+files have ordering limits. Imported
 real, string, and aggregate constants have not been covered by the integer
 evaluator. Token normalization now waits for branch selection, so obsolete
 primitive spellings in inactive top-level, type, and procedure branches are

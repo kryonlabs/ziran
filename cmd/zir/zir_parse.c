@@ -2248,6 +2248,12 @@ typedef struct {
 } ZirTypes;
 
 typedef struct {
+    char **paths;
+    int count;
+    int capacity;
+} ZirDiscoveredFiles;
+
+typedef struct {
     int braces;                   /* net '{' until the region's closing '}' */
     int selected;
     int active;
@@ -5310,14 +5316,53 @@ append_type_source(char *target, size_t capacity, const char *line,
     target[length + addition + 1] = '\0';
 }
 
+static char *read_lowered_source(const char *path);
+
+static int
+remember_discovered_file(ZirDiscoveredFiles *files, const char *path)
+{
+    char *canonical = realpath(path, NULL);
+    if(canonical == NULL)
+        canonical = strdup(path);
+    if(canonical == NULL)
+        die("out of memory discovering loaded files");
+    for(int i = 0; i < files->count; i++)
+        if(!strcmp(files->paths[i], canonical)) {
+            free(canonical);
+            return 0;
+        }
+    if(files->count == files->capacity) {
+        int capacity = files->capacity > 0 ? files->capacity * 2 : 8;
+        char **paths = realloc(files->paths,
+                               (size_t)capacity * sizeof(*paths));
+        if(paths == NULL)
+            die("out of memory discovering loaded files");
+        files->paths = paths;
+        files->capacity = capacity;
+    }
+    files->paths[files->count++] = canonical;
+    return 1;
+}
+
+static void
+free_discovered_files(ZirDiscoveredFiles *files)
+{
+    for(int i = 0; i < files->count; i++)
+        free(files->paths[i]);
+    free(files->paths);
+}
+
 /* Discover only unconditional, single-line file constants, using and import
  * declarations. Conditional bodies, type bodies, and procedures are opaque:
  * branch selection must never gain names from a discarded branch. */
 static void
 discover_file_scope(const char *source, const char *path, const char *rel,
+                    const char *root,
                     ZirConsts *future_constants, ZirUsings *future_usings,
-                    ZirImports *future_imports, ZirTypes *future_types)
+                    ZirImports *future_imports, ZirTypes *future_types,
+                    ZirDiscoveredFiles *files, int depth)
 {
+    if(depth >= 32 || !remember_discovered_file(files, path)) return;
     char line[SOURCE_LINE_MAX];
     char type_source[ZIR_TEXT_MAX * 2 + SOURCE_LINE_MAX] = "";
     int line_no = 0;
@@ -5365,6 +5410,47 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                       !strcmp(t, "#scope_export")) {
                 scope_file = 0;
                 scope_public = !strcmp(t, "#scope_export");
+            } else if(starts_word(t, "#load")) {
+                const char *argument = skip_ws(t + strlen("#load"));
+                const char *end = *argument == '"' ?
+                    strchr(argument + 1, '"') : NULL;
+                if(end != NULL && !strcmp(skip_ws(end + 1), ";")) {
+                    char requested[SOURCE_PATH_MAX];
+                    size_t length = (size_t)(end - argument - 1);
+                    if(length > 3 && length < sizeof(requested)) {
+                        memcpy(requested, argument + 1, length);
+                        requested[length] = '\0';
+                        if(requested[0] != '/' &&
+                           !strcmp(requested + length - 3, ".zi") &&
+                           strchr(requested, '\\') == NULL) {
+                            char candidate[SOURCE_PATH_MAX * 2];
+                            const char *slash = strrchr(path, '/');
+                            int written = slash == NULL ?
+                                snprintf(candidate, sizeof(candidate), "%s",
+                                         requested) :
+                                snprintf(candidate, sizeof(candidate),
+                                         "%.*s/%s", (int)(slash - path),
+                                         path, requested);
+                            if(written > 0 &&
+                               (size_t)written < sizeof(candidate)) {
+                                char *loaded_path = realpath(candidate, NULL);
+                                if(loaded_path != NULL) {
+                                    char loaded_rel[SOURCE_PATH_MAX];
+                                    copy_text(loaded_rel, sizeof(loaded_rel),
+                                              relative_path(root, loaded_path));
+                                    char *loaded = read_lowered_source(
+                                        loaded_path);
+                                    discover_file_scope(loaded, loaded_path,
+                                        loaded_rel, root, future_constants,
+                                        future_usings, future_imports,
+                                        future_types, files, depth + 1);
+                                    free(loaded);
+                                    free(loaded_path);
+                                }
+                            }
+                        }
+                    }
+                }
             } else if((starts_word(t, "using") ||
                      !strncmp(t, "using,", 6)) &&
                     strstr(t, "#import") == NULL) {
@@ -5905,6 +5991,7 @@ parse_source(const char *path, const char *root, const char *source,
     ZirUsings future_usings = {0};
     ZirImports future_imports = {0};
     ZirTypes future_types = {0};
+    ZirDiscoveredFiles discovered_files = {0};
     int body_mdepth[8];
     int body_mselected[8];
     int body_mactive[8];
@@ -5961,8 +6048,9 @@ parse_source(const char *path, const char *root, const char *source,
                   canonical_root != NULL ? canonical_root : root);
         free(canonical_root);
     }
-    discover_file_scope(source, path, rel, &future_constants,
-                        &future_usings, &future_imports, &future_types);
+    discover_file_scope(source, path, rel, root, &future_constants,
+                        &future_usings, &future_imports, &future_types,
+                        &discovered_files, 0);
 
     for(;;) {
         if(!have_look && onelineq_count == 0 &&
@@ -6608,6 +6696,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_usings.items);
                 free(future_imports.items);
                 free(future_types.items);
+                free_discovered_files(&discovered_files);
                 free(canonical);
                 return NULL;
             }
@@ -7486,6 +7575,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_usings.items);
                 free(future_imports.items);
                 free(future_types.items);
+                free_discovered_files(&discovered_files);
                 free(canonical);
                 return NULL;
             }
@@ -7496,6 +7586,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_usings.items);
                 free(future_imports.items);
                 free(future_types.items);
+                free_discovered_files(&discovered_files);
                 free(canonical);
                 return NULL;
             }
@@ -7508,6 +7599,7 @@ parse_source(const char *path, const char *root, const char *source,
     free(future_usings.items);
     free(future_imports.items);
     free(future_types.items);
+    free_discovered_files(&discovered_files);
     free(canonical);
     return program;
 }

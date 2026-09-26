@@ -170,7 +170,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   portable output for this form. Nested `#load "relative/file.zi";` adds
   declarations to the current module, keeps source file diagnostics, and
   resolves imports relative to each loaded file. Cycles and missing files are
-  rejected; inactive compile-time branches skip loads. `#import, string`
+  rejected; inactive compile-time branches skip loads. Unconditional nested
+  loads are discovered before compile-time branch
+  selection, so earlier conditions can use later public constants and type
+  layouts from those files. File-private names remain local to their loaded
+  file; `tests/forward_load_conditions.sh` checks source and saved IR on C,
+  C++, Go, and `.zib`. `#import, string`
   compiles quoted or raw `#string` source as an embedded module, with named
   and unqualified imports. Compile-time branches inside embedded source can
   call modules imported earlier in that source. Source and saved IR bundles
