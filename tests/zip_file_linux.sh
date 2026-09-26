@@ -17,10 +17,10 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 #include "zip_file_linux_test.h"
 #include <stdint.h>
 int main(int argc, char **argv) {
-    return argc == 2 ? SelfTest((uint8_t *)argv[1]) : 10;
+    return argc == 3 ? SelfTest((uint8_t *)argv[1], (uint8_t *)argv[2]) : 12;
 }
 EOF
-env -u DISPLAY -u WAYLAND_DISPLAY "$work/test" "$work/archive.zip"
+env -u DISPLAY -u WAYLAND_DISPLAY "$work/test" "$work/archive.tmp" "$work/archive.zip"
 python3 - "$work/archive.zip" <<'PY'
 import sys
 from zipfile import ZipFile

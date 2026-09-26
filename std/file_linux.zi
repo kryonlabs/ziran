@@ -11,6 +11,7 @@ ReadAtRaw :: (fd: s32, output: *u8, count: u64, offset: s64) -> s64 #foreign lib
 WriteAtRaw :: (fd: s32, input: *u8, count: u64, offset: s64) -> s64 #foreign libc "pwrite";
 MakeDirectoryRaw :: (path: *u8, mode: s32) -> s32 #foreign libc "mkdir";
 UnlinkRaw :: (path: *u8) -> s32 #foreign libc "unlink";
+LinkRaw :: (source: *u8, destination: *u8) -> s32 #foreign libc "link";
 
 #scope_export
 FileHandle :: struct {
@@ -59,6 +60,15 @@ RemoveFile :: (path: string) -> bool {
     name: [4096]u8
     if !CopyCString(path, name[:]) { return false }
     return UnlinkRaw(*name[0]) == 0
+}
+
+#program_export
+LinkFile :: (source: string, destination: string) -> bool {
+    old_name: [4096]u8
+    new_name: [4096]u8
+    if !CopyCString(source, old_name[:]) ||
+       !CopyCString(destination, new_name[:]) { return false }
+    return LinkRaw(*old_name[0], *new_name[0]) == 0
 }
 
 #program_export

@@ -5,8 +5,9 @@
 #import "byte_text_linux"
 
 #program_export
-SelfTest :: (path: *u8) -> s32 {
+SelfTest :: (path: *u8, published_path: *u8) -> s32 {
     name: string = TextFromCString(path)
+    published: string = TextFromCString(published_path)
     file: FileHandle = OpenExclusivePrivate(name)
     if !file.valid { return 1 }
     meta: [2]u8
@@ -33,16 +34,18 @@ SelfTest :: (path: *u8) -> s32 {
         return 5
     }
     if !CloseFile(file) { return 6 }
-    mapped: MappedFile = MapPrivate(name)
-    if !mapped.valid { return 7 }
+    if !LinkFile(name, published) || LinkFile(name, published) { return 7 }
+    if !RemoveFile(name) { return 8 }
+    mapped: MappedFile = MapPrivate(published)
+    if !mapped.valid { return 9 }
     archive: []u8 = MappedBytes(mapped)
     entry: ZipEntry = FindZipEntry(archive, "a")
     output: [5]u8
     if !CopyStoredZipEntry(archive, entry, output[:]) ||
        output[0] != cast(u8)104 || output[4] != cast(u8)111 {
         UnmapFile(mapped)
-        return 8
+        return 10
     }
-    if !UnmapFile(mapped) { return 9 }
+    if !UnmapFile(mapped) { return 11 }
     return 0
 }
