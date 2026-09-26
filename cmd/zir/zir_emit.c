@@ -1328,6 +1328,7 @@ ScalarLiteral(const char *type, const char *text, ZirTarget target,
 
 typedef struct {
     const ZirModule *module;
+    const ZirGlobal *global;
     const ZirFunction *probe;
     ZirTarget target;
     ZirSourceSpan span;
@@ -1336,6 +1337,16 @@ typedef struct {
     ZirGlobalFieldRewrite field_name;
     void *context;
 } GlobalLiteralEmit;
+
+static void
+global_slot_wrapper_name(const ZirModule *module, const ZirGlobal *global,
+                         int index, char *out, size_t size)
+{
+    char prefix[64];
+    number_prefix(module, prefix, sizeof(prefix));
+    format(out, size, "%s_global_slot_%ld_%d", prefix,
+           (long)(global - module->globals), index);
+}
 
 static int
 append_global_literal(char *out, size_t size, size_t *used,
@@ -1368,6 +1379,21 @@ global_field(const ZirType *record, const char *name, int ordinal,
         position++;
     }
     return 0;
+}
+
+static const ZirType *
+global_function_slot(const ZirModule *module, const ZirModule *scope,
+                     const char *type, const ZirExpr *expr)
+{
+    const ZirType *slot = FindType(scope, type, NULL);
+    const ZirModule *owner = NULL;
+    const ZirFunction *declaration = NULL;
+    if(slot == NULL || !slot->is_procedure_type ||
+       expr->kind != ZIR_EXPR_IDENT ||
+       ResolveFunction(module, expr->name, &owner, &declaration) != 1 ||
+       declaration->is_extern)
+        return NULL;
+    return slot;
 }
 
 static int
@@ -1496,6 +1522,29 @@ emit_global_literal_node(GlobalLiteralEmit *emit, int index,
         }
         return append_global_literal(out, size, used, "}");
     }
+    const ZirType *slot = global_function_slot(emit->module, scope,
+                                                type, expr);
+    if(slot != NULL) {
+        char call[ZIR_TEXT_MAX], resolved[ZIR_TEXT_MAX];
+        size_t length;
+        if(emit->target == ZIR_GO || slot->is_c_call) {
+            if(emit->scalar == NULL) return 0;
+            format(call, sizeof(call), "%s()", expr->name);
+            if(!emit->scalar(emit->module, call, resolved,
+                             sizeof(resolved), emit->context)) return 0;
+            length = strlen(resolved);
+            if(length < 2 || strcmp(resolved + length - 2, "()")) return 0;
+            resolved[length - 2] = '\0';
+            return append_global_literal(out, size, used, "%s", resolved);
+        }
+        char wrapper[ZIR_NAME_MAX];
+        global_slot_wrapper_name(emit->module, emit->global, index,
+                                 wrapper, sizeof(wrapper));
+        return append_global_literal(out, size, used,
+                                     emit->target == ZIR_C ? "{NULL, %s}" :
+                                                             "{nullptr, %s}",
+                                     wrapper);
+    }
     char scalar[ZIR_TEXT_MAX * 2];
     if(!ScalarLiteral(type, expr->text, emit->target, emit->span,
                       scalar, sizeof(scalar))) {
@@ -1520,16 +1569,101 @@ EmitGlobalInitializer(const ZirModule *module, const ZirGlobal *global,
     out[0] = '\0';
     root = ParseExprTyped(&probe, module, global->init,
                           global->span, global->type);
-    if(root < 0 || probe.exprs[root].kind != ZIR_EXPR_COMPOUND) {
+    if(root < 0 || (probe.exprs[root].kind != ZIR_EXPR_COMPOUND &&
+       global_function_slot(module, module, global->type,
+                            &probe.exprs[root]) == NULL)) {
         free(probe.exprs);
         return 0;
     }
-    GlobalLiteralEmit emit = {module, &probe, target, global->span,
+    GlobalLiteralEmit emit = {module, global, &probe, target, global->span,
                               scalar, type_name, field_name, context};
     ok = emit_global_literal_node(&emit, root, module, global->type, out, size,
                                   &used, 0);
     free(probe.exprs);
     return ok ? 1 : -1;
+}
+
+static void
+emit_global_slot_wrappers_node(FILE *out, const ZirModule *module,
+                               const ZirGlobal *global,
+                               const ZirFunction *probe, int index,
+                               const ZirModule *scope, const char *type,
+                               ZirTarget target, ZirResolveTarget resolver,
+                               void *context, int depth)
+{
+    if(index < 0 || index >= probe->expr_count || depth > 32) return;
+    const ZirExpr *value = &probe->exprs[index];
+    if(value->kind == ZIR_EXPR_COMPOUND) {
+        char element[ZIR_NAME_MAX];
+        const ZirModule *record_owner = NULL;
+        int array = ArrayElementType(type, element, sizeof(element), NULL);
+        const ZirType *record = array ? NULL :
+            FindType(scope, type, &record_owner);
+        int position = 0;
+        for(int child = value->first_child; child >= 0;
+            child = probe->exprs[child].next_sibling) {
+            const ZirExpr *entry = &probe->exprs[child];
+            ZirTypeField field;
+            if(entry->right >= 0 &&
+               (array || (record != NULL &&
+                          global_field(record, entry->name, position,
+                                       &field))))
+                emit_global_slot_wrappers_node(out, module, global, probe,
+                    entry->right, record ? record_owner : scope,
+                    record ? field.type : element, target, resolver,
+                    context, depth + 1);
+            position++;
+        }
+        return;
+    }
+    const ZirType *slot = global_function_slot(module, scope, type, value);
+    if(slot == NULL || slot->is_c_call) return;
+    char parameters[64][ZIR_TEXT_MAX];
+    int count = *skip_ws(slot->body) ?
+        split_top_level(slot->body, parameters[0], 64,
+                        sizeof(parameters[0])) : 0;
+    char wrapper[ZIR_NAME_MAX], call[ZIR_TEXT_MAX], resolved[ZIR_TEXT_MAX];
+    char result_type[ZIR_NAME_MAX];
+    slot_native_type(slot->procedure_return_type, target,
+                     result_type, sizeof(result_type));
+    resolver(context, result_type, result_type, sizeof(result_type));
+    global_slot_wrapper_name(module, global, index,
+                             wrapper, sizeof(wrapper));
+    fprintf(out, "static %s %s(void *context", result_type, wrapper);
+    size_t length = (size_t)format(call, sizeof(call), "%s(", value->name);
+    for(int argument = 0; argument < count; argument++) {
+        const char *separator = strchr(parameters[argument], ':');
+        if(separator == NULL) break;
+        const char *source = skip_ws(separator + 1);
+        char native_type[ZIR_NAME_MAX];
+        slot_native_type(source, target, native_type, sizeof(native_type));
+        fprintf(out, ", %s slot_arg_%d", native_type, argument);
+        length += (size_t)format(call + length, sizeof(call) - length,
+                                  "%sslot_arg_%d",
+                                  argument ? ", " : "", argument);
+    }
+    format(call + length, sizeof(call) - length, ")");
+    resolver(context, call, resolved, sizeof(resolved));
+    fprintf(out, ")\n{\n    (void)context;\n    %s%s;\n}\n",
+            strcmp(slot->procedure_return_type, "void") ? "return " : "",
+            resolved);
+}
+
+void
+EmitGlobalSlotWrappers(FILE *out, const ZirModule *module,
+                       const ZirGlobal *global, ZirTarget target,
+                       ZirResolveTarget resolver, void *context)
+{
+    ZirFunction probe = {0};
+    if((target != ZIR_C && target != ZIR_CPP) || !global->init[0])
+        return;
+    int root = ParseExprTyped(&probe, module, global->init,
+                              global->span, global->type);
+    if(root >= 0)
+        emit_global_slot_wrappers_node(out, module, global, &probe, root,
+                                       module, global->type, target,
+                                       resolver, context, 0);
+    free(probe.exprs);
 }
 
 static void
@@ -1689,18 +1823,19 @@ EmitSlotWrappers(FILE *out, const ZirModule *module, const ZirFunction *fn,
         int count = *skip_ws(slot->body) ?
             split_top_level(slot->body, parameters[0], 64, sizeof(parameters[0])) : 0;
         char wrapper[ZIR_NAME_MAX], call[ZIR_TEXT_MAX], resolved[ZIR_TEXT_MAX];
-        const char *result_scalar = TargetType(slot->procedure_return_type, target);
         char result_type[ZIR_NAME_MAX];
-        copy_text(result_type, sizeof(result_type),
-                  result_scalar ? result_scalar : slot->procedure_return_type);
+        slot_native_type(slot->procedure_return_type, target,
+                         result_type, sizeof(result_type));
         resolver(context, result_type, result_type, sizeof(result_type));
         slot_wrapper_name(module, fn, index, wrapper, sizeof(wrapper));
         fprintf(out, "static %s %s(void *context", result_type, wrapper);
         size_t length = (size_t)format(call, sizeof(call), "%s(", value->name);
         for(int argument = 0; argument < count; argument++) {
             const char *source = skip_ws(strchr(parameters[argument], ':') + 1);
-            const char *scalar = TargetType(source, target);
-            fprintf(out, ", %s slot_arg_%d", scalar ? scalar : source, argument);
+            char native_type[ZIR_NAME_MAX];
+            slot_native_type(source, target, native_type,
+                             sizeof(native_type));
+            fprintf(out, ", %s slot_arg_%d", native_type, argument);
             length += (size_t)format(call + length, sizeof(call) - length,
                                       "%sslot_arg_%d", argument ? ", " : "", argument);
         }

@@ -1060,6 +1060,11 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
                 cret[0] ? cret : "void", cname, cargs);
     }
     for(i = 0; i < m->global_count; i++) {
+        BodySymbols symbols = {m, restab, restab_count, m->globals[i].span.path};
+        EmitGlobalSlotWrappers(c, m, &m->globals[i], ZIR_CPP,
+                               resolve_body_symbol, &symbols);
+    }
+    for(i = 0; i < m->global_count; i++) {
         const ZirGlobal *g = &m->globals[i];
         char base[LOWER_TEXT_MAX];
         char suffix[LOWER_NAME_MAX];

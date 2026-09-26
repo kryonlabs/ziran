@@ -25,6 +25,9 @@ int EmitGlobalInitializer(const ZirModule *module, const ZirGlobal *global,
                           ZirGlobalTypeRewrite type_name,
                           ZirGlobalFieldRewrite field_name, void *context,
                           char *out, size_t size);
+void EmitGlobalSlotWrappers(FILE *out, const ZirModule *module,
+                            const ZirGlobal *global, ZirTarget target,
+                            ZirResolveTarget resolver, void *context);
 /* C/C++ private ABI names and source-shaped arguments for array values. */
 int ArrayValueType(const char *type);
 int ModuleUsesSlices(const ZirModule *module);
