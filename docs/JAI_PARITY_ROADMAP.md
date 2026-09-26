@@ -204,9 +204,10 @@ Pure procedures can return named records and fixed arrays for compile-time
 field selection, array indexing, `.count`, and assertions. Local aggregate
 definitions now bind to checked runtime expression graphs; direct global
 initializers can use them. Public aggregates resolve through named, open,
-and using imports with their declaring record type preserved. The compiler
-rejects a conflicting consumer record name while native C still emits
-colliding tags. `tests/compile_values.sh` and
+and using imports with their declaring record type preserved. The checker
+still rejects a conflicting consumer record name in this aggregate path;
+native output now assigns distinct names to colliding record types.
+`tests/compile_values.sh` and
 `tests/imported_aggregate_constants.sh` check source and saved IR across
 all four targets, including imported record fields and array elements in
 `#run`, `#assert`, `#if`, and pure file-scope initializers. Direct calls with
