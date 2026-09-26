@@ -37,6 +37,8 @@ STOP;
 
 #program_export
 Answer :: () -> s32 {
+    if Large.count != 2301 || Large[2299] != #char "x" ||
+       Large[2300] != #char "\n" { return 0 }
     if !Same(Greeting, "  Jai \"quotes\" \\ slash\nEND_EXTRA\n\\n stays two bytes\n\t\u00e9\n") { return 0 }
     if !Same(Empty, "") { return 0 }
     if !Same(RawReturn(), "first\nsecond\n") { return 0 }
@@ -53,6 +55,12 @@ SECOND)) { return 0 }
     return 42
 }
 ZI
+
+awk 'BEGIN {
+    print "Large :: #string LONG"
+    for (i = 0; i < 2300; i++) printf "x"
+    print "\nLONG"
+}' >> "$work/multiline.zi"
 
 "$ziran" check --root "$work" "$work/multiline.zi"
 "$ziran" ir --root "$work" -o "$work/ir" "$work/multiline.zi"

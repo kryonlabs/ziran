@@ -2057,7 +2057,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
     case ZIR_EXPR_STRING:
         string_literal(expr, e->target, a, sizeof(a));
         if(e->target == ZIR_C || e->target == ZIR_CPP)
-            format(result, sizeof(result), "StringView(%s, sizeof(%s) - 1)", a, a);
+            format(result, sizeof(result), "StringLiteral(%s)", a);
         else
             copy_text(result, sizeof(result), a);
         pure = 1;

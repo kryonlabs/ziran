@@ -20,6 +20,9 @@ static inline String StringView(const char *data, size_t length) {
     return value;
 }
 
+/* Keep long literals in generated expressions once, including embedded NUL. */
+#define StringLiteral(text) StringView((text), sizeof(text) - 1)
+
 static inline String StringRange(String source, int64_t low, int64_t high) {
     if (low < 0 || high < low || (uint64_t)high > source.length ||
         (source.data == NULL && source.length != 0)) {
