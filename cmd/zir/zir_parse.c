@@ -3149,6 +3149,7 @@ typedef struct {
     CompileKind kind;
     long integer;
     double real;
+    char type[ZIR_NAME_MAX];
     char literal[ZIR_TEXT_MAX];
 } CompileValue;
 
@@ -3203,8 +3204,7 @@ compile_type_value(const char *type, CompileValue *value)
     }
     if(!strcmp(type, "string")) return value->kind == COMPILE_STRING;
     if(value->kind == COMPILE_COMPOUND &&
-       strncmp(value->literal, type, strlen(type)) == 0 &&
-       value->literal[strlen(type)] == '.') return 1;
+       !strcmp(value->type, type)) return 1;
     return 0;
 }
 
@@ -3243,6 +3243,152 @@ static int evaluate_typed_function(const ZirModule *module,
                                    char argument_names[][ZIR_NAME_MAX],
                                    int argument_count, int depth, int *fuel,
                                    CompileValue *result);
+static int evaluate_typed_node(const ZirFunction *probe, int index,
+                    const ZirModule *module, const char *path,
+                    int depth, int *fuel, CompileValue *result);
+
+static int
+compile_compound_value(const ZirFunction *probe, const ZirExpr *expression,
+                       const ZirModule *module, const char *path, int depth,
+                       int *fuel, CompileValue *result)
+{
+    char element[ZIR_NAME_MAX] = "";
+    int capacity = 0;
+    int array = ArrayElementType(expression->name, element,
+                                 sizeof(element), &capacity);
+    const ZirType *record = array ? NULL :
+        FindType(module, expression->name, NULL);
+    if((array && capacity < 0) ||
+       (!array && (record == NULL || record->is_enum ||
+                   record->is_procedure_type || record->is_record_template)))
+        return 0;
+    int written = array ?
+        snprintf(result->literal, sizeof(result->literal), "%s.[", element) :
+        snprintf(result->literal, sizeof(result->literal), "%s.{",
+                 expression->name);
+    if(written < 0 || (size_t)written >= sizeof(result->literal)) return 0;
+    size_t used = (size_t)written;
+    int ordinal = 0, mode = -1;
+    for(int child = expression->first_child; child >= 0;
+        child = probe->exprs[child].next_sibling) {
+        const ZirExpr *entry = &probe->exprs[child];
+        CompileValue value = {0};
+        char field_type[ZIR_NAME_MAX];
+        char field_name[ZIR_NAME_MAX] = "";
+        int named = !strcmp(entry->op, "=");
+        if(array) {
+            if(named || ordinal >= capacity) return 0;
+            copy_text(field_type, sizeof(field_type), element);
+        } else {
+            ZirTypeField field;
+            size_t offset = 0;
+            int position = 0, found = 0;
+            if(mode >= 0 && mode != named) return 0;
+            mode = named;
+            while(TypeNextField(record, &offset, &field) == 1) {
+                if(named ? !strcmp(field.name, entry->name) :
+                           position == ordinal) {
+                    copy_text(field_type, sizeof(field_type), field.type);
+                    copy_text(field_name, sizeof(field_name), field.name);
+                    found = 1;
+                    break;
+                }
+                position++;
+            }
+            if(!found) return 0;
+            for(int previous = expression->first_child; previous != child;
+                previous = probe->exprs[previous].next_sibling)
+                if(named && !strcmp(probe->exprs[previous].name,
+                                    field_name)) return 0;
+        }
+        if(!evaluate_typed_node(probe, entry->right, module, path,
+                                depth + 1, fuel, &value) ||
+           !compile_type_value(field_type, &value)) return 0;
+        if(array)
+            written = snprintf(result->literal + used,
+                               sizeof(result->literal) - used, "%s%s",
+                               ordinal ? ", " : "", value.literal);
+        else
+            written = snprintf(result->literal + used,
+                               sizeof(result->literal) - used,
+                               "%s.%s = %s", ordinal ? ", " : "",
+                               field_name, value.literal);
+        if(written < 0 || (size_t)written >= sizeof(result->literal) - used)
+            return 0;
+        used += (size_t)written;
+        ordinal++;
+    }
+    if(array && ordinal != capacity) return 0;
+    written = snprintf(result->literal + used, sizeof(result->literal) - used,
+                       "%c", array ? ']' : '}');
+    if(written != 1 || (size_t)written >= sizeof(result->literal) - used)
+        return 0;
+    result->kind = COMPILE_COMPOUND;
+    copy_text(result->type, sizeof(result->type), expression->name);
+    return 1;
+}
+
+static int
+compile_compound_member(const CompileValue *compound, const char *member,
+                        const ZirModule *module, const char *path, int depth,
+                        int *fuel, CompileValue *result)
+{
+    ZirFunction probe = {0};
+    int root = ParseExpr(&probe, module, compound->literal,
+                         Span(path, 1, 1));
+    int found = 0;
+    if(root >= 0 && probe.exprs[root].kind == ZIR_EXPR_COMPOUND) {
+        const ZirType *record = FindType(module, compound->type, NULL);
+        for(int child = probe.exprs[root].first_child; child >= 0;
+            child = probe.exprs[child].next_sibling) {
+            const ZirExpr *entry = &probe.exprs[child];
+            if(!strcmp(entry->name, member)) {
+                ZirTypeField field;
+                size_t offset = 0;
+                while(record != NULL &&
+                      TypeNextField(record, &offset, &field) == 1)
+                    if(!strcmp(field.name, member)) {
+                        found = evaluate_typed_node(&probe, entry->right,
+                                                    module, path, depth + 1,
+                                                    fuel, result) &&
+                                compile_type_value(field.type, result);
+                        break;
+                    }
+                break;
+            }
+        }
+    }
+    free(probe.exprs);
+    return found;
+}
+
+static int
+compile_compound_index(const CompileValue *compound, long index,
+                       const ZirModule *module, const char *path, int depth,
+                       int *fuel, CompileValue *result)
+{
+    char element[ZIR_NAME_MAX];
+    int capacity = 0;
+    if(!ArrayElementType(compound->type, element, sizeof(element),
+                         &capacity) || index < 0 || index >= capacity)
+        return 0;
+    ZirFunction probe = {0};
+    int root = ParseExpr(&probe, module, compound->literal,
+                         Span(path, 1, 1));
+    int found = 0, ordinal = 0;
+    if(root >= 0 && probe.exprs[root].kind == ZIR_EXPR_COMPOUND)
+        for(int child = probe.exprs[root].first_child; child >= 0;
+            child = probe.exprs[child].next_sibling, ordinal++)
+            if(ordinal == index) {
+                found = evaluate_typed_node(&probe, probe.exprs[child].right,
+                                            module, path, depth + 1, fuel,
+                                            result) &&
+                        compile_type_value(element, result);
+                break;
+            }
+    free(probe.exprs);
+    return found;
+}
 
 static int
 evaluate_imported_typed_define(const ZirModule *module, const char *path,
@@ -3310,6 +3456,9 @@ evaluate_typed_node(const ZirFunction *probe, int index,
         copy_text(result->literal, sizeof(result->literal),
                   expression->text);
         return 1;
+    case ZIR_EXPR_COMPOUND:
+        return compile_compound_value(probe, expression, module, path,
+                                      depth, fuel, result);
     case ZIR_EXPR_COMPILE_TIME:
         result->kind = COMPILE_INTEGER;
         result->integer = 1;
@@ -3450,7 +3599,27 @@ evaluate_typed_node(const ZirFunction *probe, int index,
             result->integer = (long)length;
             return compile_value_literal(result);
         }
+        if(left.kind == COMPILE_COMPOUND) {
+            int capacity = 0;
+            if(ArrayElementType(left.type, NULL, 0, &capacity) &&
+               !strcmp(expression->name, "count")) {
+                result->kind = COMPILE_INTEGER;
+                result->integer = capacity;
+                return compile_value_literal(result);
+            }
+            return compile_compound_member(&left, expression->name,
+                                           module, path, depth, fuel, result);
+        }
         return 0;
+    case ZIR_EXPR_INDEX:
+        if(!evaluate_typed_node(probe, expression->left, module, path,
+                                depth + 1, fuel, &left) ||
+           !evaluate_typed_node(probe, expression->right, module, path,
+                                depth + 1, fuel, &right) ||
+           left.kind != COMPILE_COMPOUND ||
+           right.kind != COMPILE_INTEGER) return 0;
+        return compile_compound_index(&left, right.integer, module, path,
+                                      depth, fuel, result);
     case ZIR_EXPR_CAST:
         if(!evaluate_typed_node(probe, expression->right, module, path,
                                 depth + 1, fuel, result)) return 0;
@@ -3719,7 +3888,8 @@ typed_body_statements(TypedBody *body, int start, int stop,
             }
             const char *type = colon[0] ? colon :
                 value.kind == COMPILE_REAL ? "float64" :
-                value.kind == COMPILE_STRING ? "string" : "s64";
+                value.kind == COMPILE_STRING ? "string" :
+                value.kind == COMPILE_COMPOUND ? value.type : "s64";
             if(equals != NULL && !compile_type_value(type, &value))
                 goto failed;
             if(!typed_add_local(body, text, type,

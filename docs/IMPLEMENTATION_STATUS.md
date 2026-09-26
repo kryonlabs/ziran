@@ -311,8 +311,14 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   and string constants resolve in `#if` and `#run` even when the import
   declaration follows the condition. Their public visibility and private
   exclusion are checked from source and saved IR on C, C++, Go, and `.zib` by
-  `tests/imported_typed_constants.sh`. Effects, unbounded execution, aggregate
-  results, and general metaprogramming are unsupported.
+  `tests/imported_typed_constants.sh`. Pure compile-time procedures can now
+  return named records and fixed arrays. Their evaluated fields, array
+  elements, and array counts can feed `#run` scalars and `#assert`; aggregate
+  `#run` definitions remain compile-time values. `tests/compile_values.sh`
+  checks nested records, fixed arrays, bounds rejection, and source/saved-IR
+  execution on C, C++, Go, and `.zib`. Runtime references to aggregate
+  definitions, effects, unbounded execution, and general metaprogramming
+  remain unsupported.
   Integer conditions and typed expressions use the same bounded procedure
   evaluator, including a shared instruction budget across nested calls; the
   separate integer-only procedure interpreter has been removed.

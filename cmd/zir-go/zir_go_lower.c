@@ -1451,6 +1451,17 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                     fprintf(f, "type %s %s\n", cname, aliased);
                     continue;
                 }
+                ZirFunction probe = {0};
+                int root = ParseExpr(&probe, m, value,
+                                     m->defines[i].span);
+                int aggregate = root >= 0 &&
+                    probe.exprs[root].kind == ZIR_EXPR_COMPOUND;
+                free(probe.exprs);
+                if(aggregate) {
+                    /* Aggregate definitions are compile-time values until
+                     * the checker can bind them in runtime expressions. */
+                    continue;
+                }
                 tx_expr(m, m->defines[i].value, cval, sizeof(cval));
                 fprintf(f, "const %s = %s\n", cname, cval);
             }
