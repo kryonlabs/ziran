@@ -40,7 +40,7 @@ including `#enum`, `variant`, postfix `?`, `#global`, `#export`, `#private`,
 `#extern`, C pointer suffixes, C conditional expressions, and old Kryon file
 extensions. The rejection tests should stay.
 
-The full local `make check` suite has 99 checks. Re-run it after any change to
+The full local `make check` suite has 100 checks. Re-run it after any change to
 the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 
 | Area | Current subset | Next proof of parity |
@@ -205,9 +205,10 @@ and using imports with their declaring record type preserved. The compiler
 rejects a conflicting consumer record name while native C still emits
 colliding tags. `tests/compile_values.sh` and
 `tests/imported_aggregate_constants.sh` check source and saved IR across
-all four targets, including imported record fields, array elements, and direct
-calls with record parameters or results in
-`#run`, `#assert`, `#if`, and pure file-scope initializers. File-scope field
+all four targets, including imported record fields and array elements in
+`#run`, `#assert`, `#if`, and pure file-scope initializers. Direct calls with
+record parameters or results and qualified record literals also work in the
+tested runtime expressions. File-scope field
 selection, indexing, scalar arithmetic, and `#ifx` selection fold to typed
 literals before native or portable output. Bounded pure procedure calls also
 fold in globals; runtime-dependent calls remain unsupported by the portable

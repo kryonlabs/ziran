@@ -25,6 +25,9 @@ saved: Lib.Wrapper = Lib.WRAPPER;
 numbers: [2]s64 = Lib.NUMBERS;
 records: [2]Lib.Point = Lib.RECORDS;
 selected_point: Lib.Point = Lib.WRAPPER.point;
+literal_point: Lib.Point = Lib.Point.{.value = 42};
+literal_wrapper: Lib.Wrapper = Lib.Wrapper.{.point = Lib.Point.{.value = 42}, .text = "ready"};
+inferred_wrapper: Lib.Wrapper = Lib.Wrapper.{.point = {.value = 42}, .text = "ready"};
 selected_record: Lib.Point = Lib.RECORDS[1];
 selected_number: s64 = Lib.WRAPPER.point.value + Lib.NUMBERS[1] - 42;
 selected_choice: Lib.Point = #ifx true then Lib.RECORDS[1] else Lib.RECORDS[0];
@@ -43,7 +46,9 @@ SELECTED :: Missing();
 #program_export
 Answer :: () -> s64 {
     local: Lib.Wrapper = Lib.WRAPPER;
+    direct: Lib.Point = Lib.Point.{.value = 42};
     via_call: Lib.Wrapper = Lib.Make();
+    if direct.value != 42 || literal_point.value != 42 || literal_wrapper.point.value != 42 || inferred_wrapper.point.value != 42 { return 0 }
     if local.text != "ready" || via_call.point.value != 42 || Lib.Read(via_call.point) != 42 || saved.text != "ready" || selected_point.value != 42 || selected_record.value != 42 || selected_number != 42 || selected_choice.value != 42 { return 0 }
     return Lib.WRAPPER.point.value + local.point.value + saved.point.value + Lib.NUMBERS[1] + numbers[1] + Lib.RECORDS[1].value + records[1].value + SELECTED - 294
 }

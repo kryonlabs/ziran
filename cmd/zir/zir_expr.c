@@ -379,7 +379,9 @@ record_initializer(ExprParser *p, size_t start, const char *type,
     int first = -1;
     int last = -1;
     int ordinal = 0;
-    const ZirType *record = p->module ? FindType(p->module, type, NULL) : NULL;
+    const ZirModule *record_owner = NULL;
+    const ZirType *record = p->module ?
+        FindType(p->module, type, &record_owner) : NULL;
     expect(p, open);
     while(!p->failed && !is(p, close) && p->token.kind != ZIR_TOKEN_EOF) {
         size_t field_start = p->begin;
@@ -422,6 +424,18 @@ record_initializer(ExprParser *p, size_t start, const char *type,
                     break;
                 }
                 position++;
+            }
+            if(record_owner != NULL && record_owner != p->module) {
+                const char *dot = strchr(type, '.');
+                const ZirType *declared = FindType(record_owner,
+                                                   field_type, NULL);
+                char qualified[ZIR_NAME_MAX];
+                int length = dot != NULL && declared != NULL ?
+                    snprintf(qualified, sizeof(qualified), "%.*s.%s",
+                             (int)(dot - type), type, field_type) : -1;
+                if(length >= 0 && (size_t)length < sizeof(qualified) &&
+                   FindType(p->module, qualified, NULL) == declared)
+                    copy_text(field_type, sizeof(field_type), qualified);
             }
             if(++p->depth > 128) {
                 p->failed = 1;
@@ -681,18 +695,32 @@ prefix(ExprParser *p)
                 result = typed_array_initializer(p, start, tok.text);
             } else if(following.kind == ZIR_TOKEN_IDENT) {
                 ZirToken dot = LexerNext(&lookahead);
-                ZirToken bracket = LexerNext(&lookahead);
+                ZirToken opener = LexerNext(&lookahead);
                 char qualified[ZIR_NAME_MAX];
                 int length = snprintf(qualified, sizeof(qualified), "%s.%s",
                                       tok.text, following.text);
                 if(!strcmp(dot.text, ".") &&
-                   !strcmp(bracket.text, "[") && length >= 0 &&
+                   length >= 0 &&
                    (size_t)length < sizeof(qualified) &&
                    type_name(p, qualified)) {
-                    next(p);
-                    next(p);
-                    next(p);
-                    result = typed_array_initializer(p, start, qualified);
+                    if(!strcmp(opener.text, "[") ||
+                       !strcmp(opener.text, "{")) {
+                        next(p);
+                        next(p);
+                        next(p);
+                        if(!strcmp(opener.text, "["))
+                            result = typed_array_initializer(p, start,
+                                                             qualified);
+                        else {
+                            const ZirType *record = FindType(p->module,
+                                                             qualified, NULL);
+                            if(record == NULL || record->is_enum)
+                                p->failed = 1;
+                            else
+                                result = record_initializer(p, start,
+                                                            qualified, "{", "}");
+                        }
+                    }
                 }
             }
         }
