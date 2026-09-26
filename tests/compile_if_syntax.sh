@@ -259,3 +259,94 @@ if "$ziran" check --root "$work" "$work/cyclic_constant.zi" \
 fi
 grep -Fq 'cyclic compile-time constant: FIRST' \
     "$work/cyclic_constant.err"
+
+cat > "$work/forward_using.zi" <<'EOF'
+Color :: enum { Red :: 1; Blue :: 2; }
+#if Red == 1 {
+Selected :: 1;
+} else {
+Selected :: MissingValue;
+}
+RUN :: #run Red + 40;
+#scope_file
+using,only("Red") Color;
+#scope_export
+#program_export
+Answer :: () -> s64 { return Selected + RUN }
+EOF
+"$ziran" ir --root "$work" -o "$work/using-ir" \
+    "$work/forward_using.zi"
+if grep -aFq 'MissingValue' "$work/using-ir/forward_using.zir"; then
+    echo 'unselected forward-using branch was saved in IR' >&2
+    exit 1
+fi
+for input in "$work/forward_using.zi" "$work/using-ir/forward_using.zir"; do
+    case "$input" in
+        *.zi) root=$work; label=source ;;
+        *.zir) root=$work/using-ir; label=saved ;;
+    esac
+    "$ziran" bundle --root "$root" --entry forward_using:Answer \
+        -o "$work/using-$label.zib" "$input"
+    test "$("$ziran" run "$work/using-$label.zib")" = 42
+    for target in c cpp go; do
+        out="$work/using-$label-$target"
+        "$ziran" build "--target=$target" --root "$root" -o "$out" "$input"
+        case "$target" in
+            c)
+                printf '#include "forward_using.h"\nint main(void) { return Answer() == 42 ? 0 : 1; }\n' > "$work/using-main.c"
+                ${CC:-cc} -Iinclude -I"$out" "$out"/*.c \
+                    "$work/using-main.c" -o "$out/app"
+                "$out/app"
+                ;;
+            cpp)
+                printf '#include "forward_using.hpp"\nint main() { return Answer() == 42 ? 0 : 1; }\n' > "$work/using-main.cpp"
+                ${CXX:-c++} -Iinclude -I"$out" "$out"/*.cpp \
+                    "$work/using-main.cpp" -o "$out/app"
+                "$out/app"
+                ;;
+            go)
+                cat > "$out/forward_using_test.go" <<'GO'
+package ziran
+import "testing"
+func TestForwardUsing(t *testing.T) {
+    if ForwardUsing_Answer() != 42 { t.Fatal("forward using") }
+}
+GO
+                GO111MODULE=off go test "$out"/*.go
+                ;;
+        esac
+    done
+done
+cmp "$work/using-source.zib" "$work/using-saved.zib"
+
+cat > "$work/inactive_using.zi" <<'EOF'
+Color :: enum { Red :: 1; }
+#if false {
+using Color;
+}
+#if Red == 1 {
+Answer :: () -> s64 { return 42 }
+}
+EOF
+if "$ziran" check --root "$work" "$work/inactive_using.zi" \
+    2> "$work/inactive_using.err"; then
+    echo 'using in inactive branch became visible' >&2
+    exit 1
+fi
+grep -Fq '#if condition is not a compile-time constant' \
+    "$work/inactive_using.err"
+
+cat > "$work/filtered_using.zi" <<'EOF'
+Color :: enum { Red :: 1; Blue :: 2; }
+#if Blue == 2 {
+Answer :: () -> s64 { return 42 }
+}
+using,only("Red") Color;
+EOF
+if "$ziran" check --root "$work" "$work/filtered_using.zi" \
+    2> "$work/filtered_using.err"; then
+    echo 'filtered future enum member became visible' >&2
+    exit 1
+fi
+grep -Fq '#if condition is not a compile-time constant' \
+    "$work/filtered_using.err"

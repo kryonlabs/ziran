@@ -2230,6 +2230,12 @@ typedef struct {
 } ZirConsts;
 
 typedef struct {
+    ZirUsing *items;
+    int count;
+    int capacity;
+} ZirUsings;
+
+typedef struct {
     int braces;                   /* net '{' until the region's closing '}' */
     int selected;
     int active;
@@ -4174,6 +4180,7 @@ typedef struct CompileParseContext {
     ZirCompileImportResolver resolver;
     void *resolver_context;
     const ZirConsts *future_constants;
+    const ZirUsings *future_usings;
 } CompileParseContext;
 
 static ZirConsts
@@ -4202,6 +4209,33 @@ visible_compile_constants(const ZirConsts *parsed, const ZirConsts *future)
     return visible;
 }
 
+static ZirModule
+visible_compile_usings(const ZirModule *parsed, const ZirUsings *future)
+{
+    ZirModule visible = *parsed;
+    int extra = future != NULL ? future->count : 0;
+    visible.usings = calloc((size_t)parsed->using_count + (size_t)extra + 1,
+                            sizeof(*visible.usings));
+    if(visible.usings == NULL)
+        die("out of memory resolving compile-time using declarations");
+    visible.using_count = 0;
+    for(int i = 0; i < parsed->using_count; i++)
+        visible.usings[visible.using_count++] = parsed->usings[i];
+    for(int i = 0; i < extra; i++) {
+        const ZirUsing *candidate = &future->items[i];
+        int present = 0;
+        for(int j = 0; j < parsed->using_count; j++)
+            if(!strcmp(parsed->usings[j].span.path, candidate->span.path) &&
+               parsed->usings[j].span.line == candidate->span.line) {
+                present = 1;
+                break;
+            }
+        if(!present)
+            visible.usings[visible.using_count++] = *candidate;
+    }
+    return visible;
+}
+
 static int
 select_compile_condition(ZirModule *module, const ZirConsts *consts,
                          const char *source, ZirSourceSpan span,
@@ -4213,14 +4247,16 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
     int known;
     ZirConsts visible = visible_compile_constants(consts,
         context != NULL ? context->future_constants : NULL);
+    ZirModule using_scope = visible_compile_usings(module,
+        context != NULL ? context->future_usings : NULL);
     consts = &visible;
     expand_compile_expr(expanded, sizeof(expanded), consts, source, span.path);
-    if(module->using_count > 0 && context != NULL &&
+    if(using_scope.using_count > 0 && context != NULL &&
        context->resolver != NULL &&
        !context->resolver(context->resolver_context, context->program,
                           module, source_path, context->root, NULL))
         die_at(span, "cannot resolve imports for #if enum member");
-    if(!LowerFileScopeUsing(module, expanded, sizeof(expanded), span))
+    if(!LowerFileScopeUsing(&using_scope, expanded, sizeof(expanded), span))
         die_at(span, "invalid #if enum member");
     if(strstr(expanded, "size_of") != NULL && context != NULL &&
        context->resolver != NULL &&
@@ -4256,7 +4292,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
                               module, source_path, context->root,
                               expanded))
             die_at(span, "cannot resolve imports for #if condition");
-        if(!LowerFileScopeUsing(module, expanded, sizeof(expanded), span))
+        if(!LowerFileScopeUsing(&using_scope, expanded, sizeof(expanded), span))
             die_at(span, "invalid #if enum member");
         known = eval_const_condition(expanded, &value, module, consts,
                                      span.path, 0);
@@ -4267,6 +4303,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
     if(!known)
         die_at(span, "#if condition is not a compile-time constant: %s",
                expanded);
+    free(using_scope.usings);
     free(visible.items);
     return value != 0;
 }
@@ -4968,12 +5005,12 @@ read_source_line(char *line, size_t size, const char **source,
     return line;
 }
 
-/* Discover only unconditional, single-line file constants. Conditional
- * bodies, type bodies, and procedures are opaque here: branch selection must
- * never gain names from a branch that may later be discarded. */
+/* Discover only unconditional, single-line file constants and using
+ * declarations. Conditional bodies, type bodies, and procedures are opaque:
+ * branch selection must never gain names from a discarded branch. */
 static void
-discover_file_constants(const char *source, const char *path,
-                        const char *rel, ZirConsts *future)
+discover_file_scope(const char *source, const char *path, const char *rel,
+                    ZirConsts *future_constants, ZirUsings *future_usings)
 {
     char line[SOURCE_LINE_MAX];
     int line_no = 0;
@@ -4991,7 +5028,41 @@ discover_file_constants(const char *source, const char *path,
             else if(!strcmp(t, "#scope_module") ||
                     !strcmp(t, "#scope_export"))
                 scope_file = 0;
-            else {
+            else if((starts_word(t, "using") ||
+                     !strncmp(t, "using,", 6)) &&
+                    strstr(t, "#import") == NULL) {
+                const char *binding = skip_ws(t + 5);
+                char filter[160] = "";
+                parse_using_modifiers(&binding, filter, sizeof(filter),
+                                      rel, line_no);
+                size_t length = strlen(binding);
+                if(length > 1 && binding[length - 1] == ';' &&
+                   length < ZIR_NAME_MAX && strchr(binding, ':') == NULL) {
+                    char name[ZIR_NAME_MAX];
+                    memcpy(name, binding, length - 1);
+                    name[length - 1] = '\0';
+                    trim_in_place(name);
+                    if(is_member_path_text(name)) {
+                        if(future_usings->count == future_usings->capacity) {
+                            int capacity = future_usings->capacity > 0 ?
+                                future_usings->capacity * 2 : 8;
+                            ZirUsing *items = realloc(future_usings->items,
+                                (size_t)capacity * sizeof(*items));
+                            if(items == NULL)
+                                die("out of memory discovering using declarations");
+                            future_usings->items = items;
+                            future_usings->capacity = capacity;
+                        }
+                        ZirUsing *using = &future_usings->items[
+                            future_usings->count++];
+                        memset(using, 0, sizeof(*using));
+                        copy_text(using->path, sizeof(using->path), name);
+                        copy_text(using->filter, sizeof(using->filter), filter);
+                        using->is_file_private = scope_file;
+                        using->span = Span(rel, line_no, 1);
+                    }
+                }
+            } else {
                 const char *colons = strstr(t, "::");
                 if(colons != NULL && !brace_outside_literals(t) &&
                    !looks_like_function_header(t)) {
@@ -5011,17 +5082,19 @@ discover_file_constants(const char *source, const char *path,
                         name[name_length] = '\0';
                         trim_in_place(name);
                         if(is_identifier_text(name)) {
-                            if(future->count == future->capacity) {
-                                int capacity = future->capacity > 0 ?
-                                    future->capacity * 2 : 16;
-                                ZirConst *items = realloc(future->items,
+                            if(future_constants->count ==
+                               future_constants->capacity) {
+                                int capacity = future_constants->capacity > 0 ?
+                                    future_constants->capacity * 2 : 16;
+                                ZirConst *items = realloc(future_constants->items,
                                     (size_t)capacity * sizeof(*items));
                                 if(items == NULL)
                                     die("out of memory discovering constants");
-                                future->items = items;
-                                future->capacity = capacity;
+                                future_constants->items = items;
+                                future_constants->capacity = capacity;
                             }
-                            ZirConst *constant = &future->items[future->count++];
+                            ZirConst *constant = &future_constants->items[
+                                future_constants->count++];
                             memset(constant, 0, sizeof(*constant));
                             copy_text(constant->name, sizeof(constant->name),
                                       name);
@@ -5458,6 +5531,7 @@ parse_source(const char *path, const char *root, const char *source,
     int type_frame_count = 0;
     ZirConsts consts;
     ZirConsts future_constants = {0};
+    ZirUsings future_usings = {0};
     int body_mdepth[8];
     int body_mselected[8];
     int body_mactive[8];
@@ -5501,6 +5575,7 @@ parse_source(const char *path, const char *root, const char *source,
     compile_context.resolver = resolver;
     compile_context.resolver_context = resolver_context;
     compile_context.future_constants = &future_constants;
+    compile_context.future_usings = &future_usings;
 
     module = ProgramAddModule(program, module_name, rel, Span(rel, 1, 1));
     if(module == NULL)
@@ -5511,7 +5586,8 @@ parse_source(const char *path, const char *root, const char *source,
                   canonical_root != NULL ? canonical_root : root);
         free(canonical_root);
     }
-    discover_file_constants(source, path, rel, &future_constants);
+    discover_file_scope(source, path, rel, &future_constants,
+                        &future_usings);
 
     for(;;) {
         if(!have_look && onelineq_count == 0 &&
@@ -6146,6 +6222,7 @@ parse_source(const char *path, const char *root, const char *source,
                 ProgramFree(program);
                 free(consts.items);
                 free(future_constants.items);
+                free(future_usings.items);
                 free(canonical);
                 return NULL;
             }
@@ -7021,6 +7098,7 @@ parse_source(const char *path, const char *root, const char *source,
                 ProgramFree(program);
                 free(consts.items);
                 free(future_constants.items);
+                free(future_usings.items);
                 free(canonical);
                 return NULL;
             }
@@ -7028,6 +7106,7 @@ parse_source(const char *path, const char *root, const char *source,
                 ProgramFree(program);
                 free(consts.items);
                 free(future_constants.items);
+                free(future_usings.items);
                 free(canonical);
                 return NULL;
             }
@@ -7037,6 +7116,7 @@ parse_source(const char *path, const char *root, const char *source,
     }
     free(consts.items);
     free(future_constants.items);
+    free(future_usings.items);
     free(canonical);
     return program;
 }
