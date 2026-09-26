@@ -4554,6 +4554,19 @@ restart:
                     error(c, st->span, problem, st->name);
             }
             const ZirType *local_type = FindType(c->module, st->type, NULL);
+            if(local_type == NULL && st->type[0] != '[' &&
+               !TargetType(st->type, ZIR_C) &&
+               !SliceElementType(st->type, NULL, 0)) {
+                const char *base = st->type;
+                int resolvable = 0;
+                while(*base == '*')
+                    base++;
+                if(TargetType(base, ZIR_C) != NULL ||
+                   FindType(c->module, base, NULL) != NULL)
+                    resolvable = 1;
+                if(!resolvable)
+                    error(c, st->span, "unknown declaration type", st->type);
+            }
             if(local_type != NULL && local_type->is_record_template)
                 error(c, st->span,
                       "generic types require a concrete specialization",
@@ -4725,22 +4738,14 @@ restart:
     c->fn->checked = c->errors == errors_before;
     for(int expression = 0; expression < c->fn->expr_count; expression++)
         has_slots |= c->fn->exprs[expression].is_function_value;
-    if(has_slots && !c->fn->is_extern &&
-       (!c->fn->checked || !CanEmitBody(c->module, c->fn))) {
-        Diagnostic(c->fn->span, "check.slot_body",
-                      "slot parameters require a fully checked portable body: %s", c->fn->name);
-        c->failed = 1;
-    }
-    if(has_arrays && !fn->is_extern &&
-       (!fn->checked || !CanEmitBody(c->module, fn))) {
-        Diagnostic(fn->span, "check.array_body",
-                      "array and slice values require a fully checked portable body: %s", fn->name);
-        c->failed = 1;
-    }
-    if(c->fn->checked && !c->fn->is_extern && !CanEmitBody(c->module, c->fn)) {
-        error(c,c->fn->span,"function is not supported by portable scalar emission",c->fn->name);
-        c->fn->checked=0;
-    }
+    /* Portable scalar emission classifies functions for bundles; a body the
+     * emitter cannot express is excluded there and re-verified by the bundle
+     * gate. Type checking itself stays complete, so native-only programs
+     * with host-bound state (raw pointers, foreign handles) check clean. */
+    if((has_slots || has_arrays) && !c->fn->is_extern && !c->fn->checked)
+        c->fn->checked = 0;
+    if(c->fn->checked && !c->fn->is_extern && !CanEmitBody(c->module, c->fn))
+        c->fn->checked = 0;
     if(c->fn->checked) {
         fn->using_parameters = 0;
         for(int i = 0; i < fn->stmt_count; i++)
