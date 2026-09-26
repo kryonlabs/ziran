@@ -352,16 +352,21 @@ portable_type(const ZirModule *module, const char *type)
     return portable_type_at(module, type, 0);
 }
 
-/* Host values have a declared, recursive record shape. A slice parameter is
- * copied into host values and copied back after the synchronous call. Arrays,
- * slice returns, and slots need separate ownership contracts. */
+/* Host values have a declared, recursive record or array shape. A slice
+ * parameter is copied into host values and copied back after the synchronous
+ * call. Fixed arrays are copied by value. */
 static int
 host_type_at(const ZirModule *module, const char *type, int depth,
              int slice_parameter)
 {
     char element[ZIR_NAME_MAX];
-    if(depth >= VM_MAX_DEPTH || ArrayElementType(type, NULL, 0, NULL))
+    int capacity;
+    if(depth >= VM_MAX_DEPTH)
         return 0;
+    if(ArrayElementType(type, element, sizeof(element), &capacity))
+        return capacity >= 0 &&
+               (size_t)capacity <= VM_MAX_ARRAY_BYTES / sizeof(Value) &&
+               host_type_at(module, element, depth + 1, 0);
     if(SliceElementType(type, element, sizeof(element)))
         return element[0] != '[' && element[0] != '\0' &&
                host_type_at(module, element, depth + 1, 0);
@@ -3308,7 +3313,7 @@ release_host_argument(VmHostValue *value, int depth)
 {
     if(depth >= VM_MAX_DEPTH)
         return;
-    if(value->kind == VM_HOST_SLICE) {
+    if(value->kind == VM_HOST_SLICE || value->kind == VM_HOST_ARRAY) {
         for(size_t i = 0; i < value->length && value->elements != NULL; i++)
             release_host_argument(&value->elements[i], depth + 1);
         free(value->elements);
@@ -3332,6 +3337,26 @@ host_argument(const ZirModule *module, const char *type, Value value,
         return 0;
     out->type = type;
     char element[ZIR_NAME_MAX];
+    int capacity;
+    if(ArrayElementType(type, element, sizeof(element), &capacity)) {
+        if(capacity < 0 || value.kind != VALUE_ARRAY || value.array == NULL ||
+           value.array->length != capacity ||
+           strcmp(value.array->element_type, element) != 0)
+            return 0;
+        out->kind = VM_HOST_ARRAY;
+        out->length = (size_t)capacity;
+        if(capacity == 0)
+            return 1;
+        out->elements = calloc((size_t)capacity, sizeof(*out->elements));
+        if(out->elements == NULL)
+            return 0;
+        for(int i = 0; i < capacity; i++)
+            if(!host_argument(module, value.array->element_type,
+                              value.array->elements[i],
+                              &out->elements[i], depth + 1))
+                return 0;
+        return 1;
+    }
     if(SliceElementType(type, element, sizeof(element))) {
         if(value.kind != VALUE_SLICE ||
            (value.length > 0 && value.array == NULL) ||
@@ -3409,6 +3434,26 @@ host_return(Vm *vm, const ZirModule *module, const char *type,
        strcmp(input->type, type) != 0) {
         vm->failed = 1;
         return result;
+    }
+    char array_element[ZIR_NAME_MAX];
+    int capacity;
+    if(ArrayElementType(type, array_element, sizeof(array_element),
+                        &capacity)) {
+        if(capacity < 0 || input->kind != VM_HOST_ARRAY ||
+           input->length != (size_t)capacity ||
+           (capacity > 0 && input->elements == NULL) ||
+           input->field_count != 0 || input->fields != NULL) {
+            vm->failed = 1;
+            return result;
+        }
+        Array *array = allocate_array_try(vm, module, array_element,
+                                          capacity, 1);
+        if(array == NULL)
+            return result;
+        for(int i = 0; i < capacity && !vm->failed; i++)
+            array->elements[i] = host_return(vm, module, array_element,
+                                              &input->elements[i], depth + 1);
+        return (Value){.kind = VALUE_ARRAY, .array = array};
     }
     const ZirModule *owner = NULL;
     const ZirType *declared = FindType(module, type, &owner);

@@ -37,6 +37,7 @@ def main():
     extra = {
         "host_capability.sh": str(bin_dir / "host-capability-test"),
         "host_slices.sh": str(bin_dir / "slice-host-test"),
+        "host_arrays.sh": str(bin_dir / "array-host-test"),
         "portable_host_records.sh": str(bin_dir / "record-host-test"),
         "process.sh": str(bin_dir / "process-host-test"),
     }

@@ -19,7 +19,8 @@ typedef enum VmHostValueKind {
     VM_HOST_STRING,
     VM_HOST_RECORD,
     VM_HOST_SLICE,
-    VM_HOST_POINTER
+    VM_HOST_POINTER,
+    VM_HOST_ARRAY
 } VmHostValueKind;
 
 typedef struct VmHostField VmHostField;
@@ -50,6 +51,10 @@ struct VmHostField {
  * Modify elements in place and keep the elements pointer and length intact;
  * the VM validates and copies every element back after the call. Returned
  * fields and string bytes must remain valid until BundleRun returns.
+ * Fixed arrays have kind VM_HOST_ARRAY and exactly their declared length.
+ * Their elements may be inspected during the call; mutations to argument
+ * elements are not copied back. A zero-length array has no elements.
+ * Returned array elements must remain valid until BundleRun returns.
  * A declared pointer type crosses as kind VM_HOST_POINTER with the raw address
  * in `pointer`; the VM treats it as an opaque handle and never dereferences
  * it, so the host owns the storage behind it. */
