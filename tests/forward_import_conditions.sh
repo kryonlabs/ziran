@@ -6,16 +6,21 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/library.zi" <<'ZI'
+BASE :: 39;
+Value :: BASE + 1;
+#scope_file
+Hidden :: 40;
+#scope_export
 Pair :: struct { value: s64; }
 Read :: () -> s64 { return 40 }
 ZI
 cat > "$work/forward_import.zi" <<'ZI'
-#if Lib.Read() == 40 && size_of(Lib.Pair) == 8 {
+#if Lib.Value == 40 && Lib.Read() == 40 && size_of(Lib.Pair) == 8 {
 Selected :: 2;
 } else {
 Selected :: MissingValue;
 }
-RUN :: #run Lib.Read();
+RUN :: #run Lib.Value;
 Lib :: #import "library";
 #program_export
 Answer :: () -> s64 { return Selected + RUN }
@@ -92,3 +97,17 @@ if "$ziran" check --root "$work" "$work/inactive_import.zi" \
 fi
 grep -Fq '#if condition is not a compile-time constant' \
     "$work/inactive_import.err"
+
+cat > "$work/private_import.zi" <<'ZI'
+#if Lib.Hidden == 40 {
+Answer :: () -> s64 { return 42 }
+}
+Lib :: #import "library";
+ZI
+if "$ziran" check --root "$work" "$work/private_import.zi" \
+    2> "$work/private_import.err"; then
+    echo 'file-private imported constant became visible' >&2
+    exit 1
+fi
+grep -Fq '#if condition is not a compile-time constant' \
+    "$work/private_import.err"

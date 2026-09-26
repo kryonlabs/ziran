@@ -91,12 +91,13 @@ visibility rules still apply. `tests/compile_if_syntax.sh` covers these cases
 on source and saved `.zir` for C, C++, Go, and `.zib`, and checks that names
 from inactive branches stay hidden. Ordinary named and open `#import`
 declarations are also discovered before condition selection, so a later import
-can provide a pure procedure or imported type layout to `#if` and `#run`.
+can provide a pure procedure, scalar integer constant, or imported type layout
+to `#if` and `#run`.
 `tests/forward_import_conditions.sh` covers source and saved IR on all four
 targets, and excludes imports in inactive branches. This is a limited first
 pass: later local type declarations, embedded source imports, and imports in
-`#load` files still have ordering limits. Imported constants in `#if` remain
-unresolved even when their import precedes the condition. The OpenJai reference
+`#load` files still have ordering limits. Imported real, string, and aggregate
+constants have not been covered by the integer evaluator. The OpenJai reference
 describes top-level declaration order as
 independent. Investigate Jai's actual behavior, then extend top-level discovery
 or add bounded dependency resolution. Do not resolve a condition by parsing
