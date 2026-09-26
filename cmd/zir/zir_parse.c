@@ -2236,6 +2236,12 @@ typedef struct {
 } ZirUsings;
 
 typedef struct {
+    ZirImport *items;
+    int count;
+    int capacity;
+} ZirImports;
+
+typedef struct {
     int braces;                   /* net '{' until the region's closing '}' */
     int selected;
     int active;
@@ -4181,6 +4187,7 @@ typedef struct CompileParseContext {
     void *resolver_context;
     const ZirConsts *future_constants;
     const ZirUsings *future_usings;
+    const ZirImports *future_imports;
 } CompileParseContext;
 
 static ZirConsts
@@ -4236,12 +4243,40 @@ visible_compile_usings(const ZirModule *parsed, const ZirUsings *future)
     return visible;
 }
 
+static void
+add_visible_compile_imports(ZirModule *visible, const ZirModule *parsed,
+                            const ZirImports *future)
+{
+    int extra = future != NULL ? future->count : 0;
+    visible->imports = calloc((size_t)parsed->import_count +
+                              (size_t)extra + 1,
+                              sizeof(*visible->imports));
+    if(visible->imports == NULL)
+        die("out of memory resolving compile-time imports");
+    visible->import_count = 0;
+    for(int i = 0; i < parsed->import_count; i++)
+        visible->imports[visible->import_count++] = parsed->imports[i];
+    for(int i = 0; i < extra; i++) {
+        const ZirImport *candidate = &future->items[i];
+        int present = 0;
+        for(int j = 0; j < parsed->import_count; j++)
+            if(!strcmp(parsed->imports[j].span.path, candidate->span.path) &&
+               parsed->imports[j].span.line == candidate->span.line) {
+                present = 1;
+                break;
+            }
+        if(!present)
+            visible->imports[visible->import_count++] = *candidate;
+    }
+}
+
 static int
 select_compile_condition(ZirModule *module, const ZirConsts *consts,
                          const char *source, ZirSourceSpan span,
                          const CompileParseContext *context,
                          const char *source_path)
 {
+    ZirModule *source_module = module;
     char expanded[ZIR_TEXT_MAX];
     long value = 0;
     int known;
@@ -4249,6 +4284,9 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
         context != NULL ? context->future_constants : NULL);
     ZirModule using_scope = visible_compile_usings(module,
         context != NULL ? context->future_usings : NULL);
+    add_visible_compile_imports(&using_scope, module,
+        context != NULL ? context->future_imports : NULL);
+    module = &using_scope;
     consts = &visible;
     expand_compile_expr(expanded, sizeof(expanded), consts, source, span.path);
     if(using_scope.using_count > 0 && context != NULL &&
@@ -4256,7 +4294,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
        !context->resolver(context->resolver_context, context->program,
                           module, source_path, context->root, NULL))
         die_at(span, "cannot resolve imports for #if enum member");
-    if(!LowerFileScopeUsing(&using_scope, expanded, sizeof(expanded), span))
+    if(!LowerFileScopeUsing(module, expanded, sizeof(expanded), span))
         die_at(span, "invalid #if enum member");
     if(strstr(expanded, "size_of") != NULL && context != NULL &&
        context->resolver != NULL &&
@@ -4280,7 +4318,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
                 import->kind != ZIR_IMPORT_MODULE)) continue;
             for(int m = 0; m < context->program->module_count; m++) {
                 ZirModule *candidate = &context->program->modules[m];
-                if(candidate != module &&
+                if(candidate != source_module &&
                    strcmp(candidate->name, import->target) == 0) {
                     import->resolved_module = candidate;
                     break;
@@ -4292,7 +4330,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
                               module, source_path, context->root,
                               expanded))
             die_at(span, "cannot resolve imports for #if condition");
-        if(!LowerFileScopeUsing(&using_scope, expanded, sizeof(expanded), span))
+        if(!LowerFileScopeUsing(module, expanded, sizeof(expanded), span))
             die_at(span, "invalid #if enum member");
         known = eval_const_condition(expanded, &value, module, consts,
                                      span.path, 0);
@@ -4304,6 +4342,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
         die_at(span, "#if condition is not a compile-time constant: %s",
                expanded);
     free(using_scope.usings);
+    free(using_scope.imports);
     free(visible.items);
     return value != 0;
 }
@@ -5005,30 +5044,34 @@ read_source_line(char *line, size_t size, const char **source,
     return line;
 }
 
-/* Discover only unconditional, single-line file constants and using
+/* Discover only unconditional, single-line file constants, using and import
  * declarations. Conditional bodies, type bodies, and procedures are opaque:
  * branch selection must never gain names from a discarded branch. */
 static void
 discover_file_scope(const char *source, const char *path, const char *rel,
-                    ZirConsts *future_constants, ZirUsings *future_usings)
+                    ZirConsts *future_constants, ZirUsings *future_usings,
+                    ZirImports *future_imports)
 {
     char line[SOURCE_LINE_MAX];
     int line_no = 0;
     int comment_depth = 0;
     int brace_depth = 0;
     int scope_file = 0;
+    int scope_public = 1;
 
     while(read_source_line(line, sizeof(line), &source, path, line_no) != NULL) {
         line_no++;
         strip_block_comments(line, &comment_depth);
         char *t = trim(line);
         if(brace_depth == 0) {
-            if(!strcmp(t, "#scope_file"))
+            if(!strcmp(t, "#scope_file")) {
                 scope_file = 1;
-            else if(!strcmp(t, "#scope_module") ||
-                    !strcmp(t, "#scope_export"))
+                scope_public = 0;
+            } else if(!strcmp(t, "#scope_module") ||
+                      !strcmp(t, "#scope_export")) {
                 scope_file = 0;
-            else if((starts_word(t, "using") ||
+                scope_public = !strcmp(t, "#scope_export");
+            } else if((starts_word(t, "using") ||
                      !strncmp(t, "using,", 6)) &&
                     strstr(t, "#import") == NULL) {
                 const char *binding = skip_ws(t + 5);
@@ -5064,6 +5107,40 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                 }
             } else {
                 const char *colons = strstr(t, "::");
+                const char *declaration = colons != NULL ?
+                    skip_ws(colons + 2) : t;
+                if(starts_word(declaration, "#import") ||
+                   !strncmp(declaration, "#import,", 8)) {
+                    const char *mode = skip_ws(declaration + 7);
+                    int string_import = 0;
+                    if(*mode == ',')
+                        string_import = starts_word(skip_ws(mode + 1),
+                                                    "string");
+                    if(!string_import) {
+                        ZirModule discovered = {0};
+                        if(parse_import_line(&discovered, rel, line_no, t,
+                                             scope_public) &&
+                           discovered.import_count > 0) {
+                            if(future_imports->count ==
+                               future_imports->capacity) {
+                                int capacity = future_imports->capacity > 0 ?
+                                    future_imports->capacity * 2 : 8;
+                                ZirImport *items = realloc(
+                                    future_imports->items,
+                                    (size_t)capacity * sizeof(*items));
+                                if(items == NULL)
+                                    die("out of memory discovering imports");
+                                future_imports->items = items;
+                                future_imports->capacity = capacity;
+                            }
+                            ZirImport *import = &future_imports->items[
+                                future_imports->count++];
+                            *import = discovered.imports[0];
+                            import->is_file_private = scope_file;
+                        }
+                        free(discovered.imports);
+                    }
+                }
                 if(colons != NULL && !brace_outside_literals(t) &&
                    !looks_like_function_header(t)) {
                     char name[ZIR_NAME_MAX];
@@ -5532,6 +5609,7 @@ parse_source(const char *path, const char *root, const char *source,
     ZirConsts consts;
     ZirConsts future_constants = {0};
     ZirUsings future_usings = {0};
+    ZirImports future_imports = {0};
     int body_mdepth[8];
     int body_mselected[8];
     int body_mactive[8];
@@ -5576,6 +5654,7 @@ parse_source(const char *path, const char *root, const char *source,
     compile_context.resolver_context = resolver_context;
     compile_context.future_constants = &future_constants;
     compile_context.future_usings = &future_usings;
+    compile_context.future_imports = &future_imports;
 
     module = ProgramAddModule(program, module_name, rel, Span(rel, 1, 1));
     if(module == NULL)
@@ -5587,7 +5666,7 @@ parse_source(const char *path, const char *root, const char *source,
         free(canonical_root);
     }
     discover_file_scope(source, path, rel, &future_constants,
-                        &future_usings);
+                        &future_usings, &future_imports);
 
     for(;;) {
         if(!have_look && onelineq_count == 0 &&
@@ -6223,6 +6302,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(consts.items);
                 free(future_constants.items);
                 free(future_usings.items);
+                free(future_imports.items);
                 free(canonical);
                 return NULL;
             }
@@ -7099,6 +7179,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(consts.items);
                 free(future_constants.items);
                 free(future_usings.items);
+                free(future_imports.items);
                 free(canonical);
                 return NULL;
             }
@@ -7107,6 +7188,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(consts.items);
                 free(future_constants.items);
                 free(future_usings.items);
+                free(future_imports.items);
                 free(canonical);
                 return NULL;
             }
@@ -7117,6 +7199,7 @@ parse_source(const char *path, const char *root, const char *source,
     free(consts.items);
     free(future_constants.items);
     free(future_usings.items);
+    free(future_imports.items);
     free(canonical);
     return program;
 }

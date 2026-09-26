@@ -40,7 +40,7 @@ including `#enum`, `variant`, postfix `?`, `#global`, `#export`, `#private`,
 `#extern`, C pointer suffixes, C conditional expressions, and old Kryon file
 extensions. The rejection tests should stay.
 
-The full local `make check` suite has 93 checks. Re-run it after any change to
+The full local `make check` suite has 94 checks. Re-run it after any change to
 the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 
 | Area | Current subset | Next proof of parity |
@@ -89,9 +89,15 @@ report an explicit error. A condition can also see enum members opened by a
 later `using` when the enum type is already declared. The filter and file
 visibility rules still apply. `tests/compile_if_syntax.sh` covers these cases
 on source and saved `.zir` for C, C++, Go, and `.zib`, and checks that names
-from inactive branches stay hidden. This is a limited first pass: later type
-and import declarations, including some forward/imported type queries, have
-ordering limits. The OpenJai reference describes top-level declaration order as
+from inactive branches stay hidden. Ordinary named and open `#import`
+declarations are also discovered before condition selection, so a later import
+can provide a pure procedure or imported type layout to `#if` and `#run`.
+`tests/forward_import_conditions.sh` covers source and saved IR on all four
+targets, and excludes imports in inactive branches. This is a limited first
+pass: later local type declarations, embedded source imports, and imports in
+`#load` files still have ordering limits. Imported constants in `#if` remain
+unresolved even when their import precedes the condition. The OpenJai reference
+describes top-level declaration order as
 independent. Investigate Jai's actual behavior, then extend top-level discovery
 or add bounded dependency resolution. Do not resolve a condition by parsing
 code from an inactive branch or by changing file-private visibility.
