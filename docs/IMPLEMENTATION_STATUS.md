@@ -21,6 +21,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   Forward global declarations, filters, local shadowing, ambiguity diagnostics,
   and file-private `#load` boundaries are tested from source and saved IR in
   C, C++, Go, and `.zib` by `tests/data_scope_using.sh`.
+  Public globals from open and named imports can also be read, assigned, and
+  opened with record `using` in procedure bodies. `tests/imported_globals.sh`
+  checks source and saved IR across C, C++, Go, and `.zib`, along with
+  ambiguous imports and private global visibility.
   `using,only(...)`/`except(...)`/`map(...)` modifiers filter and rename
   promoted record fields and opened enum members on local and data-scope
   using declarations, in source and saved IR across C, C++, Go, and `.zib`;

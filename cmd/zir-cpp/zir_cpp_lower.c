@@ -567,17 +567,20 @@ typedef struct BodySymbols {
     const ZirModule *module;
     const ZirCppModuleSyms *symbols;
     int count;
+    const char *source_path;
 } BodySymbols;
 
 static void
 resolve_body_symbol(void *context, const char *text, char *out, size_t size)
 {
     BodySymbols *symbols = context;
-    for(int i = 0; i < symbols->module->global_count; i++)
-        if(strcmp(symbols->module->globals[i].name, text) == 0) {
-            TargetGlobalName(symbols->module, ZIR_CPP, text, out, size);
-            return;
-        }
+    const ZirModule *owner = NULL;
+    const ZirGlobal *global = NULL;
+    if(ResolveGlobalAt(symbols->module, text, symbols->source_path,
+                       &owner, &global) == 1) {
+        TargetGlobalName(owner, ZIR_CPP, global->name, out, size);
+        return;
+    }
     for(int i = 0; i < symbols->module->define_count; i++)
         if(strcmp(symbols->module->defines[i].name, text) == 0) {
             TargetDefineName(symbols->module, ZIR_CPP, text, out, size);
@@ -590,7 +593,8 @@ static void
 lower_body(FILE *out, const ZirModule *module, const ZirCppModuleSyms *symbols,
            int symbol_count, const ZirFunction *function)
 {
-    BodySymbols context = {module, symbols, symbol_count};
+    BodySymbols context = {module, symbols, symbol_count,
+                           function->span.path};
     if(!EmitBody(out, module, function, ZIR_CPP,
                  resolve_body_symbol, &context, NULL)) {
         Diagnostic(function->span, "zir_cpp.body",

@@ -311,6 +311,12 @@ int ResolveFunction(const ZirModule *module, const char *name,
 int ResolveFunctionAt(const ZirModule *module, const char *name,
                       const char *source_path, const ZirModule **owner,
                       const ZirFunction **function);
+/* 1: unique visible global, 0: absent, -1: ambiguous. */
+int ResolveGlobalAt(const ZirModule *module, const char *name,
+                    const char *source_path, const ZirModule **owner,
+                    const ZirGlobal **global);
+int ResolveGlobal(const ZirModule *module, const char *name,
+                  const ZirModule **owner, const ZirGlobal **global);
 /* Runtime contracts are parsed from embedded declaration sources. */
 const ZirType *FindType(const ZirModule *module, const char *name,
                         const ZirModule **owner);

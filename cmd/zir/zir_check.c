@@ -835,6 +835,7 @@ activate_using_filtered(Checker *c, const char *path,
         return;
     }
     char root[ZIR_NAME_MAX];
+    char qualified_type[ZIR_NAME_MAX] = "";
     memcpy(root, path, root_length);
     root[root_length] = '\0';
     int root_index = -1;
@@ -849,6 +850,35 @@ activate_using_filtered(Checker *c, const char *path,
     if(binding_type == NULL) {
         const ZirGlobal *global = global_binding(c, root);
         if(global != NULL) binding_type = global->type;
+    }
+    if(binding_type == NULL && dot != NULL) {
+        const char *after_global = strchr(dot + 1, '.');
+        size_t qualified_length = after_global == NULL ? strlen(path) :
+                                  (size_t)(after_global - path);
+        if(qualified_length < sizeof(root)) {
+            char qualified[ZIR_NAME_MAX];
+            const ZirModule *owner = NULL;
+            const ZirGlobal *global = NULL;
+            memcpy(qualified, path, qualified_length);
+            qualified[qualified_length] = '\0';
+            if(global_binding(c, qualified) != NULL &&
+               ResolveGlobal(c->module, qualified, &owner, &global) == 1) {
+                copy_text(root, sizeof(root), qualified);
+                binding_type = global->type;
+                if(FindType(c->module, binding_type, NULL) == NULL &&
+                   FindType(owner, binding_type, NULL) != NULL) {
+                    size_t alias_length = (size_t)(dot - path);
+                    if(snprintf(qualified_type, sizeof(qualified_type),
+                                "%.*s.%s", (int)alias_length, path,
+                                binding_type) >= (int)sizeof(qualified_type)) {
+                        error(c, span, "qualified using type is too long", path);
+                        return;
+                    }
+                    binding_type = qualified_type;
+                }
+                dot = after_global;
+            }
+        }
     }
     if(binding_type == NULL) {
         const ZirType *enumeration = FindType(c->module, path, NULL);
@@ -1319,16 +1349,30 @@ lookup_lexical(Checker *c, const char *name)
 static const ZirGlobal *
 global_binding(Checker *c, const char *name)
 {
-    const ZirGlobal *module_binding = NULL;
-    for(int i = 0; i < c->module->global_count; i++) {
-        const ZirGlobal *global = &c->module->globals[i];
-        if(strcmp(global->name, name) ||
-           !in_lookup_file(c->module, global->is_file_private,
-                           global->span)) continue;
-        if(global->is_file_private) return global;
-        if(module_binding == NULL) module_binding = global;
+    const ZirModule *owner = NULL;
+    const ZirGlobal *global = NULL;
+    int status = ResolveGlobal(c->module, name, &owner, &global);
+    if(status < 0 && !c->failed) {
+        error(c, c->current_stmt != NULL ? c->current_stmt->span :
+              c->fn != NULL ? c->fn->span : c->module->span,
+              "ambiguous global name", name);
+        c->failed = 1;
     }
-    return module_binding;
+    if(status == 1 && owner != c->module) {
+        const char *base = global->type;
+        if(base[0] == '*') base = skip_ws(base + 1);
+        const ZirType *declared = FindType(owner, base, NULL);
+        const ZirType *visible = FindType(c->module, base, NULL);
+        if(declared != NULL && visible != NULL &&
+           declared != visible && !c->failed) {
+            error(c, c->current_stmt != NULL ? c->current_stmt->span :
+                  c->fn != NULL ? c->fn->span : c->module->span,
+                  "imported global type is shadowed", name);
+            c->failed = 1;
+            return NULL;
+        }
+    }
+    return status == 1 ? global : NULL;
 }
 
 static const char *
@@ -2568,6 +2612,33 @@ expression_type(Checker *c, int index)
             type = lookup(c, e->name);
             e->is_global_value = !*lookup_lexical(c, e->name) &&
                                   global_binding(c, e->name) != NULL;
+            if(e->is_global_value) {
+                const char *dot = strchr(e->name, '.');
+                const ZirModule *owner = NULL;
+                const ZirGlobal *global = NULL;
+                if(dot != NULL &&
+                   ResolveGlobal(c->module, e->name,
+                                 &owner, &global) == 1 &&
+                   owner != c->module) {
+                    const char *base = global->type;
+                    const char *pointer = "";
+                    if(base[0] == '*') {
+                        pointer = "*";
+                        base = skip_ws(base + 1);
+                    }
+                    if(BuiltinType(base) == NULL &&
+                       FindType(owner, base, NULL) != NULL) {
+                        int length = snprintf(e->type, sizeof(e->type),
+                            "%s%.*s.%s", pointer, (int)(dot - e->name),
+                            e->name, base);
+                        if(length < 0 || (size_t)length >= sizeof(e->type))
+                            error(c, e->span, "qualified global type is too long",
+                                  e->name);
+                        else
+                            type = e->type;
+                    }
+                }
+            }
             for(int i = c->count - 1; i >= 0; i--)
                 if(!c->bindings[i].is_using_namespace &&
                    !strcmp(c->bindings[i].name, e->name)) {

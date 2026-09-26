@@ -278,6 +278,81 @@ ResolveFunction(const ZirModule *module, const char *name,
                              owner, function);
 }
 
+int
+ResolveGlobalAt(const ZirModule *module, const char *name,
+                const char *source_path, const ZirModule **owner,
+                const ZirGlobal **global)
+{
+    const char *dot = strchr(name, '.');
+    *owner = NULL;
+    *global = NULL;
+    if(dot == NULL) {
+        for(int g = 0; g < module->global_count; g++) {
+            const ZirGlobal *candidate = &module->globals[g];
+            if(strcmp(candidate->name, name) != 0 ||
+               !file_scope_visible_at(source_path,
+                                      candidate->is_file_private,
+                                      candidate->span))
+                continue;
+            if(candidate->is_file_private) {
+                *owner = module;
+                *global = candidate;
+                return 1;
+            }
+            if(*global != NULL) {
+                *owner = NULL;
+                *global = NULL;
+                return -1;
+            }
+            *owner = module;
+            *global = candidate;
+        }
+        if(*global != NULL)
+            return 1;
+    } else if(dot == name || dot[1] == '\0' || strchr(dot + 1, '.') != NULL)
+        return 0;
+
+    for(int i = 0; i < module->import_count; i++) {
+        const ZirImport *import = &module->imports[i];
+        const ZirModule *target = import->resolved_module;
+        if(target == NULL ||
+           !file_scope_visible_at(source_path, import->is_file_private,
+                                  import->span))
+            continue;
+        if(dot != NULL) {
+            size_t alias_length = (size_t)(dot - name);
+            if(import->kind != ZIR_IMPORT_MODULE ||
+               strlen(import->name) != alias_length ||
+               strncmp(import->name, name, alias_length) != 0)
+                continue;
+        } else if(import->kind != ZIR_IMPORT_OPEN &&
+                  !(import->kind == ZIR_IMPORT_MODULE && import->is_using))
+            continue;
+        const char *symbol = dot == NULL ? name : dot + 1;
+        for(int g = 0; g < target->global_count; g++) {
+            const ZirGlobal *candidate = &target->globals[g];
+            if(candidate->is_static || candidate->is_file_private ||
+               strcmp(candidate->name, symbol) != 0)
+                continue;
+            if(*global != NULL && *global != candidate) {
+                *owner = NULL;
+                *global = NULL;
+                return -1;
+            }
+            *owner = target;
+            *global = candidate;
+        }
+    }
+    return *global != NULL;
+}
+
+int
+ResolveGlobal(const ZirModule *module, const char *name,
+              const ZirModule **owner, const ZirGlobal **global)
+{
+    return ResolveGlobalAt(module, name, module->lookup_path, owner, global);
+}
+
 const ZirType *
 BuiltinType(const char *name)
 {

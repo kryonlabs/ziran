@@ -949,12 +949,13 @@ binding_index(const Parameter *bindings, int count, const char *name)
 }
 
 static const ZirGlobal *
-find_global_declaration(const ZirModule *module, const char *name)
+find_global_declaration(const ZirModule *module, const char *name,
+                        const char *source_path)
 {
-    for(int i = 0; i < module->global_count; i++)
-        if(strcmp(module->globals[i].name, name) == 0)
-            return &module->globals[i];
-    return NULL;
+    const ZirModule *owner = NULL;
+    const ZirGlobal *global = NULL;
+    return ResolveGlobalAt(module, name, source_path, &owner, &global) == 1 ?
+        global : NULL;
 }
 
 static const char *
@@ -1106,7 +1107,8 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
            strcmp(expression->name, "false") == 0 ||
            strcmp(expression->name, "null") == 0 ||
            binding_index(bindings, binding_count, expression->name) >= 0 ||
-           find_global_declaration(module, expression->name) != NULL)
+           find_global_declaration(module, expression->name,
+                                   expression->span.path) != NULL)
             return 1;
         return 0;
     }
@@ -1582,7 +1584,8 @@ verify_sequence(const ZirModule *module, const ZirFunction *function,
                (binding_index(bindings, binding_count,
                               assignment_root(function, statement->lhs_root)) < 0 &&
                 find_global_declaration(module,
-                    assignment_root(function, statement->lhs_root)) == NULL) ||
+                    assignment_root(function, statement->lhs_root),
+                    function->exprs[statement->lhs_root].span.path) == NULL) ||
                statement->expr_root < 0 ||
                !verify_expression(module, function, bindings, binding_count,
                                   statement->lhs_root, 0) ||
@@ -1932,10 +1935,14 @@ find_local(Frame *frame, const char *name)
 static Value *
 find_global_value(Frame *frame, const char *name)
 {
+    const ZirModule *owner = NULL;
+    const ZirGlobal *declaration = NULL;
+    if(ResolveGlobalAt(frame->module, name, frame->function->span.path,
+                       &owner, &declaration) != 1)
+        return NULL;
     for(int i = 0; i < frame->vm->global_count; i++) {
         GlobalSlot *slot = &frame->vm->globals[i];
-        if(slot->module == frame->module &&
-           strcmp(slot->declaration->name, name) == 0)
+        if(slot->module == owner && slot->declaration == declaration)
             return &slot->value;
     }
     return NULL;

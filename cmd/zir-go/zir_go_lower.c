@@ -741,19 +741,9 @@ module_constant_owner(const ZirModule *module, const char *name)
 static const ZirModule *
 module_global_owner(const ZirModule *module, const char *name)
 {
-    for(int pass = 0; pass < 2; pass++) {
-        int count = pass == 0 ? 1 : module->import_count;
-        for(int i = 0; i < count; i++) {
-            const ZirModule *scope = pass == 0 ? module :
-                                     module->imports[i].resolved_module;
-            if(scope == NULL) continue;
-            for(int j = 0; j < scope->global_count; j++)
-                if((pass == 0 || !scope->globals[j].is_static) &&
-                   strcmp(scope->globals[j].name, name) == 0)
-                    return scope;
-        }
-    }
-    return NULL;
+    const ZirModule *owner = NULL;
+    const ZirGlobal *global = NULL;
+    return ResolveGlobal(module, name, &owner, &global) == 1 ? owner : NULL;
 }
 
 static void
@@ -1066,21 +1056,28 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
 
 /* -------------------------------------------------------- module lowering */
 
+typedef struct GoBodySymbols {
+    const ZirModule *module;
+    const char *source_path;
+} GoBodySymbols;
+
 static void
 resolve_body_symbol(void *context, const char *text, char *out, size_t size)
 {
-    const ZirModule *module = context;
+    const GoBodySymbols *symbols = context;
+    const ZirModule *module = symbols->module;
+    const ZirModule *owner = NULL;
+    const ZirGlobal *global = NULL;
     if((SliceElementType(text, NULL, 0) || strchr(text, '*') != NULL ||
         FindType(module, text, NULL) != NULL) &&
        go_type(text, out, size))
         return;
-    for(int i = 0; i < module->global_count; i++) {
-        if(!strcmp(text, module->globals[i].name)) {
-            TargetGlobalName(module, ZIR_GO, text, out, size);
-            return;
-        }
+    if(ResolveGlobalAt(module, text, symbols->source_path,
+                       &owner, &global) == 1) {
+        TargetGlobalName(owner, ZIR_GO, global->name, out, size);
+        return;
     }
-    tx_expr(context, text, out, size);
+    tx_expr(module, text, out, size);
 }
 
 static void
@@ -1145,7 +1142,8 @@ lower_function(FILE *f, const ZirModule *m, const ZirFunction *fn,
             fprintf(f, " %s", ret);
         fprintf(f, " {\n");
     }
-    if(!EmitBody(f, m, fn, ZIR_GO, resolve_body_symbol, (void *)m, NULL)) {
+    GoBodySymbols symbols = {m, fn->span.path};
+    if(!EmitBody(f, m, fn, ZIR_GO, resolve_body_symbol, &symbols, NULL)) {
         Diagnostic(fn->span, "zir_go.body",
                    "function has no checked typed body: %s", fn->name);
         exit(1);

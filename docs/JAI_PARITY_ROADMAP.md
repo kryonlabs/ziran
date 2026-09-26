@@ -31,7 +31,8 @@ behavior as an open question and probe it before codifying a language rule.
 The current branch has Jai-style declarations, lexical `using` for local and
 parameter records, nested and generic `using` fields, lexical enum `using`,
 data-scope enum `using`, and data-scope promotion from module-local record and
-scalar-union globals in procedure bodies. It supports nonempty typed array literals, typed and
+scalar-union globals in procedure bodies, including public globals from open
+and named imports. It supports nonempty typed array literals, typed and
 inferred record literals, named and default arguments, direct polymorphic
 calls, scopes, `#load`, several `#import` forms, bounded pure `#run`, and
 checked `.zir` graphs. The compiler rejects many inherited spellings,
@@ -44,7 +45,7 @@ the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 
 | Area | Current subset | Next proof of parity |
 | --- | --- | --- |
-| Names and scopes | Local/field record `using`; local/data enum `using`; module-local data record/union `using` in procedures; named imports | File-scope record lookup, imported global visibility, order independence |
+| Names and scopes | Local/field record `using`; local/data enum `using`; imported record globals in procedures; named imports | File-scope record lookup, full imported type ownership, order independence |
 | Values and expressions | Record literals, nonempty typed arrays, direct generic calls, `ifx` in typed expressions and call arguments | True empty arrays, broader lazy-expression audit, fuller type queries |
 | Procedures | Named values, defaults, named arguments, direct polymorphism | Overload/variadic/operator and broader procedure-form audit |
 | Compile time | Bounded pure scalars, strings, and floats | One typed evaluator, aggregates, verified effect rules |
@@ -61,16 +62,22 @@ current subset with an exact test name and target list.
 ### 1. Data-scope `using` for record values
 
 Top-level `using value;`, nested paths, and `using value: Record;` now promote
-module-local record and scalar-union global fields inside procedures. The
+module-local record and scalar-union global fields inside procedures. Public
+globals from open imports and named imports resolve for reads, writes, and
+record `using` in procedures. `tests/imported_globals.sh` exercises source and
+saved IR on C, C++, Go, and `.zib`, including ambiguity and private visibility.
+The
 checker lowers references to ordinary checked member access before `.zir` is
 saved. `tests/data_scope_using.sh` covers reads, writes, filters, forward
 declarations, local shadowing, collisions, `#scope_file` across `#load`, and
 source/saved-IR execution on C, C++, Go, and `.zib`. `using StructType;`
 still rejects a type in place of a value.
 
-Finish record promotion in legal file-scope expressions and establish whether
-exported globals from open imports may be opened unqualified. Verify the
-exact record and union rules with Jai before claiming syntax parity. Keep
+Finish record promotion in legal file-scope expressions and verify whether
+Jai opens exported globals from open imports unqualified. Preserve the
+declaring module for imported record types even when the consumer has a
+same-named type. Verify the exact record and union rules with Jai before
+claiming syntax parity. Keep
 visibility and ambiguity diagnostics consistent with local `using`.
 
 ### 2. Declaration-order-independent compile-time lookup
