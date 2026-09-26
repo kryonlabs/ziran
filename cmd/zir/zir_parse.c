@@ -2222,6 +2222,29 @@ expand_compile_expr_depth(char *dst, size_t dst_size, const ZirConsts *consts,
                 memcpy(dst + n, "defined", 7);
                 n += 7;
                 p += 8;
+                /* Copy the probe name verbatim: constants must not expand
+                 * inside defined(...). */
+                {
+                    const char *gap = p;
+                    while(*gap == ' ' || *gap == '\t')
+                        gap++;
+                    if(*gap == '(') {
+                        int probe_depth = 0;
+                        while(*gap != '\0' && n + 1 < dst_size) {
+                            if(*gap == '(')
+                                probe_depth++;
+                            else if(*gap == ')') {
+                                probe_depth--;
+                                if(probe_depth == 0) {
+                                    dst[n++] = *gap++;
+                                    break;
+                                }
+                            }
+                            dst[n++] = *gap++;
+                        }
+                        p = gap;
+                    }
+                }
                 continue;
             }
         }
@@ -2806,6 +2829,63 @@ eval_primary(ZirEval *ev)
         const char *word = ev->p;
         while(isalnum((unsigned char)*ev->p) || *ev->p == '_')
             ev->p++;
+        /* defined(NAME) probes the frontend constant table; platform
+         * predicates that were never declared evaluate to 0, matching the
+         * C preprocessor. */
+        if((size_t)(ev->p - word) == 7 && strncmp(word, "defined", 7) == 0) {
+            const char *probe = ev->p;
+            int wrapped = 0;
+            while(*probe == ' ' || *probe == '\t')
+                probe++;
+            if(*probe == '(') {
+                wrapped = 1;
+                probe++;
+                while(*probe == ' ' || *probe == '\t')
+                    probe++;
+            }
+            if(isalpha((unsigned char)*probe) || *probe == '_') {
+                const char *start = probe;
+                size_t length;
+                while(isalnum((unsigned char)*probe) || *probe == '_')
+                    probe++;
+                length = (size_t)(probe - start);
+                if(wrapped) {
+                    while(*probe == ' ' || *probe == '\t')
+                        probe++;
+                }
+                if(length > 0 && length < ZIR_NAME_MAX &&
+                   (!wrapped || *probe == ')')) {
+                    char name[ZIR_NAME_MAX];
+                    int found = 0;
+                    memcpy(name, start, length);
+                    name[length] = '\0';
+                    if(ev->consts != NULL) {
+                        for(int c = 0; c < ev->consts->count; c++) {
+                            const ZirConst *constant =
+                                &ev->consts->items[c];
+                            if(strcmp(constant->name, name) == 0 &&
+                               (!constant->is_file_private ||
+                                strcmp(constant->path,
+                                       ev->lookup_path) == 0)) {
+                                found = 1;
+                                break;
+                            }
+                        }
+                    }
+                    if(!found && ev->module != NULL) {
+                        for(int d = 0; d < ev->module->define_count; d++) {
+                            if(strcmp(ev->module->defines[d].name,
+                                      name) == 0) {
+                                found = 1;
+                                break;
+                            }
+                        }
+                    }
+                    ev->p = probe + (wrapped ? 1 : 0);
+                    return found;
+                }
+            }
+        }
         if(ev->module != NULL) {
             const char *after_name = ev->p;
             const char *call_end = after_name;
