@@ -1,5 +1,6 @@
 #import "zip"
 #import "zip_linux"
+#import "file_linux"
 
 Put16 :: (buffer: []u8, at: s32, value: u32) {
     buffer[at] = cast(u8)value
@@ -49,7 +50,25 @@ SelfTest :: () -> s32 {
     output: [5]u8
     if !ExtractZipEntry(bytes[:], entry, output[:]) ||
        output[0] != cast(u8)104 || output[4] != cast(u8)111 { return 2 }
+    file := OpenReplace("zip-linux-entry-output.bin")
+    if !file.valid { return 4 }
+    streamed := ExtractZipEntryToFile(bytes[:], entry, file)
+    if !CloseFile(file) || !streamed { return 5 }
+    file = OpenRead("zip-linux-entry-output.bin")
+    if !file.valid { return 6 }
+    restored: [5]u8
+    read_count := ReadAt(file, restored[:], 0)
+    CloseFile(file)
+    RemoveFile("zip-linux-entry-output.bin")
+    if read_count != 5 || restored[0] != cast(u8)104 ||
+       restored[4] != cast(u8)111 { return 7 }
     bytes[34] = cast(u8)0
     if ExtractZipEntry(bytes[:], entry, output[:]) { return 3 }
+    file = OpenReplace("zip-linux-entry-output.bin")
+    if !file.valid { return 8 }
+    streamed = ExtractZipEntryToFile(bytes[:], entry, file)
+    CloseFile(file)
+    RemoveFile("zip-linux-entry-output.bin")
+    if streamed { return 9 }
     return 0
 }

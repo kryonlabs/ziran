@@ -20,8 +20,10 @@ test "$("$ziran" run "$work/source.zib")" = 0
     --entry zip_linux_test:SelfTest -o "$work/native" tests/spec/zip_linux_test.zi
 "${CC:-cc}" -std=c11 -Iinclude -I"$work/native" \
     "$work/native/zip.c" "$work/native/zip_linux.c" \
+    "$work/native/file_linux.c" \
+    "$work/native/c_string.c" \
     "$work/native/zip_linux_test.c" -x c - -lz -o "$work/zip-test" <<'EOF'
 int SelfTest(void);
 int main(void) { return SelfTest(); }
 EOF
-env -u DISPLAY -u WAYLAND_DISPLAY "$work/zip-test"
+(cd "$work" && env -u DISPLAY -u WAYLAND_DISPLAY "$work/zip-test")

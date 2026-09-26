@@ -1,4 +1,5 @@
 #import "zip"
+#import "file_linux"
 
 // The platform zlib supplies raw DEFLATE for ZIP method 8. This native
 // adapter is separate from the portable ZIP directory and checksum rules.
@@ -56,4 +57,84 @@ ExtractZipEntry :: (archive: []u8, entry: ZipEntry, output: []u8) -> bool {
                   stream.total_out == entry.size
     if ZlibInflateEnd(*stream) != 0 { valid = false }
     return valid && ZipCRC32(output) == entry.crc32
+}
+
+ZipExtractWriteAll :: (file: FileHandle, bytes: []u8, offset: u64) -> bool {
+    written: s64 = 0
+    while written < bytes.count {
+        result := WriteAt(file, bytes[written:bytes.count],
+            cast(s64)offset + written)
+        if result <= 0 { return false }
+        written += result
+    }
+    return true
+}
+
+// Inflate a classic ZIP entry into a caller-owned file without holding the
+// uncompressed payload in memory. The caller publishes or removes that file.
+#program_export
+ExtractZipEntryToFile :: (archive: []u8, entry: ZipEntry,
+                         file: FileHandle) -> bool {
+    if !file.valid || !entry.found ||
+       entry.data_start > cast(u64)archive.count ||
+       entry.compressed_size > cast(u64)archive.count - entry.data_start ||
+       entry.compressed_size > cast(u64)0xffffffff ||
+       entry.size > cast(u64)0xffffffff { return false }
+
+    crc: u32 = cast(u32)0xffffffff
+    written: u64 = 0
+    if entry.method == 0 {
+        if entry.compressed_size != entry.size { return false }
+        while written < entry.size {
+            count := entry.size - written
+            if count > 65536 { count = 65536 }
+            chunk := archive[entry.data_start + written:
+                             entry.data_start + written + count]
+            if !ZipExtractWriteAll(file, chunk, written) { return false }
+            crc = ZipCRC32Update(crc, chunk)
+            written += count
+        }
+        return (crc ^ cast(u32)0xffffffff) == entry.crc32
+    }
+    if entry.method != 8 || entry.compressed_size == 0 { return false }
+
+    stream: ZStream = ZStream.{}
+    stream.next_in = *archive[entry.data_start]
+    stream.avail_in = cast(u32)entry.compressed_size
+    if ZlibInflateInit(*stream, -15, ZlibVersion(),
+                       cast(s32)size_of(ZStream)) != 0 { return false }
+
+    output: [65536]u8
+    valid: bool = true
+    while true {
+        before_in := stream.total_in
+        before_out := stream.total_out
+        stream.next_out = *output[0]
+        stream.avail_out = 65536
+        status := ZlibInflate(*stream, 4)
+        count: u32 = 65536 - stream.avail_out
+        if cast(u64)count > entry.size - written {
+            valid = false
+            break
+        }
+        if count > 0 {
+            chunk := output[0:cast(s32)count]
+            if !ZipExtractWriteAll(file, chunk, written) {
+                valid = false
+                break
+            }
+            crc = ZipCRC32Update(crc, chunk)
+            written += cast(u64)count
+        }
+        if status == 1 { break }
+        if status != 0 ||
+           (stream.total_in == before_in && stream.total_out == before_out) {
+            valid = false
+            break
+        }
+    }
+    if ZlibInflateEnd(*stream) != 0 { valid = false }
+    return valid && stream.total_in == entry.compressed_size &&
+           stream.total_out == entry.size && written == entry.size &&
+           (crc ^ cast(u32)0xffffffff) == entry.crc32
 }

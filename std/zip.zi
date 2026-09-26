@@ -177,9 +177,8 @@ FindZipEntry :: (bytes: []u8, wanted: string) -> ZipEntry {
     return result
 }
 
-#program_export
-ZipCRC32 :: (bytes: []u8) -> u32 {
-    crc: u32 = cast(u32)0xffffffff
+ZipCRC32Update :: (crc_start: u32, bytes: []u8) -> u32 {
+    crc: u32 = crc_start
     index: u64 = 0
     while index < cast(u64)bytes.count {
         crc = crc ^ cast(u32)bytes[index]
@@ -194,7 +193,12 @@ ZipCRC32 :: (bytes: []u8) -> u32 {
         }
         index += 1
     }
-    return crc ^ cast(u32)0xffffffff
+    return crc
+}
+
+#program_export
+ZipCRC32 :: (bytes: []u8) -> u32 {
+    return ZipCRC32Update(cast(u32)0xffffffff, bytes) ^ cast(u32)0xffffffff
 }
 
 #program_export
