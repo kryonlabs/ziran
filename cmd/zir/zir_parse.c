@@ -5396,6 +5396,10 @@ parse_source(const char *path, const char *root, const char *source,
            read_source_line(line, sizeof(line), &source, path, line_no) == NULL) {
             if(in_block_comment)
                 die_at(Span(rel, line_no, 1), "unterminated block comment");
+            if(pending_len != 0 || paren_depth != 0 || bracket_depth != 0 ||
+               in_string || expr_brace != 0)
+                die_at(Span(rel, pending_start_line, pending_start_column),
+                       "unterminated source declaration or expression");
             if(load_depth == 0)
                 break;
             LoadFrame *frame = &load_frames[--load_depth];
