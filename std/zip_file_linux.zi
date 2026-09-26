@@ -1,0 +1,141 @@
+#import "zip"
+#import "file_linux"
+
+// Classic stored ZIP output to a caller-owned native file. The caller owns
+// file creation, durability, and publication. Each entry may be a borrowed
+// memory mapping, so a database need not be copied into another archive buffer.
+
+ZipFileRecord :: struct {
+    local_offset: u64
+    size: u64
+    name_size: u32
+    crc32: u32
+    valid: bool
+}
+
+ZipFilePut16 :: (bytes: []u8, at: s32, value: u32) {
+    bytes[at] = cast(u8)value
+    bytes[at + 1] = cast(u8)(value >> 8)
+}
+
+ZipFilePut32 :: (bytes: []u8, at: s32, value: u32) {
+    ZipFilePut16(bytes, at, value)
+    ZipFilePut16(bytes, at + 2, value >> 16)
+}
+
+ZipFileWriteAll :: (file: FileHandle, bytes: []u8, at: u64) -> bool {
+    if !file.valid || at > cast(u64)0xffffffff { return false }
+    written: s64 = 0
+    while written < bytes.count {
+        result: s64 = WriteAt(file, bytes[written:bytes.count],
+            cast(s64)at + written)
+        if result <= 0 { return false }
+        written += result
+    }
+    return true
+}
+
+ZipFileWriteName :: (file: FileHandle, name: string, at: u64) -> bool {
+    chunk: [256]u8
+    index: u64 = 0
+    while index < cast(u64)name.count {
+        size: u64 = cast(u64)name.count - index
+        if size > 256 { size = 256 }
+        offset: u64 = 0
+        while offset < size {
+            chunk[offset] = name[index + offset]
+            offset += 1
+        }
+        if !ZipFileWriteAll(file, chunk[0:cast(s32)size], at + index) {
+            return false
+        }
+        index += size
+    }
+    return true
+}
+
+#program_export
+WriteStoredZipFileEntry :: (file: FileHandle, at: u64,
+    name: string, data: []u8) -> ZipFileRecord {
+    record: ZipFileRecord
+    size: u64 = cast(u64)data.count
+    name_size: u64 = cast(u64)name.count
+    if !file.valid || name_size == 0 || name_size > 65535 ||
+       size > cast(u64)0xffffffff || at > cast(u64)0xffffffff ||
+       30 + name_size + size > cast(u64)0xffffffff - at { return record }
+    crc: u32 = ZipCRC32(data)
+    header: [30]u8
+    ZipFilePut32(header[:], 0, cast(u32)0x04034b50)
+    ZipFilePut16(header[:], 4, 20)
+    ZipFilePut16(header[:], 6, 0)
+    ZipFilePut16(header[:], 8, 0)
+    ZipFilePut32(header[:], 10, 0)
+    ZipFilePut32(header[:], 14, crc)
+    ZipFilePut32(header[:], 18, cast(u32)size)
+    ZipFilePut32(header[:], 22, cast(u32)size)
+    ZipFilePut16(header[:], 26, cast(u32)name_size)
+    ZipFilePut16(header[:], 28, 0)
+    if !ZipFileWriteAll(file, header[:], at) ||
+       !ZipFileWriteName(file, name, at + 30) ||
+       !ZipFileWriteAll(file, data, at + 30 + name_size) { return record }
+    record.local_offset = at
+    record.size = size
+    record.name_size = cast(u32)name_size
+    record.crc32 = crc
+    record.valid = true
+    return record
+}
+
+#program_export
+StoredZipFileNext :: (record: ZipFileRecord) -> u64 {
+    if !record.valid { return 0 }
+    return record.local_offset + 30 + cast(u64)record.name_size + record.size
+}
+
+// Returns the next central-directory position, or zero on failure.
+#program_export
+WriteStoredZipFileDirectoryEntry :: (file: FileHandle, at: u64,
+    name: string, record: ZipFileRecord) -> u64 {
+    if !file.valid || !record.valid || cast(u64)name.count != cast(u64)record.name_size ||
+       at > cast(u64)0xffffffff ||
+       46 + cast(u64)record.name_size > cast(u64)0xffffffff - at {
+        return 0
+    }
+    header: [46]u8
+    ZipFilePut32(header[:], 0, cast(u32)0x02014b50)
+    ZipFilePut16(header[:], 4, 20)
+    ZipFilePut16(header[:], 6, 20)
+    ZipFilePut16(header[:], 8, 0)
+    ZipFilePut16(header[:], 10, 0)
+    ZipFilePut32(header[:], 12, 0)
+    ZipFilePut32(header[:], 16, record.crc32)
+    ZipFilePut32(header[:], 20, cast(u32)record.size)
+    ZipFilePut32(header[:], 24, cast(u32)record.size)
+    ZipFilePut16(header[:], 28, record.name_size)
+    ZipFilePut16(header[:], 30, 0)
+    ZipFilePut16(header[:], 32, 0)
+    ZipFilePut16(header[:], 34, 0)
+    ZipFilePut16(header[:], 36, 0)
+    ZipFilePut32(header[:], 38, 0)
+    ZipFilePut32(header[:], 42, cast(u32)record.local_offset)
+    if !ZipFileWriteAll(file, header[:], at) ||
+       !ZipFileWriteName(file, name, at + 46) { return 0 }
+    return at + 46 + cast(u64)record.name_size
+}
+
+#program_export
+FinishStoredZipFile :: (file: FileHandle, directory_start: u64,
+    directory_end: u64, count: u32) -> bool {
+    if !file.valid || count == 0 || count > 65535 ||
+       directory_start > directory_end || directory_end > cast(u64)0xffffffff - 22 ||
+       directory_end - directory_start > cast(u64)0xffffffff { return false }
+    end: [22]u8
+    ZipFilePut32(end[:], 0, cast(u32)0x06054b50)
+    ZipFilePut32(end[:], 4, 0)
+    ZipFilePut16(end[:], 8, count)
+    ZipFilePut16(end[:], 10, count)
+    ZipFilePut32(end[:], 12, cast(u32)(directory_end - directory_start))
+    ZipFilePut32(end[:], 16, cast(u32)directory_start)
+    ZipFilePut16(end[:], 20, 0)
+    return ZipFileWriteAll(file, end[:], directory_end)
+}

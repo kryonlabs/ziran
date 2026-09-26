@@ -1,0 +1,48 @@
+#import "zip_file_linux"
+#import "zip"
+#import "file_linux"
+#import "mapped_file_linux"
+#import "byte_text_linux"
+
+#program_export
+SelfTest :: (path: *u8) -> s32 {
+    name: string = TextFromCString(path)
+    file: FileHandle = OpenExclusivePrivate(name)
+    if !file.valid { return 1 }
+    meta: [2]u8
+    meta[0] = cast(u8)123
+    meta[1] = cast(u8)125
+    data: [5]u8
+    data[0] = cast(u8)104
+    data[1] = cast(u8)101
+    data[2] = cast(u8)108
+    data[3] = cast(u8)108
+    data[4] = cast(u8)111
+    first: ZipFileRecord = WriteStoredZipFileEntry(file, 0, "meta", meta[:])
+    if !first.valid { CloseFile(file); return 2 }
+    second: ZipFileRecord = WriteStoredZipFileEntry(file,
+        StoredZipFileNext(first), "a", data[:])
+    if !second.valid { CloseFile(file); return 3 }
+    directory_start: u64 = StoredZipFileNext(second)
+    cursor: u64 = WriteStoredZipFileDirectoryEntry(file, directory_start,
+        "meta", first)
+    if cursor == 0 { CloseFile(file); return 4 }
+    cursor = WriteStoredZipFileDirectoryEntry(file, cursor, "a", second)
+    if cursor == 0 || !FinishStoredZipFile(file, directory_start, cursor, 2) {
+        CloseFile(file)
+        return 5
+    }
+    if !CloseFile(file) { return 6 }
+    mapped: MappedFile = MapPrivate(name)
+    if !mapped.valid { return 7 }
+    archive: []u8 = MappedBytes(mapped)
+    entry: ZipEntry = FindZipEntry(archive, "a")
+    output: [5]u8
+    if !CopyStoredZipEntry(archive, entry, output[:]) ||
+       output[0] != cast(u8)104 || output[4] != cast(u8)111 {
+        UnmapFile(mapped)
+        return 8
+    }
+    if !UnmapFile(mapped) { return 9 }
+    return 0
+}

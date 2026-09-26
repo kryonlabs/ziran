@@ -139,6 +139,10 @@ It runs in portable bundles. `std/zip_linux.zi` adds raw DEFLATE extraction
 through the system zlib library for 64-bit Linux native C builds; link those
 builds with `-lz`. The caller supplies file I/O, memory limits, and which entry names
 are meaningful to the application.
+`std/zip_file_linux.zi` writes stored ZIP entries directly to a caller-owned
+file from borrowed byte slices, including mapped files. The caller controls
+file creation and publication. Its test checks the output with Python's ZIP
+reader as well as Ziran's reader.
 
 `std/net_http.zi` defines an explicit request/response host capability. A
 platform adapter supplies transport and TLS; checked Ziran code owns request
