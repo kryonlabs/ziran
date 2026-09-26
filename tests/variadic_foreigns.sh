@@ -46,7 +46,7 @@ grep -Fq 'argument count mismatch' "$work/too_few.err"
 
 cat > "$work/linked.zi" <<'EOF'
 c :: #system_library "c";
-TestLog :: (level: s32, format: *u8, args: ..any) #foreign c;
+LogLine :: (level: s32, format: *u8, args: ..any) #foreign c "TestLog";
 
 #program_export
 Answer :: () -> s32 {
@@ -54,7 +54,7 @@ Answer :: () -> s32 {
     format[0] = cast(u8)37
     format[1] = cast(u8)100
     format[2] = cast(u8)0
-    TestLog(4, *format[0], cast(s32)42)
+    LogLine(4, *format[0], cast(s32)42)
     return 42
 }
 EOF

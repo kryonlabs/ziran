@@ -715,6 +715,12 @@ emit_extern_prototype(FILE *c, const ZirModule *m, const ZirImport *imp)
         cname = symbol;
         fprintf(c, "%s %s(%s);\n", ret[0] ? ret : "void", cname, conv);
         if(strcmp(symbol, imp->name) != 0) {
+            if(imp->is_varargs) {
+                /* A C variadic argument list cannot be forwarded by a
+                 * regular wrapper. Let the call target the ABI symbol. */
+                fprintf(c, "#define %s %s\n", imp->name, symbol);
+                return;
+            }
             char call[LOWER_TEXT_MAX];
 
             extern_call_args(cargs, call, sizeof(call));
