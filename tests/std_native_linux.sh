@@ -34,6 +34,9 @@ main :: () -> s32 {
         DirectoryExists("cache/record.bin") ||
         !DirectoryExists("cache") ||
         PathExists("cache/moved.bin") { return 10 }
+    if CreateDirectory("cache/record.bin") ||
+        !CreatePrivateDirectory("private") ||
+        !DirectoryExists("private") { return 12 }
     if !RenamePath("cache/record.bin", "cache/moved.bin") ||
         PathExists("cache/record.bin") ||
         !PathExists("cache/moved.bin") ||
@@ -59,3 +62,4 @@ ZI
 "${CC:-cc}" -std=c99 -pedantic-errors -I"$root/include" -I"$work/c" \
     "$work/c"/*.c -lm -o "$work/program"
 (cd "$work" && ./program)
+test "$(stat -c %a "$work/private")" = "700"

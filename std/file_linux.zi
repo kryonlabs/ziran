@@ -107,9 +107,15 @@ CreateDirectory :: (path: string) -> bool {
     name: [4096]u8
     if !CopyCString(path, name[:]) { return false }
     if MakeDirectoryRaw(*name[0], 493) == 0 { return true }
-    existing: FileHandle = OpenRead(path)
-    if !existing.valid { return false }
-    return CloseFile(existing)
+    return DirectoryExists(path)
+}
+
+#program_export
+CreatePrivateDirectory :: (path: string) -> bool {
+    name: [4096]u8
+    if !CopyCString(path, name[:]) { return false }
+    if MakeDirectoryRaw(*name[0], 448) == 0 { return true }
+    return DirectoryExists(path)
 }
 
 #program_export
