@@ -23,6 +23,13 @@ Lib :: #import "library";
 saved: Lib.Wrapper = Lib.WRAPPER;
 numbers: [2]s64 = Lib.NUMBERS;
 records: [2]Lib.Point = Lib.RECORDS;
+DERIVED :: #run Lib.WRAPPER.point.value;
+ARRAY_DERIVED :: #run Lib.RECORDS[1].value;
+#assert Lib.WRAPPER.point.value == 42
+#assert Lib.WRAPPER.text == "ready"
+#assert Lib.NUMBERS.count == 2
+#assert Lib.RECORDS[1].value == 42
+#assert DERIVED == 42 && ARRAY_DERIVED == 42
 #program_export
 Answer :: () -> s64 {
     local: Lib.Wrapper = Lib.WRAPPER;

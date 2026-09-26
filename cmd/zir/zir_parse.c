@@ -3151,6 +3151,7 @@ typedef struct {
     double real;
     char type[ZIR_NAME_MAX];
     char literal[ZIR_TEXT_MAX];
+    const ZirModule *type_owner;
 } CompileValue;
 
 static int evaluate_typed_expression(const ZirModule *module,
@@ -3325,6 +3326,7 @@ compile_compound_value(const ZirFunction *probe, const ZirExpr *expression,
         return 0;
     result->kind = COMPILE_COMPOUND;
     copy_text(result->type, sizeof(result->type), expression->name);
+    result->type_owner = module;
     return 1;
 }
 
@@ -3333,6 +3335,8 @@ compile_compound_member(const CompileValue *compound, const char *member,
                         const ZirModule *module, const char *path, int depth,
                         int *fuel, CompileValue *result)
 {
+    if(compound->type_owner != NULL)
+        module = compound->type_owner;
     ZirFunction probe = {0};
     int root = ParseExpr(&probe, module, compound->literal,
                          Span(path, 1, 1));
@@ -3367,6 +3371,8 @@ compile_compound_index(const CompileValue *compound, long index,
                        const ZirModule *module, const char *path, int depth,
                        int *fuel, CompileValue *result)
 {
+    if(compound->type_owner != NULL)
+        module = compound->type_owner;
     char element[ZIR_NAME_MAX];
     int capacity = 0;
     if(!ArrayElementType(compound->type, element, sizeof(element),
