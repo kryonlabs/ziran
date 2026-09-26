@@ -317,10 +317,15 @@ EmitSlotType(FILE *out, const ZirType *slot, ZirTarget target,
         return;
     }
     const char *result_source = slot->procedure_return_type;
-    const char *result_scalar = TargetType(result_source, target);
     char result_type[ZIR_NAME_MAX];
-    copy_text(result_type, sizeof(result_type),
-              result_scalar ? result_scalar : result_source);
+    if(target == ZIR_GO) {
+        const char *result_scalar = TargetType(result_source, target);
+        copy_text(result_type, sizeof(result_type),
+                  result_scalar ? result_scalar : result_source);
+    } else {
+        slot_native_type(result_source, target, result_type,
+                         sizeof(result_type));
+    }
     if(resolve_type && strcmp(result_source, "void"))
         resolve_type(context, result_source, result_type, sizeof(result_type));
     if(target == ZIR_GO)
@@ -331,8 +336,12 @@ EmitSlotType(FILE *out, const ZirType *slot, ZirTarget target,
         char *colon = strchr(parameters[i], ':');
         char type[ZIR_NAME_MAX];
         const char *source = skip_ws(colon + 1);
-        const char *scalar = TargetType(source, target);
-        copy_text(type, sizeof(type), scalar ? scalar : source);
+        if(target == ZIR_GO) {
+            const char *scalar = TargetType(source, target);
+            copy_text(type, sizeof(type), scalar ? scalar : source);
+        } else {
+            slot_native_type(source, target, type, sizeof(type));
+        }
         if(resolve_type)
             resolve_type(context, source, type, sizeof(type));
         fprintf(out, "%s%s", i || target != ZIR_GO ? ", " : "", type);
