@@ -10,14 +10,29 @@ cat > "$work/global_names.zi" <<'ZI'
 TextStyleResolver :: struct {
     count: s64
 }
+class :: struct { x: s64; }
+type :: struct { y: s64; }
+switch :: enum { On :: 2; }
+xor :: struct { z: s64; }
+_Atomic :: struct { w: s64; }
 text_style_resolver: TextStyleResolver;
 range: s64;
 ziran_keyword_range_0: s64;
 char: s64;
 ziran_keyword_char_0: s64;
 
+KeywordResult :: () -> s64 {
+    a: class = class.{.x = 11}
+    b: type = type.{.y = 22}
+    state: switch = switch.On
+    c: xor = xor.{.z = 3}
+    d: _Atomic = _Atomic.{.w = 4}
+    return a.x + b.y + cast(s64)state + c.z + d.w
+}
+
 #program_export
 Answer :: () -> s64 {
+    if KeywordResult() != 42 { return 0 }
     text_style_resolver.count = 38
     range = 1
     ziran_keyword_range_0 = 1

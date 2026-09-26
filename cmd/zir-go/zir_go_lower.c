@@ -531,7 +531,7 @@ parse_enum(const ZirModule *owner, const ZirType *t)
         return;
     e = &g_enums[g_enum_count++];
     memset(e, 0, sizeof(*e));
-    if(t->native_name_collision)
+    if(t->native_name_mangled)
         NativeTypeName(owner, t, e->go_type, sizeof(e->go_type));
     else
         camel_ident(t->name, e->go_type, sizeof(e->go_type));

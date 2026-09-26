@@ -600,11 +600,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `char` type is rejected while `char` can name local
   bindings and record fields; C and C++ lower reserved field names without
   changing source names. Kryon's C callback declarations use Jai `*u8` for borrowed byte
-  pointers. Remaining top-level type and exported procedure keyword
-  names and cross-module collisions of procedures and other symbols
-  still need package-wide native name mapping. Colliding record, union, and
-  enum type names from linked modules receive distinct native names in C,
-  C++, and Go. Colliding enum members also receive distinct native names;
+  pointers. Remaining exported procedure keyword names and cross-module
+  collisions of procedures and other symbols still need package-wide native
+  name mapping. Record, union, and enum type names shared by linked modules
+  or reserved by C, C++, or Go receive distinct native names on all three
+  targets. Colliding or keyword enum members follow the mapped type name;
+  `tests/global_names.sh` checks source and saved IR with target keyword types.
   `tests/imported_type_names.sh` and `tests/imported_enum_names.sh` check
   qualified uses, fields, signatures, globals, literals, and source/saved-IR
   execution on all four targets.

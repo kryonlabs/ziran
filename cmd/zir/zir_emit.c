@@ -128,14 +128,21 @@ TargetBindingName(const ZirFunction *fn, ZirTarget target,
         "do", "double", "else", "enum", "extern", "float", "for", "goto",
         "if", "inline", "int", "long", "register", "restrict", "return",
         "short", "signed", "sizeof", "static", "struct", "switch",
-        "typedef", "union", "unsigned", "void", "volatile", "while", NULL
+        "typedef", "union", "unsigned", "void", "volatile", "while",
+        "_Alignas", "_Alignof", "_Atomic", "_Bool", "_Complex",
+        "_Generic", "_Imaginary", "_Noreturn", "_Static_assert",
+        "_Thread_local", NULL
     };
     static const char *const cpp_keywords[] = {
         "alignas", "alignof", "asm", "bool", "catch", "class", "constexpr",
         "delete", "explicit", "false", "friend", "mutable", "namespace",
         "new", "noexcept", "nullptr", "operator", "private", "protected",
         "public", "template", "this", "throw", "true", "try", "typename",
-        "using", "virtual", NULL
+        "using", "virtual", "and", "and_eq", "bitand", "bitor",
+        "char16_t", "char32_t", "compl", "const_cast", "decltype",
+        "dynamic_cast", "export", "not", "not_eq", "or", "or_eq",
+        "reinterpret_cast", "static_assert", "static_cast", "thread_local",
+        "typeid", "wchar_t", "xor", "xor_eq", NULL
     };
     static const char *const go_keywords[] = {
         "break", "case", "chan", "const", "continue", "default", "defer",
@@ -305,7 +312,7 @@ void
 NativeTypeName(const ZirModule *owner, const ZirType *type,
                char *out, size_t size)
 {
-    if(!type->native_name_collision) {
+    if(!type->native_name_mangled) {
         copy_text(out, size, type->name);
         return;
     }
@@ -344,7 +351,7 @@ NativeTypeAtUse(const ZirModule *module, const char *type,
     const ZirModule *owner = NULL;
     const ZirType *declared = FindType(module, type, &owner);
     if(declared == NULL || owner == NULL || declared->is_extern ||
-       (!declared->native_name_collision && strchr(type, '.') == NULL) ||
+       (!declared->native_name_mangled && strchr(type, '.') == NULL) ||
        BuiltinType(declared->name) == declared) return 0;
     NativeTypeName(owner, declared, out, size);
     return out[0] != '\0';
@@ -354,7 +361,7 @@ int
 NativeEnumMemberName(const ZirModule *owner, const ZirType *type,
                      const char *member, char *out, size_t size)
 {
-    if(!type->is_enum || !type->native_name_collision) return 0;
+    if(!type->is_enum || !type->native_name_mangled) return 0;
     char native[ZIR_NAME_MAX * 2];
     NativeTypeName(owner, type, native, sizeof(native));
     format(out, size, "%s_%s", native, member);
