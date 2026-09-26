@@ -1359,14 +1359,13 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
             }
         }
         {
-            char initw[LOWER_TEXT_MAX];
+            char initw[LOWER_TEXT_MAX] = "";
 
             /* initializers carry 'null' and module-local function refs */
             if(!ScalarLiteral(g->type, g->init, ZIR_C, g->span, initw, sizeof(initw))) {
-                char recordw[LOWER_TEXT_MAX];
+                char recordw[LOWER_TEXT_MAX] = "";
                 const char *stripped = skip_ws(g->init);
                 if(stripped[0] == '.' && stripped[1] == '[') {
-                    recordw[0] = '\0';
                     lower_array_literal_init(m, g, recordw, sizeof(recordw));
                 }
                 else

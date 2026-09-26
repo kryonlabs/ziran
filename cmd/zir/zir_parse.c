@@ -384,6 +384,66 @@ is_member_path_text(const char *text)
     }
 }
 
+static void
+parse_file_global(ZirModule *module, const char *declaration,
+                  ZirSourceSpan span, int scope_public, int scope_file,
+                  char *name_out, size_t name_size)
+{
+    char name[ZIR_NAME_MAX], type[ZIR_TEXT_MAX], init[ZIR_TEXT_MAX];
+    const char *colon = strchr(declaration, ':');
+    const char *value = colon == NULL ? NULL : colon + 1;
+    const char *equal = value == NULL ? NULL : strchr(value, '=');
+    const char *type_end = equal == NULL ?
+        declaration + strlen(declaration) : equal;
+    size_t length = 0;
+
+    if(colon == NULL || declaration[0] == '\0' ||
+       declaration[strlen(declaration) - 1] != ';')
+        die_at(span, "file-scope variable declaration needs ';'");
+    for(const char *cursor = declaration; cursor < colon; cursor++) {
+        if(!isalnum((unsigned char)*cursor) && *cursor != '_')
+            die_at(span, "invalid file-scope variable name");
+        if(length + 1 >= sizeof(name))
+            die_at(span, "file-scope variable name is too long");
+        name[length++] = *cursor;
+    }
+    name[length] = '\0';
+    if(!is_member_path_text(name) || strchr(name, '.') != NULL)
+        die_at(span, "invalid file-scope variable name");
+    value = skip_ws(value);
+    length = 0;
+    while(value < type_end && length + 1 < sizeof(type))
+        type[length++] = *value++;
+    if(value != type_end)
+        die_at(span, "file-scope variable type is too long");
+    while(length > 0 && (isspace((unsigned char)type[length - 1]) ||
+                         type[length - 1] == ';')) length--;
+    type[length] = '\0';
+    if(type[0] == '\0')
+        die_at(span, "file-scope variable needs a type");
+    length = 0;
+    if(equal != NULL) {
+        value = skip_ws(equal + 1);
+        while(*value != '\0' && length + 1 < sizeof(init))
+            init[length++] = *value++;
+        if(*value != '\0')
+            die_at(span, "file-scope variable initializer is too long");
+        while(length > 0 && (isspace((unsigned char)init[length - 1]) ||
+                             init[length - 1] == ';')) length--;
+        if(length == 0)
+            die_at(span, "file-scope variable initializer is empty");
+    }
+    init[length] = '\0';
+    if(scope_public)
+        ModuleAddGlobal(module, name, type, init, span);
+    else
+        ModuleAddStatic(module, name, type, init, span);
+    if(module->global_count > 0)
+        module->globals[module->global_count - 1].is_file_private = scope_file;
+    if(name_out != NULL)
+        copy_text(name_out, name_size, name);
+}
+
 static int
 contains_source_directive(const char *source, const char *directive)
 {
@@ -5831,24 +5891,31 @@ parse_source(const char *path, const char *root, const char *source,
                   !looks_like_function_header(t)) {
             die_at(Span(rel, program_export_line, 1),
                    "#program_export must precede a function declaration");
-        } else if(mode == TOP && starts_word(t, "using") &&
+        } else if(mode == TOP &&
+                  (starts_word(t, "using") || strncmp(t, "using,", 6) == 0) &&
                   strstr(t, "#import") == NULL) {
             char name[ZIR_NAME_MAX];
             char filter[160];
             const char *path = skip_ws(t + 5);
             filter[0] = '\0';
             parse_using_modifiers(&path, filter, sizeof(filter), rel, line_no);
-            size_t length = strlen(path);
-            if(length < 2 || path[length - 1] != ';' ||
-               length >= sizeof(name))
-                die_at(Span(rel, line_no, 1),
-                       "using requires an enum type and ';'");
-            memcpy(name, path, length - 1);
-            name[length - 1] = '\0';
-            trim_in_place(name);
-            if(!is_member_path_text(name))
-                die_at(Span(rel, line_no, 1),
-                       "using requires an enum type name");
+            if(strchr(path, ':') != NULL) {
+                parse_file_global(module, path, Span(rel, line_no, 1),
+                                  scope_public, scope_file,
+                                  name, sizeof(name));
+            } else {
+                size_t length = strlen(path);
+                if(length < 2 || path[length - 1] != ';' ||
+                   length >= sizeof(name))
+                    die_at(Span(rel, line_no, 1),
+                           "using requires a type or record binding and ';'");
+                memcpy(name, path, length - 1);
+                name[length - 1] = '\0';
+                trim_in_place(name);
+                if(!is_member_path_text(name))
+                    die_at(Span(rel, line_no, 1),
+                           "using requires a type or record binding name");
+            }
             ZirUsing *using = ModuleAddUsing(module, name,
                 Span(rel, line_no, 1));
             if(using == NULL)
@@ -6197,71 +6264,8 @@ parse_source(const char *path, const char *root, const char *source,
                   strchr(t, ':') != NULL && strstr(t, "::") == NULL) {
             /* A Jai file-scope variable uses the same typed declaration as
              * a local: name: Type; or name: Type = initializer; */
-            char gname[ZIR_NAME_MAX];
-            char gtype[ZIR_TEXT_MAX];
-            char ginit[ZIR_TEXT_MAX];
-            const char *colon = strchr(t, ':');
-            const char *ty = colon + 1;
-            const char *eq = strchr(ty, '=');
-            const char *tyend = eq != NULL ? eq : t + strlen(t);
-            size_t nn = 0;
-
-            if(t[strlen(t) - 1] != ';')
-                die_at(Span(rel, line_no, 1),
-                       "file-scope variable declaration needs ';'");
-
-            for(const char *p = t; p < colon; p++) {
-                if(!isalnum((unsigned char)*p) && *p != '_')
-                    die_at(Span(rel, line_no, 1),
-                           "invalid file-scope variable name");
-                if(nn + 1 >= sizeof(gname))
-                    die_at(Span(rel, line_no, 1),
-                           "file-scope variable name is too long");
-                gname[nn++] = *p;
-            }
-            gname[nn] = '\0';
-            while(*ty == ' ' || *ty == '\t')
-                ty++;
-            nn = 0;
-            while(ty < tyend && nn + 1 < sizeof(gtype))
-                gtype[nn++] = *ty++;
-            if(ty != tyend)
-                die_at(Span(rel, line_no, 1),
-                       "file-scope variable type is too long");
-            while(nn > 0 && (isspace((unsigned char)gtype[nn - 1]) ||
-                             gtype[nn - 1] == ';'))
-                nn--;
-            gtype[nn] = '\0';
-            if(gtype[0] == '\0')
-                die_at(Span(rel, line_no, 1),
-                       "file-scope variable needs a type");
-            nn = 0;
-            if(eq != NULL) {
-                const char *ib = eq + 1;
-
-                while(*ib == ' ' || *ib == '\t')
-                    ib++;
-                while(*ib != '\0' && nn + 1 < sizeof(ginit))
-                    ginit[nn++] = *ib++;
-                if(*ib != '\0')
-                    die_at(Span(rel, line_no, 1),
-                           "file-scope variable initializer is too long");
-                while(nn > 0 && (isspace((unsigned char)ginit[nn - 1]) ||
-                                 ginit[nn - 1] == ';'))
-                    nn--;
-                if(nn == 0)
-                    die_at(Span(rel, line_no, 1),
-                           "file-scope variable initializer is empty");
-            }
-            ginit[nn] = '\0';
-            if(scope_public)
-                ModuleAddGlobal(module, gname, gtype, ginit,
-                                Span(rel, line_no, 1));
-            else
-                ModuleAddStatic(module, gname, gtype, ginit,
-                                Span(rel, line_no, 1));
-            if(module->global_count > 0)
-                module->globals[module->global_count - 1].is_file_private = scope_file;
+            parse_file_global(module, t, Span(rel, line_no, 1),
+                              scope_public, scope_file, NULL, 0);
         } else if(mode == TOP && strstr(t, "::") != NULL &&
                   strstr(t, "#type") != NULL) {
             die_at(Span(rel, line_no, 1),

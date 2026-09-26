@@ -1,6 +1,6 @@
 # Jai syntax parity roadmap
 
-Status: 2026-09-25. This is a work plan, not a claim that Ziran already accepts
+Status: 2026-09-26. This is a work plan, not a claim that Ziran already accepts
 every Jai program. [Implementation status](IMPLEMENTATION_STATUS.md) records
 what works today; [Language direction](LANGUAGE_DIRECTION.md) records the broader
 design. The current checked source grammar aims to use Jai syntax. Ziran is
@@ -29,8 +29,9 @@ behavior as an open question and probe it before codifying a language rule.
 ## Current baseline
 
 The current branch has Jai-style declarations, lexical `using` for local and
-parameter records, nested and generic `using` fields, lexical enum `using`, and
-data-scope enum `using`. It supports nonempty typed array literals, typed and
+parameter records, nested and generic `using` fields, lexical enum `using`,
+data-scope enum `using`, and data-scope promotion from module-local record and
+scalar-union globals in procedure bodies. It supports nonempty typed array literals, typed and
 inferred record literals, named and default arguments, direct polymorphic
 calls, scopes, `#load`, several `#import` forms, bounded pure `#run`, and
 checked `.zir` graphs. The compiler rejects many inherited spellings,
@@ -38,14 +39,12 @@ including `#enum`, `variant`, postfix `?`, `#global`, `#export`, `#private`,
 `#extern`, C pointer suffixes, C conditional expressions, and old Kryon file
 extensions. The rejection tests should stay.
 
-The latest code commits are `0b4f157` through `43ca012` (record and enum
-`using`, typed array literals, and associated saved-IR and target tests). The
-full local `make check` suite has 72 checks. Re-run it after any change to the
-checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
+The full local `make check` suite has 90 checks. Re-run it after any change to
+the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 
 | Area | Current subset | Next proof of parity |
 | --- | --- | --- |
-| Names and scopes | Local/field record `using`; local/data enum `using`; named imports | Data record `using`, import re-exports, modifiers, order independence |
+| Names and scopes | Local/field record `using`; local/data enum `using`; module-local data record/union `using` in procedures; named imports | File-scope record lookup, imported global visibility, order independence |
 | Values and expressions | Record literals, nonempty typed arrays, direct generic calls, selected `ifx` forms | True empty arrays, nested lazy expressions, fuller type queries |
 | Procedures | Named values, defaults, named arguments, direct polymorphism | Overload/variadic/operator and broader procedure-form audit |
 | Compile time | Bounded pure scalars, strings, and floats | One typed evaluator, aggregates, verified effect rules |
@@ -61,21 +60,18 @@ current subset with an exact test name and target list.
 
 ### 1. Data-scope `using` for record values
 
-The parser currently records top-level `using Path;`, and the checker accepts
-it only when `Path` resolves to an enum. Procedures already have the machinery
-to promote a record's fields into lexical lookup. Extend that machinery to a
-visible file-scope record or union binding, including `using value;`, a nested
-path, and declaration syntax such as `using value: Record;`. Preserve explicit
-binding shadowing, ambiguity diagnostics, imported visibility, and `#scope_file`
-across `#load`. Lower every promoted reference into checked member access
-before writing `.zir`; the backends should not interpret `using` themselves.
+Top-level `using value;`, nested paths, and `using value: Record;` now promote
+module-local record and scalar-union global fields inside procedures. The
+checker lowers references to ordinary checked member access before `.zir` is
+saved. `tests/data_scope_using.sh` covers reads, writes, filters, forward
+declarations, local shadowing, collisions, `#scope_file` across `#load`, and
+source/saved-IR execution on C, C++, Go, and `.zib`. `using StructType;`
+still rejects a type in place of a value.
 
-Start in `cmd/zir/zir_parse.c` (top-level declaration parsing) and
-`cmd/zir/zir_check.c` (`activate_using`, `check_function`, and the top-level
-`using` validation). Extend `tests/using.sh` with reads, writes, collisions,
-forward declarations, and source/saved-IR execution on every target. Keep the
-test that rejects `using StructType;` if Jai requires a value there. Confirm the
-exact rule with a Jai probe before treating union promotion as settled.
+Finish record promotion in legal file-scope expressions and establish whether
+exported globals from open imports may be opened unqualified. Verify the
+exact record and union rules with Jai before claiming syntax parity. Keep
+visibility and ambiguity diagnostics consistent with local `using`.
 
 ### 2. Declaration-order-independent compile-time lookup
 
@@ -101,7 +97,9 @@ the compile-time evaluator there, with `tests/compile_if_syntax.sh`,
 constants beside the alias with local shadowing and ambiguity diagnostics.
 `using,only(...)`/`except(...)`/`map(...)` modifiers now
 filter and rename promoted fields and enum members with hidden names staying
-unresolved. `#as (source: Type) -> Result` conversions apply implicitly at
+unresolved, including file-scope enum uses in constants, global initializers,
+`#run`, `#assert`, and `#if`. Conflicting maps of one exposed name are
+diagnosed. `#as (source: Type) -> Result` conversions apply implicitly at
 every coercion site through a checked call rewrite shared by all targets. In particular, `#as` affects
 conversions, so a text substitution in a backend is insufficient. Model
 namespace import and conversion metadata explicitly, resolve it in the

@@ -208,26 +208,38 @@ file_scope_symbol_visible(const ZirModule *module, const char *name)
     return 0;
 }
 
+static const char *
+apply_using_filter(const char *filter, const char *name,
+                   char *buffer, size_t size);
+
 static int
 opened_file_enum(ZirModule *module, const char *name,
                  ZirSourceSpan span, int64_t *value)
 {
     const ZirType *found = NULL;
+    char found_member[ZIR_NAME_MAX] = "";
     for(int i = 0; i < module->using_count; i++) {
         const ZirUsing *using = &module->usings[i];
         if(!in_lookup_file(module, using->is_file_private, using->span))
             continue;
         const ZirType *candidate = FindType(module, using->path, NULL);
         int64_t candidate_value;
+        char source_name[ZIR_NAME_MAX];
+        const char *member = apply_using_filter(using->filter, name,
+                                                source_name,
+                                                sizeof(source_name));
         if(candidate == NULL || !candidate->is_enum ||
-           !EnumMemberValue(candidate, name, &candidate_value))
+           member == NULL ||
+           !EnumMemberValue(candidate, member, &candidate_value))
             continue;
-        if(found != NULL && found != candidate) {
+        if(found != NULL &&
+           (found != candidate || strcmp(found_member, member) != 0)) {
             Diagnostic(span, "check.enum_scope",
                        "ambiguous using enum member: %s", name);
             return -1;
         }
         found = candidate;
+        copy_text(found_member, sizeof(found_member), member);
         *value = candidate_value;
     }
     return found != NULL;
@@ -950,6 +962,7 @@ resolve_using_enum(Checker *c, const char *name,
                    const ZirType **enumeration, char *source, size_t size)
 {
     *enumeration = NULL;
+    char found_member[ZIR_NAME_MAX] = "";
     for(int i = c->count - 1; i >= 0; i--) {
         const Binding *binding = &c->bindings[i];
         char source_name[ZIR_NAME_MAX];
@@ -962,9 +975,12 @@ resolve_using_enum(Checker *c, const char *name,
         int64_t value;
         if(candidate == NULL ||
            !EnumMemberValue(candidate, promoted, &value)) continue;
-        if(*enumeration != NULL && *enumeration != candidate)
+        if(*enumeration != NULL &&
+           (*enumeration != candidate ||
+            strcmp(found_member, promoted) != 0))
             return -1;
         *enumeration = candidate;
+        copy_text(found_member, sizeof(found_member), promoted);
         if(source != NULL && size > 0)
             copy_text(source, size, promoted);
     }
@@ -4436,8 +4452,7 @@ restart:
         for(int i = 0; i < c->module->using_count; i++) {
             const ZirUsing *using = &c->module->usings[i];
             if(!in_lookup_file(c->module, using->is_file_private,
-                               using->span) ||
-               FindType(c->module, using->path, NULL) == NULL)
+                               using->span))
                 continue;
             activate_using_filtered(c, using->path, using->filter,
                                     using->span);
@@ -6051,11 +6066,20 @@ CheckPrograms(ZirProgram **programs, int count)
                 const ZirUsing *using = &module->usings[i];
                 select_lookup_file(module, using->span);
                 const ZirType *type = FindType(module, using->path, NULL);
-                if(type == NULL || !type->is_enum) {
+                if(type != NULL && !type->is_enum) {
                     Diagnostic(using->span, "check.enum_scope",
                                "top-level using requires an enum type: %s",
                                using->path);
                     return 0;
+                }
+                if(type == NULL) {
+                    Checker scope = {0};
+                    scope.module = module;
+                    activate_using_filtered(&scope, using->path,
+                                            using->filter, using->span);
+                    free(scope.bindings);
+                    if(scope.errors || scope.failed)
+                        return 0;
                 }
             }
             copy_text(module->lookup_path, sizeof(module->lookup_path),

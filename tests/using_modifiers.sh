@@ -9,6 +9,19 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 cat > "$work/lib.zi" <<'ZI'
 Pair :: struct { left: s64; right: s64; }
 Color :: enum { Red :: 0; Green :: 1; Blue :: 2; }
+using, map("global_green" = "Green") Color;
+GlobalGreen :: global_green;
+GlobalGreenRun :: #run global_green;
+global_green_value: s64 = global_green;
+#assert global_green == 1
+#if global_green == 1 {
+    GlobalSelected :: 1;
+} else {
+    GlobalSelected :: 0;
+}
+FileMapped :: () -> s64 {
+    return GlobalGreen + GlobalGreenRun + global_green_value + GlobalSelected
+}
 OnlyLeft :: (pair: Pair) -> s64 {
     using, only("left") pair;
     return left
@@ -41,6 +54,7 @@ Answer :: () -> s32 {
     if Mapped(pair) != 42 { return 0 }
     if EnumOnly() != 2 { return 0 }
     if EnumMapped() != 5 { return 0 }
+    if FileMapped() != 4 { return 0 }
     return 1
 }
 ZI
@@ -139,3 +153,46 @@ if "$ziran" check --root "$work" "$work/unmapped.zi" \
     exit 1
 fi
 rg -q 'unresolved name: Green' "$work/unmapped.err"
+
+cat > "$work/file_excluded.zi" <<'ZI'
+Color :: enum { Red :: 0; Green :: 1; }
+using, only("Red") Color;
+hidden: s64 = Green;
+ZI
+if "$ziran" check --root "$work" "$work/file_excluded.zi" \
+    2> "$work/file_excluded.err"; then
+    echo 'an only-hidden file-scope enum member was accepted' >&2
+    exit 1
+fi
+rg -q 'enum member needs a type qualifier or using: Green' \
+    "$work/file_excluded.err"
+
+cat > "$work/file_ambiguous_map.zi" <<'ZI'
+Color :: enum { Red :: 0; Green :: 1; }
+using, map("choice" = "Red") Color;
+using, map("choice" = "Green") Color;
+choice_value: s64 = choice;
+ZI
+if "$ziran" check --root "$work" "$work/file_ambiguous_map.zi" \
+    2> "$work/file_ambiguous_map.err"; then
+    echo 'ambiguous file-scope enum map was accepted' >&2
+    exit 1
+fi
+rg -q 'ambiguous using enum member: choice' \
+    "$work/file_ambiguous_map.err"
+
+cat > "$work/local_ambiguous_map.zi" <<'ZI'
+Color :: enum { Red :: 0; Green :: 1; }
+Bad :: () -> s64 {
+    using, map("choice" = "Red") Color;
+    using, map("choice" = "Green") Color;
+    return choice
+}
+ZI
+if "$ziran" check --root "$work" "$work/local_ambiguous_map.zi" \
+    2> "$work/local_ambiguous_map.err"; then
+    echo 'ambiguous local enum map was accepted' >&2
+    exit 1
+fi
+rg -q 'ambiguous using enum member: choice' \
+    "$work/local_ambiguous_map.err"

@@ -16,10 +16,18 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   work in native targets, while portable bundles retain their pointer limit.
   Polymorphic procedures preserve parameter, local, and imperative `using`
   declarations in saved templates and lower them for each concrete call.
+  File-scope `using value;`, nested paths, and `using value: Record;` promote
+  fields of module-local record and scalar-union globals in procedure bodies.
+  Forward global declarations, filters, local shadowing, ambiguity diagnostics,
+  and file-private `#load` boundaries are tested from source and saved IR in
+  C, C++, Go, and `.zib` by `tests/data_scope_using.sh`.
   `using,only(...)`/`except(...)`/`map(...)` modifiers filter and rename
   promoted record fields and opened enum members on local and data-scope
   using declarations, in source and saved IR across C, C++, Go, and `.zib`;
-  a hidden or unmapped name stays unresolved. `using Alias :: #import
+  a hidden or unmapped name stays unresolved. File-scope enum filters also
+  apply in constants, global initializers, `#run`, `#assert`, and `#if`;
+  conflicting maps of one exposed name are diagnosed even when they open
+  members from the same enum. `using Alias :: #import
   "Module";` re-exports the module's public procedures, types, and constants
   into unqualified scope beside the alias: local declarations shadow the
   re-export, and two using-imports exposing one name are ambiguous.
@@ -315,7 +323,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   conditions. File-private using declarations respect `#load` boundaries.
   Bare members without `using` are rejected in procedure bodies and file-scope
   global initializers; checked IR lowers opened members to values before native
-  or portable execution. Data-scope record and union using remain unsupported.
+  or portable execution. File-scope expression lookup through record and union
+  `using`, and promotion from imported globals, still need coverage.
   Call arguments and returns accept typed and contextual members. Enum and scalar
   `if`/`case` arms support terminal `#through;` with source, saved IR,
   portable, C, C++, and Go agreement. Integer, boolean, floating, and string
