@@ -79,8 +79,9 @@ declaring module for imported record types even when the consumer has a
 same-named type. Verify the exact record and union rules with Jai before
 claiming syntax parity. Keep
 visibility and ambiguity diagnostics consistent with local `using`.
-Qualified imported enum type annotations now lower across native targets, but
-`Module.Enum.Member` expressions still fail checker resolution.
+Qualified imported enum type annotations and `Module.Enum.Member` expressions
+now lower across native targets and the portable runner; see
+`tests/imported_enum_names.sh`.
 
 ### 2. Declaration-order-independent compile-time lookup
 

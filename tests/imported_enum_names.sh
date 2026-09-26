@@ -21,8 +21,11 @@ Left :: #import "left";
 Right :: #import "right";
 #program_export
 Answer :: () -> s64 {
-    left: Left.Color = Left.Get()
-    right: Right.Color = Right.Get()
+    left: Left.Color = Left.Color.Red
+    right: Right.Color = Right.Color.Red
+    if Left.Read(Left.Get()) != 20 || Right.Read(Right.Get()) != 22 {
+        return 0
+    }
     return Left.Read(left) + Right.Read(right)
 }
 ZI
@@ -71,3 +74,13 @@ CPP
     done
 done
 cmp "$work/source.zib" "$work/saved.zib"
+
+cat > "$work/bad.zi" <<'ZI'
+Left :: #import "left";
+Answer :: () -> Left.Color { return Left.Color.Missing }
+ZI
+if "$ziran" check --root "$work" "$work/bad.zi" >"$work/bad.out" 2>&1; then
+    echo "unknown qualified enum member was accepted" >&2
+    exit 1
+fi
+grep -Fq 'unknown enum member: Missing' "$work/bad.out"

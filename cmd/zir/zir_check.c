@@ -2586,6 +2586,29 @@ expression_type(Checker *c, int index)
                 return e->type;
     }
     if(e->kind == ZIR_EXPR_MEMBER && e->left >= 0 &&
+       c->fn->exprs[e->left].kind == ZIR_EXPR_MEMBER) {
+        const ZirExpr *middle = &c->fn->exprs[e->left];
+        if(middle->left >= 0 &&
+           c->fn->exprs[middle->left].kind == ZIR_EXPR_IDENT) {
+            const char *alias = c->fn->exprs[middle->left].name;
+            char qualified[ZIR_NAME_MAX];
+            int length = snprintf(qualified, sizeof(qualified), "%s.%s",
+                                  alias, middle->name);
+            if(!*lookup_lexical(c, alias) && length >= 0 &&
+               (size_t)length < sizeof(qualified)) {
+                const ZirType *enumeration = FindType(c->module, qualified,
+                                                      NULL);
+                if(enumeration != NULL && enumeration->is_enum) {
+                    if(lower_enum_reference(c, e, enumeration, e->name)) {
+                        copy_text(e->type, sizeof(e->type), qualified);
+                        return e->type;
+                    }
+                    return "";
+                }
+            }
+        }
+    }
+    if(e->kind == ZIR_EXPR_MEMBER && e->left >= 0 &&
        c->fn->exprs[e->left].kind == ZIR_EXPR_IDENT) {
         const char *alias = c->fn->exprs[e->left].name;
         for(int i = 0; i < c->module->import_count; i++) {
