@@ -3,8 +3,10 @@
 #import "c_string"
 
 curl :: #system_library "curl";
+c :: #system_library "c";
 curl_global_init :: (flags: s64) -> s32 #foreign curl;
-curl_global_cleanup :: () #foreign curl;
+CurlInitRoutine :: #type () #c_call;
+pthread_once :: (control: *s32, routine: CurlInitRoutine) -> s32 #foreign c;
 curl_easy_init :: () -> *void #foreign curl;
 curl_easy_cleanup :: (handle: *void) #foreign curl;
 curl_easy_setopt :: (handle: *void, option: s32, args: ..any) -> s32 #foreign curl;
@@ -24,6 +26,19 @@ CurlTimeoutMs :: 155
 CurlConnectTimeoutMs :: 156
 CurlNoSignal :: 99
 CurlResponseCode :: 2097154
+
+curl_once: s32 = 0;
+curl_init_result: s32 = -1;
+
+InitCurl :: () {
+    curl_init_result = curl_global_init(3)
+}
+
+CurlReady :: () -> bool {
+    routine: CurlInitRoutine = InitCurl
+    return pthread_once(*curl_once, routine) == 0 &&
+        curl_init_result == 0
+}
 
 StartsWith :: (value: string, prefix: string) -> bool {
     if value.count < prefix.count { return false }
@@ -210,12 +225,9 @@ SendCurl :: (request: HttpRequest, output: []u8) -> CurlResult {
     !MethodToken(request.method) ||
     !CopyCString(request.url, url[:]) ||
     !CopyCString(request.method, method[:]) { return result }
-    if curl_global_init(3) != 0 { return result }
+    if !CurlReady() { return result }
     handle := curl_easy_init()
-    if handle == null {
-        curl_global_cleanup()
-        return result
-    }
+    if handle == null { return result }
 
     context: CurlOutput
     context.data = *output[0]
@@ -287,6 +299,5 @@ SendCurl :: (request: HttpRequest, output: []u8) -> CurlResult {
     result.truncated = context.truncated
     if headers != null { curl_slist_free_all(headers) }
     curl_easy_cleanup(handle)
-    curl_global_cleanup()
     return result
 }
