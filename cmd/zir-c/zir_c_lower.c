@@ -431,21 +431,7 @@ static void
 function_c_name(const ZirModule *m, const ZirFunction *fn,
                 char *dst, size_t dst_size)
 {
-    char mod[LOWER_NAME_MAX];
-    size_t n = 0;
-    /* '#program_export' selects the externally visible linker name. */
-    if(fn->exported) {
-        NativeExportName(m, fn, dst, dst_size);
-        return;
-    }
-    if(m->name[0] != '\0' && strcmp(m->name, "main") != 0) {
-        for(const char *p = m->name; *p && n + 1 < sizeof(mod); p++)
-            mod[n++] = (*p == '.') ? '_' : *p;
-        mod[n] = '\0';
-        snprintf(dst, dst_size, "%s_%s", mod, fn->name);
-    } else {
-        snprintf(dst, dst_size, "%s", fn->name);
-    }
+    NativeCFunctionName(m, fn, dst, dst_size);
 }
 
 void

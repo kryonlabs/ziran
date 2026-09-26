@@ -289,7 +289,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `tests/imported_constant_names.sh` checks source and saved IR on all four
   targets. Linked globals and constants with the same native name also remain
   distinct; `tests/imported_value_names.sh` checks source and saved IR on all
-  four targets. Generic record templates use named
+  four targets. Globals and constants whose native names collide with linked
+  functions, including C/C++ program exports, receive distinct names;
+  `tests/native_function_value_names.sh` checks source and saved IR on all four
+  targets. Generic record templates use named
   `Name :: Generic(Type)` declarations or direct
   `Generic(Type)` annotations; `std/pair.zi` also provides `Pair`. Concrete
   record fields work in source, saved IR, C, C++, Go, and `.zib`. Top-level boolean

@@ -15,6 +15,14 @@ int NativeEnumMemberName(const ZirModule *owner, const ZirType *type,
                          const char *member, char *out, size_t size);
 void NativeExportName(const ZirModule *module, const ZirFunction *fn,
                       char *out, size_t size);
+void NativeCFunctionName(const ZirModule *module, const ZirFunction *fn,
+                         char *out, size_t size);
+void NativeGoModuleIdentity(const ZirProgram *const *programs, int count,
+                            const ZirModule *module, char *file_stem,
+                            size_t file_size, char *guard, size_t guard_size);
+void NativeGoFunctionName(const ZirProgram *const *programs, int count,
+                          const ZirModule *module, const ZirFunction *fn,
+                          char *out, size_t size);
 void NativeHeaderGuard(const char *stem, char *out, size_t size);
 int ScalarLiteral(const char *type, const char *text, ZirTarget target,
                       ZirSourceSpan span, char *out, size_t size);
@@ -55,6 +63,11 @@ int NativeValueNameConflict(const ZirModule *global_module,
                             const ZirGlobal *global,
                             const ZirModule *define_module,
                             const ZirDefine *define);
+int NativeFunctionValueNameConflict(const ZirProgram *const *programs,
+                                    int count, const ZirModule *function_module,
+                                    const ZirFunction *function,
+                                    const ZirModule *value_module,
+                                    const char *value_name, int is_global);
 void TargetDefineName(const ZirModule *module, ZirTarget target,
                       const char *name, char *out, size_t size);
 void ArrayAbiName(const ZirFunction *fn, int parameter, char *out, size_t size);

@@ -112,65 +112,6 @@ scalar_byte_width(const char *type)
     return 0;
 }
 
-/* stem of "path/app.zi" -> "app": Go output is flat (one package per
- * output directory), so nested source trees must not nest the output. */
-static void
-stem_from_source(const char *src, char *dst, size_t dst_size)
-{
-    const char *base = strrchr(src, '/');
-    size_t n;
-
-    base = base != NULL ? base + 1 : src;
-    n = strlen(base);
-    if(n > 3 && strcmp(base + n - 3, ".zi") == 0)
-        n -= 3;
-    if(n >= dst_size)
-        n = dst_size - 1;
-    memcpy(dst, base, n);
-    dst[n] = '\0';
-}
-
-static int
-same_folded_name(const char *left, const char *right)
-{
-    while(*left && *right) {
-        if(tolower((unsigned char)*left) !=
-           tolower((unsigned char)*right)) return 0;
-        left++;
-        right++;
-    }
-    return *left == *right;
-}
-
-static void
-go_module_identity(const ZirProgram *const *progs, int prog_count,
-                   const ZirModule *module, char *file_stem,
-                   size_t file_size, char *guard, size_t guard_size)
-{
-    stem_from_source(module->source_path, file_stem, file_size);
-    camel_ident(file_stem, guard, guard_size);
-    for(int pi = 0; pi < prog_count; pi++)
-        for(int mi = 0; mi < progs[pi]->module_count; mi++) {
-            const ZirModule *other = &progs[pi]->modules[mi];
-            char other_stem[ZIR_PATH_MAX], other_guard[ZIR_GO_NAME_MAX];
-            if(other == module) continue;
-            stem_from_source(other->source_path, other_stem,
-                             sizeof(other_stem));
-            camel_ident(other_stem, other_guard, sizeof(other_guard));
-            if(!same_folded_name(file_stem, other_stem) &&
-               strcmp(guard, other_guard)) continue;
-            uint64_t hash = UINT64_C(14695981039346656037);
-            for(const unsigned char *p =
-                    (const unsigned char *)module->source_path; *p; p++)
-                hash = (hash ^ *p) * UINT64_C(1099511628211);
-            snprintf(file_stem, file_size, "zir_%016llx",
-                     (unsigned long long)hash);
-            snprintf(guard, guard_size, "Zir_%016llx",
-                     (unsigned long long)hash);
-            return;
-        }
-}
-
 static const ZirModule *module_constant_owner(const ZirModule *module,
                                                const char *name);
 
@@ -321,8 +262,8 @@ go_build_global_functions(const ZirProgram *const *progs, int prog_count)
             char stem[ZIR_PATH_MAX];
             char guard[ZIR_GO_NAME_MAX];
 
-            go_module_identity(progs, prog_count, m, stem, sizeof(stem),
-                               guard, sizeof(guard));
+            NativeGoModuleIdentity(progs, prog_count, m, stem, sizeof(stem),
+                                   guard, sizeof(guard));
             for(int fi = 0; fi < m->function_count; fi++) {
                 const ZirFunction *fn = &m->functions[fi];
                 char fname[ZIR_GO_NAME_MAX];
@@ -1276,8 +1217,8 @@ go_lower(const ZirProgram *const *progs, int prog_count,
             char stem[512], guard[ZIR_GO_NAME_MAX];
             FILE *f;
 
-            go_module_identity(progs, prog_count, m, stem, sizeof(stem),
-                               guard, sizeof(guard));
+            NativeGoModuleIdentity(progs, prog_count, m, stem, sizeof(stem),
+                                   guard, sizeof(guard));
             snprintf(path, sizeof(path), "%s/%s.go", out_dir, stem);
             mkdir_parent(path);
             f = tmpfile();

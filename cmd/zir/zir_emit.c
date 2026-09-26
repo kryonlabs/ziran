@@ -257,6 +257,29 @@ NativeValueNameConflict(const ZirModule *global_module, const ZirGlobal *global,
                                     define_module, define->name, 1, 0);
 }
 
+int
+NativeFunctionValueNameConflict(const ZirProgram *const *programs, int count,
+                                const ZirModule *function_module,
+                                const ZirFunction *function,
+                                const ZirModule *value_module,
+                                const char *value_name, int is_global)
+{
+    char function_name[ZIR_NAME_MAX * 2];
+    char value_native[ZIR_NAME_MAX * 2];
+    NativeCFunctionName(function_module, function, function_name,
+                        sizeof(function_name));
+    for(int target = ZIR_C; target <= ZIR_CPP; target++) {
+        target_top_name(value_module, (ZirTarget)target, value_name,
+                        is_global, value_native, sizeof(value_native));
+        if(!strcmp(function_name, value_native)) return 1;
+    }
+    NativeGoFunctionName(programs, count, function_module, function,
+                         function_name, sizeof(function_name));
+    target_top_name(value_module, ZIR_GO, value_name, is_global,
+                    value_native, sizeof(value_native));
+    return !strcmp(function_name, value_native);
+}
+
 static uint64_t
 native_top_hash(const ZirModule *module, ZirSourceSpan span,
                 const char *name)
@@ -470,6 +493,92 @@ NativeExportName(const ZirModule *module, const ZirFunction *fn,
                              !strcmp(out, module->functions[i].export_symbol);
         if(!collision) return;
     }
+}
+
+void
+NativeCFunctionName(const ZirModule *module, const ZirFunction *fn,
+                    char *out, size_t size)
+{
+    if(fn->exported) {
+        NativeExportName(module, fn, out, size);
+        return;
+    }
+    if(module->name[0] && strcmp(module->name, "main")) {
+        char prefix[256];
+        size_t used = 0;
+        for(const char *p = module->name;
+            *p && used + 1 < sizeof(prefix); p++)
+            prefix[used++] = *p == '.' ? '_' : *p;
+        prefix[used] = '\0';
+        format(out, size, "%s_%s", prefix, fn->name);
+    } else
+        copy_text(out, size, fn->name);
+}
+
+static void
+go_file_stem(const char *source, char *out, size_t size)
+{
+    const char *base = strrchr(source, '/');
+    size_t length;
+    base = base ? base + 1 : source;
+    length = strlen(base);
+    if(length > 3 && !strcmp(base + length - 3, ".zi")) length -= 3;
+    if(length >= size) length = size - 1;
+    memcpy(out, base, length);
+    out[length] = '\0';
+}
+
+static int
+same_folded_name(const char *left, const char *right)
+{
+    while(*left && *right) {
+        if(tolower((unsigned char)*left) !=
+           tolower((unsigned char)*right)) return 0;
+        left++; right++;
+    }
+    return *left == *right;
+}
+
+void
+NativeGoModuleIdentity(const ZirProgram *const *programs, int count,
+                       const ZirModule *module, char *file_stem,
+                       size_t file_size, char *guard, size_t guard_size)
+{
+    go_file_stem(module->source_path, file_stem, file_size);
+    camel_ident(file_stem, guard, guard_size);
+    for(int p = 0; p < count; p++)
+        for(int m = 0; m < programs[p]->module_count; m++) {
+            const ZirModule *other = &programs[p]->modules[m];
+            char other_stem[ZIR_PATH_MAX], other_guard[256];
+            if(other == module) continue;
+            go_file_stem(other->source_path, other_stem,
+                         sizeof(other_stem));
+            camel_ident(other_stem, other_guard, sizeof(other_guard));
+            if(!same_folded_name(file_stem, other_stem) &&
+               strcmp(guard, other_guard)) continue;
+            uint64_t hash = UINT64_C(14695981039346656037);
+            for(const unsigned char *cursor =
+                    (const unsigned char *)module->source_path;
+                *cursor; cursor++)
+                hash = (hash ^ *cursor) * UINT64_C(1099511628211);
+            format(file_stem, file_size, "zir_%016llx",
+                   (unsigned long long)hash);
+            format(guard, guard_size, "Zir_%016llx",
+                   (unsigned long long)hash);
+            return;
+        }
+}
+
+void
+NativeGoFunctionName(const ZirProgram *const *programs, int count,
+                     const ZirModule *module, const ZirFunction *fn,
+                     char *out, size_t size)
+{
+    char stem[ZIR_PATH_MAX], guard[256], name[256];
+    NativeGoModuleIdentity(programs, count, module, stem, sizeof(stem),
+                           guard, sizeof(guard));
+    camel_ident(fn->name, name, sizeof(name));
+    format(out, size, "%s_%s", guard, name);
 }
 
 void

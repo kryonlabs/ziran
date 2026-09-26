@@ -6679,6 +6679,37 @@ CheckPrograms(ZirProgram **programs, int count)
                     }
             }
         }
+    {
+        const ZirProgram *native_programs[count > 0 ? count : 1];
+        for(int p = 0; p < count; p++)
+            native_programs[p] = programs[p];
+        for(int p = 0; p < count; p++)
+            for(int m = 0; m < programs[p]->module_count; m++) {
+                ZirModule *function_module = &programs[p]->modules[m];
+                for(int f = 0; f < function_module->function_count; f++) {
+                    ZirFunction *function = &function_module->functions[f];
+                    if(function->is_extern || function->is_template) continue;
+                    for(int q = 0; q < count; q++)
+                        for(int n = 0; n < programs[q]->module_count; n++) {
+                            ZirModule *module = &programs[q]->modules[n];
+                            for(int g = 0; g < module->global_count; g++) {
+                                ZirGlobal *global = &module->globals[g];
+                                if(NativeFunctionValueNameConflict(
+                                        native_programs, count, function_module,
+                                        function, module, global->name, 1))
+                                    global->native_name_collision = 1;
+                            }
+                            for(int d = 0; d < module->define_count; d++) {
+                                ZirDefine *define = &module->defines[d];
+                                if(NativeFunctionValueNameConflict(
+                                        native_programs, count, function_module,
+                                        function, module, define->name, 0))
+                                    define->native_name_collision = 1;
+                            }
+                        }
+                }
+            }
+    }
     for(int p = 0; p < count; p++)
         for(int m = 0; m < programs[p]->module_count; m++) {
             ZirModule *module = &programs[p]->modules[m];
