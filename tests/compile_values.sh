@@ -18,6 +18,7 @@ cat > "$work/app.zi" <<'ZI'
 Lib :: #import "lib";
 Point :: struct { x: s64; y: s64; }
 Wrapper :: struct { point: Point; }
+Label :: struct { text: string; number: s64; }
 BuildPoint :: (n: s64) -> Point {
     value: Point = Point.{.x = n, .y = n + 1};
     return value
@@ -28,14 +29,21 @@ BuildWrapper :: (n: s64) -> Wrapper {
 BuildArray :: (n: s64) -> [2]s64 {
     return s64.[n, n + 1]
 }
+BuildLabel :: () -> Label {
+    return Label.{.text = "hello", .number = 42}
+}
 MESSAGE :: #run Lib.Greeting("hello");
 FACTOR :: #run Lib.Scale(2.0);
 RAW :: #run 2.0;
 POINT :: #run BuildPoint(41);
 ARRAY :: #run BuildArray(41);
+LABEL :: #run BuildLabel();
 POINT_VALUE :: #run BuildPoint(41).y;
 ARRAY_VALUE :: #run BuildArray(41)[1];
 NESTED_VALUE :: #run BuildWrapper(41).point.y;
+point_global: Point = POINT;
+array_global: [2]s64 = ARRAY;
+label_global: Label = LABEL;
 #assert POINT.x == 41
 #assert POINT.y == 42
 #assert ARRAY.count == 2
@@ -63,10 +71,14 @@ DERIVED :: 42;
 } else {
 DERIVED :: Missing();
 }
+ReadPoint :: (point: Point) -> s64 { return point.y }
 #program_export
 Answer :: () -> s64 {
+    pick: Point = POINT;
+    values: [2]s64 = ARRAY;
     if MESSAGE != "hello" || FACTOR != 3.0 || RAW != 2.0 { return 0 }
-    return #ifx FACTOR == 3.0 then SELECTED + IMPORTED + DERIVED + POINT_VALUE + ARRAY_VALUE + NESTED_VALUE - 210 else Missing()
+    if LABEL.text != "hello" || label_global.text != "hello" { return 0 }
+    return #ifx FACTOR == 3.0 then SELECTED + IMPORTED + DERIVED + POINT_VALUE + ARRAY_VALUE + NESTED_VALUE + pick.y + values[1] + point_global.y + array_global[1] + ReadPoint(POINT) + LABEL.number - 462 else Missing()
 }
 ZI
 

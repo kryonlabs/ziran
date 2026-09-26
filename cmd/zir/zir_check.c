@@ -10,6 +10,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,7 @@ typedef struct Checker {
     int count, capacity, depth, errors, failed;
     int inference_only;
     int using_rewritten;
+    int aggregate_rewritten;
     int assign_destination;
     int destination_was_moved;
     int conversions_applied;
@@ -1709,6 +1711,70 @@ bound_real_constant(const ZirModule *module, const char *name, int depth,
     return status;
 }
 
+/* Aggregate definitions become checked expression nodes at their use site.
+ * Limit this path to literal graphs; the compile-time evaluator has already
+ * reduced #run results to this form before function checking starts. */
+static int
+literal_compound_graph(const ZirFunction *expression)
+{
+    for(int i = 0; i < expression->expr_count; i++) {
+        const ZirExpr *node = &expression->exprs[i];
+        switch(node->kind) {
+        case ZIR_EXPR_COMPOUND:
+        case ZIR_EXPR_FIELD_INIT:
+        case ZIR_EXPR_INT:
+        case ZIR_EXPR_FLOAT:
+        case ZIR_EXPR_STRING:
+            break;
+        case ZIR_EXPR_UNARY:
+            if(strcmp(node->op, "+") && strcmp(node->op, "-")) return 0;
+            break;
+        case ZIR_EXPR_IDENT:
+            if(strcmp(node->name, "true") &&
+               strcmp(node->name, "false")) return 0;
+            break;
+        default:
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+bound_compound_constant(const ZirModule *module, const char *name, int depth,
+                        char *literal, size_t size)
+{
+    if(depth > 128) return -1;
+    const ZirDefine *definition = NULL;
+    for(int i = 0; i < module->define_count; i++) {
+        const ZirDefine *candidate = &module->defines[i];
+        if(strcmp(candidate->name, name) ||
+           !in_lookup_file(module, candidate->is_file_private,
+                           candidate->span)) continue;
+        if(definition != NULL) return -1;
+        definition = candidate;
+    }
+    if(definition == NULL) return 0;
+    ZirFunction expression = {0};
+    int root = ParseExpr(&expression, module, definition->value,
+                         definition->span);
+    int status = 0;
+    if(root < 0) status = -1;
+    else if(expression.exprs[root].kind == ZIR_EXPR_COMPOUND &&
+            literal_compound_graph(&expression)) {
+        if(strlen(definition->value) >= size) status = -1;
+        else {
+            copy_text(literal, size, definition->value);
+            status = 1;
+        }
+    } else if(expression.exprs[root].kind == ZIR_EXPR_IDENT)
+        status = bound_compound_constant(module,
+                    expression.exprs[root].name, depth + 1,
+                    literal, size);
+    free(expression.exprs);
+    return status;
+}
+
 static int
 array_capacity(const ZirModule *module, const char *type, int *capacity)
 {
@@ -2201,6 +2267,76 @@ vec_option_result_type(Checker *c, const char *element, ZirSourceSpan span,
 static const char *try_conversion(Checker *c, int index, const char *to,
                                   ZirSourceSpan span);
 
+static int
+reserve_compound_constants(const ZirModule *module, ZirFunction *fn)
+{
+    size_t needed = (size_t)fn->expr_count;
+    for(int i = 0; i < fn->expr_count; i++) {
+        const ZirExpr *node = &fn->exprs[i];
+        if(node->kind != ZIR_EXPR_IDENT) continue;
+        char literal[ZIR_TEXT_MAX];
+        if(bound_compound_constant(module, node->name, 0,
+                                   literal, sizeof(literal)) != 1)
+            continue;
+        ZirFunction probe = {0};
+        int root = ParseExpr(&probe, module, literal, node->span);
+        if(root >= 0 && probe.expr_count > 0)
+            needed += (size_t)probe.expr_count - 1;
+        free(probe.exprs);
+        if(needed > INT_MAX || needed > SIZE_MAX / sizeof(*fn->exprs))
+            return 0;
+    }
+    if(needed <= (size_t)fn->expr_cap) return 1;
+    ZirExpr *expanded = realloc(fn->exprs, needed * sizeof(*expanded));
+    if(expanded == NULL) return 0;
+    fn->exprs = expanded;
+    fn->expr_cap = (int)needed;
+    return 1;
+}
+
+static int
+inline_compound_constant(Checker *c, int index, const char *literal)
+{
+    ZirFunction probe = {0};
+    int root = ParseExpr(&probe, c->module, literal,
+                         c->fn->exprs[index].span);
+    if(root < 0 || probe.exprs[root].kind != ZIR_EXPR_COMPOUND ||
+       c->fn->expr_count + probe.expr_count - 1 > c->fn->expr_cap) {
+        free(probe.exprs);
+        return 0;
+    }
+    int *map = malloc((size_t)probe.expr_count * sizeof(*map));
+    if(map == NULL) {
+        free(probe.exprs);
+        return 0;
+    }
+    ZirExpr previous = c->fn->exprs[index];
+    for(int i = 0; i < probe.expr_count; i++)
+        map[i] = i == root ? index : c->fn->expr_count++;
+    for(int i = 0; i < probe.expr_count; i++)
+        c->fn->exprs[map[i]] = probe.exprs[i];
+    for(int i = 0; i < probe.expr_count; i++) {
+        ZirExpr *node = &c->fn->exprs[map[i]];
+        if(node->left >= 0) node->left = map[node->left];
+        if(node->right >= 0) node->right = map[node->right];
+        if(node->third >= 0) node->third = map[node->third];
+        if(node->first_child >= 0)
+            node->first_child = map[node->first_child];
+        if(node->next_sibling >= 0)
+            node->next_sibling = map[node->next_sibling];
+    }
+    ZirExpr *replacement = &c->fn->exprs[index];
+    replacement->next_sibling = previous.next_sibling;
+    replacement->argument_index = previous.argument_index;
+    copy_text(replacement->argument_name,
+              sizeof(replacement->argument_name), previous.argument_name);
+    replacement->span = previous.span;
+    c->aggregate_rewritten = 1;
+    free(map);
+    free(probe.exprs);
+    return 1;
+}
+
 static const char *
 expression_type(Checker *c, int index)
 {
@@ -2650,6 +2786,16 @@ expression_type(Checker *c, int index)
                 }
         }
         if(!*type) {
+            char compound[ZIR_TEXT_MAX];
+            if(bound_compound_constant(c->module, e->name, 0,
+                                       compound, sizeof(compound)) == 1) {
+                if(!inline_compound_constant(c, index, compound)) {
+                    error(c, e->span,
+                          "cannot bind aggregate constant", e->name);
+                    break;
+                }
+                return expression_type(c, index);
+            }
             /* A bare procedure name is a value when the surrounding context
              * expects a matching slot (return, assignment, argument). */
             if(c->expected_type[0] && !e->is_this &&
@@ -4514,11 +4660,17 @@ check_function(Checker *c, ZirFunction *fn)
      * so its statement text cannot redefine program meaning. */
     if(!c->fn->from_ir)
         StructureFunction(c->fn, c->module);
+    if(!reserve_compound_constants(c->module, c->fn)) {
+        error(c, fn->span, "too many aggregate constant expressions",
+              fn->name);
+        return 0;
+    }
 restart:
     while(c->restore_count > 0)
         free(c->restores[--c->restore_count].flags);
     c->count = 0; c->depth = 0;
     c->using_rewritten = 0;
+    c->aggregate_rewritten = 0;
     if(!fn->from_ir || fn->is_specialization)
         for(int i = 0; i < c->module->using_count; i++) {
             const ZirUsing *using = &c->module->usings[i];
@@ -4882,8 +5034,9 @@ restart:
     c->conversions_applied = 0;
     if(!validate_loop_targets(c, fn))
         return 0;
-    if(c->using_rewritten && !order_using_expressions(fn)) {
-        error(c, fn->span, "cannot order using expressions", fn->name);
+    if((c->using_rewritten || c->aggregate_rewritten) &&
+       !order_using_expressions(fn)) {
+        error(c, fn->span, "cannot order checked expressions", fn->name);
         return 0;
     }
     c->fn->checked = c->errors == errors_before;
@@ -6294,6 +6447,34 @@ CheckPrograms(ZirProgram **programs, int count)
             for(int g = 0; g < module->global_count; g++) {
                 ZirGlobal *global = &module->globals[g];
                 if(!global->init[0]) continue;
+                select_lookup_file(module, global->span);
+                ZirFunction raw = {0};
+                int raw_root = ParseExpr(&raw, module, global->init,
+                                         global->span);
+                if(raw_root >= 0 &&
+                   raw.exprs[raw_root].kind == ZIR_EXPR_IDENT) {
+                    char literal[ZIR_TEXT_MAX];
+                    if(bound_compound_constant(module,
+                            raw.exprs[raw_root].name, 0,
+                            literal, sizeof(literal)) == 1) {
+                        copy_text(global->init, sizeof(global->init),
+                                  literal);
+                        if(ArrayElementType(global->type, NULL, 0, NULL)) {
+                            ZirFunction candidate = {0};
+                            int candidate_root = ParseExpr(&candidate, module,
+                                                           literal,
+                                                           global->span);
+                            const char *array = strstr(literal, ".[");
+                            if(candidate_root >= 0 && array != NULL &&
+                               !strcmp(candidate.exprs[candidate_root].name,
+                                       global->type))
+                                copy_text(global->init,
+                                          sizeof(global->init), array);
+                            free(candidate.exprs);
+                        }
+                    }
+                }
+                free(raw.exprs);
                 ZirFunction expression = {0};
                 int root = ParseExprTyped(&expression, module,
                                           global->init, global->span,

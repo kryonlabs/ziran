@@ -1458,8 +1458,8 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                     probe.exprs[root].kind == ZIR_EXPR_COMPOUND;
                 free(probe.exprs);
                 if(aggregate) {
-                    /* Aggregate definitions are compile-time values until
-                     * the checker can bind them in runtime expressions. */
+                    /* The checker embeds aggregate values in checked uses
+                     * and lowers direct global initializers to literals. */
                     continue;
                 }
                 tx_expr(m, m->defines[i].value, cval, sizeof(cval));

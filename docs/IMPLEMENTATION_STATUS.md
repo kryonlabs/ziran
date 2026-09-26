@@ -313,12 +313,14 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   exclusion are checked from source and saved IR on C, C++, Go, and `.zib` by
   `tests/imported_typed_constants.sh`. Pure compile-time procedures can now
   return named records and fixed arrays. Their evaluated fields, array
-  elements, and array counts can feed `#run` scalars and `#assert`; aggregate
-  `#run` definitions remain compile-time values. `tests/compile_values.sh`
-  checks nested records, fixed arrays, bounds rejection, and source/saved-IR
-  execution on C, C++, Go, and `.zib`. Runtime references to aggregate
-  definitions, effects, unbounded execution, and general metaprogramming
-  remain unsupported.
+  elements, and array counts can feed `#run` scalars and `#assert`. Local
+  record and fixed-array `#run` definitions also bind to checked literal
+  graphs in procedure bodies, and direct file-scope initializers can use
+  them. `tests/compile_values.sh` checks nested records, fixed arrays,
+  bounds rejection, runtime record arguments and globals, and source/saved-IR
+  execution on C, C++, Go, and `.zib`. Imported aggregate definitions and
+  aggregate references inside larger file-scope expressions remain open;
+  effects, unbounded execution, and general metaprogramming are unsupported.
   Integer conditions and typed expressions use the same bounded procedure
   evaluator, including a shared instruction budget across nested calls; the
   separate integer-only procedure interpreter has been removed.
