@@ -149,6 +149,30 @@ WriteAt :: (file: FileHandle, input: []u8, offset: s64) -> s64 {
     return WriteAtRaw(file.fd, *input[0], cast(u64)input.count, offset)
 }
 
+// Copy immutable text through a bounded buffer before writing it. The string
+// may borrow read-only storage, so it must not be exposed as a mutable slice.
+#program_export
+WriteTextAt :: (file: FileHandle, input: string, offset: s64) -> s64 {
+    if !file.valid || offset < 0 { return -1 }
+    length: s64 = cast(s64)input.count
+    if length > 9223372036854775807 - offset { return -1 }
+    written: s64 = 0
+    while written < length {
+        buffer: [4096]u8
+        count: s64 = length - written
+        if count > 4096 { count = 4096 }
+        index: s64 = 0
+        while index < count {
+            buffer[index] = input[written + index]
+            index += 1
+        }
+        result := WriteAt(file, buffer[0:count], offset + written)
+        if result <= 0 { return -1 }
+        written += result
+    }
+    return written
+}
+
 #program_export
 CloseFile :: (file: FileHandle) -> bool {
     if !file.valid { return false }

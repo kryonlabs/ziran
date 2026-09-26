@@ -30,6 +30,26 @@ main :: () -> s32 {
     if ReadAt(file, again[:], 0) != 16 || !CloseFile(file) ||
         ReadU64LE(again[:], 0) != 123456789 ||
         ReadF64LE(again[:], 8) != 456.25 { return 5 }
+    text_bytes: [4100]u8
+    index: s32 = 0
+    while index < 4100 {
+        text_bytes[index] = cast(u8)(65 + index % 26)
+        index += 1
+    }
+    file = OpenReplace("cache/text.bin")
+    if !file.valid ||
+        WriteTextAt(file, TextFromBytes(text_bytes[:]), 0) != 4100 ||
+        !CloseFile(file) { return 17 }
+    file = OpenRead("cache/text.bin")
+    text_again: [4100]u8
+    if !file.valid || FileSize(file) != 4100 ||
+        ReadAt(file, text_again[:], 0) != 4100 ||
+        !CloseFile(file) { return 18 }
+    index = 0
+    while index < 4100 {
+        if text_again[index] != text_bytes[index] { return 19 }
+        index += 1
+    }
     if !PathExists("cache/record.bin") ||
         DirectoryExists("cache/record.bin") ||
         !DirectoryExists("cache") ||
