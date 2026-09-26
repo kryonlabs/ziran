@@ -2484,6 +2484,7 @@ typedef struct ZirEval {
     const ZirModule *module;
     const ZirConsts *consts;
     const char *lookup_path;
+    int source_line;
     int depth;
     int *fuel;
 } ZirEval;
@@ -2504,11 +2505,11 @@ static void normalize_jai_source_tokens(char *line, const char *path,
 static int eval_const_condition(const char *src, long *value,
                                 const ZirModule *module,
                                 const ZirConsts *consts,
-                                const char *lookup_path, int depth);
+                                const char *lookup_path, int line, int depth);
 static int eval_const_condition_with_fuel(const char *src, long *value,
                                 const ZirModule *module,
                                 const ZirConsts *consts,
-                                const char *lookup_path, int depth,
+                                const char *lookup_path, int line, int depth,
                                 int *fuel);
 static int evaluate_typed_integer_function(
     ZirEval *ev, const char *name, const long *values,
@@ -2629,6 +2630,7 @@ eval_imported_integer_define(ZirEval *ev, const char *name, size_t length,
                             definition->span);
     known = eval_const_condition_with_fuel(
         expanded, value, owner, &names, definition->span.path,
+        definition->span.line,
         ev->depth + 1, ev->fuel);
     free(names.items);
     return known;
@@ -3108,7 +3110,7 @@ contains_compile_time_directive(const char *source, const char *path)
 static int
 eval_const_condition_with_fuel(const char *src, long *value,
                      const ZirModule *module, const ZirConsts *consts,
-                     const char *lookup_path, int depth, int *fuel)
+                     const char *lookup_path, int line, int depth, int *fuel)
 {
     ZirEval ev;
 
@@ -3119,6 +3121,7 @@ eval_const_condition_with_fuel(const char *src, long *value,
     ev.module = module;
     ev.consts = consts;
     ev.lookup_path = lookup_path;
+    ev.source_line = line;
     ev.depth = depth;
     ev.fuel = fuel;
     ev.value = eval_or(&ev);
@@ -3133,11 +3136,11 @@ eval_const_condition_with_fuel(const char *src, long *value,
 static int
 eval_const_condition(const char *src, long *value,
                      const ZirModule *module, const ZirConsts *consts,
-                     const char *lookup_path, int depth)
+                     const char *lookup_path, int line, int depth)
 {
     int fuel = 10000;
     return eval_const_condition_with_fuel(src, value, module, consts,
-                                          lookup_path, depth, &fuel);
+                                          lookup_path, line, depth, &fuel);
 }
 
 typedef enum {
@@ -3156,7 +3159,7 @@ typedef struct {
 
 static int evaluate_typed_expression(const ZirModule *module,
                                      const ZirConsts *names,
-                                     const char *source, const char *path,
+                                     const char *source, ZirSourceSpan span,
                                      int depth, int *fuel,
                                      CompileValue *result);
 
@@ -3239,7 +3242,7 @@ compile_values_equal(const CompileValue *left, const CompileValue *right,
 }
 
 static int evaluate_typed_function(const ZirModule *module,
-                                   const char *name, const char *path,
+                                   const char *name, ZirSourceSpan call_span,
                                    CompileValue *arguments,
                                    char argument_names[][ZIR_NAME_MAX],
                                    int argument_count, int depth, int *fuel,
@@ -3472,7 +3475,7 @@ evaluate_imported_typed_define(const ZirModule *module, const char *path,
         constant->source_line = source->span.line;
     }
     ok = evaluate_typed_expression(owner, &names, definition->value,
-                                   definition->span.path, depth + 1,
+                                   definition->span, depth + 1,
                                    fuel, result);
     free(names.items);
     return ok;
@@ -3719,7 +3722,9 @@ evaluate_typed_node(const ZirFunction *probe, int index,
                       probe->exprs[child].argument_name);
             count++;
         }
-        return evaluate_typed_function(module, name, path, args, names,
+        ZirSourceSpan call_span = expression->left >= 0 ?
+            probe->exprs[expression->left].span : expression->span;
+        return evaluate_typed_function(module, name, call_span, args, names,
                                        count, depth + 1, fuel, result);
     }
     default:
@@ -3729,7 +3734,7 @@ evaluate_typed_node(const ZirFunction *probe, int index,
 
 static int
 evaluate_typed_expression(const ZirModule *module, const ZirConsts *names,
-                          const char *source, const char *path, int depth,
+                          const char *source, ZirSourceSpan span, int depth,
                           int *fuel, CompileValue *result)
 {
     ZirConsts empty = {0};
@@ -3737,6 +3742,7 @@ evaluate_typed_expression(const ZirModule *module, const ZirConsts *names,
     char input[ZIR_TEXT_MAX], expanded[ZIR_TEXT_MAX];
     long integer;
     int root, ok;
+    const char *path = span.path;
     if(depth > 32 || source == NULL || --*fuel < 0) return 0;
     copy_text(input, sizeof(input), source);
     trim_in_place(input);
@@ -3749,12 +3755,12 @@ evaluate_typed_expression(const ZirModule *module, const ZirConsts *names,
     if(names == NULL) names = &empty;
     expand_compile_expr(expanded, sizeof(expanded), names, input, path);
     if(eval_const_condition_with_fuel(expanded, &integer, module, names,
-                                     path, depth, fuel)) {
+                                     path, span.line, depth, fuel)) {
         result->kind = COMPILE_INTEGER;
         result->integer = integer;
         return compile_value_literal(result);
     }
-    root = ParseExpr(&probe, module, expanded, Span(path, 1, 1));
+    root = ParseExpr(&probe, module, expanded, span);
     ok = root >= 0;
     if(depth == 0)
         for(int i = 0; i < probe.expr_count; i++)
@@ -3775,6 +3781,7 @@ typedef struct {
     int capacity;
     int depth;
     int *fuel;
+    ZirSourceSpan current_span;
 } TypedBody;
 
 static int
@@ -3785,7 +3792,7 @@ typed_body_expression(TypedBody *body, const char *source,
     copy_text(lowered, sizeof(lowered), source);
     lower_procedure_name_expression(lowered, sizeof(lowered), body->fn);
     return evaluate_typed_expression(body->module, &body->names, lowered,
-                                     body->fn->span.path, body->depth + 1,
+                                     body->current_span, body->depth + 1,
                                      body->fuel, value);
 }
 
@@ -3860,12 +3867,14 @@ typed_body_statements(TypedBody *body, int start, int stop,
     for(int i = start; i < stop && !*flow; i++) {
         const ZirStmt *statement = &body->fn->stmts[i];
         const char *source = skip_ws(statement->text);
+        body->current_span = statement->span;
         if(--*body->fuel < 0) goto failed;
         if(statement->kind == ZIR_STMT_IF) {
             int taken = 0;
             for(;;) {
                 const ZirStmt *arm = &body->fn->stmts[i];
                 const char *header = skip_ws(arm->text);
+                body->current_span = arm->span;
                 int close = eval_close(body->fn, i, stop);
                 int condition = 1;
                 if(close < 0) goto failed;
@@ -3897,6 +3906,7 @@ typed_body_statements(TypedBody *body, int start, int stop,
             if(close < 0) goto failed;
             for(;;) {
                 int condition = 0;
+                body->current_span = statement->span;
                 if(--*body->fuel < 0 ||
                    !typed_body_condition(body, source, "while",
                                          &condition)) goto failed;
@@ -4009,7 +4019,7 @@ failed:
 
 static int
 evaluate_typed_function(const ZirModule *module, const char *name,
-                        const char *path, CompileValue *arguments,
+                        ZirSourceSpan call_span, CompileValue *arguments,
                         char argument_names[][ZIR_NAME_MAX],
                         int argument_count, int depth, int *fuel,
                         CompileValue *result)
@@ -4017,18 +4027,22 @@ evaluate_typed_function(const ZirModule *module, const char *name,
     const ZirModule *owner = NULL;
     const ZirFunction *fn = NULL;
     char parameters[16][ZIR_TEXT_MAX];
+    char defaults[16][ZIR_TEXT_MAX] = {{0}};
     CompileValue ordered[16] = {{0}};
     unsigned used = 0;
     TypedBody body = {0};
     int expected, flow = 0, ok = 0;
     if(depth >= 32 || module == NULL || !name[0] ||
-       ResolveFunctionAt(module, name, path, &owner, &fn) != 1 ||
+       ResolveFunctionAt(module, name, call_span.path, &owner, &fn) != 1 ||
        fn == NULL || fn->is_extern || fn->is_template ||
        fn->stmt_count == 0) return 0;
     expected = *skip_ws(fn->args) ?
         split_top_level(fn->args, parameters[0], 16,
                         sizeof(parameters[0])) : 0;
     if(expected < 0 || argument_count > expected) return 0;
+    if(fn->default_args[0] &&
+       split_top_level(fn->default_args, defaults[0], 16,
+                       sizeof(defaults[0])) != expected) return 0;
     for(int argument = 0; argument < argument_count; argument++) {
         int position = -1;
         if(argument_names[argument][0]) {
@@ -4068,17 +4082,31 @@ evaluate_typed_function(const ZirModule *module, const char *name,
         *colon++ = '\0';
         trim_in_place(part);
         char *type = trim(colon);
-        char *default_value = strchr(type, '=');
-        if(default_value != NULL) {
-            *default_value++ = '\0';
+        char *default_value = top_level_assignment(defaults[i]);
+        if(default_value != NULL) default_value = trim(default_value + 1);
+        char *embedded_default = strchr(type, '=');
+        if(embedded_default != NULL) {
+            *embedded_default++ = '\0';
             trim_in_place(type);
-            default_value = trim(default_value);
+            if(default_value == NULL) default_value = trim(embedded_default);
         }
-        if(!(used & (1u << i)) &&
-           (default_value == NULL ||
-            !evaluate_typed_expression(owner, &body.names, default_value,
-                                       fn->span.path, depth + 1, fuel,
-                                       &ordered[i]))) goto done;
+        if(!type[0] && default_value != NULL &&
+           !strcmp(default_value, "#caller_location"))
+            type = "Source_Code_Location";
+        if(!(used & (1u << i))) {
+            if(default_value == NULL) goto done;
+            if(!strcmp(default_value, "#caller_location")) {
+                ordered[i].kind = COMPILE_COMPOUND;
+                copy_text(ordered[i].type, sizeof(ordered[i].type),
+                          "Source_Code_Location");
+                ordered[i].type_owner = owner;
+                if(!CallerLocationLiteral(module, call_span,
+                                          ordered[i].literal,
+                                          sizeof(ordered[i].literal))) goto done;
+            } else if(!evaluate_typed_expression(owner, &body.names,
+                       default_value, fn->span, depth + 1, fuel,
+                       &ordered[i])) goto done;
+        }
         if(!is_identifier_text(part) ||
            !compile_type_value(type, &ordered[i])) goto done;
         ZirConst *binding = &body.names.items[i];
@@ -4127,7 +4155,8 @@ evaluate_typed_integer_function(ZirEval *ev, const char *name,
         if(!compile_value_literal(&arguments[i])) return 0;
         copy_text(names[i], sizeof(names[i]), argument_names[i]);
     }
-    if(!evaluate_typed_function(ev->module, name, ev->lookup_path,
+    if(!evaluate_typed_function(ev->module, name,
+                                Span(ev->lookup_path, ev->source_line, 1),
                                 arguments, names, argument_count,
                                 ev->depth + 1, fuel, &value) ||
        value.kind != COMPILE_INTEGER) return 0;
@@ -4137,12 +4166,12 @@ evaluate_typed_integer_function(ZirEval *ev, const char *name,
 
 static int
 eval_typed_condition(const char *source, const ZirModule *module,
-                     const ZirConsts *names, const char *path,
+                     const ZirConsts *names, ZirSourceSpan span,
                      long *result)
 {
     int fuel = 10000, truth;
     CompileValue value = {0};
-    if(!evaluate_typed_expression(module, names, source, path, 0,
+    if(!evaluate_typed_expression(module, names, source, span, 0,
                                   &fuel, &value) ||
        !compile_truth(&value, &truth)) return 0;
     *result = truth;
@@ -4178,7 +4207,7 @@ EvaluateCompileExpression(const ZirModule *module, const char *source,
     if(strstr(expanded, "size_of") != NULL)
         lower_size_of_value(expanded, sizeof(expanded), module, span);
     int ok = eval_const_condition(expanded, value, module, &constants,
-                                  span.path, executing ? 1 : 0);
+                                  span.path, span.line, executing ? 1 : 0);
     free(constants.items);
     return ok;
 }
@@ -4210,7 +4239,7 @@ EvaluateCompileLiteral(const ZirModule *module, const char *source,
         constant->is_file_private = definition->is_file_private;
     }
     int ok = evaluate_typed_expression(module, &constants, source,
-                                       span.path, executing ? 1 : 0,
+                                       span, executing ? 1 : 0,
                                        &fuel, &value) &&
              value.kind != COMPILE_INVALID &&
              strlen(value.literal) < literal_size;
@@ -4379,10 +4408,10 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
     if(strstr(expanded, "size_of") != NULL)
         lower_size_of_value(expanded, sizeof(expanded), module, span);
     known = eval_const_condition(expanded, &value, module, consts,
-                                 span.path, 0);
+                                 span.path, span.line, 0);
     if(!known)
         known = eval_typed_condition(expanded, module, consts,
-                                     span.path, &value);
+                                     span, &value);
     if(!known && context != NULL) {
         /* Embedded source imports already belong to this partially parsed
          * program. External imports are loaded on demand by ProgramsLoad. */
@@ -4408,10 +4437,10 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
         if(!LowerFileScopeUsing(module, expanded, sizeof(expanded), span))
             die_at(span, "invalid #if enum member");
         known = eval_const_condition(expanded, &value, module, consts,
-                                     span.path, 0);
+                                     span.path, span.line, 0);
         if(!known)
             known = eval_typed_condition(expanded, module, consts,
-                                         span.path, &value);
+                                         span, &value);
     }
     if(!known)
         die_at(span, "#if condition is not a compile-time constant: %s",
@@ -4529,9 +4558,9 @@ replace_compile_ifx(char *source, size_t capacity, const ZirFunction *fn,
     if(strstr(condition, "size_of") != NULL)
         lower_size_of_value(condition, sizeof(condition), module, span);
     if(!eval_const_condition(condition, &value, module, consts,
-                             span.path, 0) &&
+                             span.path, span.line, 0) &&
        !eval_typed_condition(condition, module, consts,
-                             span.path, &value)) {
+                             span, &value)) {
         if(allow_deferred) return 0;
         die_at(span, "#ifx condition is not a compile-time constant: %s",
                condition);
@@ -4811,9 +4840,9 @@ parse_compile_check(ZirModule *module, const char *path, int line_no,
             long value = 0;
             int known = strstr(cond, "size_of") == NULL &&
                 (eval_const_condition(cond, &value, module, consts,
-                                      path, 0) ||
+                                      path, line_no, 0) ||
                  eval_typed_condition(cond, module, consts,
-                                      path, &value));
+                                      Span(path, line_no, 1), &value));
 
             if(known && !value)
                 die_at(Span(path, line_no, 1), "#assert failed: %s", msg);
@@ -6962,7 +6991,7 @@ parse_source(const char *path, const char *root, const char *source,
                                             rel);
                         folded = strstr(expanded, "size_of") == NULL &&
                                  eval_const_condition(expanded, &value, module,
-                                                     &visible, rel, 1);
+                                                     &visible, rel, line_no, 1);
                         if(folded)
                             snprintf(run_value, sizeof(run_value),
                                      "%ld", value);
@@ -6976,7 +7005,8 @@ parse_source(const char *path, const char *root, const char *source,
                                 die_at(Span(rel, line_no, 1),
                                        "cannot resolve imports for #run expression");
                             if(evaluate_typed_expression(module, &visible,
-                                    expanded, rel, 1, &fuel, &typed) &&
+                                    expanded, Span(rel, line_no, 1), 1,
+                                    &fuel, &typed) &&
                                typed.kind != COMPILE_INVALID) {
                                 copy_text(run_value, sizeof(run_value),
                                           typed.literal);

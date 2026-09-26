@@ -16,6 +16,9 @@ Typed :: (loc: Source_Code_Location = #caller_location) -> Source_Code_Location 
 Generic :: (value: $T, loc := #caller_location) -> s64 {
     return loc.line_number
 }
+Nested :: () -> s64 {
+    return Captured().line_number
+}
 ZI
 cat > "$work/extra.zi" <<'ZI'
 Loaded :: () -> bool {
@@ -28,6 +31,32 @@ cat > "$work/app.zi" <<'ZI'
 #import "lib"
 Library :: #import "lib";
 #load "extra.zi";
+CompileLine :: #run Library.Captured().line_number;
+#assert CompileLine == 4;
+#assert Library.Captured().line_number == 6;
+CompileFile :: #run Library.Captured().fully_pathed_filename;
+#assert CompileFile == #file;
+NestedLine :: #run Library.Nested();
+#assert NestedLine == 11;
+#if Library.Captured().line_number == 11 {
+CompileFlag :: 1;
+} else {
+CompileFlag :: 0;
+}
+#assert CompileFlag == 1;
+Manual :: #run Library.Captured(
+    loc = Source_Code_Location.{.fully_pathed_filename = "manual",
+                                  .line_number = 77}).line_number;
+#assert Manual == 77;
+Local :: (loc := #caller_location) -> s64 {
+    return loc.line_number
+}
+#if Local() == 24 {
+LocalFlag :: 1;
+} else {
+LocalFlag :: 0;
+}
+#assert LocalFlag == 1;
 #program_export
 Answer :: () -> s32 {
     if Captured().line_number != #line { return 0 }

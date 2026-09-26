@@ -95,17 +95,16 @@ static int parse_expr(ZirFunction *fn, const ZirModule *module,
 
 static int default_expansion_depth;
 
-static int
-caller_location_literal(const ExprParser *p, int callee,
-                        char *output, size_t capacity)
+int
+CallerLocationLiteral(const ZirModule *module, ZirSourceSpan location,
+                      char *output, size_t capacity)
 {
-    const ZirSourceSpan *span = &p->fn->exprs[callee].span;
     char candidate[ZIR_PATH_MAX * 2];
     char escaped[ZIR_TEXT_MAX];
-    const char *path = span->path;
-    if(path[0] != '/' && p->module->source_root[0] != '\0') {
+    const char *path = location.path;
+    if(path[0] != '/' && module->source_root[0] != '\0') {
         int written = snprintf(candidate, sizeof(candidate), "%s/%s",
-                               p->module->source_root, path);
+                               module->source_root, path);
         if(written < 0 || (size_t)written >= sizeof(candidate))
             return 0;
         path = candidate;
@@ -124,7 +123,7 @@ caller_location_literal(const ExprParser *p, int callee,
         return 0;
     int written = snprintf(output, capacity,
         "Source_Code_Location.{.fully_pathed_filename = \"%s\", "
-        ".line_number = %d}", escaped, span->line);
+        ".line_number = %d}", escaped, location.line);
     return written >= 0 && (size_t)written < capacity;
 }
 
@@ -290,7 +289,8 @@ append_default_arguments(ExprParser *p, int callee,
         FunctionDefaultHelperName(function, i, helper_name,
                                   sizeof(helper_name));
         if(strcmp(value, "#caller_location") == 0) {
-            if(!caller_location_literal(p, callee, location_default,
+            if(!CallerLocationLiteral(p->module, p->fn->exprs[callee].span,
+                                        location_default,
                                         sizeof(location_default))) {
                 p->failed = 1;
                 break;

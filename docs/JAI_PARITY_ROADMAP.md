@@ -212,7 +212,10 @@ literals before native or portable output. Bounded pure procedure calls also
 fold in globals; runtime-dependent calls remain unsupported by the portable
 bundle. General file-scope initialization,
 effects, and general metaprogramming remain open.
-`#caller_location` parameters in compile-time calls are also missing. Integer
+`#caller_location` defaults now capture the call site in compile-time
+`#run`, `#assert`, and local or imported `#if` calls, including nested calls and
+explicit overrides. `tests/caller_location.sh` checks those through source
+and saved IR on the portable VM and C, C++, and Go targets. Integer
 conditions now send procedure calls through the typed evaluator, and the old
 integer-only procedure interpreter has been removed. The integer expression
 parser remains for `#if` predicates and compiler-host probes such as
