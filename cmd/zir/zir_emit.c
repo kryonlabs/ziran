@@ -560,7 +560,11 @@ supported_expression(const ZirModule *module, const ZirFunction *fn, int index)
         if(e->name[0] != '*' && !TargetType(e->name, ZIR_C) &&
            !enum_type(module, e->name)) return 0;
         break;
-    case ZIR_EXPR_CALL: if(!e->name[0]) return 0; break;
+    case ZIR_EXPR_CALL:
+        if(!e->name[0] &&
+           (e->left < 0 || !portable_type(module, fn->exprs[e->left].type)))
+            return 0;
+        break;
     default: return 0;
     }
     if(!supported_expression(module, fn, e->left) || !supported_expression(module, fn, e->right) ||
@@ -1350,7 +1354,14 @@ emit_call(Emitter *e, const ZirExpr *expr, const char *array_result, char *out, 
         char callable[ZIR_NAME_MAX];
         fresh(e, callable);
         char source[ZIR_TEXT_MAX];
-        resolve(e, expr->name, source, sizeof(source));
+        if(expr->name[0]) {
+            resolve(e, expr->name, source, sizeof(source));
+        } else {
+            /* Anonymous slot call: the callee expression (a record field,
+             * a local, or an index) names the callable. */
+            source[0] = '\0';
+            emit_expr(e, expr->left, expr->slot_type, source, sizeof(source));
+        }
         declare(e, callable, expr->slot_type, source);
         if(e->target == ZIR_C || e->target == ZIR_CPP) {
             const ZirType *slot = FindType(e->module, expr->slot_type, NULL);
@@ -2128,6 +2139,25 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             if(!strcmp(e->fn->exprs[expr->left].type, "null"))
                 operand_type = canonical(e->fn->exprs[expr->right].type);
         }
+        /* Procedure slots compare like pointers: against null through the
+         * callable entry, and against another slot field by field. */
+        const ZirType *operand_slot = FindType(e->module, operand_type, NULL);
+        int slot_compare = operand_slot != NULL &&
+                           operand_slot->is_procedure_type &&
+                           (!strcmp(expr->op, "==") || !strcmp(expr->op, "!="));
+        int left_is_null = e->fn->exprs[expr->left].kind == ZIR_EXPR_IDENT &&
+                           !strcmp(e->fn->exprs[expr->left].name, "null");
+        int right_is_null = e->fn->exprs[expr->right].kind == ZIR_EXPR_IDENT &&
+                            !strcmp(e->fn->exprs[expr->right].name, "null");
+        if(slot_compare && (left_is_null || right_is_null) &&
+           e->target == ZIR_GO) {
+            const char *callable = left_is_null ?
+                e->fn->exprs[expr->right].name : e->fn->exprs[expr->left].name;
+            format(result, sizeof(result), "%s %s nil", callable, expr->op);
+            atom = 0;
+            e->pure = 1;
+            break;
+        }
         emit_expr(e,expr->left,operand_type,a,sizeof(a));
         left_pure = e->pure;
         if(!strcmp(expr->op,"&&") || !strcmp(expr->op,"||")) {
@@ -2136,8 +2166,30 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             emit_expr(e,expr->right,"bool",b,sizeof(b));line(e,"%s = %s%s",temp,b,e->target==ZIR_GO?"":";");
             e->indent--;line(e,"}");copy_text(out,size,temp);e->pure=1;return;
         }
+        if(slot_compare && (left_is_null || right_is_null)) {
+            /* The null side never emits; a null slot has a null callable. */
+            const char *value = left_is_null ? b : a;
+            const char *cmp = !strcmp(expr->op, "!=") ? "!=" : "==";
+            if(e->target == ZIR_GO)
+                format(result, sizeof(result), "%s %s nil", value, cmp);
+            else
+                format(result, sizeof(result), "%s.call %s NULL", value, cmp);
+            atom = 0;
+            pure = 1;
+            break;
+        }
         emit_expr(e,expr->right,(!strcmp(expr->op,"<<")||!strcmp(expr->op,">>"))?"s32":operand_type,b,sizeof(b));
         pure = left_pure && e->pure;
+        if(slot_compare && (e->target == ZIR_C || e->target == ZIR_CPP)) {
+            if(!strcmp(expr->op, "=="))
+                format(result, sizeof(result),
+                       "(%s.call == %s.call && %s.context == %s.context)", a, b, a, b);
+            else
+                format(result, sizeof(result),
+                       "(%s.call != %s.call || %s.context != %s.context)", a, b, a, b);
+            atom = 0;
+            break;
+        }
         if(!strcmp(operand_type, "string") && (e->target == ZIR_C || e->target == ZIR_CPP))
             format(result, sizeof(result), "%sStringEqual(%s, %s)", !strcmp(expr->op, "!=") ? "!" : "", a, b);
         else if(width(type) && operation(expr->op)) number(e,type,a,b,operation(expr->op),result,sizeof(result));

@@ -2510,6 +2510,26 @@ expression_type(Checker *c, int index)
                 }
         }
         if(!*type) {
+            /* A bare procedure name is a value when the surrounding context
+             * expects a matching slot (return, assignment, argument). */
+            if(c->expected_type[0] && !e->is_this &&
+               !*lookup_lexical(c, e->name)) {
+                const ZirType *expected_slot =
+                    FindType(c->module, c->expected_type, NULL);
+                const ZirModule *decl_owner = NULL;
+                const ZirFunction *declaration = NULL;
+                if(expected_slot != NULL && expected_slot->is_procedure_type &&
+                   ResolveFunction(c->module, e->name, &decl_owner,
+                                   &declaration) == 1) {
+                    contextual_slot(c, index, c->expected_type);
+                    if(c->failed)
+                        break;
+                    if(e->is_function_value) {
+                        type = e->type;
+                        break;
+                    }
+                }
+            }
             char literal[ZIR_TEXT_MAX];
             int string_status = bound_string_constant(c->module, e->name, 0,
                                                        literal, sizeof(literal));
@@ -2827,6 +2847,51 @@ expression_type(Checker *c, int index)
                 args = imp->args; return_type = imp->return_type; break;
             }
         }
+        /* Calling a procedure-typed record field (value.is_active(app)) or a
+         * field behind a record pointer (practice.draw(app)): resolve the
+         * field's slot type and type the call from its signature. Anonymous
+         * calls name their callee in e->left. */
+        if(!callee && slot == NULL) {
+            if(e->name[0] == '\0' && e->left >= 0) {
+                const ZirType *indirect = FindType(c->module, left, NULL);
+                if(indirect != NULL && indirect->is_procedure_type) {
+                    copy_text(e->slot_type, sizeof(e->slot_type), left);
+                    slot = indirect;
+                    args = indirect->body;
+                    return_type = indirect->procedure_return_type;
+                }
+            } else if(strchr(e->name, '.') != NULL) {
+                char base[ZIR_NAME_MAX];
+                copy_text(base, sizeof(base), e->name);
+                char *field = strrchr(base, '.');
+                *field++ = '\0';
+                const char *base_type = lookup(c, base);
+                const char *record_name = base_type;
+                if(*record_name == '*')
+                    record_name = skip_ws(record_name + 1);
+                const ZirModule *field_owner = NULL;
+                const ZirType *record = FindType(c->module, record_name, &field_owner);
+                if(record != NULL && !record->is_enum) {
+                    char member_type[ZIR_NAME_MAX] = "";
+                    char field_path[ZIR_NAME_MAX];
+                    int found = strchr(field, '.') != NULL ?
+                        RecordFieldPathType(field_owner, record, field,
+                                            member_type, sizeof(member_type)) :
+                        ResolveRecordField(field_owner, record, field,
+                                           field_path, sizeof(field_path),
+                                           member_type, sizeof(member_type));
+                    const ZirType *field_slot = *member_type ?
+                        FindType(c->module, member_type, NULL) : NULL;
+                    if(found > 0 && field_slot != NULL &&
+                       field_slot->is_procedure_type) {
+                        copy_text(e->slot_type, sizeof(e->slot_type), member_type);
+                        slot = field_slot;
+                        args = field_slot->body;
+                        return_type = field_slot->procedure_return_type;
+                    }
+                }
+            }
+        }
         expected = args && *skip_ws(args) ? split_top_level(args, parts[0], 64, sizeof(parts[0])) : 0;
         if(args && !bind_call_arguments(c, e, parts, expected, display_name,
                                        callee ? callee->default_args : NULL)) {
@@ -2895,7 +2960,18 @@ expression_type(Checker *c, int index)
             error(c, e->span, "array values do not support binary operations", e->op);
         const ZirType *left_slot = FindType(c->module, left, NULL);
         const ZirType *right_slot = FindType(c->module, right, NULL);
-        if((left_slot && left_slot->is_procedure_type) || (right_slot && right_slot->is_procedure_type))
+        /* Procedure slots compare against null (and identical slot types)
+         * the same way pointers do; every other operation stays rejected. */
+        int slot_null_compare =
+            (!strcmp(e->op, "==") || !strcmp(e->op, "!=")) &&
+            ((left_slot != NULL && left_slot->is_procedure_type &&
+              (!strcmp(right, "null") ||
+               (right_slot != NULL && right_slot->is_procedure_type &&
+                !strcmp(left, right)))) ||
+             (right_slot != NULL && right_slot->is_procedure_type &&
+              !strcmp(left, "null")));
+        if(((left_slot && left_slot->is_procedure_type) ||
+            (right_slot && right_slot->is_procedure_type)) && !slot_null_compare)
             error(c, e->span, "slot values do not support binary operations", e->op);
         if((text_type(left) || text_type(right)) &&
            strcmp(e->op, "==") && strcmp(e->op, "!="))
@@ -2925,7 +3001,7 @@ expression_type(Checker *c, int index)
                 error(c, e->span, "unsupported enum_flags operation", e->op);
             break;
         }
-        if(!compatible(left, right) && !compatible(right, left))
+        if(!compatible(left, right) && !compatible(right, left) && !slot_null_compare)
             error(c, e->span, "operand types differ; use an explicit cast", e->op);
         if(!strcmp(e->op, "==") || !strcmp(e->op, "!=") || !strcmp(e->op, "<") ||
            !strcmp(e->op, "<=") || !strcmp(e->op, ">") || !strcmp(e->op, ">=") ||
@@ -4386,6 +4462,10 @@ restart:
         if(st->kind == ZIR_STMT_ASSIGN && st->lhs_root >= 0 &&
            c->fn->exprs[st->lhs_root].kind == ZIR_EXPR_IDENT)
             contextual_slot(c, st->expr_root, lookup(c, c->fn->exprs[st->lhs_root].name));
+        else if(st->kind == ZIR_STMT_ASSIGN && st->lhs_root >= 0 &&
+                (c->fn->exprs[st->lhs_root].kind == ZIR_EXPR_MEMBER ||
+                 c->fn->exprs[st->lhs_root].kind == ZIR_EXPR_POINTER_MEMBER))
+            contextual_slot(c, st->expr_root, expression_type(c, st->lhs_root));
         c->expected_type[0] = '\0';
         if(st->kind == ZIR_STMT_DECL)
             copy_text(c->expected_type, sizeof(c->expected_type), st->type);
