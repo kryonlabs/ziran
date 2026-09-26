@@ -7,6 +7,10 @@ typedef enum ZirTarget { ZIR_C, ZIR_CPP, ZIR_GO } ZirTarget;
  * captured argument names only, never a source expression to reinterpret. */
 typedef void (*ZirResolveTarget)(void *context, const char *text, char *out, size_t size);
 const char *TargetType(const char *type, ZirTarget target);
+void NativeTypeName(const ZirModule *owner, const ZirType *type,
+                    char *out, size_t size);
+int NativeTypeAtUse(const ZirModule *module, const char *type,
+                    char *out, size_t size);
 int ScalarLiteral(const char *type, const char *text, ZirTarget target,
                       ZirSourceSpan span, char *out, size_t size);
 typedef int (*ZirGlobalScalarRewrite)(const ZirModule *module,

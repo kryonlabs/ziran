@@ -201,10 +201,14 @@ go_type(const char *type, char *dst, size_t dst_size)
         for(char *c = t; *c != '\0'; c++)
             if(!is_ident_char((unsigned char)*c) && *c != '.')
                 identish = 0;
+        const ZirModule *owner = NULL;
         const ZirType *declared = identish && type_scope != NULL ?
-            FindType(type_scope, t, NULL) : NULL;
+            FindType(type_scope, t, &owner) : NULL;
         if(declared != NULL) {
-            snprintf(dst, dst_size, "%s", declared->name);
+            if(owner != NULL)
+                NativeTypeName(owner, declared, dst, dst_size);
+            else
+                snprintf(dst, dst_size, "%s", declared->name);
             return 1;
         }
     }
@@ -943,6 +947,20 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                 const char *end = member;
                 while(is_ident_char((unsigned char)*end))
                     end++;
+                if(end > member && (size_t)(end - p) < ZIR_NAME_MAX) {
+                    char qualified[ZIR_NAME_MAX], native[ZIR_GO_NAME_MAX];
+                    memcpy(qualified, p, (size_t)(end - p));
+                    qualified[end - p] = '\0';
+                    if(NativeTypeAtUse(m, qualified, native,
+                                       sizeof(native))) {
+                        size_t length = strlen(native);
+                        if(dn + length >= dst_size) break;
+                        memcpy(dst + dn, native, length);
+                        dn += length;
+                        p = end;
+                        continue;
+                    }
+                }
                 if(end > member && *skip_ws(end) == '(' &&
                    (size_t)(end - p) < ZIR_NAME_MAX) {
                     int gfi = go_global_function_index(m, p,
@@ -1023,8 +1041,18 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                         dn += length;
                     }
                 } else {
-                    memcpy(dst + dn, ident, il);
-                    dn += il;
+                    char native[ZIR_GO_NAME_MAX];
+                    if(NativeTypeAtUse(m, ident, native,
+                                       sizeof(native))) {
+                        size_t length = strlen(native);
+                        if(dn + length + 1 < dst_size) {
+                            memcpy(dst + dn, native, length);
+                            dn += length;
+                        }
+                    } else {
+                        memcpy(dst + dn, ident, il);
+                        dn += il;
+                    }
                 }
             }
             p = q;
@@ -1329,6 +1357,8 @@ go_lower(const ZirProgram *const *progs, int prog_count,
 
             for(int i = 0; i < m->type_count; i++) {
                 const ZirType *t = &m->types[i];
+                char native[ZIR_GO_NAME_MAX];
+                NativeTypeName(m, t, native, sizeof(native));
                 if(t->is_union) {
                     size_t offset = 0;
                     ZirTypeField field;
@@ -1354,7 +1384,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                     fprintf(f, "type %s struct {\n"
                            "\t_ [0]uint64\n"
                            "\tdata [%zu]byte\n"
-                           "}\n\n", t->name, size);
+                           "}\n\n", native, size);
                     g_union_unsafe = 1;
                     continue;
                 }
@@ -1405,7 +1435,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                         }
                         fprintf(f, ")\n\n");
                     } else {
-                        fprintf(f, "type %s struct {\n", t->name);
+                        fprintf(f, "type %s struct {\n", native);
                     {
                         size_t offset = 0;
                         ZirTypeField field;

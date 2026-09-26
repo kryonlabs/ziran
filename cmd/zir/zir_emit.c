@@ -301,6 +301,55 @@ TargetType(const char *type, ZirTarget target)
     return NULL;
 }
 
+void
+NativeTypeName(const ZirModule *owner, const ZirType *type,
+               char *out, size_t size)
+{
+    if(!type->native_name_collision) {
+        copy_text(out, size, type->name);
+        return;
+    }
+    uint64_t hash = UINT64_C(14695981039346656037);
+    const char *paths[] = {owner->source_path, type->span.path};
+    for(size_t part = 0; part < 2; part++) {
+        for(const unsigned char *p = (const unsigned char *)paths[part];
+            *p; p++)
+            hash = (hash ^ *p) * UINT64_C(1099511628211);
+        hash = (hash ^ 0xffu) * UINT64_C(1099511628211);
+    }
+    const unsigned coordinates[] = {
+        (unsigned)type->span.line, (unsigned)type->span.column
+    };
+    for(size_t i = 0; i < 2; i++)
+        for(size_t byte = 0; byte < sizeof(coordinates[i]); byte++)
+            hash = (hash ^ ((coordinates[i] >> (byte * 8)) & 0xffu)) *
+                   UINT64_C(1099511628211);
+    int length = snprintf(out, size, "zir_%016llx_",
+                          (unsigned long long)hash);
+    if(length < 0 || (size_t)length >= size) {
+        if(size) out[0] = '\0';
+        return;
+    }
+    size_t used = (size_t)length;
+    for(const unsigned char *p = (const unsigned char *)type->name;
+        *p && used + 1 < size; p++)
+        out[used++] = isalnum(*p) || *p == '_' ? *p : '_';
+    out[used] = '\0';
+}
+
+int
+NativeTypeAtUse(const ZirModule *module, const char *type,
+                char *out, size_t size)
+{
+    const ZirModule *owner = NULL;
+    const ZirType *declared = FindType(module, type, &owner);
+    if(declared == NULL || owner == NULL || declared->is_extern ||
+       !declared->native_name_collision ||
+       BuiltinType(declared->name) == declared) return 0;
+    NativeTypeName(owner, declared, out, size);
+    return out[0] != '\0';
+}
+
 static void
 slot_native_type(const char *source, ZirTarget target, char *out, size_t size)
 {

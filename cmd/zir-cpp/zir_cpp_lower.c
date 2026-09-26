@@ -265,6 +265,22 @@ rewrite_body2(const ZirModule *m, const ZirCppModuleSyms *restab,
 
                 while(isalnum((unsigned char)*me) || *me == '_')
                     me++;
+                char qualified[ZIR_NAME_MAX], native[LOWER_NAME_MAX * 2];
+                int type_length = snprintf(qualified, sizeof(qualified),
+                                           "%.*s", (int)(me - p), p);
+                if(type_length >= 0 &&
+                   (size_t)type_length < sizeof(qualified) &&
+                   NativeTypeAtUse(m, qualified, native, sizeof(native))) {
+                    size_t length = strlen(native);
+                    if(n + length >= dst_size) {
+                        dst[n] = '\0';
+                        return;
+                    }
+                    memcpy(dst + n, native, length);
+                    n += length;
+                    p = me - 1;
+                    continue;
+                }
                 if(*me == '(' && restab != NULL) {
                     char cname[LOWER_NAME_MAX * 3];
                     size_t clen = resolve_aliased_fn(m, restab, restab_count,
@@ -381,6 +397,27 @@ rewrite_body2(const ZirModule *m, const ZirCppModuleSyms *restab,
                 }
                 if(resolved_top) continue;
             }
+            if(!(p > src && p[-1] == '.') &&
+               !(p > src + 1 && p[-1] == '>' && p[-2] == '-')) {
+                char source_type[ZIR_NAME_MAX], native[LOWER_NAME_MAX * 2];
+                size_t length = (size_t)(e - p);
+                if(length < sizeof(source_type)) {
+                    memcpy(source_type, p, length);
+                    source_type[length] = '\0';
+                    if(NativeTypeAtUse(m, source_type, native,
+                                       sizeof(native))) {
+                        length = strlen(native);
+                        if(n + length >= dst_size) {
+                            dst[n] = '\0';
+                            return;
+                        }
+                        memcpy(dst + n, native, length);
+                        n += length;
+                        p = e - 1;
+                        continue;
+                    }
+                }
+            }
             while(p < e && n + 1 < dst_size)
                 dst[n++] = *p++;
             p--;   /* compensate for the loop's p++ */
@@ -447,6 +484,7 @@ strip_alias_type(const ZirModule *m, const char *type,
         copy_text(dst, dst_size, "Slice");
         return;
     }
+    if(NativeTypeAtUse(m, type, dst, dst_size)) return;
     const char *dot = strchr(type, '.');
     const char *scalar = ScalarType(type);
     if(*scalar && !strcmp(scalar,type) && TargetType(type,ZIR_C)) {
@@ -807,6 +845,8 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
     }
     for(i = 0; i < m->type_count; i++) {
         const ZirType *ty = &m->types[i];
+        char native[LOWER_NAME_MAX * 2];
+        NativeTypeName(m, ty, native, sizeof(native));
         if(ty->is_extern || ty->is_record_template ||
            (ty->is_procedure_type && !ty->is_enum))
             continue;
@@ -814,7 +854,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
         if(!ty->is_extern && !ty->is_record_template &&
            !ty->is_procedure_type && !ty->is_enum)
             fprintf(h, "typedef %s %s %s;\n",
-                    ty->is_union ? "union" : "struct", ty->name, ty->name);
+                    ty->is_union ? "union" : "struct", native, native);
         if(ty->is_enum) {
             const char *backing = enum_storage_type(ty->enum_backing);
             if(backing == NULL) {
@@ -836,6 +876,8 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
     }
     for(i = 0; i < m->type_count; i++) {
         const ZirType *ty = &m->types[i];
+        char native[LOWER_NAME_MAX * 2];
+        NativeTypeName(m, ty, native, sizeof(native));
 
         if(ty->is_extern || ty->is_record_template)
             continue;
@@ -896,7 +938,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
             continue;
         }
         fprintf(h, "\n%s %s {\n", ty->is_union ? "union" : "struct",
-                ty->name);
+                native);
         /* Each body line is a field decl: 'name: [N] Type' / 'name: Type'. */
         {
             const char *line = ty->body;

@@ -601,8 +601,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   bindings and record fields; C and C++ lower reserved field names without
   changing source names. Kryon's C callback declarations use Jai `*u8` for borrowed byte
   pointers. Remaining top-level type and exported procedure keyword
-  names and cross-module name collisions
-  still need package-wide native name mapping. `Vec(T)` now provides growable
+  names and cross-module collisions of enums, procedures, and other symbols
+  still need package-wide native name mapping. Colliding record and union type
+  names from linked modules receive distinct native names in C, C++, and Go;
+  `tests/imported_type_names.sh` checks qualified uses, fields, signatures,
+  globals, literals, and source/saved-IR execution on all four targets.
+  `Vec(T)` now provides growable
   storage for locals, globals, and record fields across C99, C++, Go, and
   `.zib`, with
   checked indexing, push, clear, free, swap, `VecPop` and `VecGet` results as
