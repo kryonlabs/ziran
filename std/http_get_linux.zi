@@ -1,0 +1,11 @@
+#import "process_capture_linux"
+
+// Native HTTPS GET. curl owns TLS and redirects; the caller owns storage.
+#program_export
+GetHttps :: (url: string, output: []u8) -> CaptureResult {
+    arguments: [8]string = .{
+        "curl", "-fsSL", "--compressed", "--max-time", "20",
+        "-A", "Ziran/1.0", url
+    }
+    return CaptureOutput(arguments[:], output)
+}

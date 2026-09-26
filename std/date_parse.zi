@@ -1,0 +1,201 @@
+// UTC calendar parsing for feeds and dated data sources.
+
+DateDigit :: (value: u8) -> s32 {
+    if value < cast(u8)48 || value > cast(u8)57 { return -1 }
+    return cast(s32)(value - cast(u8)48)
+}
+
+#program_export
+DateNumber :: (value: string, start: s32, count: s32) -> s32 {
+    if start < 0 || count <= 0 || start + count > cast(s32)value.count {
+        return -1
+    }
+    result: s32 = 0
+    index: s32 = 0
+    while index < count {
+        digit: s32 = DateDigit(value[start + index])
+        if digit < 0 { return -1 }
+        result = result * 10 + digit
+        index += 1
+    }
+    return result
+}
+
+#program_export
+DaysFromCivil :: (year: s32, month: s32, day: s32) -> s64 {
+    if year < 1970 || month < 1 || month > 12 || day < 1 || day > 31 {
+        return -1
+    }
+    adjusted: s32 = year
+    if month <= 2 { adjusted -= 1 }
+    era: s32 = adjusted / 400
+    yoe: s32 = adjusted - era * 400
+    shifted: s32 = month - 3
+    if month <= 2 { shifted = month + 9 }
+    doy: s32 = (153 * shifted + 2) / 5 + day - 1
+    doe: s32 = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    return cast(s64)(era * 146097 + doe - 719468)
+}
+
+DateValid :: (year: s32, month: s32, day: s32) -> bool {
+    lengths: [12]s32 = .{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+    if year < 1970 || month < 1 || month > 12 || day < 1 { return false }
+    limit: s32 = lengths[month - 1]
+    if month == 2 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+        limit = 29
+    }
+    return day <= limit
+}
+
+UtcDate :: struct {
+    year: s32
+    month: s32
+    day: s32
+    hour: s32
+    minute: s32
+    second: s32
+}
+
+#program_export
+CivilFromUnix :: (timestamp: s64) -> UtcDate {
+    result: UtcDate
+    if timestamp < 0 { return result }
+    days: s64 = timestamp / 86400 + 719468
+    era: s64 = days / 146097
+    doe: s64 = days - era * 146097
+    yoe: s64 = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    year: s64 = yoe + era * 400
+    doy: s64 = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    mp: s64 = (5 * doy + 2) / 153
+    day: s64 = doy - (153 * mp + 2) / 5 + 1
+    month: s64 = mp + 3
+    if mp >= 10 { month = mp - 9 }
+    if month <= 2 { year += 1 }
+    result.year = cast(s32)year
+    result.month = cast(s32)month
+    result.day = cast(s32)day
+    result.hour = cast(s32)((timestamp % 86400) / 3600)
+    result.minute = cast(s32)((timestamp % 3600) / 60)
+    result.second = cast(s32)(timestamp % 60)
+    return result
+}
+
+DateWriteDigits :: (output: []u8, at: s32, value: s32, digits: s32) -> s32 {
+    if at < 0 || value < 0 || at + digits > cast(s32)output.count { return -1 }
+    divisor: s32 = 1
+    index: s32 = 1
+    while index < digits {
+        divisor *= 10
+        index += 1
+    }
+    index = 0
+    while index < digits {
+        output[at + index] = cast(u8)48 + cast(u8)((value / divisor) % 10)
+        divisor /= 10
+        index += 1
+    }
+    return at + digits
+}
+
+#program_export
+WriteCompactUtc :: (timestamp: s64, output: []u8) -> s32 {
+    if output.count < 15 { return -1 }
+    value: UtcDate = CivilFromUnix(timestamp)
+    at: s32 = DateWriteDigits(output, 0, value.year, 4)
+    at = DateWriteDigits(output, at, value.month, 2)
+    at = DateWriteDigits(output, at, value.day, 2)
+    at = DateWriteDigits(output, at, value.hour, 2)
+    at = DateWriteDigits(output, at, value.minute, 2)
+    at = DateWriteDigits(output, at, value.second, 2)
+    return at
+}
+
+#program_export
+WriteIsoDay :: (timestamp: s64, output: []u8) -> s32 {
+    if output.count < 10 { return -1 }
+    value: UtcDate = CivilFromUnix(timestamp)
+    DateWriteDigits(output, 0, value.year, 4)
+    output[4] = cast(u8)45
+    DateWriteDigits(output, 5, value.month, 2)
+    output[7] = cast(u8)45
+    DateWriteDigits(output, 8, value.day, 2)
+    return 10
+}
+
+#program_export
+UtcSeconds :: (year: s32, month: s32, day: s32,
+    hour: s32, minute: s32, second: s32) -> s64 {
+    if !DateValid(year, month, day) || hour < 0 || hour > 23 ||
+        minute < 0 || minute > 59 || second < 0 || second > 59 { return 0 }
+    return DaysFromCivil(year, month, day) * 86400 +
+        cast(s64)(hour * 3600 + minute * 60 + second)
+}
+
+#program_export
+ParseCompactUtc :: (value: string) -> s64 {
+    // GDELT's YYYYMMDDTHHMMSSZ and YYYYMMDDHHMMSS forms.
+    if value.count < 14 { return 0 }
+    at: s32 = 8
+    if value[8] == cast(u8)84 {
+        if value.count < 15 { return 0 }
+        at = 9
+    }
+    return UtcSeconds(DateNumber(value, 0, 4), DateNumber(value, 4, 2),
+        DateNumber(value, 6, 2), DateNumber(value, at, 2),
+        DateNumber(value, at + 2, 2), DateNumber(value, at + 4, 2))
+}
+
+DateMonth :: (value: string, at: s32) -> s32 {
+    if at < 0 || at + 3 > cast(s32)value.count { return 0 }
+    months: [12]string = .{"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
+    index: s32 = 0
+    while index < 12 {
+        if value[at:at + 3] == months[index] { return index + 1 }
+        index += 1
+    }
+    return 0
+}
+
+#program_export
+ParseRfc822Utc :: (value: string) -> s64 {
+    // Common RSS form: "Sat, 26 Sep 2026 19:08:00 GMT". Numeric offsets
+    // are handled too. Unknown zones are rejected rather than guessed.
+    at: s32 = 0
+    while at < cast(s32)value.count && value[at] != cast(u8)44 &&
+        value[at] != cast(u8)32 { at += 1 }
+    if at < cast(s32)value.count && value[at] == cast(u8)44 { at += 1 }
+    while at < cast(s32)value.count && value[at] == cast(u8)32 { at += 1 }
+    day: s32 = DateNumber(value, at, 2)
+    if day < 0 {
+        day = DateNumber(value, at, 1)
+        at += 1
+    } else {
+        at += 2
+    }
+    if at + 21 > cast(s32)value.count || value[at] != cast(u8)32 { return 0 }
+    month: s32 = DateMonth(value, at + 1)
+    year: s32 = DateNumber(value, at + 5, 4)
+    hour: s32 = DateNumber(value, at + 10, 2)
+    minute: s32 = DateNumber(value, at + 13, 2)
+    second: s32 = DateNumber(value, at + 16, 2)
+    if month == 0 || value[at + 12] != cast(u8)58 ||
+        value[at + 15] != cast(u8)58 { return 0 }
+    result: s64 = UtcSeconds(year, month, day, hour, minute, second)
+    zone: s32 = at + 19
+    if zone >= cast(s32)value.count { return 0 }
+    if zone + 3 <= cast(s32)value.count &&
+        (value[zone:zone + 3] == "GMT" ||
+        value[zone:zone + 3] == "UTC") {
+        return result
+    }
+    if zone + 5 > cast(s32)value.count { return 0 }
+    sign: u8 = value[zone]
+    if sign != cast(u8)43 && sign != cast(u8)45 { return 0 }
+    offset_hour: s32 = DateNumber(value, zone + 1, 2)
+    offset_minute: s32 = DateNumber(value, zone + 3, 2)
+    if offset_hour > 23 || offset_minute > 59 { return 0 }
+    offset: s64 = cast(s64)(offset_hour * 3600 + offset_minute * 60)
+    if sign == cast(u8)43 { return result - offset }
+    return result + offset
+}
