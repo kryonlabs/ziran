@@ -32,11 +32,20 @@ main(int argc, char **argv)
     request.accept = StringLiteral("application/json");
     request.content_type = StringLiteral("application/json");
     request.body = StringLiteral("{\"value\":42}");
-    HttpHeader extra = {
-        .name = StringLiteral("X-Daochi-User"),
-        .value = StringLiteral("account"),
+    char signature[4841];
+    memset(signature, 'b', sizeof signature - 1);
+    signature[sizeof signature - 1] = 0;
+    HttpHeader extra[] = {
+        {
+            .name = StringLiteral("X-Daochi-User"),
+            .value = StringLiteral("account"),
+        },
+        {
+            .name = StringLiteral("X-Daochi-Signature"),
+            .value = StringView(signature, sizeof signature - 1),
+        },
     };
-    request.headers = (Slice){.data = &extra, .length = 1};
+    request.headers = (Slice){.data = extra, .length = 2};
     result = SendCurl(request, buffer);
     assert(result.code == 0 && result.status == 201);
     assert(strcmp(output, "accepted") == 0);

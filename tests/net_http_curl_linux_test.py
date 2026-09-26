@@ -42,6 +42,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.headers.get("Accept") == "application/json" and
                 self.headers.get("Content-Type") == "application/json" and
                 self.headers.get("X-Daochi-User") == "account" and
+                self.headers.get("X-Daochi-Signature") == "b" * 4840 and
                 body == b'{"value":42}'):
             self.respond(201, b"accepted")
         else:

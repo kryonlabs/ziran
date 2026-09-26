@@ -241,7 +241,8 @@ SendCurl :: (request: HttpRequest, output: []u8) -> CurlResult {
         }
     }
 
-    header: [4300]u8
+    // ML-DSA signatures and other protocol headers can exceed 4 KiB.
+    header: [8192]u8
     if configured && request.token.count > 0 {
         configured = AddCurlHeader(*headers, "Authorization: Bearer ",
             request.token, header[:])
