@@ -540,6 +540,15 @@ convert_args(const ZirModule *m, const ZirFunction *fn,
 
                     while(*ty == ' ' || *ty == '\t')
                         ty++;
+                    if(strcmp(ty, "..any") == 0) {
+                        if(!first && n + 2 < dst_size)
+                            dst[n++] = ',';
+                        if(!first && n + 1 < dst_size)
+                            dst[n++] = ' ';
+                        n += (size_t)snprintf(dst + n, dst_size - n, "...");
+                        first = 0;
+                        goto next_arg;
+                    }
                     while(nl > 0 && isspace((unsigned char)name_start[nl - 1]))
                         nl--;
                     if(nl >= sizeof(name))
@@ -573,6 +582,7 @@ convert_args(const ZirModule *m, const ZirFunction *fn,
                     }
                     first = 0;
                 }
+next_arg:
                 if(*p == '\0')
                     break;
                 start = p + 1;

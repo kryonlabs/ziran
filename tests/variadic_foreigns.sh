@@ -43,3 +43,46 @@ if "$ziran" check --root "$work" "$work/too_few.zi" \
     exit 1
 fi
 grep -Fq 'argument count mismatch' "$work/too_few.err"
+
+cat > "$work/linked.zi" <<'EOF'
+c :: #system_library "c";
+TestLog :: (level: s32, format: *u8, args: ..any) #foreign c;
+
+#program_export
+Answer :: () -> s32 {
+    format: [3]u8
+    format[0] = cast(u8)37
+    format[1] = cast(u8)100
+    format[2] = cast(u8)0
+    TestLog(4, *format[0], cast(s32)42)
+    return 42
+}
+EOF
+cat > "$work/linked.c" <<'EOF'
+#include "linked.h"
+#include <assert.h>
+#include <stdarg.h>
+
+static int observed;
+void TestLog(int32_t level, uint8_t *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    assert(level == 4 && format[0] == '%' && format[1] == 'd');
+    observed = va_arg(args, int);
+    va_end(args);
+}
+int main(void)
+{
+    assert(Answer() == 42);
+    assert(observed == 42);
+    return 0;
+}
+EOF
+"$(dirname "$ziran")/zi2c" --no-main --root "$work" -o "$work/c" "$work/linked.zi"
+"${CC:-cc}" -std=c11 -Wall -Wextra -Werror -I"$repo/include" -I"$work/c" \
+    "$work/c/linked.c" "$work/linked.c" -o "$work/linked"
+"$work/linked"
+"$(dirname "$ziran")/zi2cpp" --no-main --root "$work" -o "$work/cpp" "$work/linked.zi"
+"${CXX:-c++}" -std=c++17 -fsyntax-only -I"$repo/include" -I"$work/cpp" \
+    "$work/cpp/linked.cpp"
