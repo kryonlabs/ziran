@@ -1,0 +1,131 @@
+// Blocking, bounded WebSocket text receive for native libcurl hosts.
+// The protocol consumer owns URL construction and JSON validation.
+#import "net_http_curl_linux"
+#import "byte_text_linux"
+#import "c_string"
+
+curl :: #system_library "curl";
+c :: #system_library "c";
+curl_global_init :: (flags: s64) -> s32 #foreign curl;
+curl_global_cleanup :: () #foreign curl;
+curl_easy_init :: () -> *void #foreign curl;
+curl_easy_cleanup :: (handle: *void) #foreign curl;
+curl_easy_setopt :: (handle: *void, option: s32, args: ..any) -> s32 #foreign curl;
+curl_easy_perform :: (handle: *void) -> s32 #foreign curl;
+curl_easy_getinfo :: (handle: *void, option: s32, args: ..any) -> s32 #foreign curl;
+curl_slist_free_all :: (list: *void) #foreign curl;
+curl_ws_recv :: (handle: *void, data: *u8, capacity: u64,
+    received: *u64, frame: **CurlWsFrame) -> s32 #foreign curl;
+poll :: (descriptors: *PollDescriptor, count: u64,
+    timeout_ms: s32) -> s32 #foreign c;
+time :: (output: *s64) -> s64 #foreign c;
+
+CurlWsFrame :: struct {
+    age: s32
+    flags: s32
+    offset: s64
+    bytes_left: s64
+    length: u64
+}
+
+PollDescriptor :: struct {
+    fd: s32
+    events: s16
+    returned: s16
+}
+
+CurlConnectOnly :: 141;
+CurlActiveSocket :: 5242924;
+CurlAgain :: 81;
+CurlWsText :: 1;
+CurlWsContinue :: 4;
+CurlWsClose :: 8;
+PollRead :: 1;
+
+// Output is NUL terminated on success. status is 401 on an unauthorized
+// handshake so a protocol client can refresh its session and retry.
+#program_export
+ReceiveWebSocketCurl :: (context: *void, url: string, token: string,
+    output: []u8, status: *s32) -> bool {
+    unused context
+    if status == null || output.count < 2 { return false }
+    status.* = 0
+    output[0] = cast(u8)0
+    if url.count >= 2048 || token.count == 0 || token.count >= 4096 ||
+        !(StartsWith(url, "ws://") || StartsWith(url, "wss://")) {
+        return false
+    }
+    url_text: [2048]u8
+    if !CopyCString(url, url_text[:]) { return false }
+    if curl_global_init(3) != 0 { return false }
+    handle := curl_easy_init()
+    if handle == null {
+        curl_global_cleanup()
+        return false
+    }
+    headers: *void = null
+    header: [8192]u8
+    configured := AddCurlHeader(*headers, "Authorization: Bearer ",
+        token, header[:]) &&
+        curl_easy_setopt(handle, CurlUrl, *url_text[0]) == 0 &&
+        SetCurlLong(handle, CurlConnectOnly, 2) &&
+        SetCurlLong(handle, CurlNoSignal, 1) &&
+        SetCurlLong(handle, CurlConnectTimeoutMs, 10000)
+    if configured {
+        configured = curl_easy_setopt(handle, CurlHeaders, headers) == 0
+    }
+    connected := configured && curl_easy_perform(handle) == 0
+    if !connected {
+        status.* = ReadCurlStatus(handle)
+    } else {
+        status.* = 200
+    }
+    ok := false
+    if connected {
+        socket: s32 = -1
+        if curl_easy_getinfo(handle, CurlActiveSocket, *socket) == 0 &&
+            socket >= 0 {
+            descriptor: PollDescriptor
+            descriptor.fd = socket
+            descriptor.events = cast(s16)PollRead
+            end_time := time(null) + 35
+            length: s64 = 0
+            while time(null) < end_time {
+                received: u64 = 0
+                frame: *CurlWsFrame = null
+                code := curl_ws_recv(handle, *output[length],
+                    cast(u64)(output.count - length - 1),
+                    *received, *frame)
+                if code == CurlAgain {
+                    descriptor.returned = 0
+                    if poll(*descriptor, 1, 1000) < 0 { break }
+                    continue
+                }
+                if code != 0 || frame == null { break }
+                if (frame.flags & cast(s32)CurlWsClose) != 0 { break }
+                if (frame.flags & cast(s32)CurlWsText) == 0 {
+                    if length != 0 { break }
+                    continue
+                }
+                if received > cast(u64)(output.count - length - 1) {
+                    break
+                }
+                length += cast(s64)received
+                output[length] = cast(u8)0
+                if frame.bytes_left > cast(s64)(output.count - length - 1) {
+                    break
+                }
+                if frame.bytes_left == 0 &&
+                    (frame.flags & cast(s32)CurlWsContinue) == 0 {
+                    ok = length > 0
+                    break
+                }
+            }
+        }
+    }
+    if headers != null { curl_slist_free_all(headers) }
+    curl_easy_cleanup(handle)
+    curl_global_cleanup()
+    if !ok { output[0] = cast(u8)0 }
+    return ok
+}
