@@ -64,31 +64,6 @@ stem_from_source(const char *src, char *dst, size_t dst_size)
     dst[n] = '\0';
 }
 
-static void
-guard_from_stem(const char *stem, char *dst, size_t dst_size)
-{
-    size_t n = 0;
-
-    if(dst_size < 6) {
-        if(dst_size > 0) dst[0] = '\0';
-        return;
-    }
-    dst[n++] = 'Z';
-    dst[n++] = 'I';
-    dst[n++] = '_';
-    for(const char *p = stem; *p && n + 3 < dst_size; p++) {
-        char ch = *p;
-
-        if(isalnum((unsigned char)ch))
-            dst[n++] = isalpha((unsigned char)ch) ? (char)toupper(ch) : ch;
-        else
-            dst[n++] = '_';
-    }
-    dst[n++] = '_';
-    dst[n++] = 'H';
-    dst[n] = '\0';
-}
-
 /* Convert a .zi type like "[64] char" or "[2][3] int" to C declarator
  * pieces: base "char" + array suffix "[64]" (placed after the name). */
 static void
@@ -802,7 +777,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
     int i;
 
     stem_from_source(m->source_path, stem, sizeof(stem));
-    guard_from_stem(stem, guard, sizeof(guard));
+    NativeHeaderGuard(stem, guard, sizeof(guard));
     snprintf(hpath, sizeof(hpath), "%s/%s.hpp", out_dir, stem);
     snprintf(cpath, sizeof(cpath), "%s/%s.cpp", out_dir, stem);
     mkdir_parent(hpath);

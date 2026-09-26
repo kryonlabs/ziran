@@ -392,6 +392,30 @@ NativeExportName(const ZirModule *module, const ZirFunction *fn,
     }
 }
 
+void
+NativeHeaderGuard(const char *stem, char *out, size_t size)
+{
+    uint64_t hash = UINT64_C(14695981039346656037);
+    size_t used = 0;
+    if(size < 24) {
+        fprintf(stderr, "generated header guard exceeds output limit\n");
+        exit(1);
+    }
+    out[used++] = 'Z';
+    out[used++] = 'I';
+    out[used++] = '_';
+    for(const unsigned char *p = (const unsigned char *)stem; *p; p++) {
+        hash = (hash ^ *p) * UINT64_C(1099511628211);
+        if(used + 20 >= size) {
+            fprintf(stderr, "generated header guard exceeds output limit\n");
+            exit(1);
+        }
+        out[used++] = isalnum(*p) ? (char)toupper(*p) : '_';
+    }
+    format(out + used, size - used, "_H_%016llx",
+           (unsigned long long)hash);
+}
+
 static void
 slot_native_type(const char *source, ZirTarget target, char *out, size_t size)
 {

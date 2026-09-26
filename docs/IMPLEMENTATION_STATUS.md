@@ -612,7 +612,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `tests/global_names.sh` checks source and saved IR with target keyword types.
   `tests/imported_type_names.sh` and `tests/imported_enum_names.sh` check
   qualified uses, fields, signatures, globals, literals, and source/saved-IR
-  execution on all four targets.
+  execution on all four targets. Go output gives modules distinct filenames
+  and function prefixes when case or identifier normalization would collide;
+  C and C++ headers use distinct guards. `tests/module_symbol_names.sh`
+  checks both source and saved IR on all four targets.
   `Vec(T)` now provides growable
   storage for locals, globals, and record fields across C99, C++, Go, and
   `.zib`, with
