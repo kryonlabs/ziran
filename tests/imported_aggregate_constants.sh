@@ -30,11 +30,16 @@ ARRAY_DERIVED :: #run Lib.RECORDS[1].value;
 #assert Lib.NUMBERS.count == 2
 #assert Lib.RECORDS[1].value == 42
 #assert DERIVED == 42 && ARRAY_DERIVED == 42
+#if Lib.WRAPPER.point.value == 42 && Lib.RECORDS[1].value == 42 {
+SELECTED :: 42;
+} else {
+SELECTED :: Missing();
+}
 #program_export
 Answer :: () -> s64 {
     local: Lib.Wrapper = Lib.WRAPPER;
     if local.text != "ready" || saved.text != "ready" { return 0 }
-    return Lib.WRAPPER.point.value + local.point.value + saved.point.value + Lib.NUMBERS[1] + numbers[1] + Lib.RECORDS[1].value + records[1].value - 252
+    return Lib.WRAPPER.point.value + local.point.value + saved.point.value + Lib.NUMBERS[1] + numbers[1] + Lib.RECORDS[1].value + records[1].value + SELECTED - 294
 }
 ZI
 
@@ -97,7 +102,17 @@ using Lib :: #import "library";
 #program_export
 Answer :: () -> s64 { return WRAPPER.point.value + Lib.NUMBERS[1] - 42 }
 ZI
-for name in open_case using_case; do
+cat > "$work/forward_case.zi" <<'ZI'
+#if Lib.WRAPPER.point.value == 42 && Lib.RECORDS[1].value == 42 {
+SELECTED :: 42;
+} else {
+SELECTED :: Missing();
+}
+Lib :: #import "library";
+#program_export
+Answer :: () -> s64 { return SELECTED }
+ZI
+for name in open_case using_case forward_case; do
     "$ziran" ir --root "$work" -o "$work/ir" "$work/$name.zi"
     for input in "$work/$name.zi" "$work/ir/$name.zir"; do
         case "$input" in

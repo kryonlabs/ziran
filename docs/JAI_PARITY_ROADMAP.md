@@ -109,8 +109,10 @@ flags, embedded source imports, and imports in conditionally selected `#load`
 files have ordering limits. Named imported real and string constants work in
 `#if` and `#run`, including an import declared later in the file;
 `tests/imported_typed_constants.sh` checks them on source and saved IR across
-all four targets. Aggregate constants in parse-time `#if` conditions and
-broader import forms remain open.
+all four targets. Imported aggregate fields and array elements also work in
+tested `#if` conditions, including a later named import;
+`tests/imported_aggregate_constants.sh` covers this. Broader import forms
+remain open.
 Token normalization now waits for branch selection, so obsolete
 primitive spellings in inactive top-level, type, and procedure branches are
 ignored while selected `else #if` conditions still use Jai scalar aliases.
@@ -204,8 +206,7 @@ rejects a conflicting consumer record name while native C still emits
 colliding tags. `tests/compile_values.sh` and
 `tests/imported_aggregate_constants.sh` check source and saved IR across
 all four targets, including imported record fields and array elements in
-`#run` and `#assert`. Aggregate uses inside parse-time `#if` conditions and
-larger file-scope expressions,
+`#run`, `#assert`, and `#if`. Aggregate uses inside larger file-scope expressions,
 effects, and general metaprogramming remain open.
 `#caller_location` parameters in compile-time calls are also missing. Integer
 conditions now send procedure calls through the typed evaluator, and the old

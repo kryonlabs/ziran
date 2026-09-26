@@ -321,12 +321,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   execution on C, C++, Go, and `.zib`. Public aggregate definitions from
   named, open, and using imports retain their declaring record types in
   runtime expressions and direct globals; `tests/imported_aggregate_constants.sh`
-  checks nested records, arrays, compile-time `#run` and `#assert` field
-  selection, private visibility, and source/saved IR
+  checks nested records, arrays, compile-time `#run`, `#assert`, and `#if`
+  field selection, a later named import in `#if`, private visibility, and source/saved IR
   across the same targets. A conflicting consumer record name is rejected
   during checking because native C still emits colliding record tags.
-  Aggregate references inside parse-time `#if` conditions and larger
-  file-scope expressions remain open;
+  Aggregate references inside larger file-scope expressions remain open;
   effects, unbounded execution, and general metaprogramming are unsupported.
   Integer conditions and typed expressions use the same bounded procedure
   evaluator, including a shared instruction budget across nested calls; the
