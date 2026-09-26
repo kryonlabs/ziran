@@ -85,3 +85,60 @@ if "$ziran" check --root "$work" "$work/invalid.zi" \
     exit 1
 fi
 grep -Fq '#program_export symbol must be an identifier' "$work/invalid.err"
+
+cat > "$work/keywords.zi" <<'ZI'
+#program_export
+switch :: () -> s64 { return 39 }
+#program_export
+ziran_keyword_switch_0 :: () -> s64 { return 1 }
+#program_export "class"
+Legacy :: () -> s64 { return 2 }
+#program_export
+Answer :: () -> s64 {
+    return switch() + ziran_keyword_switch_0() + Legacy()
+}
+ZI
+"$ziran" ir --root "$work" -o "$work/keywords-ir" "$work/keywords.zi"
+cat > "$work/keyword_main.c" <<'C'
+#include "keywords.h"
+int main(void) {
+    return Answer() == 42 && ziran_keyword_switch_1() == 39 &&
+           ziran_keyword_switch_0() == 1 && ziran_keyword_class_0() == 2
+               ? 0 : 1;
+}
+C
+cat > "$work/keyword_main.cpp" <<'CPP'
+#include "keywords.hpp"
+int main() {
+    return Answer() == 42 && ziran_keyword_switch_1() == 39 &&
+           ziran_keyword_switch_0() == 1 && ziran_keyword_class_0() == 2
+               ? 0 : 1;
+}
+CPP
+for input in source saved; do
+    if test "$input" = source; then
+        root=$work
+        file=$work/keywords.zi
+    else
+        root=$work/keywords-ir
+        file=$work/keywords-ir/keywords.zir
+    fi
+    "$ziran" bundle --root "$root" --entry keywords:Answer \
+        -o "$work/keywords-$input.zib" "$file"
+    test "$("$ziran" run "$work/keywords-$input.zib")" = 42
+    for target in c cpp; do
+        out="$work/keywords-$target-$input"
+        "$ziran" build "--target=$target" --root "$root" -o "$out" "$file"
+        if test "$target" = c; then
+            "${CC:-cc}" -std=c99 -pedantic-errors -Iinclude -I"$out" \
+                "$out/keywords.c" "$work/keyword_main.c" -o "$out/main"
+        else
+            "${CXX:-c++}" -std=c++17 -pedantic-errors -Iinclude -I"$out" \
+                "$out/keywords.cpp" "$work/keyword_main.cpp" -o "$out/main"
+        fi
+        "$out/main"
+        nm "$out/main" | grep -Eq ' T switch$'
+        nm "$out/main" | grep -Eq ' T class$'
+    done
+done
+cmp "$work/keywords-source.zib" "$work/keywords-saved.zib"

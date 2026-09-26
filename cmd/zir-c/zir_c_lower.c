@@ -460,8 +460,7 @@ function_c_name(const ZirModule *m, const ZirFunction *fn,
     size_t n = 0;
     /* '#program_export' selects the externally visible linker name. */
     if(fn->exported) {
-        snprintf(dst, dst_size, "%s",
-                 fn->export_symbol[0] ? fn->export_symbol : fn->name);
+        NativeExportName(m, fn, dst, dst_size);
         return;
     }
     if(m->name[0] != '\0' && strcmp(m->name, "main") != 0) {
@@ -1077,8 +1076,14 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
         convert_args(m, fn, abi_args, cargs, sizeof(cargs));
         strip_alias_type(m, ArrayElementType(fn->return_type, NULL, 0, NULL) ? "void" : fn->return_type,
                          cret, sizeof(cret));
-        fprintf(h, "%s %s(%s);\n",
-                cret[0] ? cret : "void", cname, cargs);
+        fprintf(h, "%s %s(%s)", cret[0] ? cret : "void", cname, cargs);
+        if(fn->exported) {
+            const char *symbol = fn->export_symbol[0] ?
+                fn->export_symbol : fn->name;
+            if(strcmp(cname, symbol))
+                fprintf(h, " __asm__(\"%s\")", symbol);
+        }
+        fputs(";\n", h);
     }
     fprintf(h, "\n#ifdef __cplusplus\n}\n#endif\n\n#endif /* %s */\n", guard);
     fclose(h);

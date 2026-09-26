@@ -368,6 +368,30 @@ NativeEnumMemberName(const ZirModule *owner, const ZirType *type,
     return 1;
 }
 
+void
+NativeExportName(const ZirModule *module, const ZirFunction *fn,
+                 char *out, size_t size)
+{
+    const char *symbol = fn->export_symbol[0] ? fn->export_symbol : fn->name;
+    TargetBindingName(NULL, ZIR_CPP, symbol, out, size);
+    if(!strcmp(out, symbol)) return;
+    for(int serial = 0; ; serial++) {
+        int collision = 0;
+        format(out, size, "ziran_keyword_%s_%d", symbol, serial);
+        for(int i = 0; i < module->global_count; i++)
+            collision |= !strcmp(out, module->globals[i].name);
+        for(int i = 0; i < module->define_count; i++)
+            collision |= !strcmp(out, module->defines[i].name);
+        for(int i = 0; i < module->type_count; i++)
+            collision |= !strcmp(out, module->types[i].name);
+        for(int i = 0; i < module->function_count; i++)
+            if(&module->functions[i] != fn)
+                collision |= !strcmp(out, module->functions[i].name) ||
+                             !strcmp(out, module->functions[i].export_symbol);
+        if(!collision) return;
+    }
+}
+
 static void
 slot_native_type(const char *source, ZirTarget target, char *out, size_t size)
 {
