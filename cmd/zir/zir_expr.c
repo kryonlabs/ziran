@@ -614,9 +614,18 @@ prefix(ExprParser *p)
         exit(1);
     } else if(take(p, "(")) {
         if(type_name(p, p->token.text) || is(p, "[")) {
-            Diagnostic(p->span, "parse.jai_syntax",
-                       "C-style cast or literal is not valid Jai syntax; use cast(Type) value or Type.{...}");
-            exit(1);
+            /* `(Color.{...})` is a parenthesized record literal, not a
+             * C-style cast: the record marker `.` follows the type name. */
+            ZirLexer lookahead = p->lexer;
+            ZirToken after_type = LexerNext(&lookahead);
+            int record_literal = is(p, ".") || !strcmp(after_type.text, ".");
+            if(!record_literal) {
+                Diagnostic(p->span, "parse.jai_syntax",
+                           "C-style cast or literal is not valid Jai syntax; use cast(Type) value or Type.{...}");
+                exit(1);
+            }
+            result = expression(p, 1);
+            expect(p, ")");
         } else {
             result = expression(p, 1);
             expect(p, ")");
