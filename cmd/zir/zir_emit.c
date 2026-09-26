@@ -219,19 +219,56 @@ target_top_name(const ZirModule *module, ZirTarget target, const char *name,
     }
 }
 
+static int
+native_top_name_conflict(const ZirModule *left, const char *left_source,
+                         const ZirModule *right, const char *right_source,
+                         int is_global)
+{
+    for(int target = ZIR_C; target <= ZIR_GO; target++) {
+        char left_name[ZIR_NAME_MAX * 2], right_name[ZIR_NAME_MAX * 2];
+        target_top_name(left, (ZirTarget)target, left_source,
+                        is_global, left_name, sizeof(left_name));
+        target_top_name(right, (ZirTarget)target, right_source,
+                        is_global, right_name, sizeof(right_name));
+        if(!strcmp(left_name, right_name)) return 1;
+    }
+    return 0;
+}
+
 int
 NativeGlobalNameConflict(const ZirModule *left, const ZirGlobal *a,
                          const ZirModule *right, const ZirGlobal *b)
 {
-    for(int target = ZIR_C; target <= ZIR_GO; target++) {
-        char left_name[ZIR_NAME_MAX * 2], right_name[ZIR_NAME_MAX * 2];
-        target_top_name(left, (ZirTarget)target, a->name,
-                        1, left_name, sizeof(left_name));
-        target_top_name(right, (ZirTarget)target, b->name,
-                        1, right_name, sizeof(right_name));
-        if(!strcmp(left_name, right_name)) return 1;
+    return native_top_name_conflict(left, a->name, right, b->name, 1);
+}
+
+int
+NativeDefineNameConflict(const ZirModule *left, const ZirDefine *a,
+                         const ZirModule *right, const ZirDefine *b)
+{
+    return native_top_name_conflict(left, a->name, right, b->name, 0);
+}
+
+static uint64_t
+native_top_hash(const ZirModule *module, ZirSourceSpan span,
+                const char *name)
+{
+    uint64_t hash = UINT64_C(14695981039346656037);
+    const char *parts[] = {module->source_path, span.path, name};
+    for(size_t part = 0; part < 3; part++) {
+        for(const unsigned char *p = (const unsigned char *)parts[part];
+            *p; p++)
+            hash = (hash ^ *p) * UINT64_C(1099511628211);
+        hash = (hash ^ 0xffu) * UINT64_C(1099511628211);
     }
-    return 0;
+    const unsigned coordinates[] = {
+        (unsigned)span.line, (unsigned)span.column
+    };
+    for(size_t c = 0; c < 2; c++)
+        for(size_t byte = 0; byte < sizeof(coordinates[c]); byte++)
+            hash = (hash ^ ((coordinates[c] >> (byte * 8)) & 0xffu)) *
+                   UINT64_C(1099511628211);
+    return hash;
 }
 
 void
@@ -243,23 +280,8 @@ TargetGlobalName(const ZirModule *module, ZirTarget target,
             const ZirGlobal *global = &module->globals[i];
             if(strcmp(global->name, name) ||
                !global->native_name_collision) continue;
-            uint64_t hash = UINT64_C(14695981039346656037);
-            const char *parts[] = {
-                module->source_path, global->span.path, global->name
-            };
-            for(size_t part = 0; part < 3; part++) {
-                for(const unsigned char *p =
-                        (const unsigned char *)parts[part]; *p; p++)
-                    hash = (hash ^ *p) * UINT64_C(1099511628211);
-                hash = (hash ^ 0xffu) * UINT64_C(1099511628211);
-            }
-            const unsigned coordinates[] = {
-                (unsigned)global->span.line, (unsigned)global->span.column
-            };
-            for(size_t c = 0; c < 2; c++)
-                for(size_t byte = 0; byte < sizeof(coordinates[c]); byte++)
-                    hash = (hash ^ ((coordinates[c] >> (byte * 8)) & 0xffu)) *
-                           UINT64_C(1099511628211);
+            uint64_t hash = native_top_hash(module, global->span,
+                                            global->name);
             format(out, size, "zir_g_%016llx", (unsigned long long)hash);
             return;
         }
@@ -270,6 +292,16 @@ void
 TargetDefineName(const ZirModule *module, ZirTarget target,
                  const char *name, char *out, size_t size)
 {
+    if(module != NULL)
+        for(int i = 0; i < module->define_count; i++) {
+            const ZirDefine *define = &module->defines[i];
+            if(strcmp(define->name, name) ||
+               !define->native_name_collision) continue;
+            uint64_t hash = native_top_hash(module, define->span,
+                                            define->name);
+            format(out, size, "zir_d_%016llx", (unsigned long long)hash);
+            return;
+        }
     target_top_name(module, target, name, 0, out, size);
 }
 

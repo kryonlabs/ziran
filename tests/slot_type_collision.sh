@@ -2,7 +2,7 @@
 set -eu
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-bin=${1:-"$repo/build/bin"}
+bin=$(dirname "${1:-$repo/build/bin/ziran}")
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 

@@ -284,7 +284,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   whose names differ only by case or underscores remain distinct. Constants
   use the same keyword and collision handling without defining C keywords as
   macros; source and saved IR tests include dependent constants and fixed-array
-  bounds. Generic record templates use named
+  bounds. Constants shared by linked modules, or whose target keyword escapes
+  collide across modules, receive distinct C macro and Go constant names;
+  `tests/imported_constant_names.sh` checks source and saved IR on all four
+  targets. Generic record templates use named
   `Name :: Generic(Type)` declarations or direct
   `Generic(Type)` annotations; `std/pair.zi` also provides `Pair`. Concrete
   record fields work in source, saved IR, C, C++, Go, and `.zib`. Top-level boolean

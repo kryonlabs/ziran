@@ -185,6 +185,7 @@ typedef struct ZirDefine {
     int is_public; /* visible to importing modules */
     int is_file_private;
     int requires_open_enum; /* unresolved source alias, cleared by checking */
+    int native_name_collision; /* in-memory: another constant maps to this native name */
     ZirSourceSpan span;
 } ZirDefine;
 

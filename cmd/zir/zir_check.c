@@ -6593,6 +6593,8 @@ CheckPrograms(ZirProgram **programs, int count)
             ZirModule *module = &programs[p]->modules[m];
             for(int g = 0; g < module->global_count; g++)
                 module->globals[g].native_name_collision = 0;
+            for(int d = 0; d < module->define_count; d++)
+                module->defines[d].native_name_collision = 0;
             for(int t = 0; t < module->type_count; t++) {
                 ZirType *type = &module->types[t];
                 type->native_name_mangled = 0;
@@ -6623,6 +6625,27 @@ CheckPrograms(ZirProgram **programs, int count)
                                                          other_module, other))
                                 continue;
                             global->native_name_collision = 1;
+                            other->native_name_collision = 1;
+                        }
+                    }
+            }
+        }
+    for(int p = 0; p < count; p++)
+        for(int m = 0; m < programs[p]->module_count; m++) {
+            ZirModule *module = &programs[p]->modules[m];
+            for(int d = 0; d < module->define_count; d++) {
+                ZirDefine *define = &module->defines[d];
+                for(int q = p; q < count; q++)
+                    for(int n = q == p ? m : 0;
+                        n < programs[q]->module_count; n++) {
+                        ZirModule *other_module = &programs[q]->modules[n];
+                        for(int h = q == p && n == m ? d + 1 : 0;
+                            h < other_module->define_count; h++) {
+                            ZirDefine *other = &other_module->defines[h];
+                            if(!NativeDefineNameConflict(module, define,
+                                                         other_module, other))
+                                continue;
+                            define->native_name_collision = 1;
                             other->native_name_collision = 1;
                         }
                     }
