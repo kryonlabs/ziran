@@ -277,10 +277,14 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   saved IR tests run `switch` and `goto` bindings, including a generated-name
   collision, across C, C++, and Go. Go globals keep source spelling when
   legal; native emitters escape target keyword globals, including collisions
-  with the generated escape name. A Go global and type whose names differ only
-  by case or underscores remain distinct. Constants use the same keyword and
-  collision handling without defining C keywords as macros; source and saved
-  IR tests include dependent constants and fixed-array bounds. Generic record templates use named
+  with the generated escape name. Same-named globals in linked modules, and
+  globals whose target keyword escapes collide across modules, receive
+  distinct native names. `tests/imported_global_names.sh` checks reads,
+  writes, source, and saved IR on C, C++, Go, and `.zib`. A Go global and type
+  whose names differ only by case or underscores remain distinct. Constants
+  use the same keyword and collision handling without defining C keywords as
+  macros; source and saved IR tests include dependent constants and fixed-array
+  bounds. Generic record templates use named
   `Name :: Generic(Type)` declarations or direct
   `Generic(Type)` annotations; `std/pair.zi` also provides `Pair`. Concrete
   record fields work in source, saved IR, C, C++, Go, and `.zib`. Top-level boolean

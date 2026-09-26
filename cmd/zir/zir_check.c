@@ -6591,6 +6591,8 @@ CheckPrograms(ZirProgram **programs, int count)
     for(int p = 0; p < count; p++)
         for(int m = 0; m < programs[p]->module_count; m++) {
             ZirModule *module = &programs[p]->modules[m];
+            for(int g = 0; g < module->global_count; g++)
+                module->globals[g].native_name_collision = 0;
             for(int t = 0; t < module->type_count; t++) {
                 ZirType *type = &module->types[t];
                 type->native_name_mangled = 0;
@@ -6603,6 +6605,27 @@ CheckPrograms(ZirProgram **programs, int count)
                     if(strcmp(mapped, type->name))
                         type->native_name_mangled = 1;
                 }
+            }
+        }
+    for(int p = 0; p < count; p++)
+        for(int m = 0; m < programs[p]->module_count; m++) {
+            ZirModule *module = &programs[p]->modules[m];
+            for(int g = 0; g < module->global_count; g++) {
+                ZirGlobal *global = &module->globals[g];
+                for(int q = p; q < count; q++)
+                    for(int n = q == p ? m : 0;
+                        n < programs[q]->module_count; n++) {
+                        ZirModule *other_module = &programs[q]->modules[n];
+                        for(int h = q == p && n == m ? g + 1 : 0;
+                            h < other_module->global_count; h++) {
+                            ZirGlobal *other = &other_module->globals[h];
+                            if(!NativeGlobalNameConflict(module, global,
+                                                         other_module, other))
+                                continue;
+                            global->native_name_collision = 1;
+                            other->native_name_collision = 1;
+                        }
+                    }
             }
         }
     for(int p = 0; p < count; p++)

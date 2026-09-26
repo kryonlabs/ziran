@@ -219,10 +219,50 @@ target_top_name(const ZirModule *module, ZirTarget target, const char *name,
     }
 }
 
+int
+NativeGlobalNameConflict(const ZirModule *left, const ZirGlobal *a,
+                         const ZirModule *right, const ZirGlobal *b)
+{
+    for(int target = ZIR_C; target <= ZIR_GO; target++) {
+        char left_name[ZIR_NAME_MAX * 2], right_name[ZIR_NAME_MAX * 2];
+        target_top_name(left, (ZirTarget)target, a->name,
+                        1, left_name, sizeof(left_name));
+        target_top_name(right, (ZirTarget)target, b->name,
+                        1, right_name, sizeof(right_name));
+        if(!strcmp(left_name, right_name)) return 1;
+    }
+    return 0;
+}
+
 void
 TargetGlobalName(const ZirModule *module, ZirTarget target,
                  const char *name, char *out, size_t size)
 {
+    if(module != NULL)
+        for(int i = 0; i < module->global_count; i++) {
+            const ZirGlobal *global = &module->globals[i];
+            if(strcmp(global->name, name) ||
+               !global->native_name_collision) continue;
+            uint64_t hash = UINT64_C(14695981039346656037);
+            const char *parts[] = {
+                module->source_path, global->span.path, global->name
+            };
+            for(size_t part = 0; part < 3; part++) {
+                for(const unsigned char *p =
+                        (const unsigned char *)parts[part]; *p; p++)
+                    hash = (hash ^ *p) * UINT64_C(1099511628211);
+                hash = (hash ^ 0xffu) * UINT64_C(1099511628211);
+            }
+            const unsigned coordinates[] = {
+                (unsigned)global->span.line, (unsigned)global->span.column
+            };
+            for(size_t c = 0; c < 2; c++)
+                for(size_t byte = 0; byte < sizeof(coordinates[c]); byte++)
+                    hash = (hash ^ ((coordinates[c] >> (byte * 8)) & 0xffu)) *
+                           UINT64_C(1099511628211);
+            format(out, size, "zir_g_%016llx", (unsigned long long)hash);
+            return;
+        }
     target_top_name(module, target, name, 1, out, size);
 }
 

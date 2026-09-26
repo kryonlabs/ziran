@@ -47,6 +47,8 @@ void TargetFieldName(const ZirType *record, ZirTarget target,
                      const char *name, char *out, size_t size);
 void TargetGlobalName(const ZirModule *module, ZirTarget target,
                       const char *name, char *out, size_t size);
+int NativeGlobalNameConflict(const ZirModule *left, const ZirGlobal *a,
+                             const ZirModule *right, const ZirGlobal *b);
 void TargetDefineName(const ZirModule *module, ZirTarget target,
                       const char *name, char *out, size_t size);
 void ArrayAbiName(const ZirFunction *fn, int parameter, char *out, size_t size);

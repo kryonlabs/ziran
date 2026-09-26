@@ -174,6 +174,7 @@ typedef struct ZirGlobal {
     char init[ZIR_TEXT_MAX];
     int is_static;   /* internal linkage in generated native code */
     int is_file_private;
+    int native_name_collision; /* in-memory: another global maps to this native name */
     ZirSourceSpan span;
 } ZirGlobal;
 
