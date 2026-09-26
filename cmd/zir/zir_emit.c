@@ -36,6 +36,25 @@ ArrayValueType(const char *type)
 int
 ModuleUsesSlices(const ZirModule *module)
 {
+    for(int i = 0; i < module->global_count; i++)
+        if(SliceElementType(module->globals[i].type, NULL, 0))
+            return 1;
+    for(int i = 0; i < module->type_count; i++) {
+        const ZirType *record = &module->types[i];
+        if(record->is_enum)
+            continue;
+        if(record->is_procedure_type) {
+            if(SliceElementType(record->procedure_return_type, NULL, 0) ||
+               strstr(record->body, "[]") != NULL)
+                return 1;
+            continue;
+        }
+        size_t offset = 0;
+        ZirTypeField field;
+        while(TypeNextField(record, &offset, &field) > 0)
+            if(SliceElementType(field.type, NULL, 0))
+                return 1;
+    }
     for(int i = 0; i < module->import_count; i++) {
         const ZirImport *imp = &module->imports[i];
         if(imp->kind == ZIR_IMPORT_EXTERN &&
