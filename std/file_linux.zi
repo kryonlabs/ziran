@@ -12,6 +12,7 @@ WriteAtRaw :: (fd: s32, input: *u8, count: u64, offset: s64) -> s64 #foreign lib
 MakeDirectoryRaw :: (path: *u8, mode: s32) -> s32 #foreign libc "mkdir";
 UnlinkRaw :: (path: *u8) -> s32 #foreign libc "unlink";
 LinkRaw :: (source: *u8, destination: *u8) -> s32 #foreign libc "link";
+SyncRaw :: (fd: s32) -> s32 #foreign libc "fsync";
 
 #scope_export
 FileHandle :: struct {
@@ -105,4 +106,10 @@ WriteAt :: (file: FileHandle, input: []u8, offset: s64) -> s64 {
 CloseFile :: (file: FileHandle) -> bool {
     if !file.valid { return false }
     return CloseRaw(file.fd) == 0
+}
+
+#program_export
+SyncFile :: (file: FileHandle) -> bool {
+    if !file.valid { return false }
+    return SyncRaw(file.fd) == 0
 }

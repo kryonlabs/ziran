@@ -33,7 +33,7 @@ SelfTest :: (path: *u8, published_path: *u8) -> s32 {
         CloseFile(file)
         return 5
     }
-    if !CloseFile(file) { return 6 }
+    if !SyncFile(file) || !CloseFile(file) { return 6 }
     if !LinkFile(name, published) || LinkFile(name, published) { return 7 }
     if !RemoveFile(name) { return 8 }
     mapped: MappedFile = MapPrivate(published)
