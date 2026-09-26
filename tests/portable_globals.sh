@@ -209,6 +209,29 @@ fi
 grep -q 'portable global initializers need a scalar, string, record, or array literal value' \
     "$work/error"
 
+cat > "$work/wrong_string.zi" <<'ZI'
+bad: string = 42;
+ZI
+cat > "$work/wrong_bool.zi" <<'ZI'
+bad: bool = 1;
+ZI
+cat > "$work/wrong_field.zi" <<'ZI'
+Box :: struct { name: string; }
+bad: Box = Box.{.name = 42};
+ZI
+cat > "$work/wrong_array.zi" <<'ZI'
+bad: [1]string = string.[42];
+ZI
+for name in wrong_string wrong_bool wrong_field wrong_array; do
+    if "$ziran" check --root "$work" "$work/$name.zi" \
+        2> "$work/$name.err"; then
+        echo "mismatched global initializer passed checking: $name" >&2
+        exit 1
+    fi
+    rg -q 'initializer type mismatch|initializer field type mismatch|array initializer element type mismatch' \
+        "$work/$name.err"
+done
+
 cat > "$work/session.zi" <<'ZI'
 counter: s32;
 #program_export

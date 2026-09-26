@@ -1443,8 +1443,10 @@ global_vec_source(Checker *c, int index)
 static int
 numeric(const char *type)
 {
+    const char *scalar = ScalarType(type);
     return !strcmp(type, "integer") || !strcmp(type, "real") ||
-           (*type && strchr("suf", type[0]) && *ScalarType(type));
+           (*scalar && strcmp(scalar, "string") &&
+            strchr("suf", scalar[0]) != NULL);
 }
 
 static int
@@ -6735,7 +6737,7 @@ CheckPrograms(ZirProgram **programs, int count)
                 free(raw.exprs);
                 char folded[ZIR_TEXT_MAX];
                 const ZirModule *folded_owner = NULL;
-                if(!literal_initializer &&
+                if(!literal_initializer && strcmp(global->type, "bool") &&
                    EvaluateCompileLiteral(module, global->init,
                         global->span, 0, folded, sizeof(folded),
                         &folded_owner)) {
@@ -6753,20 +6755,12 @@ CheckPrograms(ZirProgram **programs, int count)
                                        global->init);
                             return 0;
                         }
-                    } else if(!strcmp(global->type, "bool")) {
-                        if(!strcmp(folded, "0"))
-                            copy_text(folded, sizeof(folded), "false");
-                        else if(!strcmp(folded, "1"))
-                            copy_text(folded, sizeof(folded), "true");
-                        else {
-                            Diagnostic(global->span, "check.constant_type",
-                                       "boolean initializer is not a boolean constant: %s",
-                                       global->init);
-                            return 0;
-                        }
                     }
                     copy_text(global->init, sizeof(global->init), folded);
                 }
+                if(!check_file_private_expression(module, global->init,
+                                                  global->span))
+                    return 0;
                 ZirFunction expression = {0};
                 int root = ParseExprTyped(&expression, module,
                                           global->init, global->span,
@@ -6778,6 +6772,46 @@ CheckPrograms(ZirProgram **programs, int count)
                     free(expression.exprs);
                     return 0;
                 }
+                if(valid) {
+                    Checker initializer = {0};
+                    initializer.module = module;
+                    initializer.fn = &expression;
+                    initializer.programs = programs;
+                    initializer.program_count = count;
+                    copy_text(initializer.expected_type,
+                              sizeof(initializer.expected_type),
+                              global->type);
+                    if(!reserve_compound_constants(module, &expression)) {
+                        Diagnostic(global->span, "check.global",
+                                   "global initializer expression is too large");
+                        free(expression.exprs);
+                        return 0;
+                    }
+                    const char *actual = expression_type(&initializer, root);
+                    if(initializer.errors == 0) {
+                        if(!actual[0])
+                            error(&initializer, global->span,
+                                  "cannot infer initializer type", global->name);
+                        else if(!compatible_checked(&initializer,
+                                                    global->type, actual))
+                            error(&initializer, global->span,
+                                  "initializer type mismatch", global->name);
+                    }
+                    int typed_valid = initializer.errors == 0 &&
+                                      !initializer.failed;
+                    for(int i = 0; i < initializer.restore_count; i++)
+                        free(initializer.restores[i].flags);
+                    free(initializer.bindings);
+                    free(initializer.specializations);
+                    if(!typed_valid) {
+                        if(initializer.errors == 0)
+                            Diagnostic(global->span, "check.global",
+                                       "cannot check file-scope initializer: %s",
+                                       global->name);
+                        free(expression.exprs);
+                        return 0;
+                    }
+                }
                 free(expression.exprs);
                 if(!valid) {
                     Diagnostic(global->span, "check.global",
@@ -6785,9 +6819,6 @@ CheckPrograms(ZirProgram **programs, int count)
                                global->init);
                     return 0;
                 }
-                if(!check_file_private_expression(module, global->init,
-                                                  global->span))
-                    return 0;
             }
             for(int d = 0; d < module->define_count; d++)
                 if(!check_file_private_expression(module,

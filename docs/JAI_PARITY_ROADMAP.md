@@ -40,7 +40,7 @@ including `#enum`, `variant`, postfix `?`, `#global`, `#export`, `#private`,
 `#extern`, C pointer suffixes, C conditional expressions, and old Kryon file
 extensions. The rejection tests should stay.
 
-The full local `make check` suite has 98 checks. Re-run it after any change to
+The full local `make check` suite has 99 checks. Re-run it after any change to
 the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 
 | Area | Current subset | Next proof of parity |
@@ -234,8 +234,9 @@ Function bodies use checked expression graphs, but declaration and import
 lowering still contain target-specific text handling. File-scope record and
 array initializers now share a parsed expression-tree lowering path on C,
 C++, and Go, including nested values and reordered record fields;
-`tests/portable_globals.sh` compares them with saved IR and `.zib`. Replace
-the remaining textual lowering with typed
+`tests/portable_globals.sh` compares them with saved IR and `.zib` and checks
+that mismatched scalar, record-field, and array-element initializers fail in
+the shared checker. Replace the remaining textual lowering with typed
 declaration/import nodes or a checked target-neutral lowering plan. Audit name
 mapping across an entire program: top-level types, exported procedures,
 foreign symbols, imports, target keywords, and names differing by case or

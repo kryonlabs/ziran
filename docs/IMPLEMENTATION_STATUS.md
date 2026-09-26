@@ -48,12 +48,15 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   and saved IR retain these exports and globals across native and portable
   builds.
 - File-scope variable initializers and constants pass through the Jai
-  expression parser during checking. C-style compound literals and ternary
-  expressions are rejected there before native output, including from saved
-  IR. The C++ and Go backends no longer carry C-style compound-literal
-  rewrites; Go also no longer translates C casts, `NULL`, or C scalar type
-  aliases in file-scope expressions. The source reader no longer joins C-style
-  adjacent string literals or multi-line `?:` fragments.
+  expression parser and shared type checker during checking, including nested
+  record fields and fixed-array elements. A mismatched string, boolean, or
+  nested initializer now fails before native output or portable bundling;
+  `tests/portable_globals.sh` exercises these diagnostics. C-style compound
+  literals and ternary expressions are rejected there before native output,
+  including from saved IR. The C++ and Go backends no longer carry C-style
+  compound-literal rewrites; Go also no longer translates C casts, `NULL`, or
+  C scalar type aliases in file-scope expressions. The source reader no longer
+  joins C-style adjacent string literals or multi-line `?:` fragments.
 - Portable file-scope array initializers use `.[...]` literals with the
   declared array type for context: scalar elements and record elements
   (`Type.{.field = value}`) fold in the VM, serialize through `.zib`, and
