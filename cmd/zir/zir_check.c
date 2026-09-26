@@ -3305,12 +3305,19 @@ check_type_declarations(ZirModule *module)
         if(record->is_procedure_type) {
             const ZirType *result = FindType(module,
                 record->procedure_return_type, NULL);
+            const char *result_base = record->procedure_return_type;
+            while(*result_base == '*')
+                result_base++;
+            const ZirType *result_base_type = result != NULL ? result :
+                FindType(module, result_base, NULL);
             if(!record->procedure_return_type[0] ||
                (record->is_c_call ?
                 (strcmp(record->procedure_return_type, "void") &&
                  local_storage_error(module, record->procedure_return_type) != NULL) :
                 (TargetType(record->procedure_return_type, ZIR_C) == NULL &&
-                 result == NULL)) || (result && result->is_procedure_type))
+                 TargetType(result_base, ZIR_C) == NULL &&
+                 result_base_type == NULL)) ||
+               (result_base_type && result_base_type->is_procedure_type))
                 return record_declaration_error(record,
                     "invalid procedure type result", record->procedure_return_type);
             char parameters[64][ZIR_TEXT_MAX];
@@ -3323,12 +3330,20 @@ check_type_declarations(ZirModule *module)
                 *colon++ = '\0';
                 trim_in_place(parameters[parameter]);
                 trim_in_place(colon);
+                /* Pointer slot parameters name a pointee type: strip the
+                 * leading '*' chain before resolving the base type. */
+                const char *base = colon;
+                while(*base == '*')
+                    base++;
                 const ZirType *type = FindType(module, colon, NULL);
+                const ZirType *base_type = type != NULL ? type :
+                    FindType(module, base, NULL);
                 if(!*parameters[parameter] || !strcmp(colon, "void") ||
                    (record->is_c_call ?
                     local_storage_error(module, colon) != NULL :
-                    (TargetType(colon, ZIR_C) == NULL && type == NULL)) ||
-                   (type && type->is_procedure_type))
+                    (TargetType(colon, ZIR_C) == NULL &&
+                     TargetType(base, ZIR_C) == NULL && base_type == NULL)) ||
+                   (base_type && base_type->is_procedure_type))
                     return record_declaration_error(record, "invalid slot parameter", parameters[parameter]);
                 for(int previous = 0; previous < parameter; previous++)
                     if(!strcmp(parameters[previous], parameters[parameter]))
