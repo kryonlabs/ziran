@@ -51,6 +51,10 @@ int NativeGlobalNameConflict(const ZirModule *left, const ZirGlobal *a,
                              const ZirModule *right, const ZirGlobal *b);
 int NativeDefineNameConflict(const ZirModule *left, const ZirDefine *a,
                              const ZirModule *right, const ZirDefine *b);
+int NativeValueNameConflict(const ZirModule *global_module,
+                            const ZirGlobal *global,
+                            const ZirModule *define_module,
+                            const ZirDefine *define);
 void TargetDefineName(const ZirModule *module, ZirTarget target,
                       const char *name, char *out, size_t size);
 void ArrayAbiName(const ZirFunction *fn, int parameter, char *out, size_t size);

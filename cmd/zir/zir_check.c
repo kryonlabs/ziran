@@ -6654,6 +6654,25 @@ CheckPrograms(ZirProgram **programs, int count)
     for(int p = 0; p < count; p++)
         for(int m = 0; m < programs[p]->module_count; m++) {
             ZirModule *module = &programs[p]->modules[m];
+            for(int g = 0; g < module->global_count; g++) {
+                ZirGlobal *global = &module->globals[g];
+                for(int q = 0; q < count; q++)
+                    for(int n = 0; n < programs[q]->module_count; n++) {
+                        ZirModule *other_module = &programs[q]->modules[n];
+                        for(int d = 0; d < other_module->define_count; d++) {
+                            ZirDefine *define = &other_module->defines[d];
+                            if(!NativeValueNameConflict(module, global,
+                                                        other_module, define))
+                                continue;
+                            global->native_name_collision = 1;
+                            define->native_name_collision = 1;
+                        }
+                    }
+            }
+        }
+    for(int p = 0; p < count; p++)
+        for(int m = 0; m < programs[p]->module_count; m++) {
+            ZirModule *module = &programs[p]->modules[m];
             for(int t = 0; t < module->type_count; t++) {
                 ZirType *type = &module->types[t];
                 if(type->is_procedure_type || type->is_record_template ||

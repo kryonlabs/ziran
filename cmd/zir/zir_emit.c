@@ -222,14 +222,14 @@ target_top_name(const ZirModule *module, ZirTarget target, const char *name,
 static int
 native_top_name_conflict(const ZirModule *left, const char *left_source,
                          const ZirModule *right, const char *right_source,
-                         int is_global)
+                         int left_global, int right_global)
 {
     for(int target = ZIR_C; target <= ZIR_GO; target++) {
         char left_name[ZIR_NAME_MAX * 2], right_name[ZIR_NAME_MAX * 2];
         target_top_name(left, (ZirTarget)target, left_source,
-                        is_global, left_name, sizeof(left_name));
+                        left_global, left_name, sizeof(left_name));
         target_top_name(right, (ZirTarget)target, right_source,
-                        is_global, right_name, sizeof(right_name));
+                        right_global, right_name, sizeof(right_name));
         if(!strcmp(left_name, right_name)) return 1;
     }
     return 0;
@@ -239,14 +239,22 @@ int
 NativeGlobalNameConflict(const ZirModule *left, const ZirGlobal *a,
                          const ZirModule *right, const ZirGlobal *b)
 {
-    return native_top_name_conflict(left, a->name, right, b->name, 1);
+    return native_top_name_conflict(left, a->name, right, b->name, 1, 1);
 }
 
 int
 NativeDefineNameConflict(const ZirModule *left, const ZirDefine *a,
                          const ZirModule *right, const ZirDefine *b)
 {
-    return native_top_name_conflict(left, a->name, right, b->name, 0);
+    return native_top_name_conflict(left, a->name, right, b->name, 0, 0);
+}
+
+int
+NativeValueNameConflict(const ZirModule *global_module, const ZirGlobal *global,
+                        const ZirModule *define_module, const ZirDefine *define)
+{
+    return native_top_name_conflict(global_module, global->name,
+                                    define_module, define->name, 1, 0);
 }
 
 static uint64_t
