@@ -39,13 +39,13 @@ including `#enum`, `variant`, postfix `?`, `#global`, `#export`, `#private`,
 `#extern`, C pointer suffixes, C conditional expressions, and old Kryon file
 extensions. The rejection tests should stay.
 
-The full local `make check` suite has 90 checks. Re-run it after any change to
+The full local `make check` suite has 91 checks. Re-run it after any change to
 the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 
 | Area | Current subset | Next proof of parity |
 | --- | --- | --- |
 | Names and scopes | Local/field record `using`; local/data enum `using`; module-local data record/union `using` in procedures; named imports | File-scope record lookup, imported global visibility, order independence |
-| Values and expressions | Record literals, nonempty typed arrays, direct generic calls, selected `ifx` forms | True empty arrays, nested lazy expressions, fuller type queries |
+| Values and expressions | Record literals, nonempty typed arrays, direct generic calls, `ifx` in typed expressions and call arguments | True empty arrays, broader lazy-expression audit, fuller type queries |
 | Procedures | Named values, defaults, named arguments, direct polymorphism | Overload/variadic/operator and broader procedure-form audit |
 | Compile time | Bounded pure scalars, strings, and floats | One typed evaluator, aggregates, verified effect rules |
 | Native output | C/C++/Go checked body graphs; C/C++ unions | Declaration lowering, whole-program names, Go union layout |
@@ -124,9 +124,10 @@ clear evaluation-order rules. Extend the existing direct polymorphic call
 support to field expressions in specialized record defaults and defaults on
 procedure-type values.
 
-Nested lazy expressions inside larger calls are a known gap: `ifx`/`#ifx`
-lowering currently covers selected placements, but a conditional used inside
-an outer call is not fully supported. Standalone `type_of`, forward and
+`ifx` and `#ifx` now work as positional and named call arguments in the
+tested scalar subset, including source/saved-IR builds and entry pruning.
+Audit remaining lazy-expression placements and aggregate result types.
+Standalone `type_of`, forward and
 imported file-scope `type_of`, and foreign-record `size_of` also remain open.
 Put each accepted expression through source, saved IR, and all applicable
 targets. Rejection for an unavailable construct must occur in checking, not

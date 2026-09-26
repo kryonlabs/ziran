@@ -274,8 +274,13 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   short-circuit evaluation, including nested forms. Jai `ifx` conditional
   expressions, with or without `then`, replace C-style `?:`; top-level
   conditional expressions with
-  typed destinations or loop conditions preserve selected-arm evaluation. Lazy expressions
-  embedded in outer calls remain unsupported.
+  typed destinations or loop conditions preserve selected-arm evaluation.
+  Conditional expressions inside positional and named call arguments run
+  across the native targets and portable bundles. Entry linking preserves
+  argument positions when it folds a constant
+  conditional or short-circuit expression. `tests/nested_lazy_call.sh`
+  compares source and saved `.zir` across C, C++, Go, and `.zib` while
+  checking that unselected arms have no effects.
   Jai `#ifx` selects a constant, global initializer, or function expression
   arm before strict checking and saved-IR generation. It accepts the Jai
   semicolon before `else`, nested selections, boolean and integer constants,

@@ -347,6 +347,22 @@ copy_live_expression(const ZirFunction *from, ZirFunction *to,
             int selected = known ? expr->right : expr->third;
             int result = copy_live_expression(from, to, mapping, selected,
                                               depth + 1);
+            if(result >= 0) {
+                /* A conditional can be a named or positional call argument.
+                 * The selected arm inherits that call-site binding when the
+                 * enclosing expression disappears during pruning. */
+                to->exprs[result].argument_index = expr->argument_index;
+                copy_text(to->exprs[result].argument_name,
+                          sizeof(to->exprs[result].argument_name),
+                          expr->argument_name);
+                if(expr->argument_index >= 0 &&
+                   (!strcmp(to->exprs[result].type, "integer") ||
+                    !strcmp(to->exprs[result].type, "real")) &&
+                   strcmp(expr->type, "integer") != 0 &&
+                   strcmp(expr->type, "real") != 0)
+                    copy_text(to->exprs[result].type,
+                              sizeof(to->exprs[result].type), expr->type);
+            }
             mapping[source] = result;
             return result;
         }
@@ -359,6 +375,12 @@ copy_live_expression(const ZirFunction *from, ZirFunction *to,
                (!strcmp(expr->op, "||") && !left)) {
                 int result = copy_live_expression(from, to, mapping,
                                                   expr->right, depth + 1);
+                if(result >= 0) {
+                    to->exprs[result].argument_index = expr->argument_index;
+                    copy_text(to->exprs[result].argument_name,
+                              sizeof(to->exprs[result].argument_name),
+                              expr->argument_name);
+                }
                 mapping[source] = result;
                 return result;
             }
