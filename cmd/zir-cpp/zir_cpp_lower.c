@@ -487,6 +487,13 @@ strip_alias_type(const ZirModule *m, const char *type,
     snprintf(dst, dst_size, "%s", type);
 }
 
+static void
+resolve_slot_type(void *context, const char *source,
+                  char *out, size_t size)
+{
+    strip_alias_type((const ZirModule *)context, source, out, size);
+}
+
 /* Convert Jai parameters to C++ and strip imported type qualifiers. */
 static void
 convert_args(const ZirModule *m, const ZirFunction *fn,
@@ -821,7 +828,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
         const ZirType *slot = &m->types[i];
         if(!slot->is_procedure_type || !slot->is_c_call)
             continue;
-        EmitSlotType(h, slot, ZIR_CPP, NULL, NULL);
+        EmitSlotType(h, slot, ZIR_CPP, resolve_slot_type, (void *)m);
     }
     for(i = 0; i < m->type_count; i++) {
         const ZirType *ty = &m->types[i];
@@ -852,7 +859,7 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
         const ZirType *slot = &m->types[i];
         if(!slot->is_procedure_type || slot->is_c_call)
             continue;
-        EmitSlotType(h, slot, ZIR_CPP, NULL, NULL);
+        EmitSlotType(h, slot, ZIR_CPP, resolve_slot_type, (void *)m);
     }
     for(i = 0; i < m->type_count; i++) {
         const ZirType *ty = &m->types[i];
