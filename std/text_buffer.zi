@@ -1,0 +1,13 @@
+// Bounded NUL-terminated byte buffer to borrowed text. The caller keeps the
+// buffer alive until the returned view is no longer used.
+#program_export
+TextUntilNul :: (buffer: []u8) -> string {
+    index: s64 = 0
+    while index < cast(s64)buffer.count {
+        if buffer[index] == cast(u8)0 {
+            return TextView(buffer[0:index])
+        }
+        index += 1
+    }
+    return ""
+}

@@ -244,6 +244,11 @@ rejected for strings, slices, and fixed arrays.
 String ranges use `value[low:high]` and return an immutable borrowed `string`
 view over those bytes. Bounds are checked, and callers must keep UTF-8
 codepoint boundaries intact when they need valid text.
+`TextView(bytes)` makes an immutable borrowed `string` view of a `[]u8` slice.
+The caller keeps the byte storage alive while the text is used. The portable
+bundle runner copies those bytes into its managed execution storage. The
+standard library's `TextUntilNul(buffer)` accepts a bounded byte slice and
+returns a view ending at the first zero byte, or empty text if none is found.
 An ordinary record may still declare a field named `length`; generated C ABI
 structures also retain their internal length fields.
 Array declarations accept `.[values]` with an expected fixed-array type and

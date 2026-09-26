@@ -3113,6 +3113,15 @@ expression_type(Checker *c, int index)
     case ZIR_EXPR_CALL: {
         char display_name[ZIR_NAME_MAX];
         copy_text(display_name, sizeof(display_name), e->name);
+        if(!strcmp(e->name, "TextView")) {
+            int first = e->first_child;
+            if(first < 0 || c->fn->exprs[first].next_sibling >= 0 ||
+               c->fn->exprs[first].argument_name[0] ||
+               strcmp(expression_type(c, first), "[]u8"))
+                error(c, e->span, "TextView requires one []u8 argument", e->name);
+            type = "string";
+            break;
+        }
         if(!strcmp(e->name, "VecPush") || !strcmp(e->name, "VecClear") ||
            !strcmp(e->name, "VecFree") || !strcmp(e->name, "VecSwap") ||
            !strcmp(e->name, "VecPop") || !strcmp(e->name, "VecGet") ||

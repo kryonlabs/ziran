@@ -476,6 +476,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   and record fields. `text[low:high]` returns a borrowed byte range as a
   `string`; bounds are checked in the portable VM and generated C, C++, and
   Go. Callers must choose UTF-8 codepoint boundaries when slicing text.
+  `TextView([]u8)` borrows a byte slice as text in native C and C++; Go and
+  the bundle runner copy it into managed storage. The bounded
+  `std/text_buffer.zi` helper reads a NUL-terminated buffer through this
+  operation. The dedicated gate exercises C, C++, Go, bundles, and invalid
+  non-byte arguments.
   `make check` compares source and saved-IR bundles with C, C++, and Go on a
   string program and rejects out-of-range indexing.
 - Portable bundles retain referenced module globals, including records and

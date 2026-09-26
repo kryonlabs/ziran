@@ -523,7 +523,8 @@ law_names_import(const ZirModule *module, const ZirImport *import)
 static int
 vec_operation(const char *name)
 {
-    return !strcmp(name, "VecPush") || !strcmp(name, "VecClear") ||
+    return !strcmp(name, "TextView") ||
+           !strcmp(name, "VecPush") || !strcmp(name, "VecClear") ||
            !strcmp(name, "VecFree") || !strcmp(name, "VecSwap") ||
            !strcmp(name, "VecPop") || !strcmp(name, "VecGet") ||
            !strcmp(name, "VecClone") || !strcmp(name, "VecSlice") ||

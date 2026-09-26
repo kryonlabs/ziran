@@ -1,0 +1,94 @@
+#!/bin/sh
+set -eu
+
+ziran=$1
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+
+cat > "$work/app.zi" <<'ZI'
+#import "text_buffer"
+#program_export
+Check :: () -> s32 {
+    bytes: [4]u8
+    bytes[0] = cast(u8)97
+    bytes[1] = cast(u8)98
+    bytes[2] = cast(u8)99
+    bytes[3] = cast(u8)0
+    text := TextView(bytes[0:3])
+    whole := TextView(bytes[:])
+    terminated := TextUntilNul(bytes[:])
+    if text != "abc" || text.count != 3 ||
+        whole.count != 4 || whole[3] != cast(u8)0 ||
+        terminated != "abc" { return 1 }
+    return 0
+}
+ZI
+
+"$ziran" bundle --root "$work" --module-path "$repo/std" --entry app:Check \
+    -o "$work/app.zib" "$work/app.zi"
+test "$("$ziran" run "$work/app.zib")" = 0
+"$ziran" ir --root "$work" --module-path "$repo/std" \
+    -o "$work/ir" "$work/app.zi"
+"$ziran" bundle --root "$work/ir" --module-path "$repo/std" \
+    --entry app:Check -o "$work/saved.zib" "$work/ir/app.zir"
+test "$("$ziran" run "$work/saved.zib")" = 0
+
+"$ziran" build --target=c --no-main --root "$work" \
+    --module-path "$repo/std" \
+    -o "$work/c" "$work/app.zi"
+cat > "$work/c/main.c" <<'C'
+#include "app.h"
+int main(void) { return Check(); }
+C
+"${CC:-cc}" -std=c11 -I"$repo/include" -I"$work/c" \
+    "$work/c"/*.c -o "$work/c/app"
+"$work/c/app"
+
+"$ziran" build --target=cpp --no-main --root "$work" \
+    --module-path "$repo/std" \
+    -o "$work/cpp" "$work/app.zi"
+cat > "$work/cpp/main.cpp" <<'CPP'
+#include "app.hpp"
+int main() { return Check(); }
+CPP
+"${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$work/cpp" \
+    "$work/cpp"/*.cpp -o "$work/cpp/app"
+"$work/cpp/app"
+
+"$ziran" build --target=go --pkg main --no-main --root "$work" \
+    --module-path "$repo/std" \
+    -o "$work/go" "$work/app.zi"
+cat > "$work/go/main.go" <<'GO'
+package main
+func main() { if App_Check() != 0 { panic("TextView") } }
+GO
+GO111MODULE=off go run "$work/go"/*.go
+
+cat > "$work/invalid.zi" <<'ZI'
+Check :: () -> string {
+    numbers: [1]s32
+    return TextView(numbers[:])
+}
+ZI
+if "$ziran" ir --root "$work" -o "$work/invalid-ir" \
+    "$work/invalid.zi" > "$work/invalid.log" 2>&1; then
+    echo 'TextView accepted a non-byte slice' >&2
+    exit 1
+fi
+rg -q 'TextView requires one \[\]u8 argument' "$work/invalid.log"
+
+cat > "$work/escape.zi" <<'ZI'
+Bad :: () -> string {
+    bytes: [2]u8
+    bytes[0] = cast(u8)97
+    bytes[1] = cast(u8)98
+    return TextView(bytes[:])
+}
+ZI
+if "$ziran" ir --root "$work" -o "$work/escape-ir" \
+    "$work/escape.zi" > "$work/escape.log" 2>&1; then
+    echo 'TextView let a local buffer escape' >&2
+    exit 1
+fi
+rg -q 'returned text view borrows local or temporary storage' "$work/escape.log"

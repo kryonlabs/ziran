@@ -629,7 +629,8 @@ PrintLawResults(ZirProgram **programs, int count, FILE *out)
 static int
 vec_operation_name(const char *name)
 {
-    return !strcmp(name, "VecPush") || !strcmp(name, "VecClear") ||
+    return !strcmp(name, "TextView") ||
+           !strcmp(name, "VecPush") || !strcmp(name, "VecClear") ||
            !strcmp(name, "VecFree") || !strcmp(name, "VecSwap") ||
            !strcmp(name, "VecPop") || !strcmp(name, "VecGet") ||
            !strcmp(name, "VecClone") || !strcmp(name, "VecSlice") ||

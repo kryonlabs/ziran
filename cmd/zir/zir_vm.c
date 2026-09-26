@@ -1377,6 +1377,15 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
     case ZIR_EXPR_CALL:
         if(expression->name[0] == 0)
             return 0;
+        if(!strcmp(expression->name, "TextView")) {
+            int first = expression->first_child;
+            return first >= 0 &&
+                   function->exprs[first].next_sibling < 0 &&
+                   strcmp(function->exprs[first].type, "[]u8") == 0 &&
+                   strcmp(expression->type, "string") == 0 &&
+                   verify_expression(module, function, bindings,
+                                     binding_count, first, depth + 1);
+        }
         if(!strcmp(expression->name, "VecPush") ||
            !strcmp(expression->name, "VecClear") ||
            !strcmp(expression->name, "VecFree") ||
@@ -2635,6 +2644,37 @@ eval(Frame *frame, int index, int depth)
                           expression->third, depth + 1);
         break;
     case ZIR_EXPR_CALL: {
+        if(!strcmp(expression->name, "TextView")) {
+            Value bytes = eval(frame, expression->first_child, depth + 1);
+            if(frame->vm->failed || bytes.kind != VALUE_SLICE ||
+               (bytes.length > 0 && bytes.array == NULL)) {
+                frame->vm->failed = 1;
+                break;
+            }
+            StringLiteral *item = malloc(sizeof(*item) + bytes.length + 1);
+            if(item == NULL) {
+                frame->vm->failed = 1;
+                break;
+            }
+            for(size_t i = 0; i < bytes.length; i++) {
+                Value *part = indexed_element(bytes, i);
+                if(part == NULL || part->kind != VALUE_INT) {
+                    frame->vm->failed = 1;
+                    free(item);
+                    break;
+                }
+                item->data[i] = (unsigned char)integer_bits(*part);
+            }
+            if(frame->vm->failed)
+                break;
+            item->data[bytes.length] = 0;
+            item->length = bytes.length;
+            item->expression = NULL;
+            item->next = frame->vm->strings;
+            frame->vm->strings = item;
+            value = string_value(item->data, item->length);
+            break;
+        }
         if(!strcmp(expression->name, "VecPush") ||
            !strcmp(expression->name, "VecClear") ||
            !strcmp(expression->name, "VecFree") ||

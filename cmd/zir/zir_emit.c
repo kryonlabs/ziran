@@ -2649,6 +2649,23 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         break;
     }
     case ZIR_EXPR_CALL:
+        if(!strcmp(expr->name, "TextView")) {
+            if(expr->first_child < 0 ||
+               e->fn->exprs[expr->first_child].next_sibling >= 0)
+                fatal(expr, "TextView requires one []u8 argument");
+            emit_expr(e, expr->first_child, "[]u8", a, sizeof(a));
+            if(e->target == ZIR_GO) {
+                format(out, size, "string(%s)", a);
+            } else {
+                fresh(e, temp);
+                line(e, "Slice %s = %s;", temp, a);
+                format(out, size,
+                       "StringView((const char *)(%s).data, (size_t)(%s).length)",
+                       temp, temp);
+            }
+            e->pure = 1;
+            return;
+        }
         if(!strcmp(expr->name, "VecPush") ||
            !strcmp(expr->name, "VecClear") ||
            !strcmp(expr->name, "VecFree") ||
