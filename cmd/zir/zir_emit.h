@@ -13,6 +13,7 @@ int NativeTypeAtUse(const ZirModule *module, const char *type,
                     char *out, size_t size);
 int NativeEnumMemberName(const ZirModule *owner, const ZirType *type,
                          const char *member, char *out, size_t size);
+int TypeHasZeroArray(const ZirModule *module, const char *type);
 void NativeExportName(const ZirModule *module, const ZirFunction *fn,
                       char *out, size_t size);
 void NativeCFunctionName(const ZirModule *module, const ZirFunction *fn,

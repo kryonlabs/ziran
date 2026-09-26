@@ -1,6 +1,7 @@
 #include "zir_vm.h"
 #include "zir_check.h"
 #include "zir_parse.h"
+#include "zir_expr.h"
 #include "zir_diagnostic.h"
 #include "zir_text.h"
 
@@ -284,7 +285,7 @@ portable_type_at(const ZirModule *module, const char *type, int depth)
                portable_type_at(module, element, depth + 1);
     }
     if(ArrayElementType(type, element, sizeof(element), &capacity)) {
-        return capacity > 0 &&
+        return capacity >= 0 &&
                (size_t)capacity <= VM_MAX_ARRAY_BYTES / sizeof(Value) &&
                portable_type_at(module, element, depth + 1);
     }
@@ -515,7 +516,7 @@ static Array *
 allocate_array_try(Vm *vm, const ZirModule *owner, const char *element,
                    int length, int fail_hard)
 {
-    if(length <= 0 || (size_t)length >
+    if(length < 0 || (size_t)length >
        (VM_MAX_ARRAY_BYTES - sizeof(Array)) / sizeof(Value)) {
         if(fail_hard) vm->failed = 1;
         return NULL;
@@ -607,7 +608,7 @@ default_value(Vm *vm, const ZirModule *module, const char *type, int depth)
     if(SliceElementType(type, element, sizeof(element)))
         return (Value){.kind = VALUE_SLICE};
     if(ArrayElementType(type, element, sizeof(element), &capacity)) {
-        if(depth >= VM_MAX_DEPTH || capacity <= 0) {
+        if(depth >= VM_MAX_DEPTH || capacity < 0) {
             vm->failed = 1;
             return int_value(0);
         }
@@ -1232,7 +1233,7 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         if(ArrayElementType(expression->name, element,
                             sizeof(element), &capacity)) {
             int position = 0;
-            if(capacity <= 0 ||
+            if(capacity < 0 ||
                strcmp(expression->type, expression->name) != 0)
                 return 0;
             for(int child = expression->first_child; child >= 0;
@@ -1290,6 +1291,17 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         if(expression->left < 0 || expression->left >= function->expr_count)
             return 0;
         const ZirExpr *base = &function->exprs[expression->left];
+        char element[ZIR_NAME_MAX];
+        int capacity;
+        if(ArrayElementType(base->type, element, sizeof(element), &capacity) &&
+           capacity == 0 && !strcmp(expression->name, "data")) {
+            char pointer[ZIR_NAME_MAX];
+            int written = snprintf(pointer, sizeof(pointer), "*%s", element);
+            return written > 0 && (size_t)written < sizeof(pointer) &&
+                   !strcmp(expression->type, pointer) &&
+                   verify_expression(module, function, bindings, binding_count,
+                                     expression->left, depth + 1);
+        }
         if(strcmp(base->type, "string") == 0 ||
            SliceElementType(base->type, NULL, 0) ||
            ArrayElementType(base->type, NULL, 0, NULL)) {
@@ -1361,7 +1373,7 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
         int slice = !array && SliceElementType(base, element, sizeof(element));
         int vec = !array && !slice &&
                   VecElementType(module, base, element, sizeof(element));
-        return (slice || vec || (array && capacity > 0)) &&
+        return (slice || vec || (array && capacity >= 0)) &&
                (strcmp(expression->type, element) == 0 ||
                 (ScalarType(element)[0] != 0 &&
                  strcmp(expression->type, ScalarType(element)) == 0));
@@ -1926,9 +1938,14 @@ VmVerify(const ZirProgram *program, const char *entry_module,
                         literal_ok = 1;
                 }
                 if(!literal_ok &&
-                   ArrayElementType(global->type, NULL, 0, NULL) &&
-                   init[0] == '.' && init[1] == '[')
-                    literal_ok = 1;
+                   ArrayElementType(global->type, NULL, 0, NULL)) {
+                    ZirFunction probe = {0};
+                    int root = ParseExprTyped(&probe, module, init,
+                                              global->span, global->type);
+                    literal_ok = root >= 0 &&
+                        probe.exprs[root].kind == ZIR_EXPR_COMPOUND;
+                    free(probe.exprs);
+                }
                 if(!literal_ok ||
                    SliceElementType(global->type, NULL, 0)) {
                     Diagnostic(global->span, "zib.global",
@@ -2537,6 +2554,12 @@ eval(Frame *frame, int index, int depth)
             value = int_value((int64_t)left.array->length);
             break;
         }
+        if(left.kind == VALUE_ARRAY && left.array != NULL &&
+           left.array->length == 0 &&
+           strcmp(expression->name, "data") == 0) {
+            value = int_value(0);
+            break;
+        }
         Value *field = left.kind == VALUE_RECORD ?
                        record_field_path(left.record, expression->name) : NULL;
         if(field == NULL)
@@ -2578,6 +2601,7 @@ eval(Frame *frame, int index, int depth)
         if(left.kind == VALUE_ARRAY && left.array != NULL) {
             backing = left.array;
             length = (size_t)backing->length;
+            if(length == 0) backing = NULL;
         } else if(left.kind == VALUE_SLICE) {
             backing = left.array;
             offset = left.offset;

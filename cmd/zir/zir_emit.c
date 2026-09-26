@@ -1,5 +1,6 @@
 #include "zir_emit.h"
 #include "zir_check.h"
+#include "zir_parse.h"
 #include "zir_text.h"
 #include "zir_expr.h"
 #include "zir_diagnostic.h"
@@ -31,6 +32,53 @@ ArrayValueType(const char *type)
     /* Host char buffers retain their explicit C-string interop convention. */
     return ArrayElementType(type, element, sizeof(element), NULL) &&
            strcmp(element, "char") != 0 && strcmp(element, "const char") != 0;
+}
+
+static int
+type_has_zero_array(const ZirModule *module, const char *type, int depth)
+{
+    char element[ZIR_NAME_MAX];
+    int capacity;
+    if(depth > 16 || module == NULL || type == NULL) return 0;
+    if(ArrayElementType(type, element, sizeof(element), &capacity)) {
+        if(capacity < 0) {
+            const char *close = strchr(type, ']');
+            char bound[ZIR_NAME_MAX];
+            int64_t folded;
+            size_t length = close ? (size_t)(close - type - 1) : 0;
+            if(length > 0 && length < sizeof(bound)) {
+                memcpy(bound, type + 1, length);
+                bound[length] = '\0';
+                if(EvaluateCompileExpression(module, bound, Span("", 0, 0),
+                                             0, &folded) && folded == 0)
+                    return 1;
+            }
+        }
+        return capacity == 0 ||
+               type_has_zero_array(module, element, depth + 1);
+    }
+    if(type[0] == '*') return 0;
+    const ZirModule *owner = NULL;
+    const ZirType *record = FindType(module, type, &owner);
+    if(record != NULL && !record->is_enum && !record->is_extern &&
+       !record->is_procedure_type && !record->is_record_template) {
+        ZirTypeField field;
+        size_t offset = 0;
+        while(TypeNextField(record, &offset, &field) == 1)
+            if(type_has_zero_array(owner ? owner : module, field.type,
+                                   depth + 1)) return 1;
+    }
+    for(int i = 0; i < module->define_count; i++)
+        if(!strcmp(module->defines[i].name, type))
+            return type_has_zero_array(module, module->defines[i].value,
+                                       depth + 1);
+    return 0;
+}
+
+int
+TypeHasZeroArray(const ZirModule *module, const char *type)
+{
+    return type_has_zero_array(module, type, 0);
 }
 
 int
@@ -1186,48 +1234,15 @@ declare_array(Emitter *e, const char *name, const char *type, const char *value)
     else
         e->resolve(e->context, element, target_element, sizeof(target_element));
     if(e->target == ZIR_GO) {
-        char go_bounds[ZIR_NAME_MAX * 2] = "";
-        /* Go dimensions run inner-first: reverse the collected order. */
-        char reversed[ZIR_NAME_MAX * 2] = "";
-        const char *scan = bounds;
-        char dims[8][ZIR_NAME_MAX];
-        int dim_count = 0;
-        while(*scan == '[' && dim_count < 8) {
-            const char *close = strchr(scan, ']');
-            if(close == NULL)
-                break;
-            size_t length = (size_t)(close - scan + 1);
-            if(length >= sizeof(dims[dim_count]))
-                length = sizeof(dims[dim_count]) - 1;
-            memcpy(dims[dim_count], scan, length);
-            dims[dim_count][length] = '\0';
-            dim_count++;
-            scan = close + 1;
-        }
-        for(int dim = dim_count - 1; dim >= 0; dim--) {
-            char stripped[ZIR_NAME_MAX];
-            size_t length = strlen(dims[dim]);
-            if(length >= 2) {
-                memcpy(stripped, dims[dim] + 1, length - 2);
-                stripped[length - 2] = '\0';
-            } else {
-                stripped[0] = '\0';
-            }
-            if(go_bounds[0] == '\0') {
-                copy_text(go_bounds, sizeof(go_bounds), stripped);
-            } else if(strlen(go_bounds) + strlen(stripped) + 1 < sizeof(go_bounds)) {
-                strcat(go_bounds, "]");
-                strcat(go_bounds, stripped);
-            }
-            (void)reversed;
-        }
         if(value != NULL && *value)
-            line(e, "var %s [%s]%s = %s", name, go_bounds, target_element, value);
+            line(e, "var %s %s%s = %s", name, bounds, target_element, value);
         else
-            line(e, "var %s [%s]%s", name, go_bounds, target_element);
+            line(e, "var %s %s%s", name, bounds, target_element);
     } else if(e->target == ZIR_C || e->target == ZIR_CPP) {
-        line(e, "%s %s%s = %s;", target_element, name, bounds,
-             e->target == ZIR_C ? "{0}" : "{}");
+        int zero = TypeHasZeroArray(e->module, type);
+        line(e, "%s%s %s%s = %s;", zero ? "__extension__ " : "",
+             target_element, name, bounds,
+             zero || e->target == ZIR_CPP ? "{}" : "{0}");
         if(value != NULL && *value)
             assign_value(e, name, type, value);
     } else {
@@ -1294,7 +1309,9 @@ declare(Emitter *e, const char *name, const char *type, const char *value)
         return;
     }
     if(e->target == ZIR_GO) line(e, "var %s %s = %s", name, target_type, value);
-    else line(e, "%s %s = %s;", target_type, name, value);
+    else line(e, "%s%s %s = %s;",
+              TypeHasZeroArray(e->module, type) ? "__extension__ " : "",
+              target_type, name, value);
 }
 
 static void
@@ -2582,6 +2599,27 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             pure = base_pure;
             break;
         }
+        if(!strcmp(expr->name, "data") &&
+           ArrayElementType(base_type, NULL, 0, &capacity)) {
+            if(capacity == 0) {
+                if(e->target == ZIR_GO) {
+                    char element[ZIR_NAME_MAX];
+                    char mapped[ZIR_NAME_MAX * 2];
+                    ArrayElementType(base_type, element, sizeof(element), NULL);
+                    const char *scalar = TargetType(element, ZIR_GO);
+                    if(scalar != NULL) copy_text(mapped, sizeof(mapped), scalar);
+                    else e->resolve(e->context, element, mapped,
+                                    sizeof(mapped));
+                    format(result, sizeof(result), "(*%s)(nil)", mapped);
+                } else
+                    copy_text(result, sizeof(result), "NULL");
+            } else if(e->target == ZIR_GO)
+                format(result, sizeof(result), "&(%s)[0]", a);
+            else
+                copy_text(result, sizeof(result), a);
+            pure = base_pure;
+            break;
+        }
         if((!strcmp(base_type, "string") ||
             SliceElementType(base_type, NULL, 0)) &&
            !strcmp(expr->name, "count")) {
@@ -2643,7 +2681,14 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         }
         base_pure = e->pure;
         fresh(e, view);
-        if(e->target == ZIR_GO) {
+        if(array && capacity == 0 && e->target == ZIR_GO) {
+            const char *scalar = TargetType(element, ZIR_GO);
+            if(scalar != NULL) copy_text(mapped, sizeof(mapped), scalar);
+            else e->resolve(e->context, element, mapped, sizeof(mapped));
+            line(e, "var %s []%s", view, mapped);
+        } else if(array && capacity == 0) {
+            line(e, "Slice %s = {NULL, 0};", view);
+        } else if(e->target == ZIR_GO) {
             line(e, "%s := %s[:]", view, source);
         } else if(array) {
             line(e, "Slice %s = {%s, %d};", view, source, capacity);
@@ -2690,7 +2735,7 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
         base_pure = e->pure;
         emit_expr(e, expr->right, "s32", b, sizeof(b));
         pure = base_pure && e->pure;
-        ArrayElementType(base_type, NULL, 0, &capacity);
+        int fixed_array = ArrayElementType(base_type, NULL, 0, &capacity);
         if(VecElementType(e->module, base_type, NULL, 0) &&
            (e->target == ZIR_C || e->target == ZIR_CPP)) {
             format(result, sizeof(result),
@@ -2706,10 +2751,14 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
                 format(result, sizeof(result), "%s[%s]", a, b);
             else
                 format(result, sizeof(result), "(uint8_t)ZIRAN_INDEX(%s.data, %s.length, %s)", a, a, b);
-        } else if((e->target == ZIR_C || e->target == ZIR_CPP) && capacity != 0) {
+        } else if((e->target == ZIR_C || e->target == ZIR_CPP) &&
+                  fixed_array && capacity == 0) {
+            format(result, sizeof(result), "ZIRAN_EMPTY_INDEX(%s, %s)", a, b);
+        } else if((e->target == ZIR_C || e->target == ZIR_CPP) &&
+                  fixed_array && capacity > 0) {
             /* Fixed-capacity arrays are bounds-checked in debug builds. */
-            format(result, sizeof(result), "ZIRAN_INDEX(%s, sizeof(%s) / sizeof(%s[0]), %s)",
-                   a, a, a, b);
+            format(result, sizeof(result), "ZIRAN_INDEX(%s, %d, %s)",
+                   a, capacity, b);
         } else {
             format(result, sizeof(result), "%s[%s]", a, b);
         }
@@ -3373,7 +3422,8 @@ zero_record(Emitter *e, const char *type, char *out, size_t size)
         format(out, size, "%s{}", target_type);
         return;
     }
-    copy_text(out, size, e->target == ZIR_CPP ? "{}" : "{0}");
+    copy_text(out, size, e->target == ZIR_CPP ||
+              TypeHasZeroArray(e->module, type) ? "{}" : "{0}");
 }
 
 static int

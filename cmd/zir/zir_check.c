@@ -560,7 +560,6 @@ layout_type(const ZirModule *module, const char *source, int depth,
         size_t field_size, field_alignment;
         if(!layout_type(owner ? owner : module, field.type, depth + 1,
                         &field_size, &field_alignment) ||
-           field_size == 0 ||
            (!record->is_union &&
             (!align_size(offset, field_alignment, &offset) ||
              offset > SIZE_MAX - field_size)))
@@ -2004,7 +2003,7 @@ array_capacity(const ZirModule *module, const char *type, int *capacity)
     free(expression.exprs);
     if(status != 1)
         return status;
-    if(value < 1 || value > 1048576)
+    if(value < 0 || value > 1048576)
         return -1;
     *capacity = (int)value;
     return 1;
@@ -2890,6 +2889,13 @@ expression_type(Checker *c, int index)
             ArrayElementType(left, NULL, 0, NULL))) {
             if(!strcmp(e->name, "count")) {
                 type = "s64";
+                break;
+            }
+            char element[ZIR_NAME_MAX];
+            if(!strcmp(e->name, "data") &&
+               ArrayElementType(left, element, sizeof(element), NULL)) {
+                snprintf(member_type, sizeof(member_type), "*%s", element);
+                type = member_type;
                 break;
             }
         }
@@ -3783,8 +3789,6 @@ storage_type_error(const ZirModule *module, const char *source,
             return "slices do not yet have portable storage semantics";
         if(!ArrayElementType(type, element, sizeof(element), &capacity))
             return "malformed fixed array type";
-        if(capacity == 0)
-            return "fixed arrays require a positive capacity";
         if(capacity < 0) {
             int status = array_capacity(module, type, &capacity);
             if(status < 0)

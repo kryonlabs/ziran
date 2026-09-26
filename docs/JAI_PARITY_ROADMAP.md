@@ -32,7 +32,7 @@ The current branch has Jai-style declarations, lexical `using` for local and
 parameter records, nested and generic `using` fields, lexical enum `using`,
 data-scope enum `using`, and data-scope promotion from module-local record and
 scalar-union globals in procedure bodies, including public globals from open
-and named imports. It supports nonempty typed array literals, typed and
+and named imports. It supports typed array literals, including empty arrays, typed and
 inferred record literals, named and default arguments, direct polymorphic
 calls, scopes, `#load`, several `#import` forms, bounded pure `#run`, and
 checked `.zir` graphs. The compiler rejects many inherited spellings,
@@ -40,13 +40,13 @@ including `#enum`, `variant`, postfix `?`, `#global`, `#export`, `#private`,
 `#extern`, C pointer suffixes, C conditional expressions, and old Kryon file
 extensions. The rejection tests should stay.
 
-The full local `make check` suite has 109 checks. Re-run it after any change to
+The full local `make check` suite has 110 checks. Re-run it after any change to
 the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 
 | Area | Current subset | Next proof of parity |
 | --- | --- | --- |
 | Names and scopes | Local/field record `using`; local/data enum `using`; imported record globals in procedures; named imports | File-scope record lookup, full imported type ownership, order independence |
-| Values and expressions | Record literals, nonempty typed arrays, direct generic calls, `ifx` in typed expressions and call arguments | True empty arrays, broader lazy-expression audit, fuller type queries |
+| Values and expressions | Record literals, typed arrays including zero capacity, direct generic calls, `ifx` in typed expressions and call arguments | Array host boundaries and full `.data` contract, broader lazy-expression audit, fuller type queries |
 | Procedures | Named values, defaults, named arguments, direct polymorphism | Overload/variadic/operator and broader procedure-form audit |
 | Compile time | Bounded pure scalars, strings, floats, and record/array results used at compile time, in checked runtime expressions, and in selected file-scope initializers, including public imports | Full file-scope initialization semantics, verified effect rules |
 | Native output | C/C++/Go checked body graphs; C/C++ unions; imported and keyword record, union, enum, global, and constant names, including global/constant and function/value collisions; C/C++ keyword exports and header guards; Go module filenames and prefixes | Declaration lowering, remaining whole-program names, Go union layout |
@@ -179,21 +179,21 @@ as a later C/Go compiler error.
 
 ### 5. Array syntax and true zero capacity
 
-`T.[item, ...]` works for nonempty arrays. `T.[]` is currently rejected by
-the positive-capacity rule. This needs a representation change, not a parser
-exception: native C emission uses `T name[bound]`, and the portable verifier
-and VM assume positive capacity. A fake one-element allocation would produce
-the wrong `size_of`, `.count`, `.data`, and bounds behavior. The OpenJai
-reference explicitly describes an empty typed literal with count zero and a
-null data pointer. Verify those rules with Jai, choose a checked zero-capacity
-representation, then update layout calculation, C/C++/Go lowering, `.zir`,
-`.zib`, host boundaries, and array borrowing together.
+`T.[]` and context-inferred `.[]` now work for zero-capacity fixed arrays.
+`tests/zero_arrays.sh` checks locals, globals, aliases, nested arrays, records,
+arguments, returns, `size_of`, `.count`, null `.data`, and index failures from
+source and saved IR on C, C++, Go, and `.zib`. The native C/C++ output uses
+GNU-compatible zero-array extensions, which compile under the strict C99 and
+C++ modes used by the test. The portable VM allocates an array descriptor with
+zero elements. No fake element contributes to layout or storage.
 
-Acceptance: `T.[]`, context-inferred `.[]`, globals, records, arguments,
-returns, `size_of`, `.count`, `.data`, indexing failures, and source/saved-IR
-builds agree. Also audit nonempty arrays for Jai's `.data` contract rather
-than treating native C arrays as proof of layout parity. Add focused cases to
-`tests/portable_arrays.sh` and native array tests.
+Finish the host boundary and broader zero-length slice borrowing audit, expand
+nested and imported zero-bound alias cases, and test the generated native ABI
+on supported compilers. Nonempty arrays also need the full Jai `.data`
+contract rather than using native C array layout as proof. The OpenJai
+reference describes an empty typed literal with count zero and a null data
+pointer; verify that behavior with Jai itself before claiming exact language
+parity.
 
 ## Priority 2: make the checked language portable and predictable
 

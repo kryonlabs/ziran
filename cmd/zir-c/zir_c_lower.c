@@ -581,9 +581,13 @@ convert_args(const ZirModule *m, const ZirFunction *fn,
                             dst[n++] = ',';
                         if(!first && n + 1 < dst_size)
                             dst[n++] = ' ';
-                        n += (size_t)snprintf(dst + n, dst_size - n,
-                                              "%s %s%s", pbase, name,
-                                              psuffix);
+                        if(!strcmp(psuffix, "[0]"))
+                            n += (size_t)snprintf(dst + n, dst_size - n,
+                                                  "%s *%s", pbase, name);
+                        else
+                            n += (size_t)snprintf(dst + n, dst_size - n,
+                                                  "%s %s%s", pbase, name,
+                                                  psuffix);
                     }
                     first = 0;
                 }
@@ -933,8 +937,9 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
             if(!ty->is_public) fputs("#endif\n", h);
             continue;
         }
-        fprintf(h, "\n%s %s {\n", ty->is_union ? "union" : "struct",
-                native);
+        fprintf(h, "\n%s%s %s {\n",
+                TypeHasZeroArray(m, ty->name) ? "__extension__ " : "",
+                ty->is_union ? "union" : "struct", native);
         /* Each body line is a field decl: 'name: [N] Type' / 'name: Type'. */
         {
             const char *line = ty->body;
@@ -1019,7 +1024,9 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
                 snprintf(suffix, sizeof(suffix), "%s", tmps);
             }
         }
-        fprintf(h, "extern %s %s%s;\n", base, name, suffix);
+        fprintf(h, "%sextern %s %s%s;\n",
+                TypeHasZeroArray(m, g->type) ? "__extension__ " : "",
+                base, name, suffix);
     }
     /* A public extern declaration is part of the generated module interface. */
     for(i = 0; i < m->import_count; i++) {
@@ -1167,9 +1174,11 @@ lower_module(const ZirModule *m, const ZirCModuleSyms *restab,
                                        sizeof(initw)))
                     c_rewrite_overflow(m->source_path, g->span.line);
             }
-            fprintf(c, "%s%s %s%s = %s;\n", g->is_static ? "static " : "",
-                    base, name, suffix,
-                    initw[0] ? initw : "{0}");
+            int zero = TypeHasZeroArray(m, g->type);
+            fprintf(c, "%s%s%s %s%s = %s;\n",
+                    zero ? "__extension__ " : "",
+                    g->is_static ? "static " : "", base, name, suffix,
+                    initw[0] ? initw : zero ? "{}" : "{0}");
         }
     }
     for(i = 0; i < m->function_count; i++) {

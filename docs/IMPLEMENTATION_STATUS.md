@@ -606,7 +606,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.[...]` directly in the expression parser without rewriting through a
   C-style literal. Explicit nonempty typed arrays such as `s32.[1, 2]` and
   `Module.Point.[first, second]` infer their fixed capacity from the elements;
-  zero-element typed arrays are still rejected by the positive-capacity rule.
+  zero-element typed arrays and context-inferred `.[]` have count and size zero
+  and null `.data`. `tests/zero_arrays.sh` covers locals, globals, aliases,
+  nested arrays and records, arguments, returns, and invalid indexing from
+  source and saved IR on C, C++, Go, and `.zib`. C/C++ use a GNU-compatible
+  zero-array extension for zero-byte storage; host boundary coverage and
+  nonempty `.data` behavior remain open.
   Jai `#this` resolves the enclosing procedure for calls and
   typed procedure values across native and portable targets, and resolves the
   enclosing type in plain and polymorphic struct fields. Saved IR preserves
