@@ -6358,6 +6358,18 @@ parse_source(const char *path, const char *root, const char *source,
                                 break;
                             }
                         }
+                        /* Platform predicates stay out of the define table,
+                         * so also consult the local constant table: an alias
+                         * of a declared constant is a define, not an open
+                         * enum member reference. */
+                        if(!known_alias) {
+                            for(int i = 0; i < consts.count; i++) {
+                                if(!strcmp(consts.items[i].name, expr)) {
+                                    known_alias = 1;
+                                    break;
+                                }
+                            }
+                        }
                     }
                     int using_alias = module->using_count > 0 &&
                         is_identifier_text(expr) && !known_alias &&
