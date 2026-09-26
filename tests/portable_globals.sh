@@ -26,6 +26,12 @@ ratio: float32 = 2.5;
 name: string = "ziran";
 flag: bool = true;
 origin: Cell = Cell.{.value = 9};
+Track :: struct {
+    title: string
+    weight: s32
+}
+tracks: [3]Track = .[Track.{.title = "first", .weight = 3}, Track.{.title = "second", .weight = 5}, Track.{.title = "third", .weight = 7}];
+marks: [4]s32 = .[2, 4, 6, 8];
 
 #program_export
 InitChecks :: () -> s32 {
@@ -36,6 +42,9 @@ InitChecks :: () -> s32 {
     if flag != true { return 0 }
     if name.count != 5 { return 0 }
     if origin.value != 9 { return 0 }
+    if marks[0] != 2 || marks[3] != 8 { return 0 }
+    if tracks[0].weight != 3 || tracks[2].weight != 7 { return 0 }
+    if tracks[1].title.count != 6 { return 0 }
     return 1
 }
 
@@ -149,7 +158,7 @@ if "$ziran" bundle --root "$work" --entry invalid:Answer \
     -o "$work/invalid.zib" "$work/invalid.zi" >"$work/error" 2>&1; then
     exit 1
 fi
-grep -q 'portable global initializers need a scalar, string, or record literal value' \
+grep -q 'portable global initializers need a scalar, string, record, or array literal value' \
     "$work/error"
 
 cat > "$work/session.zi" <<'ZI'

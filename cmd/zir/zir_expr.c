@@ -847,6 +847,13 @@ ParseExprNoDefaults(ZirFunction *fn, const ZirModule *module,
     return parse_expr(fn, module, text, span, NULL, -1, 0);
 }
 
+int
+ParseExprTyped(ZirFunction *fn, const ZirModule *module,
+               const char *text, ZirSourceSpan span, const char *expected_type)
+{
+    return parse_expr(fn, module, text, span, expected_type, -1, 0);
+}
+
 void
 StructureFunction(ZirFunction *fn, const ZirModule *module)
 {

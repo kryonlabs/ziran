@@ -42,6 +42,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   rewrites; Go also no longer translates C casts, `NULL`, or C scalar type
   aliases in file-scope expressions. The source reader no longer joins C-style
   adjacent string literals or multi-line `?:` fragments.
+- Portable file-scope array initializers use `.[...]` literals with the
+  declared array type for context: scalar elements and record elements
+  (`Type.{.field = value}`) fold in the VM, serialize through `.zib`, and
+  lower to brace initializers in C99 (designated, with string fields expanded
+  to `{data, length}` pairs), C++ (positional with the same string pairs),
+  and Go composite literals (native strings).
 - Jai `#must` after a procedure result type requires callers to use the
   result. The checker enforces it for ordinary, imported, polymorphic, and
   foreign procedures in source and saved IR.

@@ -6035,8 +6035,9 @@ CheckPrograms(ZirProgram **programs, int count)
                 ZirGlobal *global = &module->globals[g];
                 if(!global->init[0]) continue;
                 ZirFunction expression = {0};
-                int root = ParseExprNoDefaults(&expression, module,
-                                               global->init, global->span);
+                int root = ParseExprTyped(&expression, module,
+                                          global->init, global->span,
+                                          global->type);
                 int valid = root >= 0 &&
                     expression.exprs[root].kind != ZIR_EXPR_UNKNOWN;
                 if(valid && !check_file_scope_enum_names(module, &expression,
