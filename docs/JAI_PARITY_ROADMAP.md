@@ -40,7 +40,7 @@ including `#enum`, `variant`, postfix `?`, `#global`, `#export`, `#private`,
 `#extern`, C pointer suffixes, C conditional expressions, and old Kryon file
 extensions. The rejection tests should stay.
 
-The full local `make check` suite has 94 checks. Re-run it after any change to
+The full local `make check` suite has 95 checks. Re-run it after any change to
 the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 
 | Area | Current subset | Next proof of parity |
@@ -94,10 +94,17 @@ declarations are also discovered before condition selection, so a later import
 can provide a pure procedure, scalar integer constant, or imported type layout
 to `#if` and `#run`.
 `tests/forward_import_conditions.sh` covers source and saved IR on all four
-targets, and excludes imports in inactive branches. This is a limited first
-pass: later local type declarations, embedded source imports, and imports in
-`#load` files still have ordering limits. Imported real, string, and aggregate
-constants have not been covered by the integer evaluator. The OpenJai reference
+targets, and excludes imports in inactive branches. Unconditional later record
+and plain enum declarations with known bodies are discovered for conditions;
+`tests/forward_type_conditions.sh` covers multiline records, Jai scalar aliases,
+`size_of` in `#if` and `#run`, an enum opened by a later `using`, source/saved IR
+on all four targets, and inactive type isolation. Multiline record fields with
+semicolons now lower the same way as inline fields. This is still a limited
+pass: types with conditional bodies, generic instances, enum flags, embedded
+source imports, and imports in `#load` files have ordering limits. Imported
+real, string, and aggregate constants have not been covered by the integer
+evaluator. Token normalization still rejects obsolete primitive spellings in
+inactive type branches before branch selection. The OpenJai reference
 describes top-level declaration order as
 independent. Investigate Jai's actual behavior, then extend top-level discovery
 or add bounded dependency resolution. Do not resolve a condition by parsing

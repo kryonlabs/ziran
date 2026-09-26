@@ -2242,6 +2242,12 @@ typedef struct {
 } ZirImports;
 
 typedef struct {
+    ZirType *items;
+    int count;
+    int capacity;
+} ZirTypes;
+
+typedef struct {
     int braces;                   /* net '{' until the region's closing '}' */
     int selected;
     int active;
@@ -4264,6 +4270,7 @@ typedef struct CompileParseContext {
     const ZirConsts *future_constants;
     const ZirUsings *future_usings;
     const ZirImports *future_imports;
+    const ZirTypes *future_types;
 } CompileParseContext;
 
 static ZirConsts
@@ -4346,6 +4353,32 @@ add_visible_compile_imports(ZirModule *visible, const ZirModule *parsed,
     }
 }
 
+static void
+add_visible_compile_types(ZirModule *visible, const ZirModule *parsed,
+                          const ZirTypes *future)
+{
+    int extra = future != NULL ? future->count : 0;
+    visible->types = calloc((size_t)parsed->type_count + (size_t)extra + 1,
+                            sizeof(*visible->types));
+    if(visible->types == NULL)
+        die("out of memory resolving compile-time types");
+    visible->type_count = 0;
+    for(int i = 0; i < parsed->type_count; i++)
+        visible->types[visible->type_count++] = parsed->types[i];
+    for(int i = 0; i < extra; i++) {
+        const ZirType *candidate = &future->items[i];
+        int present = 0;
+        for(int j = 0; j < parsed->type_count; j++)
+            if(!strcmp(parsed->types[j].span.path, candidate->span.path) &&
+               parsed->types[j].span.line == candidate->span.line) {
+                present = 1;
+                break;
+            }
+        if(!present)
+            visible->types[visible->type_count++] = *candidate;
+    }
+}
+
 static int
 select_compile_condition(ZirModule *module, const ZirConsts *consts,
                          const char *source, ZirSourceSpan span,
@@ -4362,6 +4395,8 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
         context != NULL ? context->future_usings : NULL);
     add_visible_compile_imports(&using_scope, module,
         context != NULL ? context->future_imports : NULL);
+    add_visible_compile_types(&using_scope, module,
+        context != NULL ? context->future_types : NULL);
     module = &using_scope;
     consts = &visible;
     expand_compile_expr(expanded, sizeof(expanded), consts, source, span.path);
@@ -4419,6 +4454,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
                expanded);
     free(using_scope.usings);
     free(using_scope.imports);
+    free(using_scope.types);
     free(visible.items);
     return value != 0;
 }
@@ -5120,26 +5156,195 @@ read_source_line(char *line, size_t size, const char **source,
     return line;
 }
 
+static void parse_enum_backing(ZirType *type, const char *header);
+static void canonical_enum_values(ZirType *type);
+
+static int
+is_named_type_header(const char *line)
+{
+    const char *colons = strstr(line, "::");
+    if(colons == NULL) return 0;
+    char name[ZIR_NAME_MAX];
+    size_t length = (size_t)(colons - line);
+    if(length == 0 || length >= sizeof(name)) return 0;
+    memcpy(name, line, length);
+    name[length] = '\0';
+    trim_in_place(name);
+    if(!is_identifier_text(name)) return 0;
+    const char *body = skip_ws(colons + 2);
+    return starts_word(body, "struct") || starts_word(body, "union") ||
+           starts_word(body, "enum") || starts_word(body, "enum_flags");
+}
+
+static void
+discover_named_type(const char *source, const char *path, const char *rel,
+                    int line_no,
+                    int scope_public, int scope_file, ZirTypes *future)
+{
+    char normalized[ZIR_TEXT_MAX * 2 + SOURCE_LINE_MAX] = "";
+    size_t normalized_length = 0;
+    int physical_line = line_no;
+    if(contains_source_directive(source, "#if")) return;
+    for(const char *cursor = source; *cursor;) {
+        const char *end = strchr(cursor, '\n');
+        size_t length = end == NULL ? strlen(cursor) :
+                        (size_t)(end - cursor);
+        char line[SOURCE_LINE_MAX];
+        if(length >= sizeof(line)) return;
+        memcpy(line, cursor, length);
+        line[length] = '\0';
+        normalize_jai_source_tokens(line, rel, path, physical_line++);
+        length = strlen(line);
+        if(normalized_length + length + 2 >= sizeof(normalized)) return;
+        memcpy(normalized + normalized_length, line, length);
+        normalized_length += length;
+        normalized[normalized_length++] = '\n';
+        normalized[normalized_length] = '\0';
+        cursor = end == NULL ? cursor + strlen(cursor) : end + 1;
+    }
+    source = normalized;
+    const char *colons = strstr(source, "::");
+    const char *after = colons == NULL ? NULL : skip_ws(colons + 2);
+    const char *open = after == NULL ? NULL : strchr(after, '{');
+    const char *close = NULL;
+    int depth = 0;
+    int quote = 0;
+    if(open == NULL) return;
+    for(const char *p = open; *p; p++) {
+        if(quote) {
+            if(*p == '\\' && p[1]) p++;
+            else if(*p == quote) quote = 0;
+            continue;
+        }
+        if(*p == '"' || *p == '\'') { quote = *p; continue; }
+        if(*p == '{') depth++;
+        if(*p == '}' && --depth == 0) { close = p; break; }
+    }
+    if(close == NULL) return;
+    const char *tail = skip_ws(close + 1);
+    if(*tail != '\0' && strcmp(tail, ";") != 0) return;
+    ZirType type = {0};
+    size_t name_length = (size_t)(colons - source);
+    if(name_length == 0 || name_length >= sizeof(type.name)) return;
+    memcpy(type.name, source, name_length);
+    type.name[name_length] = '\0';
+    trim_in_place(type.name);
+    if(!is_identifier_text(type.name)) return;
+    type.span = Span(rel, line_no, 1);
+    type.is_public = scope_public;
+    type.is_file_private = scope_file;
+    type.is_union = starts_word(after, "union");
+    type.is_enum_flags = starts_word(after, "enum_flags");
+    type.is_enum = type.is_enum_flags || starts_word(after, "enum");
+    if(type.is_enum)
+        parse_enum_backing(&type, after);
+    if(!type.is_enum &&
+       !parse_type_parameters(after, type.is_union ? "union" : "struct",
+                              type.template_params,
+                              sizeof(type.template_params))) return;
+    type.is_record_template = type.template_params[0] != '\0';
+    size_t body_length = (size_t)(close - open - 1);
+    if(body_length >= sizeof(type.body)) return;
+    memcpy(type.body, open + 1, body_length);
+    type.body[body_length] = '\0';
+    if(type.is_enum) {
+        if(type.is_enum_flags) return;
+        char lowered[sizeof(type.body)];
+        size_t used = 0;
+        for(const char *p = type.body; *p; p++) {
+            if(p[0] == ':' && p[1] == ':') {
+                if(used + 3 >= sizeof(lowered)) return;
+                memcpy(lowered + used, " = ", 3);
+                used += 3;
+                p++;
+            } else {
+                if(used + 1 >= sizeof(lowered)) return;
+                lowered[used++] = *p == ';' ? '\n' : *p;
+            }
+        }
+        lowered[used] = '\0';
+        copy_text(type.body, sizeof(type.body), lowered);
+        if(!EnumMemberValue(&type, NULL, NULL)) return;
+        canonical_enum_values(&type);
+    } else if(type.is_record_template) {
+        for(size_t i = 0; i < body_length; i++)
+            if(type.body[i] == ';') type.body[i] = '\n';
+    }
+    if(!expand_type_this(&type)) return;
+    if(future->count == future->capacity) {
+        int capacity = future->capacity > 0 ? future->capacity * 2 : 8;
+        ZirType *items = realloc(future->items,
+                                 (size_t)capacity * sizeof(*items));
+        if(items == NULL) die("out of memory discovering types");
+        future->items = items;
+        future->capacity = capacity;
+    }
+    future->items[future->count++] = type;
+}
+
+static void
+append_type_source(char *target, size_t capacity, const char *line,
+                   int *overflow)
+{
+    if(*overflow) return;
+    size_t length = strlen(target), addition = strlen(line);
+    if(length + addition + 2 >= capacity) {
+        *overflow = 1;
+        return;
+    }
+    memcpy(target + length, line, addition);
+    target[length + addition] = '\n';
+    target[length + addition + 1] = '\0';
+}
+
 /* Discover only unconditional, single-line file constants, using and import
  * declarations. Conditional bodies, type bodies, and procedures are opaque:
  * branch selection must never gain names from a discarded branch. */
 static void
 discover_file_scope(const char *source, const char *path, const char *rel,
                     ZirConsts *future_constants, ZirUsings *future_usings,
-                    ZirImports *future_imports)
+                    ZirImports *future_imports, ZirTypes *future_types)
 {
     char line[SOURCE_LINE_MAX];
+    char type_source[ZIR_TEXT_MAX * 2 + SOURCE_LINE_MAX] = "";
     int line_no = 0;
     int comment_depth = 0;
     int brace_depth = 0;
     int scope_file = 0;
     int scope_public = 1;
+    int collecting_type = 0;
+    int type_overflow = 0;
+    int type_start_line = 0;
+    int type_scope_file = 0;
+    int type_scope_public = 1;
 
     while(read_source_line(line, sizeof(line), &source, path, line_no) != NULL) {
         line_no++;
         strip_block_comments(line, &comment_depth);
         char *t = trim(line);
-        if(brace_depth == 0) {
+        int brace_delta = net_block_braces(t);
+        if(collecting_type ||
+           (brace_depth == 0 && is_named_type_header(t))) {
+            if(!collecting_type) {
+                collecting_type = 1;
+                type_overflow = 0;
+                type_source[0] = '\0';
+                type_start_line = line_no;
+                type_scope_file = scope_file;
+                type_scope_public = scope_public;
+            }
+            append_type_source(type_source, sizeof(type_source), t,
+                               &type_overflow);
+            if(strchr(type_source, '{') != NULL &&
+               brace_depth + brace_delta == 0) {
+                if(!type_overflow)
+                    discover_named_type(type_source, path, rel,
+                                        type_start_line,
+                                        type_scope_public, type_scope_file,
+                                        future_types);
+                collecting_type = 0;
+            }
+        } else if(brace_depth == 0) {
             if(!strcmp(t, "#scope_file")) {
                 scope_file = 1;
                 scope_public = 0;
@@ -5263,7 +5468,7 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                 }
             }
         }
-        brace_depth += net_block_braces(t);
+        brace_depth += brace_delta;
         if(brace_depth < 0)
             brace_depth = 0;
     }
@@ -5686,6 +5891,7 @@ parse_source(const char *path, const char *root, const char *source,
     ZirConsts future_constants = {0};
     ZirUsings future_usings = {0};
     ZirImports future_imports = {0};
+    ZirTypes future_types = {0};
     int body_mdepth[8];
     int body_mselected[8];
     int body_mactive[8];
@@ -5731,6 +5937,7 @@ parse_source(const char *path, const char *root, const char *source,
     compile_context.future_constants = &future_constants;
     compile_context.future_usings = &future_usings;
     compile_context.future_imports = &future_imports;
+    compile_context.future_types = &future_types;
 
     module = ProgramAddModule(program, module_name, rel, Span(rel, 1, 1));
     if(module == NULL)
@@ -5742,7 +5949,7 @@ parse_source(const char *path, const char *root, const char *source,
         free(canonical_root);
     }
     discover_file_scope(source, path, rel, &future_constants,
-                        &future_usings, &future_imports);
+                        &future_usings, &future_imports, &future_types);
 
     for(;;) {
         if(!have_look && onelineq_count == 0 &&
@@ -6379,6 +6586,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_constants.items);
                 free(future_usings.items);
                 free(future_imports.items);
+                free(future_types.items);
                 free(canonical);
                 return NULL;
             }
@@ -6938,7 +7146,7 @@ parse_source(const char *path, const char *root, const char *source,
                 int written = snprintf(body + used, capacity - used, "%s\n", t);
                 if(written < 0 || (size_t)written >= capacity - used)
                     die_at(ty->span, "type body exceeds size limit");
-                if(ty->is_enum)
+                if(!ty->is_record_template)
                     for(size_t byte = used; byte < used + (size_t)written; byte++)
                         if(body[byte] == ';') body[byte] = '\n';
             }
@@ -7256,6 +7464,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_constants.items);
                 free(future_usings.items);
                 free(future_imports.items);
+                free(future_types.items);
                 free(canonical);
                 return NULL;
             }
@@ -7265,6 +7474,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_constants.items);
                 free(future_usings.items);
                 free(future_imports.items);
+                free(future_types.items);
                 free(canonical);
                 return NULL;
             }
@@ -7276,6 +7486,7 @@ parse_source(const char *path, const char *root, const char *source,
     free(future_constants.items);
     free(future_usings.items);
     free(future_imports.items);
+    free(future_types.items);
     free(canonical);
     return program;
 }
