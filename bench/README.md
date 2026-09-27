@@ -35,3 +35,18 @@ The first repeated baseline, including raw samples and machine metadata, is
 in [`results/2026-09-27`](results/2026-09-27/benchmark.md). It used three
 measured compile samples and five measured runtime samples per case on one
 machine; its medians are not regression thresholds.
+
+For a second workload that grows a `Vec(s32)` and then scans it, run:
+
+```sh
+env -u DISPLAY -u WAYLAND_DISPLAY python3 bench/vector_growth.py
+```
+
+This measures source and saved-IR checks and emissions to C, C++, Go, and
+portable `.zib`, downstream native builds, and whole-process execution.
+Handwritten C, C++, and Go versions provide algorithm-level comparisons. The
+checksum uses a closed-form arithmetic oracle, and every runtime sample must
+match it. The portable VM runs the small input only. Raw commands, samples,
+source and tool hashes, and caveats are written alongside the report. These
+workloads remain a smoke and collection baseline; they do not cover text,
+records, generics, larger module graphs, or real applications.
