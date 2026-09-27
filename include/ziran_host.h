@@ -46,7 +46,7 @@ struct VmHostField {
 
 /* Return nonzero after writing a result of the declared return type.
  * Record fields are in declaration order and carry their declared names and
- * types. Argument fields are borrowed for the call. A scalar or string slice
+ * types. Argument fields are borrowed for the call. A scalar, string, or record slice
  * argument has kind VM_HOST_SLICE, length elements, and a mutable elements array.
  * Modify elements in place and keep the elements pointer and length intact;
  * the VM validates and copies every element back after the call. Returned
@@ -71,7 +71,7 @@ typedef struct HostBinding {
     void *context;
 } HostBinding;
 
-/* Open and validate a version 21 portable bundle. Close releases all names. */
+/* Open and validate a version 23 portable bundle. Close releases all names. */
 Bundle *BundleOpen(const char *path);
 void BundleClose(Bundle *bundle);
 size_t BundleCapabilityCount(const Bundle *bundle);

@@ -468,11 +468,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   bundle handle, capability enumeration, and bindings for integer, real, string,
   enum, plain record, and void calls. Record fields retain declared names and
   types, including nested records; returned fields are checked before use.
-  Numeric, boolean, and string slice parameters can cross a synchronous host
+  Numeric, boolean, string, and plain-record slice parameters can cross a synchronous host
   call. The host edits a typed element array, which the VM validates and copies
   back into the borrowed Ziran array. Source and saved bundles and generated
-  C, C++, and Go run the same buffer example. The VM rejects overlapping
-  mutable host slice arguments and invalid returned element types.
+  C, C++, and Go run the same buffer and record slice examples. The VM rejects
+  overlapping mutable host slice arguments and malformed returned elements.
   Empty fixed arrays can be borrowed as zero-length slices for synchronous
   host calls. Host-returned zero-length slices may have no elements; oversized
   returned lengths fail before allocation.

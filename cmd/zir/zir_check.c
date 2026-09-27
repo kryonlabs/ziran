@@ -5956,7 +5956,7 @@ LinkImports(ZirProgram **programs, int count)
                        (!*ScalarType(element) &&
                         FindType(module, element, NULL) == NULL)) {
                         Diagnostic(import->span, "check.slice_signature",
-                                      "host slice returns need a scalar element");
+                                      "host slice returns need a supported element type");
                         return 0;
                     }
                 }

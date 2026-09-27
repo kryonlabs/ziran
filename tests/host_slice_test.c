@@ -82,6 +82,54 @@ return_view(void *context, const char *module, const char *function,
     return 1;
 }
 
+static int
+record_slice(void *context, const char *module, const char *function,
+             const VmHostValue *args, int arg_count, VmHostValue *result)
+{
+    int bad_return = *(const int *)context;
+    assert(strcmp(module, "record_slices") == 0);
+    if(strcmp(function, "Mutate") == 0) {
+        assert(arg_count == 1 && args[0].kind == VM_HOST_SLICE);
+        assert(strcmp(args[0].type, "[]Point") == 0);
+        assert(args[0].length == 2 && args[0].elements != NULL);
+        assert(args[0].elements[0].kind == VM_HOST_RECORD);
+        assert(strcmp(args[0].elements[0].type, "Point") == 0);
+        assert(args[0].elements[0].field_count == 2);
+        VmHostField *fields = (VmHostField *)args[0].elements[0].fields;
+        assert(strcmp(fields[0].name, "x") == 0);
+        assert(fields[0].value.kind == VM_HOST_INTEGER);
+        assert(fields[0].value.integer == 1);
+        fields[0].value.integer = 40;
+        result->kind = VM_HOST_INTEGER;
+        result->type = "s32";
+        result->integer = 2;
+        return 1;
+    }
+    assert(strcmp(function, "Make") == 0 && arg_count == 0);
+    static VmHostField fields[2][2];
+    static VmHostValue elements[2];
+    for(int i = 0; i < 2; i++) {
+        for(int j = 0; j < 2; j++) {
+            fields[i][j].name = j == 0 ? "x" : "y";
+            fields[i][j].value.kind = VM_HOST_INTEGER;
+            fields[i][j].value.type = "s32";
+            fields[i][j].value.integer = i == 0 && j == 0 ? 1 :
+                                         i == 1 && j == 1 ? 2 : 0;
+        }
+        elements[i].kind = VM_HOST_RECORD;
+        elements[i].type = "Point";
+        elements[i].fields = fields[i];
+        elements[i].field_count = 2;
+    }
+    if(bad_return)
+        fields[1][1].name = "wrong";
+    result->kind = VM_HOST_SLICE;
+    result->type = "[]Point";
+    result->elements = elements;
+    result->length = 2;
+    return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -91,9 +139,24 @@ main(int argc, char **argv)
            (argc == 3 && (strcmp(argv[2], "overlap") == 0 ||
                           strcmp(argv[2], "return_view") == 0 ||
                           strcmp(argv[2], "return_empty") == 0 ||
-                          strcmp(argv[2], "return_huge") == 0)));
+                          strcmp(argv[2], "return_huge") == 0 ||
+                          strcmp(argv[2], "records") == 0 ||
+                          strcmp(argv[2], "records_bad") == 0)));
     Bundle *bundle = BundleOpen(argv[1]);
     assert(bundle != NULL);
+    if(argc == 3 && strncmp(argv[2], "records", 7) == 0) {
+        int bad_return = strcmp(argv[2], "records_bad") == 0;
+        assert(BundleCapabilityCount(bundle) == 2);
+        HostBinding bindings[2] = {
+            {"record_slices", "Mutate", record_slice, &bad_return},
+            {"record_slices", "Make", record_slice, &bad_return}
+        };
+        int ran = BundleRun(bundle, bindings, 2, &result, &has_result);
+        if(bad_return) assert(!ran);
+        else assert(ran && has_result && result == 42);
+        BundleClose(bundle);
+        return 0;
+    }
     if(argc == 3 && strncmp(argv[2], "return_", 7) == 0) {
         int mode = strcmp(argv[2], "return_empty") == 0 ? 1 :
                    strcmp(argv[2], "return_huge") == 0 ? 2 : 0;

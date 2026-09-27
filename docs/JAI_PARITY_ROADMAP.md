@@ -290,8 +290,9 @@ record and array literals across native targets. Bounded pure procedure calls
 in initializers fold before output; runtime-dependent calls remain open.
 Host calls support scalar, string, plain-record, pointer, and fixed-array
 arguments and returns, including zero and nested arrays with checked shapes.
-Selected synchronous slice arguments and returns also work. Slots and
-record-slice shapes remain open. Implement each boundary as
+Synchronous scalar, string, and plain-record slice arguments and returns work
+from source and saved IR on native C, C++, Go, and `.zib`; the VM rejects
+malformed host results. Procedure slots remain open. Implement each boundary as
 a versioned checked contract in `cmd/zir/zir_bundle.c`, `cmd/zir/zir_vm.c`, and
 `include/ziran_host.h`. Retain preflight verification so a bundle cannot reach
 an unsupported operation at runtime. Test ownership and repeated instance

@@ -161,6 +161,94 @@ for input in source saved; do
 done
 cmp "$work/returned-source.zib" "$work/returned-saved.zib"
 
+cat > "$work/record_slices.zi" <<'ZI'
+Point :: struct { x: s32; y: s32; }
+host_api :: #system_library "host_api";
+Mutate :: (points: []Point) -> s32 #foreign host_api;
+Make :: () -> []Point #foreign host_api;
+#program_export
+Answer :: () -> s32 {
+    storage: [2]Point = Point.[Point.{.x = 1, .y = 2}, Point.{.x = 3, .y = 4}]
+    view: []Point = storage[:]
+    if Mutate(view) != 2 || storage[0].x != 40 || storage[1].x != 3 { return 0 }
+    returned: []Point = Make()
+    if returned.count != 2 || returned[0].x != 1 { return 0 }
+    return storage[0].x + returned[1].y
+}
+ZI
+"$ziran" ir --root "$work" -o "$work/record-ir" "$work/record_slices.zi"
+for input in source saved; do
+    if test "$input" = source; then
+        record=$work/record_slices.zi
+        record_root=$work
+    else
+        record=$work/record-ir/record_slices.zir
+        record_root=$work/record-ir
+    fi
+    "$ziran" bundle --root "$record_root" --entry record_slices:Answer \
+        -o "$work/record-$input.zib" "$record"
+    "$host_test" "$work/record-$input.zib" records
+    "$host_test" "$work/record-$input.zib" records_bad
+    for target in c cpp go; do
+        output=$work/record-$input-$target
+        "$ziran" build --target="$target" --root "$record_root" \
+            -o "$output" "$record"
+        if test "$target" = c; then
+            cat > "$output/main.c" <<'C'
+#include "record_slices.h"
+int32_t Mutate(Slice points) {
+    if(points.length != 2) return 0;
+    ((Point *)points.data)[0].x = 40;
+    return 2;
+}
+Slice Make(void) {
+    static Point points[] = {{1, 0}, {0, 2}};
+    return (Slice){points, 2};
+}
+int main(void) { return Answer() == 42 ? 0 : 1; }
+C
+            "${CC:-cc}" -std=c11 -Wall -Werror -I"$output" -I"$include" \
+                "$output"/*.c -o "$output/app"
+            "$output/app"
+        elif test "$target" = cpp; then
+            cat > "$output/main.cpp" <<'CPP'
+#include "record_slices.hpp"
+extern "C" int32_t Mutate(Slice points) {
+    if(points.length != 2) return 0;
+    static_cast<Point *>(points.data)[0].x = 40;
+    return 2;
+}
+extern "C" Slice Make(void) {
+    static Point points[] = {{1, 0}, {0, 2}};
+    return Slice{points, 2};
+}
+int main() { return Answer() == 42 ? 0 : 1; }
+CPP
+            "${CXX:-c++}" -std=c++17 -Wall -Werror -I"$output" \
+                -I"$include" "$output"/*.cpp -o "$output/app"
+            "$output/app"
+        else
+            cat > "$output/record_slices_test.go" <<'GO'
+package ziran
+import "testing"
+type recordHost struct{}
+func (recordHost) Mutate(points []Point) int32 {
+    if len(points) != 2 { return 0 }
+    points[0].X = 40
+    return 2
+}
+func (recordHost) Make() []Point { return []Point{{X: 1}, {Y: 2}} }
+func TestRecordSlice(t *testing.T) {
+    SetRecordSlicesHost(recordHost{})
+    if RecordSlices_Answer() != 42 { t.Fatal("record slice") }
+}
+GO
+            GO111MODULE=off go test "$output"/*.go
+        fi
+    done
+done
+cmp "$work/record-source.zib" "$work/record-saved.zib"
+
 cat > "$work/bad_return.zi" <<'ZI'
 host_api :: #system_library "host_api";
 Borrow :: () -> [][]u8 #foreign host_api;
@@ -174,7 +262,7 @@ if "$ziran" check --root "$work" "$work/bad_return.zi" \
     echo 'a nested host slice return was accepted' >&2
     exit 1
 fi
-grep -Fq 'host slice returns need a scalar element' "$work/bad_return.err"
+grep -Fq 'host slice returns need a supported element type' "$work/bad_return.err"
 
 cat > "$work/overlap.zi" <<'ZI'
 host_api :: #system_library "host_api";

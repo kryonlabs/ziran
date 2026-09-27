@@ -50,7 +50,7 @@ rejects a call that needs one. The loader compares the capability list with
 the linked IR; the VM checks signatures before execution and verifies returned
 record field names and types. Record fields may themselves contain records,
 strings, or enums.
-Numeric, boolean, and string slice parameters use `VM_HOST_SLICE` and a mutable
+Numeric, boolean, string, and plain-record slice parameters use `VM_HOST_SLICE` and a mutable
 `elements` array. Hosts keep the element count and pointer intact; the VM
 validates each element and copies changes back into the caller's slice after a
 successful synchronous call. Overlapping mutable slice arguments are rejected.
@@ -65,13 +65,13 @@ procedure type aliases with imported named functions run from
 source and saved IR. Fixed arrays with numeric or resolved integer
 constant-expression capacities support defaults,
 positional literals, element reads and writes, and value copies, including
-nested arrays and `u8` arrays inside imported records. Indexing is bounds-checked. Version 20 is
-experimental and has no compatibility promise. Host calls with arrays or
+nested arrays and `u8` arrays inside imported records. Indexing is bounds-checked. Version 23 is
+experimental and has no compatibility promise. Host calls with procedure
 slots remain unsupported. Default-initialized module globals of
 portable value types work within one `BundleRun`; each call starts with fresh
 global values. `BundleInstantiate` creates an instance whose globals persist
-across `BundleInstanceRun` calls. Explicit global initializers, complete
-graphical runtime integration, slice fields/globals/host returns and record slice parameters,
+across `BundleInstanceRun` calls. Runtime-dependent global initializers, complete
+graphical runtime integration, slice fields/globals and unsupported host return shapes,
 unresolved fixed-array bounds,
 module state, custom `for_expansion` iteration, and `switch` remain unsupported.
 
