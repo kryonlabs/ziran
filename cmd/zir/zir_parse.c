@@ -1825,6 +1825,8 @@ parse_import_line(ZirModule *module, const char *path, int line_no,
         ZirImport *imported = ModuleAddImport(module, kind, name, target,
                                              signature, scope_public,
                                              Span(path, line_no, 1));
+        if(imported != NULL)
+            imported->is_public = scope_public;
         if(imported != NULL && using_import) {
             if(kind != ZIR_IMPORT_MODULE)
                 die_at(Span(path, line_no, 1),

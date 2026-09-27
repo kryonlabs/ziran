@@ -182,16 +182,19 @@ as a later C/Go compiler error.
 `T.[]` and context-inferred `.[]` now work for zero-capacity fixed arrays.
 `tests/zero_arrays.sh` checks locals, globals, aliases, nested arrays, records,
 arguments, returns, open and named imported-bound aliases in globals,
-records, signatures, and nested arrays, `size_of`, `.count`, null `.data`,
-and index failures from
-source and saved IR on C, C++, Go, and `.zib`. The native C/C++ output uses
+records, signatures, and nested arrays, plus fixed-array aliases exposed
+through one public `using` import re-export. Private and ambiguous re-exported
+aliases are rejected. The test also checks `size_of`, `.count`, null `.data`,
+and index failures from source and saved IR on C, C++, Go, and `.zib`.
+The native C/C++ output uses
 GNU-compatible zero-array extensions, which compile under the strict C99 and
 C++ modes used by the test. The portable VM allocates an array descriptor with
 zero elements. No fake element contributes to layout or storage.
 
 `tests/host_slices.sh` covers a zero-length slice borrowed from a zero-capacity
 array and a host-returned empty slice across source and saved IR. Broaden the
-slice borrowing audit and alias behavior through re-exports and generic use.
+slice borrowing audit and alias behavior through deeper re-exports and generic
+use.
 `tests/host_arrays.sh` checks fixed-array foreign arguments and returns on
 C99, C++17, Go, and portable bundles; compare the native ABI with Jai before
 claiming parity. Nonempty arrays also need the full Jai `.data` contract

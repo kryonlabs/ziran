@@ -1902,6 +1902,42 @@ compound_qualifier_for_global(CompoundConstant *compound,
 }
 
 static int
+exported_define(const ZirModule *module, const char *name, int depth,
+                const ZirDefine **definition, const ZirModule **owner)
+{
+    if(depth >= 32) return -1;
+    *definition = NULL;
+    *owner = NULL;
+    for(int d = 0; d < module->define_count; d++) {
+        const ZirDefine *candidate = &module->defines[d];
+        if(!candidate->is_public || candidate->is_file_private ||
+           strcmp(candidate->name, name)) continue;
+        if(*definition != NULL && *definition != candidate) return -1;
+        *definition = candidate;
+        *owner = module;
+    }
+    if(*definition != NULL) return 1;
+    for(int i = 0; i < module->import_count; i++) {
+        const ZirImport *import = &module->imports[i];
+        if(!import->is_using || !import->is_public ||
+           import->is_file_private || import->resolved_module == NULL)
+            continue;
+        const ZirDefine *candidate = NULL;
+        const ZirModule *candidate_owner = NULL;
+        int found = exported_define(import->resolved_module, name,
+                                    depth + 1, &candidate, &candidate_owner);
+        if(found < 0 || (found == 1 && *definition != NULL &&
+                         *definition != candidate))
+            return -1;
+        if(found == 1) {
+            *definition = candidate;
+            *owner = candidate_owner;
+        }
+    }
+    return *definition != NULL;
+}
+
+static int
 visible_define(const ZirModule *module, const char *name,
                const ZirDefine **definition, const ZirModule **owner,
                const ZirImport **selected_import)
@@ -1932,17 +1968,30 @@ visible_define(const ZirModule *module, const char *name,
             const ZirModule *scope = import == NULL ? module :
                                      import->resolved_module;
             if(scope == NULL) continue;
-            for(int j = 0; j < scope->define_count; j++) {
-                const ZirDefine *candidate = &scope->defines[j];
-                if((import != NULL && !candidate->is_public) ||
-                   (import == NULL && !in_lookup_file(module,
-                       candidate->is_file_private, candidate->span)) ||
-                   strcmp(candidate->name, symbol)) continue;
-                if(*definition != NULL && *definition != candidate)
+            if(import == NULL) {
+                for(int j = 0; j < scope->define_count; j++) {
+                    const ZirDefine *candidate = &scope->defines[j];
+                    if(!in_lookup_file(module, candidate->is_file_private,
+                                       candidate->span) ||
+                       strcmp(candidate->name, symbol)) continue;
+                    if(*definition != NULL && *definition != candidate)
+                        return -1;
+                    *definition = candidate;
+                    *owner = scope;
+                }
+            } else {
+                const ZirDefine *candidate = NULL;
+                const ZirModule *candidate_owner = NULL;
+                int found = exported_define(scope, symbol, 0,
+                                            &candidate, &candidate_owner);
+                if(found < 0 || (found == 1 && *definition != NULL &&
+                                 *definition != candidate))
                     return -1;
-                *definition = candidate;
-                *owner = scope;
-                if(selected_import != NULL) *selected_import = import;
+                if(found == 1) {
+                    *definition = candidate;
+                    *owner = candidate_owner;
+                    if(selected_import != NULL) *selected_import = import;
+                }
             }
         }
         if(*definition != NULL) break;

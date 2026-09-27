@@ -618,8 +618,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   nested arrays and records, arguments, returns, and invalid indexing from
   source and saved IR on C, C++, Go, and `.zib`, including open and named
   imported array aliases in globals, records, signatures, nested arrays, and
-  `size_of`. Private and ambiguous imported aliases are rejected, while a
-  local record type keeps precedence over an open-imported alias. C/C++ use a
+  `size_of`. One public `using` import re-export also resolves a fixed-array
+  alias in declarations and `size_of` across source and saved IR on every
+  target. Private and ambiguous imported or re-exported aliases are rejected,
+  while a local record type keeps precedence over an open-imported alias. C/C++ use a
   GNU-compatible zero-array extension for zero-byte storage. Native C/C++
   foreign array returns use a hidden result parameter; exact Jai ABI
   conformance and nonempty `.data` behavior remain open.

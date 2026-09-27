@@ -190,6 +190,85 @@ CPP
 done
 cmp "$work/source.zib" "$work/saved.zib"
 
+cat > "$work/bridge.zi" <<'ZI'
+using Defs :: #import "defs";
+ZI
+cat > "$work/relay.zi" <<'ZI'
+#import "bridge"
+Bridge :: #import "bridge";
+#assert size_of(ImportedAlias) == 0
+#assert size_of(Bridge.ImportedAlias) == 0
+#program_export
+Answer :: () -> s32 {
+    value: ImportedAlias = s32.[]
+    named: Bridge.ImportedAlias = s32.[]
+    if value.count != 0 || value.data != null ||
+       named.count != 0 || named.data != null { return 0 }
+    return 42
+}
+ZI
+"$ziran" ir --root "$work" -o "$work/relay-ir" "$work/relay.zi"
+"$ziran" bundle --root "$work" --entry relay:Answer \
+    -o "$work/relay-source.zib" "$work/relay.zi"
+"$ziran" bundle --root "$work/relay-ir" --entry relay:Answer \
+    -o "$work/relay-saved.zib" "$work/relay-ir/relay.zir"
+cmp "$work/relay-source.zib" "$work/relay-saved.zib"
+test "$("$ziran" run "$work/relay-source.zib")" = 42
+test "$("$ziran" run "$work/relay-saved.zib")" = 42
+for input in source saved; do
+    if test "$input" = source; then
+        root=$work
+        file=$work/relay.zi
+    else
+        root=$work/relay-ir
+        file=$work/relay-ir/relay.zir
+    fi
+    for target in c cpp go; do
+        out="$work/relay-$target-$input"
+        if test "$target" = go; then
+            "$ziran" build --target=go --pkg main --root "$root" \
+                -o "$out" "$file"
+            cat > "$out/main.go" <<'GO'
+package main
+func main() { if Relay_Answer() != 42 { panic("re-exported array") } }
+GO
+            GO111MODULE=off go run "$out"/*.go
+        elif test "$target" = c; then
+            "$ziran" build --target=c --root "$root" -o "$out" "$file"
+            cat > "$out/main.c" <<'C'
+#include "relay.h"
+int main(void) { return Answer() == 42 ? 0 : 1; }
+C
+            "${CC:-cc}" -std=c99 -Wall -Werror -pedantic-errors \
+                -I"$repo/include" -I"$out" "$out"/*.c -o "$out/program"
+            "$out/program"
+        else
+            "$ziran" build --target=cpp --root "$root" -o "$out" "$file"
+            cat > "$out/main.cpp" <<'CPP'
+#include "relay.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+CPP
+            "${CXX:-c++}" -std=c++17 -Wall -Werror -pedantic-errors \
+                -I"$repo/include" -I"$out" "$out"/*.cpp -o "$out/program"
+            "$out/program"
+        fi
+    done
+done
+
+cat > "$work/private_bridge.zi" <<'ZI'
+#scope_module
+using Defs :: #import "defs";
+ZI
+cat > "$work/private_relay.zi" <<'ZI'
+#import "private_bridge"
+Bad :: (values: ImportedAlias) -> s64 { return values.count }
+ZI
+if "$ziran" check --root "$work" "$work/private_relay.zi" \
+    >"$work/private_relay.out" 2>&1; then
+    echo "private re-exported array alias was accepted" >&2
+    exit 1
+fi
+
 cat > "$work/private_alias.zi" <<'ZI'
 Defs :: #import "defs";
 Bad :: (values: Defs.PrivateAlias) -> s64 { return values.count }
@@ -211,6 +290,20 @@ ZI
 if "$ziran" check --root "$work" "$work/ambiguous_alias.zi" \
     >"$work/ambiguous.out" 2>&1; then
     echo "ambiguous imported array alias was accepted" >&2
+    exit 1
+fi
+
+cat > "$work/other_bridge.zi" <<'ZI'
+using Other :: #import "other";
+ZI
+cat > "$work/ambiguous_relay.zi" <<'ZI'
+#import "bridge"
+#import "other_bridge"
+Bad :: (values: ImportedAlias) -> s64 { return values.count }
+ZI
+if "$ziran" check --root "$work" "$work/ambiguous_relay.zi" \
+    >"$work/ambiguous_relay.out" 2>&1; then
+    echo "ambiguous re-exported array alias was accepted" >&2
     exit 1
 fi
 
