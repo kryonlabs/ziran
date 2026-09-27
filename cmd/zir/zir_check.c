@@ -738,8 +738,6 @@ import_type_alias(const ZirModule *module, const ZirModule *owner)
         const ZirImport *import = &module->imports[i];
         if(import->kind == ZIR_IMPORT_MODULE &&
            in_lookup_file(module, import->is_file_private, import->span) &&
-           (import->is_using ||
-            strcmp(import->signature, "internal-open") == 0) &&
            import->resolved_module == owner)
             return import->name;
     }
@@ -755,6 +753,8 @@ qualified_global_type(const ZirModule *module, const char *name,
     const char *pointer = "";
     const char *dot = strchr(name, '.');
     const char *alias = NULL;
+    const ZirModule *type_owner = NULL;
+    const ZirType *declared;
     int alias_length;
     if(owner == NULL || owner == module)
         return 0;
@@ -762,13 +762,16 @@ qualified_global_type(const ZirModule *module, const char *name,
         pointer = "*";
         base = skip_ws(base + 1);
     }
-    if(BuiltinType(base) != NULL || FindType(owner, base, NULL) == NULL)
+    if(BuiltinType(base) != NULL)
         return 0;
-    if(dot != NULL) {
+    declared = FindType(owner, base, &type_owner);
+    if(declared == NULL || FindType(module, base, NULL) == declared)
+        return 0;
+    if(type_owner == owner && dot != NULL) {
         alias = name;
         alias_length = (int)(dot - name);
     } else {
-        alias = import_type_alias(module, owner);
+        alias = import_type_alias(module, type_owner);
         if(alias == NULL) return 0;
         alias_length = (int)strlen(alias);
     }
