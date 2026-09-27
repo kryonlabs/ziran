@@ -9,13 +9,20 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/defs.zi" <<'ZI'
 ZERO :: 0
+ImportedAlias :: [ZERO]s32
+#scope_file
+PrivateAlias :: [0]s32
+#scope_module
 ZI
 cat > "$work/empty.zi" <<'ZI'
 #import "defs"
+Defs :: #import "defs";
 EMPTY_SIZE :: size_of([0]s32)
 EMPTY :: s32.[]
 Box :: struct {
     empty: [ZERO]s32
+    imported: ImportedAlias
+    named: Defs.ImportedAlias
     value: s32
 }
 Only :: struct { empty: [0]s32 }
@@ -26,6 +33,8 @@ Nested :: struct {
 EmptyAlias :: [ZERO]s32
 global_empty: [0]s32;
 global_literal: [0]s32 = s32.[];
+global_imported: ImportedAlias;
+global_named: Defs.ImportedAlias;
 
 #assert EMPTY_SIZE == 0
 #assert size_of(Box) == 4
@@ -33,6 +42,8 @@ global_literal: [0]s32 = s32.[];
 #assert size_of(Nested) == 4
 #assert size_of([2][0]s32) == 0
 #assert size_of(EmptyAlias) == 0
+#assert size_of(ImportedAlias) == 0
+#assert size_of(Defs.ImportedAlias) == 0
 #assert s32.[].count == 0
 #assert EMPTY.count == 0
 
@@ -41,6 +52,10 @@ ReturnEmpty :: () -> [0]s32 { return s32.[] }
 AliasCount :: (values: EmptyAlias) -> s64 { return values.count }
 AliasReturn :: () -> EmptyAlias { return s32.[] }
 AliasDefault :: (values: EmptyAlias = s32.[]) -> s64 {
+    return values.count
+}
+ImportedCount :: (values: ImportedAlias) -> s64 { return values.count }
+NamedCount :: (values: Defs.ImportedAlias) -> s64 {
     return values.count
 }
 
@@ -53,6 +68,8 @@ Answer :: () -> s32 {
     aliased: EmptyAlias = s32.[]
     alias_returned: EmptyAlias = AliasReturn()
     alias_matrix: [2]EmptyAlias
+    imported: ImportedAlias = s32.[]
+    named: Defs.ImportedAlias = s32.[]
     record_empty := Box.[]
     matrix: [2][0]s32
     box: Box
@@ -61,18 +78,24 @@ Answer :: () -> s32 {
     nested.value = box.value
     if typed.count != 0 || contextual.count != 0 ||
        returned.count != 0 || view.count != 0 || global_empty.count != 0 ||
-       global_literal.count != 0 ||
+       global_literal.count != 0 || global_imported.count != 0 ||
+       global_named.count != 0 ||
        aliased.count != 0 || alias_returned.count != 0 ||
+       imported.count != 0 || ImportedCount(imported) != 0 ||
+       named.count != 0 || NamedCount(named) != 0 ||
        alias_matrix.count != 2 || alias_matrix[0].count != 0 ||
        record_empty.count != 0 || matrix.count != 2 ||
        matrix[0].count != 0 || box.empty.count != 0 ||
+       box.imported.count != 0 || box.named.count != 0 ||
        nested.empty.empty.count != 0 || Count(typed) != 0 ||
        AliasCount(aliased) != 0 || AliasDefault() != 0 ||
        typed.data != null || contextual.data != null ||
        returned.data != null || global_empty.data != null ||
-       global_literal.data != null ||
+       global_literal.data != null || global_imported.data != null ||
+       global_named.data != null ||
        record_empty.data != null ||
        matrix[0].data != null || box.empty.data != null ||
+       box.imported.data != null || box.named.data != null ||
        EMPTY_SIZE != 0 { return 0 }
     return nested.value
 }
@@ -166,3 +189,41 @@ CPP
     done
 done
 cmp "$work/source.zib" "$work/saved.zib"
+
+cat > "$work/private_alias.zi" <<'ZI'
+Defs :: #import "defs";
+Bad :: (values: Defs.PrivateAlias) -> s64 { return values.count }
+ZI
+if "$ziran" check --root "$work" "$work/private_alias.zi" \
+    >"$work/private.out" 2>&1; then
+    echo "private imported array alias was accepted" >&2
+    exit 1
+fi
+
+cat > "$work/other.zi" <<'ZI'
+ImportedAlias :: [1]s32
+ZI
+cat > "$work/ambiguous_alias.zi" <<'ZI'
+#import "defs"
+#import "other"
+Bad :: (values: ImportedAlias) -> s64 { return values.count }
+ZI
+if "$ziran" check --root "$work" "$work/ambiguous_alias.zi" \
+    >"$work/ambiguous.out" 2>&1; then
+    echo "ambiguous imported array alias was accepted" >&2
+    exit 1
+fi
+
+cat > "$work/shadow_alias.zi" <<'ZI'
+#import "defs"
+ImportedAlias :: struct { value: s32 }
+#program_export
+Answer :: () -> s32 {
+    item: ImportedAlias
+    item.value = 42
+    return item.value
+}
+ZI
+"$ziran" bundle --root "$work" --entry shadow_alias:Answer \
+    -o "$work/shadow_alias.zib" "$work/shadow_alias.zi"
+test "$("$ziran" run "$work/shadow_alias.zib")" = 42

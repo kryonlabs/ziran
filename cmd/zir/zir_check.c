@@ -399,6 +399,11 @@ static int bound_expression(const ZirModule *module,
                             int depth, int64_t *value);
 static const char *local_storage_error(const ZirModule *module,
                                        const char *type);
+static void normalize_array(const ZirModule *module, char *type, size_t size);
+static int visible_define(const ZirModule *module, const char *name,
+                          const ZirDefine **definition,
+                          const ZirModule **owner,
+                          const ZirImport **selected_import);
 
 static int
 layout_type(const ZirModule *module, const char *source, int depth,
@@ -538,14 +543,12 @@ layout_type(const ZirModule *module, const char *source, int depth,
         record = &instance;
     }
     if(record == NULL) {
-        for(int d = 0; d < module->define_count; d++) {
-            const ZirDefine *definition = &module->defines[d];
-            if(strcmp(definition->name, type) == 0 &&
-               in_lookup_file(module, definition->is_file_private,
-                              definition->span))
-                return layout_type(module, definition->value,
-                                   depth + 1, size, alignment);
-        }
+        const ZirDefine *definition = NULL;
+        const ZirModule *definition_owner = NULL;
+        if(visible_define(module, type, &definition,
+                          &definition_owner, NULL) == 1)
+            return layout_type(definition_owner, definition->value,
+                               depth + 1, size, alignment);
     }
     if(record == NULL || record->is_procedure_type || record->is_extern ||
        record->is_record_template || record->is_type_instance)
@@ -1899,13 +1902,13 @@ compound_qualifier_for_global(CompoundConstant *compound,
 }
 
 static int
-bound_compound_constant(const ZirModule *module, const char *name, int depth,
-                        CompoundConstant *result)
+visible_define(const ZirModule *module, const char *name,
+               const ZirDefine **definition, const ZirModule **owner,
+               const ZirImport **selected_import)
 {
-    if(depth > 128) return -1;
-    const ZirDefine *definition = NULL;
-    const ZirModule *owner = NULL;
-    const ZirImport *selected_import = NULL;
+    *definition = NULL;
+    *owner = NULL;
+    if(selected_import != NULL) *selected_import = NULL;
     const char *dot = strchr(name, '.');
     const char *symbol = dot == NULL ? name : dot + 1;
     for(int pass = 0; pass < 2; pass++) {
@@ -1935,16 +1938,29 @@ bound_compound_constant(const ZirModule *module, const char *name, int depth,
                    (import == NULL && !in_lookup_file(module,
                        candidate->is_file_private, candidate->span)) ||
                    strcmp(candidate->name, symbol)) continue;
-                if(definition != NULL && definition != candidate)
+                if(*definition != NULL && *definition != candidate)
                     return -1;
-                definition = candidate;
-                owner = scope;
-                selected_import = import;
+                *definition = candidate;
+                *owner = scope;
+                if(selected_import != NULL) *selected_import = import;
             }
         }
-        if(definition != NULL) break;
+        if(*definition != NULL) break;
     }
-    if(definition == NULL) return 0;
+    return *definition != NULL;
+}
+
+static int
+bound_compound_constant(const ZirModule *module, const char *name, int depth,
+                        CompoundConstant *result)
+{
+    if(depth > 128) return -1;
+    const ZirDefine *definition = NULL;
+    const ZirModule *owner = NULL;
+    const ZirImport *selected_import = NULL;
+    int found = visible_define(module, name, &definition, &owner,
+                               &selected_import);
+    if(found != 1) return found;
     ZirFunction expression = {0};
     int root = ParseExpr(&expression, owner, definition->value,
                          definition->span);
@@ -2010,38 +2026,45 @@ array_capacity(const ZirModule *module, const char *type, int *capacity)
 }
 
 static void
-normalize_array(const ZirModule *module, char *type, size_t size)
+normalize_array_at(const ZirModule *module, char *type, size_t size, int depth)
 {
     char element[ZIR_NAME_MAX];
     int capacity;
+    if(depth >= 64) return;
     if(!ArrayElementType(type, element, sizeof(element), NULL)) {
-        /* An alias naming an array type resolves through file-scope
-         * constants before normalization. */
-        const char *resolved = type;
-        for(int depth = 0; depth < 8; depth++) {
-            const ZirDefine *found = NULL;
-            for(int d = 0; d < module->define_count; d++)
-                if(strcmp(module->defines[d].name, resolved) == 0 &&
-                    in_lookup_file(module, module->defines[d].is_file_private,
-                                   module->defines[d].span)) {
-                    found = &module->defines[d];
-                    break;
-                }
-            if(found == NULL)
+        for(int t = 0; t < module->type_count; t++)
+            if(!strcmp(module->types[t].name, type) &&
+               in_lookup_file(module, module->types[t].is_file_private,
+                              module->types[t].span))
                 return;
-            resolved = skip_ws(found->value);
+        /* Resolve local and imported aliases in the declaring module so
+         * symbolic bounds retain their original constant namespace. */
+        char resolved[ZIR_NAME_MAX];
+        if(strlen(type) >= sizeof(resolved)) return;
+        copy_text(resolved, sizeof(resolved), type);
+        const ZirModule *owner = module;
+        for(int alias_depth = 0; alias_depth < 8; alias_depth++) {
+            const ZirDefine *found = NULL;
+            const ZirModule *next_owner = NULL;
+            if(visible_define(owner, resolved, &found, &next_owner,
+                              NULL) != 1)
+                return;
+            const char *value = skip_ws(found->value);
+            if(strlen(value) >= sizeof(resolved)) return;
+            copy_text(resolved, sizeof(resolved), value);
+            owner = next_owner;
             if(resolved[0] == '[')
                 break;
         }
-        if(resolved == type || resolved[0] != '[')
+        if(resolved[0] != '[' || strlen(resolved) >= size)
             return;
-        if(strlen(resolved) >= size)
-            return;
+        normalize_array_at(owner, resolved, sizeof(resolved), depth + 1);
         copy_text(type, size, resolved);
         if(!ArrayElementType(type, element, sizeof(element), NULL))
             return;
+        module = owner;
     }
-    normalize_array(module, element, sizeof(element));
+    normalize_array_at(module, element, sizeof(element), depth + 1);
     char normalized[ZIR_NAME_MAX];
     int length;
     if(array_capacity(module, type, &capacity) == 1)
@@ -2054,6 +2077,12 @@ normalize_array(const ZirModule *module, char *type, size_t size)
     }
     if(length >= 0 && (size_t)length < sizeof(normalized))
         copy_text(type, size, normalized);
+}
+
+static void
+normalize_array(const ZirModule *module, char *type, size_t size)
+{
+    normalize_array_at(module, type, size, 0);
 }
 
 static int
@@ -3762,6 +3791,7 @@ storage_type_error(const ZirModule *module, const char *source,
 
     copy_text(type, sizeof(type), source);
     trim_in_place(type);
+    normalize_array(module, type, sizeof(type));
     if(!strcmp(type, "void"))
         return indirect ? NULL : "stored values cannot have void type";
     {
@@ -7234,6 +7264,19 @@ CheckPrograms(ZirProgram **programs, int count)
             if(!check_type_declarations(&programs[p]->modules[m]) ||
                !normalize_record_arrays(&programs[p]->modules[m]))
                 return 0;
+    for(int p = 0; p < count; p++)
+        for(int m = 0; m < programs[p]->module_count; m++) {
+            ZirModule *module = &programs[p]->modules[m];
+            char saved_path[ZIR_PATH_MAX];
+            copy_text(saved_path, sizeof(saved_path), module->lookup_path);
+            for(int g = 0; g < module->global_count; g++) {
+                ZirGlobal *global = &module->globals[g];
+                select_lookup_file(module, global->span);
+                normalize_array(module, global->type, sizeof(global->type));
+            }
+            copy_text(module->lookup_path, sizeof(module->lookup_path),
+                      saved_path);
+        }
     for(int p = 0; p < count; p++) for(int m = 0; m < programs[p]->module_count; m++) {
         c.module = &programs[p]->modules[m];
         for(int i = 0; i < c.module->global_count; i++) {

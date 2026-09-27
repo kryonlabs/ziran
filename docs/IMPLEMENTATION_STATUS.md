@@ -616,8 +616,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   zero-element typed arrays and context-inferred `.[]` have count and size zero
   and null `.data`. `tests/zero_arrays.sh` covers locals, globals, aliases,
   nested arrays and records, arguments, returns, and invalid indexing from
-  source and saved IR on C, C++, Go, and `.zib`, including imported zero bounds
-  in aliases used by nested arrays and procedure signatures. C/C++ use a
+  source and saved IR on C, C++, Go, and `.zib`, including open and named
+  imported array aliases in globals, records, signatures, nested arrays, and
+  `size_of`. Private and ambiguous imported aliases are rejected, while a
+  local record type keeps precedence over an open-imported alias. C/C++ use a
   GNU-compatible zero-array extension for zero-byte storage. Native C/C++
   foreign array returns use a hidden result parameter; exact Jai ABI
   conformance and nonempty `.data` behavior remain open.
