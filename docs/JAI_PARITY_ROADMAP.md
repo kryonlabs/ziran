@@ -116,14 +116,20 @@ file-private and inactive visibility. Direct `size_of(Box(s64))` and a later
 one-line concrete alias `LaterBox :: Box(s64)` also resolve in `#if` and
 `#run`; the alias works without a trailing semicolon, while inactive and
 file-private aliases remain hidden. Multiline record fields with semicolons
-lower the same way as inline fields. Unconditional nested
+lower the same way as inline fields. A later unconditional record, enum, or
+generic record can have `#if`-selected fields or members when its condition
+resolves from discovered declarations. The prepass selects only the active
+fields before computing `size_of` or opening enum members, including a type
+from a later `#load`; `tests/forward_type_conditions.sh` checks source and
+saved IR on all four targets and file-private visibility. Unconditional nested
 `#load` files also contribute public constants, types, `using` declarations,
 and imports to earlier conditions; file-private names remain visible only in
 their declaring file. `tests/forward_load_conditions.sh` checks source and
 saved IR on all four targets, private visibility, and inactive loads. This is
-still a limited pass: types with conditional bodies, other generic-instance
-declaration forms, embedded source imports, and imports in conditionally selected `#load`
-files have ordering limits. Named imported real and string constants work in
+still a limited pass: mutually dependent conditional type bodies, other
+generic-instance declaration forms, embedded source imports, and imports in
+conditionally selected `#load` files have ordering limits. Named imported real
+and string constants work in
 `#if` and `#run`, including an import declared later in the file;
 `tests/imported_typed_constants.sh` checks them on source and saved IR across
 all four targets. Imported aggregate fields and array elements also work in

@@ -8,6 +8,14 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 cat > "$work/loaded_flags.zi" <<'ZI'
 LoadedMask :: enum_flags u16 { LoadedOne; LoadedTwo; }
 using LoadedMask;
+LoadedConditional :: struct {
+    #if LoadedChoice == 1 {
+        value: s64;
+    } else {
+        unavailable: MissingLoadedType;
+    }
+}
+LoadedChoice :: 1
 ZI
 
 cat > "$work/forward_type.zi" <<'ZI'
@@ -31,6 +39,11 @@ LoadedSelected :: 1;
 } else {
 LoadedSelected :: MissingLoaded;
 }
+#if size_of(LoadedConditional) == 8 {
+LoadedConditionalSelected :: 1;
+} else {
+LoadedConditionalSelected :: MissingLoadedConditional;
+}
 #if size_of(Box(s64)) == 8 {
 GenericSelected :: 1;
 } else {
@@ -41,11 +54,29 @@ AliasSelected :: 1;
 } else {
 AliasSelected :: MissingAlias;
 }
+#if size_of(Conditional) == 16 {
+ConditionalSelected :: 1;
+} else {
+ConditionalSelected :: MissingConditional;
+}
+#if Active == 7 && size_of(ConditionalEnum) == 8 {
+ConditionalEnumSelected :: 1;
+} else {
+ConditionalEnumSelected :: MissingConditionalEnum;
+}
+#if size_of(ConditionalBox(s64)) == 8 {
+ConditionalGenericSelected :: 1;
+} else {
+ConditionalGenericSelected :: MissingConditionalGeneric;
+}
 RUN :: #run size_of(Later);
 FlagsRun :: #run size_of(LaterMask);
 SpecifiedRun :: #run size_of(SpecifiedMask);
 LoadedRun :: #run size_of(LoadedMask);
+LoadedConditionalRun :: #run size_of(LoadedConditional);
 AliasRun :: #run size_of(LaterBox);
+ConditionalRun :: #run size_of(Conditional);
+ConditionalGenericRun :: #run size_of(ConditionalBox(s64));
 Later :: struct {
     first: int;
     second: s64;
@@ -59,12 +90,42 @@ using SpecifiedMask;
 #load "loaded_flags.zi";
 LaterBox :: Box(s64)
 Box :: struct($T: Type) { value: T; }
+Conditional :: struct {
+    first: s64;
+    #if false {
+        unavailable: MissingType;
+    } else #if Choice == 1 {
+        second: s64;
+    } else {
+        unavailable: MissingOtherType;
+    }
+}
+Choice :: 1
+ConditionalEnum :: enum {
+    #if Choice == 1 {
+        Active :: 7;
+    } else {
+        Unavailable :: MissingEnumValue;
+    }
+}
+using ConditionalEnum;
+ConditionalBox :: struct($T: Type) {
+    #if Choice == 1 {
+        value: T;
+    } else {
+        unavailable: MissingGenericType;
+    }
+}
 #program_export
 Answer :: () -> s64 {
     return Selected + RUN + FlagsSelected + FlagsRun +
            SpecifiedSelected + SpecifiedRun +
            LoadedSelected + LoadedRun +
-           GenericSelected + AliasSelected + AliasRun + 5
+           LoadedConditionalSelected + LoadedConditionalRun +
+           GenericSelected + AliasSelected + AliasRun +
+           ConditionalSelected + ConditionalRun +
+           ConditionalEnumSelected + ConditionalGenericSelected +
+           ConditionalGenericRun + 5
 }
 ZI
 
@@ -85,12 +146,33 @@ if grep -aFq 'MissingLoaded' "$work/ir/forward_type.zir"; then
     echo 'unselected forward loaded enum_flags branch was saved in IR' >&2
     exit 1
 fi
+if grep -aFq 'MissingLoadedConditional' "$work/ir/forward_type.zir" ||
+   grep -aFq 'MissingLoadedType' "$work/ir/forward_type.zir"; then
+    echo 'unselected loaded conditional-type branch was saved in IR' >&2
+    exit 1
+fi
 if grep -aFq 'MissingGeneric' "$work/ir/forward_type.zir"; then
     echo 'unselected forward generic branch was saved in IR' >&2
     exit 1
 fi
 if grep -aFq 'MissingAlias' "$work/ir/forward_type.zir"; then
     echo 'unselected forward generic alias branch was saved in IR' >&2
+    exit 1
+fi
+if grep -aFq 'MissingConditional' "$work/ir/forward_type.zir" ||
+   grep -aFq 'MissingType' "$work/ir/forward_type.zir" ||
+   grep -aFq 'MissingOtherType' "$work/ir/forward_type.zir"; then
+    echo 'unselected conditional-type branch was saved in IR' >&2
+    exit 1
+fi
+if grep -aFq 'MissingConditionalEnum' "$work/ir/forward_type.zir" ||
+   grep -aFq 'MissingEnumValue' "$work/ir/forward_type.zir"; then
+    echo 'unselected conditional-enum branch was saved in IR' >&2
+    exit 1
+fi
+if grep -aFq 'MissingConditionalGeneric' "$work/ir/forward_type.zir" ||
+   grep -aFq 'MissingGenericType' "$work/ir/forward_type.zir"; then
+    echo 'unselected conditional-generic branch was saved in IR' >&2
     exit 1
 fi
 for input in "$work/forward_type.zi" "$work/ir/forward_type.zir"; do
@@ -100,19 +182,19 @@ for input in "$work/forward_type.zi" "$work/ir/forward_type.zir"; do
     esac
     "$ziran" bundle --root "$root" --entry forward_type:Answer \
         -o "$work/$label.zib" "$input"
-    test "$("$ziran" run "$work/$label.zib")" = 42
+    test "$("$ziran" run "$work/$label.zib")" = 78
     for target in c cpp go; do
         out="$work/$label-$target"
         "$ziran" build "--target=$target" --root "$root" -o "$out" "$input"
         case "$target" in
             c)
-                printf '#include "forward_type.h"\nint main(void) { return Answer() == 42 ? 0 : 1; }\n' > "$work/main.c"
+                printf '#include "forward_type.h"\nint main(void) { return Answer() == 78 ? 0 : 1; }\n' > "$work/main.c"
                 ${CC:-cc} -Iinclude -I"$out" "$out"/*.c \
                     "$work/main.c" -o "$out/app"
                 "$out/app"
                 ;;
             cpp)
-                printf '#include "forward_type.hpp"\nint main() { return Answer() == 42 ? 0 : 1; }\n' > "$work/main.cpp"
+                printf '#include "forward_type.hpp"\nint main() { return Answer() == 78 ? 0 : 1; }\n' > "$work/main.cpp"
                 ${CXX:-c++} -Iinclude -I"$out" "$out"/*.cpp \
                     "$work/main.cpp" -o "$out/app"
                 "$out/app"
@@ -122,7 +204,7 @@ for input in "$work/forward_type.zi" "$work/ir/forward_type.zir"; do
 package ziran
 import "testing"
 func TestForwardType(t *testing.T) {
-    if ForwardType_Answer() != 42 { t.Fatal("forward type") }
+    if ForwardType_Answer() != 78 { t.Fatal("forward type") }
 }
 GO
                 GO111MODULE=off go test "$out"/*.go
@@ -215,6 +297,28 @@ if "$ziran" check --root "$work" "$work/private_alias_top.zi" \
 fi
 grep -Fq 'size_of requires a known sized type' \
     "$work/private_alias_top.err"
+
+cat > "$work/private_conditional.zi" <<'ZI'
+#scope_file
+PrivateConditional :: struct {
+    #if true {
+        value: s64;
+    }
+}
+ZI
+cat > "$work/private_conditional_top.zi" <<'ZI'
+#if size_of(PrivateConditional) == 8 {
+Answer :: () -> s64 { return 42 }
+}
+#load "private_conditional.zi";
+ZI
+if "$ziran" check --root "$work" "$work/private_conditional_top.zi" \
+    2> "$work/private_conditional_top.err"; then
+    echo 'file-private loaded conditional type became visible' >&2
+    exit 1
+fi
+grep -Fq 'size_of requires a known sized type' \
+    "$work/private_conditional_top.err"
 
 cat > "$work/inactive_field.zi" <<'ZI'
 Later :: struct {

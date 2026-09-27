@@ -431,6 +431,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   and `.zib`. The same test covers a later generic record and a one-line
   concrete alias without a semicolon in `#if size_of` and `#run size_of`;
   aliases inside inactive branches or private loaded files stay hidden.
+  Later records, enums, and generic records with `#if`-selected bodies also
+  resolve for supported forward size queries and opened enum members, including
+  a type from a later `#load`. The selected branch alone reaches checked IR;
+  private loaded types stay hidden.
   Forward `#if` calls to unconditional procedures with local declarations,
   assignments, braced `if`/`else if`/`else`, and bounded `while` loops run
   through the compile-time evaluator. `break`, `continue`, calls to another

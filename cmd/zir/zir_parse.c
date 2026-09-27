@@ -2250,6 +2250,21 @@ typedef struct {
 } ZirTypes;
 
 typedef struct {
+    char *source;
+    char *path;
+    char rel[SOURCE_PATH_MAX];
+    int line;
+    int is_public;
+    int is_file_private;
+} ZirDeferredType;
+
+typedef struct {
+    ZirDeferredType *items;
+    int count;
+    int capacity;
+} ZirDeferredTypes;
+
+typedef struct {
     ZirFunction *items;
     int count;
     int capacity;
@@ -5434,6 +5449,41 @@ append_type_source(char *target, size_t capacity, const char *line,
 }
 
 static void
+defer_conditional_type(ZirDeferredTypes *deferred, const char *source,
+                       const char *path, const char *rel, int line,
+                       int is_public, int is_file_private)
+{
+    if(deferred->count == deferred->capacity) {
+        int capacity = deferred->capacity > 0 ? deferred->capacity * 2 : 8;
+        ZirDeferredType *items = realloc(deferred->items,
+                                         (size_t)capacity * sizeof(*items));
+        if(items == NULL) die("out of memory discovering conditional types");
+        deferred->items = items;
+        deferred->capacity = capacity;
+    }
+    ZirDeferredType *item = &deferred->items[deferred->count++];
+    memset(item, 0, sizeof(*item));
+    item->source = strdup(source);
+    item->path = strdup(path);
+    if(item->source == NULL || item->path == NULL)
+        die("out of memory discovering conditional types");
+    copy_text(item->rel, sizeof(item->rel), rel);
+    item->line = line;
+    item->is_public = is_public;
+    item->is_file_private = is_file_private;
+}
+
+static void
+free_deferred_types(ZirDeferredTypes *deferred)
+{
+    for(int i = 0; i < deferred->count; i++) {
+        free(deferred->items[i].source);
+        free(deferred->items[i].path);
+    }
+    free(deferred->items);
+}
+
+static void
 discover_function_header(const char *source, const char *path,
                          const char *rel, int line_no,
                          int scope_public, int scope_file,
@@ -5677,6 +5727,7 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                     const char *root,
                     ZirConsts *future_constants, ZirUsings *future_usings,
                     ZirImports *future_imports, ZirTypes *future_types,
+                    ZirDeferredTypes *deferred_types,
                     ZirFunctions *future_functions,
                     ZirGlobals *future_globals,
                     ZirDiscoveredFiles *files, int depth)
@@ -5734,11 +5785,18 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                                &type_overflow);
             if(strchr(type_source, '{') != NULL &&
                brace_depth + brace_delta == 0) {
-                if(!type_overflow)
-                    discover_named_type(type_source, path, rel,
-                                        type_start_line,
-                                        type_scope_public, type_scope_file,
-                                        future_types);
+                if(!type_overflow) {
+                    if(contains_source_directive(type_source, "#if"))
+                        defer_conditional_type(deferred_types, type_source,
+                                               path, rel, type_start_line,
+                                               type_scope_public,
+                                               type_scope_file);
+                    else
+                        discover_named_type(type_source, path, rel,
+                                            type_start_line,
+                                            type_scope_public, type_scope_file,
+                                            future_types);
+                }
                 collecting_type = 0;
             }
         } else if(collecting_function ||
@@ -5827,7 +5885,8 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                                     discover_file_scope(loaded, loaded_path,
                                         loaded_rel, root, future_constants,
                                         future_usings, future_imports,
-                                        future_types, future_functions,
+                                        future_types, deferred_types,
+                                        future_functions,
                                         future_globals,
                                         files, depth + 1);
                                     free(loaded);
@@ -5961,6 +6020,39 @@ discover_file_scope(const char *source, const char *path, const char *rel,
         brace_depth += brace_delta;
         if(brace_depth < 0)
             brace_depth = 0;
+    }
+}
+
+static void
+discover_conditional_types(const ZirDeferredTypes *deferred,
+                           ZirModule *module, const ZirConsts *constants,
+                           const CompileParseContext *context,
+                           ZirTypes *future)
+{
+    for(int i = 0; i < deferred->count; i++) {
+        const ZirDeferredType *item = &deferred->items[i];
+        const char *source = item->source;
+        char line[SOURCE_LINE_MAX];
+        char selected[ZIR_TEXT_MAX * 2 + SOURCE_LINE_MAX] = "";
+        ZirCondFrame frames[8] = {0};
+        int frame_count = 0;
+        int line_no = item->line - 1;
+        int overflow = 0;
+        while(read_source_line(line, sizeof(line), &source,
+                               item->path, line_no) != NULL) {
+            line_no++;
+            char *text = trim(line);
+            if(cond_top_step(text, frames, &frame_count, module, constants,
+                             context, item->path, item->rel, line_no))
+                continue;
+            if(frame_count > 0 && !frames[frame_count - 1].active)
+                continue;
+            append_type_source(selected, sizeof(selected), text, &overflow);
+        }
+        if(!overflow && frame_count == 0)
+            discover_named_type(selected, item->path, item->rel,
+                                item->line, item->is_public,
+                                item->is_file_private, future);
     }
 }
 
@@ -6383,6 +6475,7 @@ parse_source(const char *path, const char *root, const char *source,
     ZirUsings future_usings = {0};
     ZirImports future_imports = {0};
     ZirTypes future_types = {0};
+    ZirDeferredTypes deferred_types = {0};
     ZirFunctions future_functions = {0};
     ZirGlobals future_globals = {0};
     ZirDiscoveredFiles discovered_files = {0};
@@ -6460,8 +6553,11 @@ parse_source(const char *path, const char *root, const char *source,
     }
     discover_file_scope(source, path, rel, root, &future_constants,
                         &future_usings, &future_imports, &future_types,
+                        &deferred_types,
                         &future_functions, &future_globals,
                         &discovered_files, 0);
+    discover_conditional_types(&deferred_types, module, &consts,
+                               &compile_context, &future_types);
 
     for(;;) {
         if(!have_look && onelineq_count == 0 &&
@@ -7108,6 +7204,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_usings.items);
                 free(future_imports.items);
                 free(future_types.items);
+                free_deferred_types(&deferred_types);
                 free_discovered_functions(&future_functions);
                 free(future_globals.items);
                 free_discovered_files(&discovered_files);
@@ -7993,6 +8090,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_usings.items);
                 free(future_imports.items);
                 free(future_types.items);
+                free_deferred_types(&deferred_types);
                 free_discovered_functions(&future_functions);
                 free(future_globals.items);
                 free_discovered_files(&discovered_files);
@@ -8006,6 +8104,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_usings.items);
                 free(future_imports.items);
                 free(future_types.items);
+                free_deferred_types(&deferred_types);
                 free_discovered_functions(&future_functions);
                 free(future_globals.items);
                 free_discovered_files(&discovered_files);
@@ -8021,6 +8120,7 @@ parse_source(const char *path, const char *root, const char *source,
     free(future_usings.items);
     free(future_imports.items);
     free(future_types.items);
+    free_deferred_types(&deferred_types);
     free_discovered_functions(&future_functions);
     free(future_globals.items);
     free_discovered_files(&discovered_files);
