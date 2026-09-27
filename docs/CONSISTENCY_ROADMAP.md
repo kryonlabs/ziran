@@ -40,8 +40,10 @@ contracts.
    generated C/C++ but retains the earlier bytes in Go and `.zib`. Choose one
    language rule, then enforce it consistently. An immutable-borrow rule needs
    alias and lifetime tracking through records, arrays, calls, returns, globals,
-   and host boundaries. The checker currently accepts a record that returns a
-   view of a local byte array. Reject escapes that cannot be proved safe.
+   and host boundaries. Recursive origin checks now reject a record literal,
+   nested record, field assignment, or checked-call result that returns a view
+   of a local byte array. Pointer-derived views and mutable aliases still need
+   a complete lifetime model; reject escapes that cannot be proved safe.
 3. **Numerical edge cases.** Expand differential tests beyond the corrected
    8/16-bit shifts and floating zero division: signed overflow, minimum
    integer divided by minus one, all cast widths, negative and oversized

@@ -509,7 +509,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   the bundle runner copy it into managed storage. The bounded
   `std/text_buffer.zi` helper reads a NUL-terminated buffer through this
   operation. The dedicated gate exercises C, C++, Go, bundles, and invalid
-  non-byte arguments.
+  non-byte arguments. Borrow origins now flow through record/array values and
+  checked calls, so returning a record containing a `TextView` of a local
+  byte array is rejected; `tests/aggregate_view_lifetime.sh` covers literal,
+  nested, array-field, assigned-field, and call-result escapes. Mutable backing-byte
+  aliasing and pointer-derived origins still need one complete cross-target
+  contract.
   `make check` compares source and saved-IR bundles with C, C++, and Go on a
   string program and rejects out-of-range indexing.
 - Portable bundles retain referenced module globals, including records and

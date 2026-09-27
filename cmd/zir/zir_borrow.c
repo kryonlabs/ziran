@@ -10,6 +10,7 @@ typedef struct Origin {
     uint64_t parameters;
     int depth;
     int invalid;
+    int unknown;
 } Origin;
 
 typedef struct BorrowFunction {
@@ -46,6 +47,7 @@ merge(Origin a, Origin b)
     if(b.depth > a.depth)
         a.depth = b.depth;
     a.invalid |= b.invalid;
+    a.unknown |= b.unknown;
     return a;
 }
 
@@ -54,7 +56,7 @@ accumulate(BorrowCheck *check, Origin *destination, Origin source)
 {
     Origin next = merge(*destination, source);
     if(next.parameters != destination->parameters || next.depth != destination->depth ||
-       next.invalid != destination->invalid) {
+       next.invalid != destination->invalid || next.unknown != destination->unknown) {
         *destination = next;
         check->changed = 1;
     }
@@ -77,6 +79,51 @@ binding(BorrowCheck *check, const char *name)
     return NULL;
 }
 
+static int
+contains_view(const ZirModule *module, const char *type, int depth)
+{
+    if(depth > 32 || type == NULL || !*type || *type == '*')
+        return 0;
+    if(!strcmp(type, "string") || SliceElementType(type, NULL, 0))
+        return 1;
+    char element[ZIR_NAME_MAX];
+    if(ArrayElementType(type, element, sizeof(element), NULL))
+        return contains_view(module, element, depth + 1);
+    const ZirModule *owner = NULL;
+    const ZirType *record = FindType(module, type, &owner);
+    if(record == NULL || record->is_enum || record->is_procedure_type ||
+       record->is_record_template || record->is_extern)
+        return 0;
+    size_t offset = 0;
+    ZirTypeField field;
+    while(TypeNextField(record, &offset, &field) == 1)
+        if(contains_view(owner ? owner : module, field.type, depth + 1))
+            return 1;
+    return 0;
+}
+
+static int
+view_type(BorrowCheck *check, const char *type)
+{
+    return contains_view(check->current->module, type, 0);
+}
+
+static const ZirExpr *
+destination_root(const ZirFunction *fn, int index)
+{
+    while(index >= 0) {
+        const ZirExpr *expression = &fn->exprs[index];
+        if(expression->kind == ZIR_EXPR_IDENT)
+            return expression;
+        if(expression->kind != ZIR_EXPR_MEMBER &&
+           expression->kind != ZIR_EXPR_POINTER_MEMBER &&
+           expression->kind != ZIR_EXPR_INDEX)
+            return NULL;
+        index = expression->left;
+    }
+    return NULL;
+}
+
 static Origin expression_origin(BorrowCheck *check, int index);
 
 static Origin
@@ -92,7 +139,10 @@ call_origin(BorrowCheck *check, const ZirExpr *expression)
             summary = &check->functions[i];
     if(summary == NULL)
         return (Origin){0, 0, 1};
-    Origin result = {0, summary->returned.depth, summary->returned.invalid};
+    Origin result = {0};
+    result.depth = summary->returned.depth;
+    result.invalid = summary->returned.invalid;
+    result.unknown = summary->returned.unknown;
     for(int child = expression->first_child; child >= 0;
         child = check->current->fn->exprs[child].next_sibling) {
         int parameter = check->current->fn->exprs[child].argument_index;
@@ -120,23 +170,43 @@ expression_origin(BorrowCheck *check, int index)
             if(source != NULL && source->local < 0 &&
                source->origin.depth == 1 && !source->origin.invalid)
                 return source->origin;
-            return (Origin){0, 0, 1};
+            Origin unknown = {0};
+            unknown.unknown = 1;
+            return unknown;
         }
         if(source == NULL)
             return (Origin){0}; /* Typed module-owned array or record storage. */
-        if(SliceElementType(source->type, NULL, 0) ||
-           strcmp(source->type, "string") == 0)
+        if(view_type(check, source->type))
             return source->local >= 0 ? check->current->locals[source->local] : source->origin;
         return (Origin){0, source->depth, 0};
     }
     case ZIR_EXPR_MEMBER:
     case ZIR_EXPR_POINTER_MEMBER:
     case ZIR_EXPR_INDEX:
-    case ZIR_EXPR_SLICE:
         return expression_origin(check, expression->left);
+    case ZIR_EXPR_SLICE: {
+        const ZirExpr *base = &fn->exprs[expression->left];
+        if(base->kind == ZIR_EXPR_IDENT &&
+           ArrayElementType(base->type, NULL, 0, NULL)) {
+            BorrowBinding *source = binding(check, base->name);
+            if(source != NULL)
+                return (Origin){0, source->depth, 0};
+        }
+        return expression_origin(check, expression->left);
+    }
     case ZIR_EXPR_CONDITIONAL:
         return merge(expression_origin(check, expression->right),
                      expression_origin(check, expression->third));
+    case ZIR_EXPR_FIELD_INIT:
+        return expression_origin(check, expression->right);
+    case ZIR_EXPR_COMPOUND: {
+        Origin result = {0};
+        for(int child = expression->first_child; child >= 0;
+            child = fn->exprs[child].next_sibling)
+            if(view_type(check, fn->exprs[child].type))
+                result = merge(result, expression_origin(check, child));
+        return result;
+    }
     case ZIR_EXPR_CALL:
         if(!strcmp(expression->name, "TextView"))
             return expression_origin(check, expression->first_child);
@@ -147,8 +217,7 @@ expression_origin(BorrowCheck *check, int index)
              * keep that binding alive while the view is in scope. */
             return expression_origin(check, expression->first_child);
         }
-        if(SliceElementType(expression->type, NULL, 0) ||
-           strcmp(expression->type, "string") == 0) {
+        if(view_type(check, expression->type)) {
             /* Host slice returns own their storage: the VM copies the
              * elements before the value reaches the caller. Ordinary
              * checked calls keep their summarized origins. */
@@ -223,7 +292,7 @@ check_function(BorrowCheck *check, BorrowFunction *function)
         trim_in_place(colon);
         Origin origin = {0};
         int local = -1;
-        if(SliceElementType(colon, NULL, 0) || !strcmp(colon, "string")) {
+        if(view_type(check, colon)) {
             origin.parameters = UINT64_C(1) << i;
             local = fn->stmt_count + i;
             accumulate(check, &function->locals[local], origin);
@@ -243,49 +312,58 @@ check_function(BorrowCheck *check, BorrowFunction *function)
         check_ranges(check, statement->lhs_root);
         check_ranges(check, statement->expr_root);
         if(statement->kind == ZIR_STMT_DECL) {
-            if(SliceElementType(statement->type, NULL, 0) ||
-               !strcmp(statement->type, "string")) {
+            if(view_type(check, statement->type)) {
                 Origin source = expression_origin(check, statement->expr_root);
+                int direct_view = SliceElementType(statement->type, NULL, 0) ||
+                    !strcmp(statement->type, "string");
                 accumulate(check, &function->locals[i], source);
-                if(source.invalid || source.depth > check->depth)
+                if((source.invalid && direct_view) ||
+                   source.depth > check->depth)
                     reject(check, statement->span,
                            !strcmp(statement->type, "string") ?
                            "text view initializer outlives its backing storage" :
-                           "slice initializer outlives its backing storage");
+                           SliceElementType(statement->type, NULL, 0) ?
+                           "slice initializer outlives its backing storage" :
+                           "view initializer outlives its backing storage");
             }
             add_binding(check, statement->name, statement->type, (Origin){0}, i,
                         check->depth, 0);
         } else if(statement->kind == ZIR_STMT_ASSIGN && statement->lhs_root >= 0) {
             const ZirExpr *destination = &fn->exprs[statement->lhs_root];
-            if((SliceElementType(destination->type, NULL, 0) ||
-                !strcmp(destination->type, "string")) &&
-               destination->kind == ZIR_EXPR_IDENT) {
-                BorrowBinding *target = binding(check, destination->name);
+            if(view_type(check, destination->type)) {
+                const ZirExpr *root = destination_root(fn, statement->lhs_root);
+                BorrowBinding *target = root == NULL ? NULL : binding(check, root->name);
                 Origin source = expression_origin(check, statement->expr_root);
-                int global_text = target == NULL &&
-                    !strcmp(destination->type, "string") &&
-                    !source.invalid && source.depth == 0 &&
+                int global_storage = root != NULL && target == NULL &&
+                    !source.invalid && !source.unknown && source.depth == 0 &&
                     source.parameters == 0;
-                if(!global_text &&
-                   (target == NULL || target->captured || source.invalid ||
+                int direct_view = destination->kind == ZIR_EXPR_IDENT &&
+                    (SliceElementType(destination->type, NULL, 0) ||
+                     !strcmp(destination->type, "string"));
+                if(!global_storage &&
+                   (target == NULL || target->captured ||
+                    (source.invalid && direct_view) ||
                     source.depth > target->depth)) {
                     reject(check, statement->span,
                            !strcmp(destination->type, "string") ?
                            "text view assignment may escape its backing storage" :
-                           "slice assignment may escape its backing storage");
+                           SliceElementType(destination->type, NULL, 0) ?
+                           "slice assignment may escape its backing storage" :
+                           "view assignment may escape its backing storage");
                 } else if(target != NULL && target->local >= 0) {
                     accumulate(check, &function->locals[target->local], source);
                 }
             }
         } else if(statement->kind == ZIR_STMT_RETURN &&
-                  (SliceElementType(fn->return_type, NULL, 0) ||
-                   !strcmp(fn->return_type, "string"))) {
+                  view_type(check, fn->return_type)) {
             Origin source = expression_origin(check, statement->expr_root);
-            if(source.invalid || source.depth > 0)
+            if(source.invalid || source.unknown || source.depth > 0)
                 reject(check, statement->span,
                        !strcmp(fn->return_type, "string") ?
                        "returned text view borrows local or temporary storage" :
-                       "returned slice borrows local or temporary storage");
+                       SliceElementType(fn->return_type, NULL, 0) ?
+                       "returned slice borrows local or temporary storage" :
+                       "returned value borrows local or temporary storage");
             accumulate(check, &function->returned, source);
         }
         if(statement->kind == ZIR_STMT_IF || statement->kind == ZIR_STMT_WHILE ||
