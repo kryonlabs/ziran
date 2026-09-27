@@ -15,7 +15,8 @@ guide = Path(sys.argv[1]).read_text()
 help_text = Path(sys.argv[2]).read_text()
 assert 'ziran guide' in help_text
 assert 'C, C++, Go, and portable .zib' in guide
-assert 'Local Vec values need explicit VecFree' in guide
+assert 'Direct owned Vec locals and parameters drop at scope exit' in guide
+assert 'ziran api --json' in guide
 source = guide.split('Source shape:\n', 1)[1].split('\n\nDeclarations', 1)[0]
 Path(sys.argv[3]).write_text('\n'.join(line[2:] for line in source.splitlines()) + '\n')
 PY

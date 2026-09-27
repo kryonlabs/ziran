@@ -59,6 +59,7 @@ PkgDispatch :: (command: string, arguments: []string, project: bool,
     bundle: bool = command == "bundle" || command == "run"
     build: bool = command == "build"
     if check || command == "ir" { executable = "zi2zir" }
+    else if command == "api" { executable = "zi-api" }
     else if command == "inspect" { executable = "zi-inspect" }
     else if command == "fmt" { executable = "zi-fmt" }
     else if bundle { executable = "zi2zib" }
@@ -128,7 +129,7 @@ PkgDispatch :: (command: string, arguments: []string, project: bool,
         index += 1
     }
     if project && !has_source &&
-       (check || command == "ir" || build || command == "bundle") {
+       (check || command == "ir" || command == "api" || build || command == "bundle") {
         child[count] = PkgJoin3(root, "/", current.entry)
         count += 1
     }
@@ -139,7 +140,7 @@ PkgDispatch :: (command: string, arguments: []string, project: bool,
 PackageMain :: (launcher: string, arguments: []string) -> s32 {
     if arguments.count == 0 || arguments[0] == "help" ||
        arguments[0] == "--help" || arguments[0] == "-h" {
-        PkgPrint("usage: ziran guide|capabilities|lock|update|fetch|add|pkg|tool|check|ir|build|bundle|run|fmt|inspect ...\n", false)
+        PkgPrint("usage: ziran guide|capabilities|api|lock|update|fetch|add|pkg|tool|check|ir|build|bundle|run|fmt|inspect ...\n", false)
         PkgPrint("project commands: --project [--locked] [--offline]\n", false)
         return 0
     }

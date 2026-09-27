@@ -38,7 +38,10 @@ another positive worker count. The compiler commands are `zi2zir` (including
 installed compiler, including current safety and target limits.
 `ziran capabilities --target=go --json` reports a versioned machine-readable
 target summary; see the [capability schema](docs/CAPABILITIES.md).
-`ziran check|ir|inspect|build|bundle|run|fmt` remains a convenience dispatcher
+`ziran api --json --root src src/main.zi` checks an entry and its imports,
+then reports their public types and procedure signatures; see the
+[API query schema](docs/API_DISCOVERY.md).
+`ziran check|ir|api|inspect|build|bundle|run|fmt` remains a convenience dispatcher
 for the same tools. [Cross-target benchmarks](bench/README.md) measure the
 compiler, downstream toolchains, and validated runtime cases separately.
 Use `ziran build --target=c` for C99 output.
@@ -57,7 +60,7 @@ read the saved file and leave it unchanged.
 
 For ordinary imports, pass the entry file and a library directory with
 `--module-path DIR` (repeat for multiple directories). `check`, `ir`,
-`build`, and `bundle` load extensionless `#import "module"` dependencies
+`api`, `build`, and `bundle` load extensionless `#import "module"` dependencies
 transitively from `.zi` or saved `.zir`. For example:
 
 ```sh
