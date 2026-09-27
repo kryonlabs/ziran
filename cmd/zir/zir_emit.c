@@ -1128,7 +1128,9 @@ EmitNumberSupport(FILE *out, ZirTarget target, const char *p)
             "    default: abort(); }\n    return 0;\n}\n\n", p, p, p);
         fprintf(out,
             "static inline uint64_t %s_float(double x, int w, int sign) {\n"
-            "    double bound = 1; for(int i = 0; i < w-sign; i++) bound *= 2;\n"
+            "    double bound = 1;\n"
+            "    int i;\n"
+            "    for(i = 0; i < w-sign; i++) bound *= 2;\n"
             "    if(!(x >= (sign ? -bound : 0) && x < bound)) abort();\n"
             "    return sign ? (uint64_t)(int64_t)x : (uint64_t)x;\n}\n", p);
     } else if(target == ZIR_GO) {

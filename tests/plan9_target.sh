@@ -7,8 +7,16 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 mkdir "$work/src"
 cat > "$work/src/main.zi" <<'EOF'
+Inner :: struct { value: s32 }
+Props :: struct { inner: Inner; scale: s32 }
+Make :: () -> Props { return .{inner = .{value = 40}, scale = 2} }
+Read :: (props: Props) -> s32 { return props.inner.value + props.scale }
 #program_export
-main :: () -> s32 { return 42 }
+main :: () -> s32 {
+    local := Make()
+    if Read(local) != 42 { return 1 }
+    return 0
+}
 EOF
 
 "$ziran" build --target=plan9-c --root "$work/src" \
