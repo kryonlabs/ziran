@@ -65,3 +65,7 @@ For a focused before/after comparison of two validated Go binaries, run
 shuffles execution order, checks every checksum, and records raw samples and
 binary hashes. A [paired fast-path result](results/2026-09-27-vector-growth-go-fastpath/README.md)
 shows how the general arithmetic helper affected the vector workload.
+
+A [provisional multilanguage matrix](results/2026-09-27-vector-growth-multilang/README.md)
+adds Rust, Java, JavaScript, and Python comparisons after the Go arithmetic
+fast path. Its metadata records the dirty working tree used for that run.

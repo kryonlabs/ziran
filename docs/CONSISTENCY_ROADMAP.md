@@ -127,6 +127,8 @@ by a scan, with process startup in runtime timings. They separate Ziran
 emission from host compiler work and mark Go build times as cache-warm. The
 integer suite can compare Rust, Java, JavaScript, and Python when installed;
 the vector-growth harness now has the same optional comparisons.
+A [provisional multilanguage vector run](../bench/results/2026-09-27-vector-growth-multilang/README.md)
+validated 206 samples across 50 phase/case combinations.
 Generated C/C++ were close to handwritten equivalents on these kernels.
 Generated Go took about 2.6 times handwritten Go on the integer kernel and
 about 2.8 times on the original large vector-growth baseline. The integer
