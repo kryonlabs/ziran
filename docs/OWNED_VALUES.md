@@ -8,17 +8,19 @@ portable VM), checked indexing, fallible `VecPush`, `VecClear`, `VecFree`,
 explicit `VecClone(dest, src)` with a recoverable failure result, and
 `VecSlice(values, low, high)` borrowed views, in C99,
 C++, Go, and the portable VM. A vector can live in a local, global, or record
-field, and moves on assignment, argument passing, and return. The checker
-rejects use after a move, assignment over an owned vector, a leaked local or
-parameter at any return or scope exit, moving nested record storage, and
-moving a global. Go can report capacity overflow but its runtime may terminate
-on physical allocation failure; this is not yet the full recoverable failure
-contract below. Owned Vec locals drop automatically: block close, return,
-break, continue, and the function tail all free still-owned storage, and a
-move zeroes its source so a later drop of the same binding is a safe no-op.
-Explicit `VecFree` and `defer { VecFree(v) }` remain available and compose
-with the automatic drops. `VecPop` and `VecGet` require the `Option` record
+field. Direct vector bindings have partial move checks on assignment,
+argument passing, and return. Go can report capacity overflow but its runtime
+may terminate on physical allocation failure; this is not yet the full
+recoverable failure contract below. `VecPop` and `VecGet` require the `Option` record
 template from `std/option.zi` to be visible in the using module.
+
+**Current safety limits:** automatic drops are not emitted for a local `Vec`
+at block close or return. Free it explicitly on each path, or use
+`defer { VecFree(v) }` when the vector stays in that scope. The checker also
+accepts copies of records containing a `Vec`, which can double-free if both
+copies are freed. Treat aggregate-owned values as unsupported until recursive
+move and drop checking is implemented. The rest of this page describes the
+intended contract, not a guarantee that every case is enforced today.
 
 `BuilderFinish` consumes the builder: the returned `string` keeps the builder's
 bytes without copying them. C99 and C++ detach the buffer instead of freeing
@@ -36,15 +38,15 @@ respectively.
 ## Values and ownership
 
 Scalars, immutable strings, and aggregates whose members are copyable retain
-value-copy semantics. An owned value, including `Vec[T]`, moves on assignment,
+value-copy semantics. An owned value, including `Vec[T]`, should move on assignment,
 argument passing, and return. A move source must be a local binding or a fresh
 call result: the checker rejects moving nested record storage and moving a
 global, because both keep shared storage that other code can reach. The
-checker rejects use after move and assignment over an owned vector; moves
-inside an `if` whose every arm returns do not reach the join. Every path
-drops each owned local exactly once: moves and `VecFree` zero their source,
-and scope exits free whatever is still owned, so an explicit drop followed by
-the automatic drop frees empty storage and never double-frees. A view declared as `[]T` from
+checker rejects use after move and assignment over a direct owned vector; moves
+inside an `if` whose every arm returns do not reach the join. The target rule
+is that every path drops each owned local exactly once, with a moved source
+zeroed so a later drop is harmless. That rule is not implemented for implicit
+scope exits yet. A view declared as `[]T` from
 `VecSlice(values, low, high)` borrows its source binding until the view's
 scope closes: moving or mutating the source, including `VecPush`, `VecPop`,
 `VecClear`, `VecFree`, `VecSwap`, and the string builder operations, is
@@ -74,7 +76,6 @@ string builder owns UTF-8 bytes in a `Vec[u8]`; `BuilderAppend` can fail, and
 `BuilderFinish` consumes the builder without copying its bytes. Immutable
 `string` values remain unchanged.
 
-The parser, checker, checked `.zir`, C/C++/Go emitters, portable verifier,
-VM, and host boundary implement these observable ownership, move, drop,
-clone, and borrow behaviors, including automatic drops at every scope exit,
-for the supported subset.
+The parser, checker, checked `.zir`, C/C++/Go emitters, portable verifier, VM,
+and host boundary implement the direct-vector operations above, with the
+ownership and automatic-drop limitations called out at the start of this page.

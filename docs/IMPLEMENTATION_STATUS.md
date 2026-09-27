@@ -684,18 +684,17 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.zib`, with
   checked indexing, push, clear, free, swap, `VecPop` and `VecGet` results as
   `Option(T)` records, and a `Vec(u8)` string builder through `BuilderAppend`
-  and `BuilderFinish`. Vectors move on assignment, argument passing, and
-  return: the checker rejects use after move, assignment over an owned vector,
-  a leaked local or parameter at any return or scope exit, moving nested
-  record storage, and moving a global, while `defer { VecFree(v) }` satisfies
-  the drop rule on every path. `VecClone(dest, src)` copies into a fresh or
+  and `BuilderFinish`. Direct vector bindings have move checks on assignment,
+  argument passing, and return, including use-after-move and overwrite checks.
+  `VecClone(dest, src)` copies into a fresh or
   moved-from destination with a recoverable failure result, and
   `VecSlice(values, low, high)` declares a borrowed `[]T` view whose live
-  scope blocks moving or mutating its source. Owned Vec locals drop
-  automatically at block close, return, break, continue, and the function
-  tail, with moves zeroing their source, completing the owned-value model. Go cannot recover from
-  physical allocation failure. The intended
-  [owned-value contract](OWNED_VALUES.md) records those semantics.
+  scope blocks moving or mutating its source. Local vectors do not currently
+  drop automatically on scope exit, and records containing vectors can still
+  be copied. Explicit cleanup and avoiding aggregate-owned copies are required
+  until these safety gaps are closed. Go cannot recover from physical
+  allocation failure. The intended [owned-value contract](OWNED_VALUES.md)
+  distinguishes the target rules from current behavior.
 - Audit parser, checker, IR, and backend paths for remaining UI assumptions.
   Finish general procedure values and imports for ordinary libraries.
   Named capture-free callbacks, including stored values, and typed record
