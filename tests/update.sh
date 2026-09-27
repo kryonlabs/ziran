@@ -45,6 +45,10 @@ Check :: () -> s32 {
     if bad_version.valid {
         return 6
     }
+    trailing_version := ParseAppcast("{\"version\":\"1.2.3.4oops\"}", "")
+    if trailing_version.valid {
+        return 8
+    }
     overflow_size := ParseAppcast("{\"version\":\"2\",\"channels\":{\"appimage-amd64\":{\"url\":\"https://example.test/a\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":9223372036854775808}}}", "appimage-amd64")
     if overflow_size.valid {
         return 7

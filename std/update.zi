@@ -61,8 +61,7 @@ ReadVersion :: (version: string) -> VersionNumbers {
         }
         cursor += 1
     }
-    result.valid = part == 4 && cursor > 0 &&
-        version[cursor - 1] != cast(u8)46
+    result.valid = part == 4 && cursor == cast(s64)version.count
     return result
 }
 
