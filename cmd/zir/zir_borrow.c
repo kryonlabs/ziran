@@ -334,13 +334,15 @@ check_function(BorrowCheck *check, BorrowFunction *function)
                 const ZirExpr *root = destination_root(fn, statement->lhs_root);
                 BorrowBinding *target = root == NULL ? NULL : binding(check, root->name);
                 Origin source = expression_origin(check, statement->expr_root);
-                int global_storage = root != NULL && target == NULL &&
+                /* A zero value or a value backed only by static storage
+                 * cannot escape a borrow, even through a pointer target. */
+                int independent_storage =
                     !source.invalid && !source.unknown && source.depth == 0 &&
                     source.parameters == 0;
                 int direct_view = destination->kind == ZIR_EXPR_IDENT &&
                     (SliceElementType(destination->type, NULL, 0) ||
                      !strcmp(destination->type, "string"));
-                if(!global_storage &&
+                if(!independent_storage &&
                    (target == NULL || target->captured ||
                     (source.invalid && direct_view) ||
                     source.depth > target->depth)) {
