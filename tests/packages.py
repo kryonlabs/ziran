@@ -2,6 +2,7 @@
 """Local Git fixtures for package locking, aliases, and two dependency revisions."""
 
 from pathlib import Path
+import json
 import os
 import shutil
 import subprocess
@@ -58,6 +59,9 @@ def main() -> None:
         env.pop("WAYLAND_DISPLAY", None)
         env["XDG_CACHE_HOME"] = str(root / "cache")
         env["ZIRAN_TEST_ALLOW_LOCAL_GIT"] = "1"
+        env["GIT_CONFIG_COUNT"] = "1"
+        env["GIT_CONFIG_KEY_0"] = "protocol.file.allow"
+        env["GIT_CONFIG_VALUE_0"] = "always"
 
         library = root / "library"
         init(library, env)
@@ -126,6 +130,7 @@ main :: () -> s32 {
         assert (app / "ziran.lock").read_bytes() == saved_lock
         call(ziran, "fetch", "--offline", cwd=app, env=env)
         call(ziran, "check", "--project", cwd=app, env=env)
+
         bootstrap = root / "bootstrap/build/bin"
         bootstrap.mkdir(parents=True)
         shutil.copy2(compiler / "build/bin/ziran", bootstrap / "ziran")
@@ -209,6 +214,54 @@ main :: () -> s32 {
 }
 ''')
         call(ziran, "check", "--project", cwd=app, env=env)
+
+        # A targeted update refreshes the selected package's dependency tree.
+        before = json.loads((app / "ziran.lock").read_text())
+        old_library = next(item["commit"] for item in before["packages"]
+                           if item["name"] == "Library" and item["ref"] == "v1")
+        call("git", "checkout", "v1", cwd=library, env=env)
+        write(library / "src/Value.zi", "Value :: () -> s32 { return 3 }\n")
+        commit(library, env)
+        call("git", "checkout", "master", cwd=library, env=env)
+        call(ziran, "update", "A", cwd=app, env=env)
+        after = json.loads((app / "ziran.lock").read_text())
+        new_library = next(item["commit"] for item in after["packages"]
+                           if item["name"] == "Library" and item["ref"] == "v1")
+        assert new_library != old_library
+
+        # A backend is fetched from the locked package checkout on demand.
+        backend_source = root / "backend-source"
+        init(backend_source, env)
+        write(backend_source / "src/raylib.h", "/* pinned backend */\n")
+        commit(backend_source, env)
+        backend_url = "https://example.invalid/backend-source.git"
+        env["GIT_CONFIG_COUNT"] = "2"
+        env["GIT_CONFIG_KEY_1"] = f"url.{backend_source.as_uri()}.insteadOf"
+        env["GIT_CONFIG_VALUE_1"] = backend_url
+        backend = root / "backend"
+        init(backend, env)
+        write(backend / "ziran.toml", """[package]
+name = "Backend"
+module_roots = ["src"]
+[exports]
+Backend = "src/Backend.zi"
+""")
+        write(backend / "src/Backend.zi", "BackendValue :: 1;\n")
+        call("git", "submodule", "add", backend_url, "vendor/raylib",
+             cwd=backend, env=env)
+        commit(backend, env)
+        write(app / "ziran.toml", aliased +
+              f'\n[dependencies.Backend]\ngit = "{backend.as_uri()}"\nref = "master"\n')
+        call(ziran, "lock", cwd=app, env=env)
+        missing = call(ziran, "pkg", "path", "Backend", "--submodules", "--offline",
+                       cwd=app, env=env, succeed=False)
+        assert "submodules" in missing and "missing" in missing
+        backend_path = Path(call(ziran, "pkg", "path", "Backend", "--submodules",
+                                 cwd=app, env=env).strip())
+        assert (backend_path / "vendor/raylib/src/raylib.h").is_file()
+        offline_path = Path(call(ziran, "pkg", "path", "Backend", "--submodules",
+                                 "--offline", cwd=app, env=env).strip())
+        assert offline_path == backend_path
 
 
 if __name__ == "__main__":

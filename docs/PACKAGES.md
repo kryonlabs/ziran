@@ -62,11 +62,20 @@ ziran check --project
 ziran ir --project --entry app:main -o build/ir
 ziran build --project --target=c --entry app:main -o build/c
 ziran tool Kryon build
+ziran pkg path Kryon --locked --submodules
 ```
+
+`ziran update` refreshes every package and the toolchain to their current refs.
+`ziran update Game2D` refreshes Game2D and its transitive dependencies while
+keeping unrelated packages pinned.
 
 `--locked` requires a matching lock and ignores local development overrides;
 `--offline` requires cached checkouts. The cache is under
 `$XDG_CACHE_HOME/ziran` or `~/.cache/ziran`.
+`ziran pkg path` returns the checkout selected by the lock, including a unique
+transitive dependency. Add `--submodules` when a platform build needs its
+vendored backend source. The command initializes the submodules at the commits
+recorded by that package; with `--offline`, it requires them to be present.
 
 For local development, an ignored `ziran.local.toml` can map package names to
 working directories:

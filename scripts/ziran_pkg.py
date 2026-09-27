@@ -160,10 +160,13 @@ def resolve_lock(root: Path, refresh: str | None = None) -> dict:
     old_entries = {(item["url"], item["ref"]): item for item in old["packages"]} if old else {}
     if refresh not in (None, "*") and refresh not in dependency_specs(data):
         raise PackageError(f"unknown dependency: {refresh}")
-    pending = [("root", alias, spec) for alias, spec in dependency_specs(data).items()]
+    pending = [("root", alias, spec, refresh in ("*", alias))
+               for alias, spec in dependency_specs(data).items()]
+    if refresh not in (None, "*"):
+        pending.sort(key=lambda item: item[1] != refresh)
     entries: dict[tuple[str, str], dict] = {}
     while pending:
-        owner, alias, spec = pending.pop(0)
+        owner, alias, spec, refresh_branch = pending.pop(0)
         url, ref = spec["git"], spec.get("ref", "master")
         key = (url, ref)
         if key not in entries:
@@ -173,15 +176,19 @@ def resolve_lock(root: Path, refresh: str | None = None) -> dict:
                 commit = run("git", "-C", str(override), "rev-parse", "HEAD", capture=True)
                 checkout = override
             else:
-                commit = previous["commit"] if previous and refresh not in ("*", alias) else git_commit(url, ref)
+                commit = previous["commit"] if previous and not refresh_branch else git_commit(url, ref)
                 checkout = cached_checkout(url, commit)
             package_data = manifest(checkout / "ziran.toml")
             entries[key] = {
                 "id": source_id(url, commit), "name": package_data["package"]["name"],
                 "url": url, "ref": ref, "commit": commit, "dependencies": {},
             }
-            for child_alias, child_spec in dependency_specs(package_data).items():
-                pending.append((entries[key]["id"], child_alias, child_spec))
+            children = [(entries[key]["id"], child_alias, child_spec, refresh_branch)
+                        for child_alias, child_spec in dependency_specs(package_data).items()]
+            if refresh_branch:
+                pending[0:0] = children
+            else:
+                pending.extend(children)
         if owner == "root":
             data.setdefault("_resolved", {})[alias] = entries[key]["id"]
         else:
@@ -380,6 +387,28 @@ def select_package(locked: dict, selector: str) -> dict:
     raise PackageError(f"package {selector} is not locked")
 
 
+def prepare_submodules(package_root: Path, offline: bool) -> None:
+    if offline:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(package_root), "submodule", "status", "--recursive"],
+                check=True, text=True, capture_output=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise PackageError(f"cannot inspect submodules in {package_root}: {exc}") from exc
+        if any(line and line[0] != " " for line in result.stdout.splitlines()):
+            raise PackageError(f"submodules in {package_root} are missing or differ from the offline package")
+        return
+    try:
+        subprocess.run(
+            ["git", "-C", str(package_root), "submodule", "update", "--init", "--recursive"],
+            check=True, text=True, capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) else str(exc)
+        raise PackageError(f"cannot initialize submodules in {package_root}: {detail}") from exc
+
+
 def pinned_driver(toolchain: Path, argv: list[str]) -> int | None:
     """Use the project's pinned package driver after the bootstrap reads its lock."""
     if os.environ.get("ZIRAN_PINNED_DRIVER") == "1" or toolchain.resolve() == SOURCE.resolve():
@@ -476,13 +505,19 @@ def main(argv: list[str]) -> int:
         if command == "fetch":
             return 0
         if command == "pkg":
-            if len(arguments) != 2 or arguments[0] != "path":
-                raise PackageError("usage: ziran pkg path PACKAGE")
+            if (len(arguments) not in (2, 3) or arguments[0] != "path" or
+                    (len(arguments) == 3 and arguments[2] != "--submodules")):
+                raise PackageError("usage: ziran pkg path PACKAGE [--submodules]")
             if arguments[1] == "ziran":
+                if len(arguments) == 3:
+                    raise PackageError("the Ziran toolchain has no package submodules")
                 print(toolchain)
                 return 0
             match = select_package(locked, arguments[1])
-            print(paths[match["id"]])
+            package_root = paths[match["id"]]
+            if len(arguments) == 3:
+                prepare_submodules(package_root, offline)
+            print(package_root)
             return 0
         if command == "tool":
             if len(arguments) < 2:
