@@ -60,6 +60,7 @@ ziran add kryonlabs/plot
 ziran lock
 ziran update
 ziran update plot
+ziran update ziran
 ziran fetch
 ziran check --project
 ziran ir --project --entry app:main -o build/ir
@@ -69,7 +70,8 @@ ziran pkg path plot --locked
 
 `ziran update` refreshes every package and the toolchain to their current refs.
 `ziran update plot` refreshes Plot and its transitive dependencies while
-keeping unrelated packages pinned. For other Git hosts, use
+keeping unrelated packages pinned. `ziran update ziran` refreshes only the
+compiler toolchain. For other Git hosts, use
 `ziran add NAME --git https://HOST/OWNER/REPO.git`.
 
 `--locked` requires a matching lock and ignores local development overrides;

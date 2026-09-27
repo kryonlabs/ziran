@@ -363,7 +363,7 @@ PkgResolveLock :: (root: string, refresh: string) -> bool {
     if !PkgParseManifest(PkgJoin(root, "/ziran.toml"), current) ||
        !PkgParseOverrides(PkgJoin(root, "/ziran.local.toml"), overrides) { return false }
     PkgReadLock(PkgJoin(root, "/ziran.lock"), old)
-    if refresh != "" && refresh != "*" {
+    if refresh != "" && refresh != "*" && refresh != "ziran" {
         found: bool = false
         index: s32 = 0
         while index < current.dependency_count {
@@ -386,7 +386,7 @@ PkgResolveLock :: (root: string, refresh: string) -> bool {
         pending_count += 1
         index += 1
     }
-    if refresh != "" && refresh != "*" {
+    if refresh != "" && refresh != "*" && refresh != "ziran" {
         index = 0
         while index < pending_count {
             if pending[index].refresh {
@@ -478,7 +478,8 @@ PkgResolveLock :: (root: string, refresh: string) -> bool {
     if tool_override.count > 0 {
         resolved.tool_commit = PkgGitHead(tool_override)
     } else if old.valid && old.tool_url == resolved.tool_url &&
-        old.tool_ref == resolved.tool_ref && refresh != "*" {
+        old.tool_ref == resolved.tool_ref && refresh != "*" &&
+        refresh != "ziran" {
         resolved.tool_commit = old.tool_commit
     } else {
         resolved.tool_commit = PkgRemoteCommit(resolved.tool_url, resolved.tool_ref)
