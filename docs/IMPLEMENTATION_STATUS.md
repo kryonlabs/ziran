@@ -434,7 +434,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   Later records, enums, and generic records with `#if`-selected bodies also
   resolve for supported forward size queries and opened enum members, including
   a type from a later `#load`. The selected branch alone reaches checked IR;
-  private loaded types stay hidden.
+  private loaded types stay hidden. Acyclic forward dependencies between
+  conditional records or enums resolve after their prerequisites are found;
+  unresolved conditions fail without selecting a branch.
   Forward `#if` calls to unconditional procedures with local declarations,
   assignments, braced `if`/`else if`/`else`, and bounded `while` loops run
   through the compile-time evaluator. `break`, `continue`, calls to another

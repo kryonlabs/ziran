@@ -4530,11 +4530,13 @@ free_visible_compile_module(ZirModule *visible)
     free(visible->globals);
 }
 
+static int compile_size_of_ready(const ZirModule *module, char *condition);
+
 static int
 select_compile_condition(ZirModule *module, const ZirConsts *consts,
                          const char *source, ZirSourceSpan span,
                          const CompileParseContext *context,
-                         const char *source_path)
+                         const char *source_path, int *deferred)
 {
     ZirModule *source_module = module;
     char expanded[ZIR_TEXT_MAX];
@@ -4550,15 +4552,26 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
     if(using_scope.using_count > 0 && context != NULL &&
        context->resolver != NULL &&
        !context->resolver(context->resolver_context, context->program,
-                          module, source_path, context->root, NULL))
+                          module, source_path, context->root, NULL)) {
+        if(deferred != NULL) { *deferred = 1; goto not_ready; }
         die_at(span, "cannot resolve imports for #if enum member");
-    if(!LowerFileScopeUsing(module, expanded, sizeof(expanded), span))
+    }
+    if(!LowerFileScopeUsing(module, expanded, sizeof(expanded), span)) {
+        if(deferred != NULL) { *deferred = 1; goto not_ready; }
         die_at(span, "invalid #if enum member");
+    }
     if(strstr(expanded, "size_of") != NULL && context != NULL &&
        context->resolver != NULL &&
        !context->resolver(context->resolver_context, context->program,
-                          module, source_path, context->root, expanded))
+                          module, source_path, context->root, expanded)) {
+        if(deferred != NULL) { *deferred = 1; goto not_ready; }
         die_at(span, "cannot resolve imports for #if condition");
+    }
+    if(deferred != NULL && strstr(expanded, "size_of") != NULL &&
+       !compile_size_of_ready(module, expanded)) {
+        *deferred = 1;
+        goto not_ready;
+    }
     if(strstr(expanded, "size_of") != NULL)
         lower_size_of_value(expanded, sizeof(expanded), module, span);
     known = eval_const_condition(expanded, &value, module, consts,
@@ -4586,22 +4599,32 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
         if(context->resolver != NULL &&
            !context->resolver(context->resolver_context, context->program,
                               module, source_path, context->root,
-                              expanded))
+                              expanded)) {
+            if(deferred != NULL) { *deferred = 1; goto not_ready; }
             die_at(span, "cannot resolve imports for #if condition");
-        if(!LowerFileScopeUsing(module, expanded, sizeof(expanded), span))
+        }
+        if(!LowerFileScopeUsing(module, expanded, sizeof(expanded), span)) {
+            if(deferred != NULL) { *deferred = 1; goto not_ready; }
             die_at(span, "invalid #if enum member");
+        }
         known = eval_const_condition(expanded, &value, module, consts,
                                      span.path, span.line, 0);
         if(!known)
             known = eval_typed_condition(expanded, module, consts,
                                          span, &value);
     }
-    if(!known)
+    if(!known) {
+        if(deferred != NULL) { *deferred = 1; goto not_ready; }
         die_at(span, "#if condition is not a compile-time constant: %s",
                expanded);
+    }
     free_visible_compile_module(&using_scope);
     free(visible.items);
     return value != 0;
+not_ready:
+    free_visible_compile_module(&using_scope);
+    free(visible.items);
+    return 0;
 }
 
 static char *
@@ -5027,7 +5050,8 @@ static int
 cond_top_step(char *line, ZirCondFrame *frames, int *count,
               ZirModule *module, const ZirConsts *consts,
               const CompileParseContext *context,
-              const char *source_path, const char *path, int line_no)
+              const char *source_path, const char *path, int line_no,
+              int *deferred)
 {
     char *cnd = NULL;
     int ck = parse_cond_start(line, &cnd);
@@ -5041,7 +5065,7 @@ cond_top_step(char *line, ZirCondFrame *frames, int *count,
         fr->selected = fr->parent_active &&
             select_compile_condition(module, consts, cnd,
                                      Span(path, line_no, 1),
-                                     context, source_path);
+                                     context, source_path, deferred);
         fr->active = fr->parent_active && fr->selected;
         fr->braces = 1;
         return 1;
@@ -5056,7 +5080,7 @@ cond_top_step(char *line, ZirCondFrame *frames, int *count,
         int chosen = fr->parent_active && !fr->selected &&
             select_compile_condition(module, consts, cnd,
                                      Span(path, line_no, 1),
-                                     context, source_path);
+                                     context, source_path, deferred);
         fr->active = fr->parent_active && !fr->selected && chosen;
         fr->selected |= chosen;
         fr->braces = 1;
@@ -6023,37 +6047,71 @@ discover_file_scope(const char *source, const char *path, const char *rel,
     }
 }
 
+static int
+discover_conditional_type(const ZirDeferredType *item,
+                          ZirModule *module, const ZirConsts *constants,
+                          const CompileParseContext *context,
+                          ZirTypes *future, int allow_defer)
+{
+    const char *source = item->source;
+    char line[SOURCE_LINE_MAX];
+    char selected[ZIR_TEXT_MAX * 2 + SOURCE_LINE_MAX] = "";
+    ZirCondFrame frames[8] = {0};
+    int frame_count = 0;
+    int line_no = item->line - 1;
+    int overflow = 0;
+    while(read_source_line(line, sizeof(line), &source,
+                           item->path, line_no) != NULL) {
+        int pending = 0;
+        line_no++;
+        char *text = trim(line);
+        int consumed = cond_top_step(text, frames, &frame_count,
+                                     module, constants, context,
+                                     item->path, item->rel, line_no,
+                                     allow_defer ? &pending : NULL);
+        if(pending) return 0;
+        if(consumed || (frame_count > 0 && !frames[frame_count - 1].active))
+            continue;
+        append_type_source(selected, sizeof(selected), text, &overflow);
+    }
+    if(!overflow && frame_count == 0)
+        discover_named_type(selected, item->path, item->rel,
+                            item->line, item->is_public,
+                            item->is_file_private, future);
+    return 1;
+}
+
 static void
 discover_conditional_types(const ZirDeferredTypes *deferred,
                            ZirModule *module, const ZirConsts *constants,
                            const CompileParseContext *context,
                            ZirTypes *future)
 {
-    for(int i = 0; i < deferred->count; i++) {
-        const ZirDeferredType *item = &deferred->items[i];
-        const char *source = item->source;
-        char line[SOURCE_LINE_MAX];
-        char selected[ZIR_TEXT_MAX * 2 + SOURCE_LINE_MAX] = "";
-        ZirCondFrame frames[8] = {0};
-        int frame_count = 0;
-        int line_no = item->line - 1;
-        int overflow = 0;
-        while(read_source_line(line, sizeof(line), &source,
-                               item->path, line_no) != NULL) {
-            line_no++;
-            char *text = trim(line);
-            if(cond_top_step(text, frames, &frame_count, module, constants,
-                             context, item->path, item->rel, line_no))
-                continue;
-            if(frame_count > 0 && !frames[frame_count - 1].active)
-                continue;
-            append_type_source(selected, sizeof(selected), text, &overflow);
+    unsigned char *done = calloc((size_t)deferred->count + 1, 1);
+    if(done == NULL) die("out of memory discovering conditional types");
+    int remaining = deferred->count;
+    while(remaining > 0) {
+        int progress = 0;
+        for(int i = 0; i < deferred->count; i++) {
+            if(done[i]) continue;
+            if(discover_conditional_type(&deferred->items[i], module,
+                    constants, context, future, 1)) {
+                done[i] = 1;
+                remaining--;
+                progress++;
+            }
         }
-        if(!overflow && frame_count == 0)
-            discover_named_type(selected, item->path, item->rel,
-                                item->line, item->is_public,
-                                item->is_file_private, future);
+        if(progress > 0) continue;
+        for(int i = 0; i < deferred->count; i++)
+            if(!done[i]) {
+                discover_conditional_type(&deferred->items[i], module,
+                                          constants, context, future, 0);
+                done[i] = 1;
+                remaining--;
+                break;
+            }
     }
+    free(done);
 }
 
 /* Jai constant declarations inside enums use 'Member :: value'. The checked
@@ -6954,7 +7012,7 @@ parse_source(const char *path, const char *root, const char *source,
         if(mode == TOP &&
            cond_top_step(t, tframes, &tframe_count,
                          module, &consts, &compile_context,
-                         path, rel, line_no)) {
+                         path, rel, line_no, NULL)) {
             continue;
         } else if(mode == TOP && tframe_count > 0 &&
                   !tframes[tframe_count - 1].active) {
@@ -7744,7 +7802,7 @@ parse_source(const char *path, const char *root, const char *source,
         } else if(mode == TYPE) {
             if(cond_top_step(t, type_frames, &type_frame_count,
                              module, &consts, &compile_context,
-                             path, rel, line_no))
+                             path, rel, line_no, NULL))
                 continue;
             if(type_frame_count > 0 &&
                !type_frames[type_frame_count - 1].active)
@@ -7813,7 +7871,7 @@ parse_source(const char *path, const char *root, const char *source,
                 int chosen = parent_active &&
                     select_compile_condition(module, &consts, bcnd,
                                              Span(rel, line_no, 1),
-                                             &compile_context, path);
+                                             &compile_context, path, NULL);
                 if(body_mcount >= 8)
                     die_at(Span(rel, line_no, 1), "too many nested #if blocks");
                 body_mdepth[body_mcount] = depth;
@@ -7827,7 +7885,7 @@ parse_source(const char *path, const char *root, const char *source,
                     !body_mselected[i] &&
                     select_compile_condition(module, &consts, bcnd,
                                              Span(rel, line_no, 1),
-                                             &compile_context, path);
+                                             &compile_context, path, NULL);
                 body_mactive[i] = body_mparent_active[i] &&
                     !body_mselected[i] && chosen;
                 body_mselected[i] |= chosen;

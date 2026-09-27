@@ -69,6 +69,16 @@ ConditionalGenericSelected :: 1;
 } else {
 ConditionalGenericSelected :: MissingConditionalGeneric;
 }
+#if size_of(OuterConditional) == 16 {
+DependentSelected :: 1;
+} else {
+DependentSelected :: MissingDependent;
+}
+#if OuterBit == 4 {
+DependentEnumSelected :: 1;
+} else {
+DependentEnumSelected :: MissingDependentEnum;
+}
 RUN :: #run size_of(Later);
 FlagsRun :: #run size_of(LaterMask);
 SpecifiedRun :: #run size_of(SpecifiedMask);
@@ -77,6 +87,7 @@ LoadedConditionalRun :: #run size_of(LoadedConditional);
 AliasRun :: #run size_of(LaterBox);
 ConditionalRun :: #run size_of(Conditional);
 ConditionalGenericRun :: #run size_of(ConditionalBox(s64));
+DependentRun :: #run size_of(OuterConditional);
 Later :: struct {
     first: int;
     second: s64;
@@ -93,6 +104,9 @@ Box :: struct($T: Type) { value: T; }
 Conditional :: struct {
     first: s64;
     #if false {
+        #if size_of(NeverType) == 8 {
+            ghost: NeverType;
+        }
         unavailable: MissingType;
     } else #if Choice == 1 {
         second: s64;
@@ -116,6 +130,37 @@ ConditionalBox :: struct($T: Type) {
         unavailable: MissingGenericType;
     }
 }
+OuterConditional :: struct {
+    first: s64;
+    #if size_of(InnerConditional) == 8 {
+        second: s64;
+    } else {
+        unavailable: MissingDependency;
+    }
+}
+InnerConditional :: struct {
+    #if Choice == 1 {
+        value: s64;
+    } else {
+        unavailable: MissingInner;
+    }
+}
+OuterEnum :: enum {
+    #if InnerBit == 1 {
+        OuterBit :: 4;
+    } else {
+        Unavailable :: MissingOuterEnum;
+    }
+}
+using OuterEnum;
+InnerEnum :: enum {
+    #if Choice == 1 {
+        InnerBit :: 1;
+    } else {
+        Unavailable :: MissingInnerEnum;
+    }
+}
+using InnerEnum;
 #program_export
 Answer :: () -> s64 {
     return Selected + RUN + FlagsSelected + FlagsRun +
@@ -125,7 +170,8 @@ Answer :: () -> s64 {
            GenericSelected + AliasSelected + AliasRun +
            ConditionalSelected + ConditionalRun +
            ConditionalEnumSelected + ConditionalGenericSelected +
-           ConditionalGenericRun + 5
+           ConditionalGenericRun + DependentSelected + DependentRun +
+           DependentEnumSelected + 5
 }
 ZI
 
@@ -161,6 +207,7 @@ if grep -aFq 'MissingAlias' "$work/ir/forward_type.zir"; then
 fi
 if grep -aFq 'MissingConditional' "$work/ir/forward_type.zir" ||
    grep -aFq 'MissingType' "$work/ir/forward_type.zir" ||
+   grep -aFq 'NeverType' "$work/ir/forward_type.zir" ||
    grep -aFq 'MissingOtherType' "$work/ir/forward_type.zir"; then
     echo 'unselected conditional-type branch was saved in IR' >&2
     exit 1
@@ -175,6 +222,18 @@ if grep -aFq 'MissingConditionalGeneric' "$work/ir/forward_type.zir" ||
     echo 'unselected conditional-generic branch was saved in IR' >&2
     exit 1
 fi
+if grep -aFq 'MissingDependent' "$work/ir/forward_type.zir" ||
+   grep -aFq 'MissingDependency' "$work/ir/forward_type.zir" ||
+   grep -aFq 'MissingInner' "$work/ir/forward_type.zir"; then
+    echo 'unselected dependent conditional-type branch was saved in IR' >&2
+    exit 1
+fi
+if grep -aFq 'MissingDependentEnum' "$work/ir/forward_type.zir" ||
+   grep -aFq 'MissingOuterEnum' "$work/ir/forward_type.zir" ||
+   grep -aFq 'MissingInnerEnum' "$work/ir/forward_type.zir"; then
+    echo 'unselected dependent conditional-enum branch was saved in IR' >&2
+    exit 1
+fi
 for input in "$work/forward_type.zi" "$work/ir/forward_type.zir"; do
     case "$input" in
         *.zi) root=$work; label=source ;;
@@ -182,19 +241,19 @@ for input in "$work/forward_type.zi" "$work/ir/forward_type.zir"; do
     esac
     "$ziran" bundle --root "$root" --entry forward_type:Answer \
         -o "$work/$label.zib" "$input"
-    test "$("$ziran" run "$work/$label.zib")" = 78
+    test "$("$ziran" run "$work/$label.zib")" = 96
     for target in c cpp go; do
         out="$work/$label-$target"
         "$ziran" build "--target=$target" --root "$root" -o "$out" "$input"
         case "$target" in
             c)
-                printf '#include "forward_type.h"\nint main(void) { return Answer() == 78 ? 0 : 1; }\n' > "$work/main.c"
+                printf '#include "forward_type.h"\nint main(void) { return Answer() == 96 ? 0 : 1; }\n' > "$work/main.c"
                 ${CC:-cc} -Iinclude -I"$out" "$out"/*.c \
                     "$work/main.c" -o "$out/app"
                 "$out/app"
                 ;;
             cpp)
-                printf '#include "forward_type.hpp"\nint main() { return Answer() == 78 ? 0 : 1; }\n' > "$work/main.cpp"
+                printf '#include "forward_type.hpp"\nint main() { return Answer() == 96 ? 0 : 1; }\n' > "$work/main.cpp"
                 ${CXX:-c++} -Iinclude -I"$out" "$out"/*.cpp \
                     "$work/main.cpp" -o "$out/app"
                 "$out/app"
@@ -204,7 +263,7 @@ for input in "$work/forward_type.zi" "$work/ir/forward_type.zir"; do
 package ziran
 import "testing"
 func TestForwardType(t *testing.T) {
-    if ForwardType_Answer() != 78 { t.Fatal("forward type") }
+    if ForwardType_Answer() != 96 { t.Fatal("forward type") }
 }
 GO
                 GO111MODULE=off go test "$out"/*.go
@@ -319,6 +378,24 @@ if "$ziran" check --root "$work" "$work/private_conditional_top.zi" \
 fi
 grep -Fq 'size_of requires a known sized type' \
     "$work/private_conditional_top.err"
+
+cat > "$work/unresolved_conditional.zi" <<'ZI'
+#if size_of(Broken) == 8 {
+Answer :: () -> s64 { return 42 }
+}
+Broken :: struct {
+    #if MissingCondition {
+        value: s64;
+    }
+}
+ZI
+if "$ziran" check --root "$work" "$work/unresolved_conditional.zi" \
+    2> "$work/unresolved_conditional.err"; then
+    echo 'unresolved conditional type was accepted' >&2
+    exit 1
+fi
+grep -Fq '#if condition is not a compile-time constant' \
+    "$work/unresolved_conditional.err"
 
 cat > "$work/inactive_field.zi" <<'ZI'
 Later :: struct {

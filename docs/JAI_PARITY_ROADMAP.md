@@ -121,12 +121,16 @@ generic record can have `#if`-selected fields or members when its condition
 resolves from discovered declarations. The prepass selects only the active
 fields before computing `size_of` or opening enum members, including a type
 from a later `#load`; `tests/forward_type_conditions.sh` checks source and
-saved IR on all four targets and file-private visibility. Unconditional nested
+saved IR on all four targets and file-private visibility. Conditional type
+discovery retries unresolved bodies after later types become known, including
+an earlier record depending on a later conditional record and an earlier enum
+depending on a later conditional enum. An unresolved condition still fails;
+inactive nested conditions are not evaluated. Unconditional nested
 `#load` files also contribute public constants, types, `using` declarations,
 and imports to earlier conditions; file-private names remain visible only in
 their declaring file. `tests/forward_load_conditions.sh` checks source and
 saved IR on all four targets, private visibility, and inactive loads. This is
-still a limited pass: mutually dependent conditional type bodies, other
+still a limited pass: cyclic conditional type dependencies, other
 generic-instance declaration forms, embedded source imports, and imports in
 conditionally selected `#load` files have ordering limits. Named imported real
 and string constants work in
