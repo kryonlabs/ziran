@@ -5288,6 +5288,7 @@ read_source_line(char *line, size_t size, const char **source,
 
 static void parse_enum_backing(ZirType *type, const char *header);
 static void canonical_enum_values(ZirType *type);
+static void lower_enum_values(ZirType *type);
 
 static int
 is_named_type_header(const char *line)
@@ -5378,24 +5379,29 @@ discover_named_type(const char *source, const char *path, const char *rel,
     memcpy(type.body, open + 1, body_length);
     type.body[body_length] = '\0';
     if(type.is_enum) {
-        if(type.is_enum_flags) return;
-        char lowered[sizeof(type.body)];
-        size_t used = 0;
-        for(const char *p = type.body; *p; p++) {
-            if(p[0] == ':' && p[1] == ':') {
-                if(used + 3 >= sizeof(lowered)) return;
-                memcpy(lowered + used, " = ", 3);
-                used += 3;
-                p++;
-            } else {
-                if(used + 1 >= sizeof(lowered)) return;
-                lowered[used++] = *p == ';' ? '\n' : *p;
+        if(type.is_enum_flags) {
+            for(size_t i = 0; i < body_length; i++)
+                if(type.body[i] == ';') type.body[i] = '\n';
+            lower_enum_values(&type);
+        } else {
+            char lowered[sizeof(type.body)];
+            size_t used = 0;
+            for(const char *p = type.body; *p; p++) {
+                if(p[0] == ':' && p[1] == ':') {
+                    if(used + 3 >= sizeof(lowered)) return;
+                    memcpy(lowered + used, " = ", 3);
+                    used += 3;
+                    p++;
+                } else {
+                    if(used + 1 >= sizeof(lowered)) return;
+                    lowered[used++] = *p == ';' ? '\n' : *p;
+                }
             }
+            lowered[used] = '\0';
+            copy_text(type.body, sizeof(type.body), lowered);
+            if(!EnumMemberValue(&type, NULL, NULL)) return;
+            canonical_enum_values(&type);
         }
-        lowered[used] = '\0';
-        copy_text(type.body, sizeof(type.body), lowered);
-        if(!EnumMemberValue(&type, NULL, NULL)) return;
-        canonical_enum_values(&type);
     } else if(type.is_record_template) {
         for(size_t i = 0; i < body_length; i++)
             if(type.body[i] == ';') type.body[i] = '\n';

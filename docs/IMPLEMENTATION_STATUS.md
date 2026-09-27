@@ -424,6 +424,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   without evaluating the operand. Procedure parameter lists may span lines;
   global member queries can use a later record type. Inactive and
   file-private names stay hidden.
+  Unconditional later `enum_flags` types also resolve in `#if` and `#run`,
+  including implicit flags, explicit values, `#specified` backing types, and
+  a later `#load`. Inactive and file-private flags stay hidden;
+  `tests/forward_type_conditions.sh` checks source and saved IR on C, C++, Go,
+  and `.zib`.
   Forward `#if` calls to unconditional procedures with local declarations,
   assignments, braced `if`/`else if`/`else`, and bounded `while` loops run
   through the compile-time evaluator. `break`, `continue`, calls to another
