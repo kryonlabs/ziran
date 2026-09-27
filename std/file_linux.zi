@@ -77,7 +77,6 @@ PathExists :: (path: string) -> bool {
     return CloseRaw(fd) == 0
 }
 
-#program_export
 DirectoryExists :: (path: string) -> bool {
     name: [4096]u8
     if !CopyCString(path, name[:]) { return false }
