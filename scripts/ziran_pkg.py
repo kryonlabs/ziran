@@ -281,6 +281,10 @@ def module_files(directory: Path, roots: list[str]) -> dict[str, Path]:
         if not path.is_relative_to(directory.resolve()) or not path.is_dir():
             raise PackageError(f"module root is unavailable: {directory / value}")
         for source in sorted(path.glob("*.zi")):
+            # A package cannot acquire source from a neighboring checkout via
+            # a symlink. Legacy links to std are resolved from the toolchain.
+            if source.is_symlink() and not source.resolve().is_relative_to(directory.resolve()):
+                continue
             name = source.stem
             if not name.isidentifier():
                 raise PackageError(f"invalid module name: {source}")
@@ -288,6 +292,8 @@ def module_files(directory: Path, roots: list[str]) -> dict[str, Path]:
                 raise PackageError(f"duplicate module {name} in {directory}")
             found[name] = source
         for source in sorted(path.glob("*/module.zi")):
+            if source.is_symlink() and not source.resolve().is_relative_to(directory.resolve()):
+                continue
             name = source.parent.name
             if not name.isidentifier():
                 raise PackageError(f"invalid module name: {source}")
