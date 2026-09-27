@@ -40,6 +40,7 @@ def main():
         "host_arrays.sh": str(bin_dir / "array-host-test"),
         "portable_host_records.sh": str(bin_dir / "record-host-test"),
         "process.sh": str(bin_dir / "process-host-test"),
+        "vm_vec_scope.sh": str(bin_dir / "vm-vec-scope-test"),
     }
     checks = [("bundle-link-test", [str(bin_dir / "bundle-link-test")])]
     for script in sorted((repo / "tests").glob("*.sh")):

@@ -15,7 +15,7 @@ item = json.loads(Path(sys.argv[1]).read_text())
 assert item['schema_version'] == 1
 assert item['targets'] == ['c', 'cpp', 'go', 'zib']
 assert item['source_and_saved_ir'] is True
-assert item['automatic_vec_drop'] is False
+assert item['automatic_vec_drop'] is True
 assert item['aggregate_vec_transfer'] is False
 assert item['gpu_execution'] == 'cpu_fallback'
 assert item['diagnostics_json'] == 'partial'
@@ -34,7 +34,7 @@ assert item['target'] == target
 assert item['parallel_execution'] == ('threads' if target in ('c', 'cpp') else 'serial')
 assert item['text_view_mutable_bytes'] == ('borrowed' if target in ('c', 'cpp') else 'snapshot')
 assert item['source_and_saved_ir'] is True
-assert item['automatic_vec_drop'] is (target != 'zib')
+assert item['automatic_vec_drop'] is True
 PY
 done
 

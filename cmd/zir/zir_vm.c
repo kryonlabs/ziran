@@ -722,7 +722,8 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         if(record != NULL && !record->is_enum && !record->is_procedure_type &&
            !record->is_extern && value.kind == VALUE_RECORD &&
            value.record != NULL && value.record->type == record)
-            return clone_value(vm, value, 0);
+            return VecElementType(module, type, NULL, 0) ?
+                value : clone_value(vm, value, 0);
         vm->failed = 1;
         return int_value(0);
     }
@@ -922,6 +923,26 @@ release_retired(Vm *vm)
         }
     }
     vm->retire_floor = remaining;
+}
+
+/* A direct Vec owns its record and backing array. Release that storage when
+ * its lexical binding leaves scope; borrowed slices in surviving frames keep
+ * their backing pinned until those views leave scope as well. */
+static void
+drop_owned_locals(Frame *frame, int first)
+{
+    int retired = 0;
+    for(int i = frame->local_count - 1; i >= first; i--) {
+        Local *local = &frame->locals[i];
+        if(VecElementType(frame->module, local->type, NULL, 0) &&
+           local->value.kind == VALUE_RECORD) {
+            retire_value(frame->vm, local->value, 0);
+            retired = 1;
+        }
+    }
+    frame->local_count = first;
+    if(retired)
+        release_retired(frame->vm);
 }
 
 static int
@@ -2501,9 +2522,19 @@ eval(Frame *frame, int index, int depth)
         if(strcmp(expression->name, "null") == 0)
             return uint_value(0);
         Local *local = find_local(frame, expression->name);
-        if(local != NULL)
+        if(local != NULL) {
+            Value stored = local->value;
+            if(expression->is_move) {
+                if(!VecElementType(frame->module, expression->type,
+                                   NULL, 0) || stored.kind != VALUE_RECORD) {
+                    frame->vm->failed = 1;
+                    break;
+                }
+                local->value = (Value){.kind = VALUE_INVALID};
+            }
             return coerce_expression(frame->vm, frame->module,
-                                     local->value, expression->type);
+                                     stored, expression->type);
+        }
         Value *global = find_global_value(frame, expression->name);
         if(global != NULL)
             return coerce_expression(frame->vm, frame->module,
@@ -3315,7 +3346,8 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
                     saved_locals = frame->local_count;
                     flow = execute_sequence(frame, branch + 1, close,
                                             depth + 1, result);
-                    frame->local_count = saved_locals;
+                    if(flow != FLOW_RETURN && flow != FLOW_ERROR)
+                        drop_owned_locals(frame, saved_locals);
                     if(flow != FLOW_NEXT)
                         return flow;
                     executed = 1;
@@ -3341,10 +3373,10 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
                     return FLOW_ERROR;
                 if(!truthy(condition))
                     break;
-                frame->local_count = saved_locals;
                 flow = execute_sequence(frame, s + 1, close, depth + 1,
                                         result);
-                frame->local_count = saved_locals;
+                if(flow != FLOW_RETURN && flow != FLOW_ERROR)
+                    drop_owned_locals(frame, saved_locals);
                 if(flow == FLOW_RETURN || flow == FLOW_ERROR)
                     return flow;
                 if((flow == FLOW_BREAK || flow == FLOW_CONTINUE) &&
@@ -3366,7 +3398,8 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
                 return FLOW_ERROR;
             saved_locals = frame->local_count;
             flow = execute_sequence(frame, s + 1, close, depth + 1, result);
-            frame->local_count = saved_locals;
+            if(flow != FLOW_RETURN && flow != FLOW_ERROR)
+                drop_owned_locals(frame, saved_locals);
             if(flow != FLOW_NEXT)
                 return flow;
             s = close;
@@ -3924,7 +3957,9 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
                   parameters[i].name);
         copy_text(frame.locals[i].type, sizeof(frame.locals[i].type),
                   parameters[i].type);
-        frame.locals[i].value = parameter_read_only(function,
+        frame.locals[i].value = !VecElementType(module, parameters[i].type,
+                                                NULL, 0) &&
+                                parameter_read_only(function,
                                                     parameters[i].name) ?
             coerce_expression(vm, module, args[i], parameters[i].type) :
             coerce(vm, module, args[i], parameters[i].type);
@@ -3934,10 +3969,13 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
     if(flow == FLOW_ERROR || flow == FLOW_BREAK || flow == FLOW_CONTINUE ||
        (flow != FLOW_RETURN && strcmp(function->return_type, "void") != 0))
         vm->failed = 1;
-    vm->active_frame = frame.caller;
-    vm->depth--;
     uint64_t allocation_before_result = vm->allocation;
     Value returned = coerce(vm, module, result, function->return_type);
+    /* Nested return paths leave their locals in this frame. Materialize the
+     * return value before releasing those bindings. */
+    drop_owned_locals(&frame, 0);
+    vm->active_frame = frame.caller;
+    vm->depth--;
     /* Named Ziran procedure values carry no borrowed frame context. The
      * returned value has already been copied, so slot-using calls can drop
      * temporaries by the same reachability rule as direct calls. */
@@ -3950,6 +3988,7 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
         vm->pin_generation++;
         pin_globals(vm);
         pin_active_frames(vm);
+        pin_value(vm, returned, 0);
         release_call_records(vm, allocation_entry, allocation_before_result);
         release_call_arrays(vm, allocation_entry, allocation_before_result);
     }
@@ -4217,6 +4256,13 @@ VmInstanceRun(VmInstance *instance, long long *result, int *has_result)
         return 0;
     }
     return 1;
+}
+
+size_t
+VmInstanceLiveValueBytes(const VmInstance *instance)
+{
+    return instance == NULL ? 0 :
+        instance->vm.record_bytes + instance->vm.array_bytes;
 }
 
 void

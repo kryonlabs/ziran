@@ -695,12 +695,12 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   moved-from destination with a recoverable failure result, and
   `VecSlice(values, low, high)` declares a borrowed `[]T` view whose live
   scope blocks moving or mutating its source. Direct owned vector locals and
-  parameters drop on scope exit in C99, C++, and Go output; the portable VM
-  still reclaims them when execution ends. The checker rejects initializing,
-  assigning, passing, or returning aggregates containing vectors until
+  parameters drop on scope exit in C99, C++, Go, and the portable VM. The
+  checker rejects initializing, assigning, passing, or returning aggregates
+  containing vectors until
   recursive ownership is supported; field operations remain available.
-  Explicit cleanup is still needed for prompt release in the VM and vector
-  fields. Go cannot recover from physical
+  Explicit cleanup is still needed for prompt release of vector fields. Go
+  cannot recover from physical
   allocation failure. The intended [owned-value contract](OWNED_VALUES.md)
   distinguishes the target rules from current behavior.
 - Audit parser, checker, IR, and backend paths for remaining UI assumptions.

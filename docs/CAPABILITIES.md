@@ -16,10 +16,9 @@ divergence when backing bytes are mutated after making a view: native C/C++
 borrow those bytes, while Go and `.zib` copy them. Portable code should avoid
 that mutation until the language defines one rule.
 
-`automatic_vec_drop` is `true` for C, C++, and Go: direct owned `Vec` locals
-and parameters are released at scope exit or return. It is `false` for the
-portable VM, which reclaims storage when the VM ends rather than at lexical
-scope exit. The all-target response reports `false` as the shared guarantee.
+`automatic_vec_drop` is `true` for every target: direct owned `Vec` locals
+and parameters are released at scope exit or return. This does not cover
+vectors stored in aggregates or global storage.
 `aggregate_vec_transfer` remains `false`: the checker rejects transfers of
 aggregates containing a `Vec`. `diagnostics_json` is `partial` because some compiler paths
 still print plain errors even when JSON is requested. These are current

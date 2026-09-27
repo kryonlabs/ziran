@@ -3,6 +3,7 @@
 
 #include "zir.h"
 #include "ziran_host.h"
+#include <stddef.h>
 #include <stdint.h>
 
 /* Initial portable scalar execution subset. Verification precedes execution. */
@@ -20,6 +21,8 @@ VmInstance *VmInstanceOpen(const ZirProgram *program,
                            const char *entry_function,
                            VmHostCall host, void *context);
 int VmInstanceRun(VmInstance *instance, long long *result, int *has_result);
+/* Live portable value storage, excluding module IR and interned strings. */
+size_t VmInstanceLiveValueBytes(const VmInstance *instance);
 void VmInstanceClose(VmInstance *instance);
 
 #endif

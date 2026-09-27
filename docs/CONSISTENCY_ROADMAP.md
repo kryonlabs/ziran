@@ -22,17 +22,16 @@ Recent differential tests aligned narrow integer shifts, narrowing casts,
 and floating division between native and portable execution. Cleanup and one
 emitter path now use structured diagnostics. A checker guard rejects value
 transfers of aggregates containing `Vec`, preventing the reproduced record-copy
-double-free case. C/C++/Go output now drops direct owned vector locals and
-parameters on scope exits, and the checker rejects repeated moves within an
+double-free case. All four execution paths now drop direct owned vector locals
+and parameters on scope exits, and the checker rejects repeated moves within an
 expression. These fixes do not complete the ownership or diagnostic contracts.
 
 ## Priority 1: one safe meaning across targets
 
-1. **Automatic ownership cleanup.** Native C/C++/Go output now releases direct
+1. **Automatic ownership cleanup.** All four execution paths now release direct
    owned `Vec` locals and parameters on return, break, continue, and normal
-   scope close; direct moves clear their source. The portable VM still releases
-   storage when execution ends, not at lexical scope exit. Lower ownership
-   into checked IR so all backends share one rule, then extend the checker and
+   scope close; direct moves clear their source. Lower ownership into checked
+   IR rather than separate backend paths, then extend the checker and
    lowering to nested records and arrays before allowing aggregate-owned
    transfers again. Validate with allocation counts, AddressSanitizer, and
    source/saved-IR tests across backends. Reclaiming the bytes detached by

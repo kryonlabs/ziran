@@ -14,11 +14,9 @@ may terminate on physical allocation failure; this is not yet the full
 recoverable failure contract below. `VecPop` and `VecGet` require the `Option` record
 template from `std/option.zi` to be visible in the using module.
 
-**Current safety limits:** C99, C++, and Go output drops direct owned `Vec`
-locals and parameters at block close, return, break, and continue. A direct
-move clears its source before the next drop. The portable VM reclaims vector
-storage when execution ends, not at lexical scope exit; use `VecFree` there
-when prompt release matters. The checker rejects
+**Current safety limits:** C99, C++, Go, and the portable VM drop direct owned
+`Vec` locals and parameters at block close, return, break, and continue. A
+direct move clears its source before the next drop. The checker rejects
 initializing, assigning, passing, or returning aggregates containing a `Vec`;
 their fields can still hold vectors and be used in place. Aggregate moves and
 automatic drops require recursive ownership checking. The rest of this page
@@ -48,8 +46,9 @@ global, because both keep shared storage that other code can reach. The
 checker rejects use after move and assignment over a direct owned vector; moves
 inside an `if` whose every arm returns do not reach the join. The target rule
 is that every path drops each owned local exactly once, with a moved source
-zeroed so a later drop is harmless. Native output implements this for direct
-`Vec` bindings, while the portable VM does not yet release them at scope exit.
+zeroed so a later drop is harmless. All current backends implement this for
+direct `Vec` bindings; aggregates containing vectors still need recursive
+ownership checking and dropping.
 A view declared as `[]T` from
 `VecSlice(values, low, high)` borrows its source binding until the view's
 scope closes: moving or mutating the source, including `VecPush`, `VecPop`,
