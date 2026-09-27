@@ -1299,10 +1299,17 @@ declare_array(Emitter *e, const char *name, const char *type, const char *value)
     }
     copy_text(element, sizeof(element), working);
     const char *scalar = TargetType(element, e->target);
-    if(scalar != NULL)
+    if(scalar != NULL) {
         copy_text(target_element, sizeof(target_element), scalar);
-    else
+    } else if(element[0] == '*') {
+        /* Pointer elements lower through the same naming as slot types:
+         * [4]*u8 emits uint8_t* name[4]. */
+        char native[ZIR_NAME_MAX * 2];
+        slot_native_type(element, e->target, native, sizeof(native));
+        copy_text(target_element, sizeof(target_element), native);
+    } else {
         e->resolve(e->context, element, target_element, sizeof(target_element));
+    }
     if(e->target == ZIR_GO) {
         if(value != NULL && *value)
             line(e, "var %s %s%s = %s", name, bounds, target_element, value);
