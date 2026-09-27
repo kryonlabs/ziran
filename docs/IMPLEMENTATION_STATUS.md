@@ -24,7 +24,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   Public globals from open and named imports can also be read, assigned, and
   opened with record `using` in procedure bodies. `tests/imported_globals.sh`
   checks source and saved IR across C, C++, Go, and `.zib`, along with
-  ambiguous imports and private global visibility.
+  ambiguous imports and private global visibility. A named imported global
+  keeps its declaring record type when a consumer defines a same-named type;
+  direct and `using` field access agree across all four targets. The equivalent
+  collision through an open import remains rejected during checking.
   `using,only(...)`/`except(...)`/`map(...)` modifiers filter and rename
   promoted record fields and opened enum members on local and data-scope
   using declarations, in source and saved IR across C, C++, Go, and `.zib`;

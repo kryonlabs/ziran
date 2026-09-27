@@ -869,8 +869,9 @@ activate_using_filtered(Checker *c, const char *path,
                ResolveGlobal(c->module, qualified, &owner, &global) == 1) {
                 copy_text(root, sizeof(root), qualified);
                 binding_type = global->type;
-                if(FindType(c->module, binding_type, NULL) == NULL &&
-                   FindType(owner, binding_type, NULL) != NULL) {
+                const ZirType *declared = FindType(owner, binding_type, NULL);
+                if(declared != NULL &&
+                   FindType(c->module, binding_type, NULL) != declared) {
                     size_t alias_length = (size_t)(dot - path);
                     if(snprintf(qualified_type, sizeof(qualified_type),
                                 "%.*s.%s", (int)alias_length, path,
@@ -1534,7 +1535,7 @@ global_binding(Checker *c, const char *name)
               "ambiguous global name", name);
         c->failed = 1;
     }
-    if(status == 1 && owner != c->module) {
+    if(status == 1 && owner != c->module && strchr(name, '.') == NULL) {
         const char *base = global->type;
         if(base[0] == '*') base = skip_ws(base + 1);
         const ZirType *declared = FindType(owner, base, NULL);

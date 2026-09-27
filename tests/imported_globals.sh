@@ -163,15 +163,60 @@ cat > "$work/named_type_shadow.zi" <<'ZI'
 Lib :: #import "lib"
 Point :: struct { z: s64; }
 using Lib.shared;
-Bad :: () -> s64 { return x }
+#program_export
+Answer :: () -> s64 {
+    x = 42
+    direct: s64 = Lib.shared.x
+    local: Point
+    local.z = 1
+    return x + direct + local.z - 43
+}
 ZI
-if "$ziran" check --root "$work" "$work/named_type_shadow.zi" \
-    2> "$work/named_type_shadow.err"; then
-    echo 'named imported global with shadowed type was accepted' >&2
-    exit 1
-fi
-grep -Fq 'imported global type is shadowed: Lib.shared' \
-    "$work/named_type_shadow.err"
+"$ziran" ir --root "$work" -o "$work/shadow-ir" \
+    "$work/named_type_shadow.zi"
+for input in source saved; do
+    if test "$input" = source; then
+        root=$work
+        file=$work/named_type_shadow.zi
+    else
+        root=$work/shadow-ir
+        file=$work/shadow-ir/named_type_shadow.zir
+    fi
+    "$ziran" bundle --root "$root" --entry named_type_shadow:Answer \
+        -o "$work/shadow-$input.zib" "$file"
+    test "$("$ziran" run "$work/shadow-$input.zib")" = 42
+    for target in c cpp go; do
+        out="$work/shadow-$target-$input"
+        "$ziran" build "--target=$target" --root "$root" -o "$out" "$file"
+        if test "$target" = go; then
+            cat > "$out/main_test.go" <<'GO'
+package ziran
+import "testing"
+func TestNamedTypeShadow(t *testing.T) {
+    if NamedTypeShadow_Answer() != 42 { t.Fatal("imported type owner") }
+}
+GO
+            GO111MODULE=off go test "$out"/*.go
+        elif test "$target" = c; then
+            cat > "$out/main.c" <<'C'
+#include "named_type_shadow.h"
+int main(void) { return Answer() == 42 ? 0 : 1; }
+C
+            "${CC:-cc}" -std=c11 -Wall -Werror -I"$repo/include" \
+                -I"$out" "$out"/*.c -o "$out/app"
+            "$out/app"
+        else
+            cat > "$out/main.cpp" <<'CPP'
+#include "named_type_shadow.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+CPP
+            "${CXX:-c++}" -std=c++17 -Wall -Werror -I"$repo/include" \
+                -I"$out" "$out"/*.cpp -o "$out/app"
+            "$out/app"
+        fi
+    done
+done
+cmp "$work/shadow-source.zib" "$work/shadow-saved.zib"
 
 cat > "$work/private.zi" <<'ZI'
 Lib :: #import "private_lib"

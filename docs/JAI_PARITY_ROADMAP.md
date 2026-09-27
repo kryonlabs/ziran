@@ -79,9 +79,11 @@ IR agree on C, C++, Go, and `.zib`; `tests/data_scope_using.sh` covers nested
 paths, filters, local shadowing, ambiguity with another record or enum, and
 file-private visibility across `#load`. General runtime-dependent global initializers and
 record promotion in compile-time conditions remain open. Verify whether Jai
-opens exported globals from open imports unqualified. Preserve the
-declaring module for imported record types even when the consumer has a
-same-named type. Verify the exact record and union rules with Jai before
+opens exported globals from open imports unqualified. Named imported globals
+now retain their declaring record type when the consumer has a same-named
+type; `tests/imported_globals.sh` checks direct and `using` field access on
+all four targets. Open-imported globals with this collision still need an
+unambiguous owner in checked IR. Verify the exact record and union rules with Jai before
 claiming syntax parity. Keep
 visibility and ambiguity diagnostics consistent with local `using`.
 Qualified imported enum type annotations and `Module.Enum.Member` expressions
