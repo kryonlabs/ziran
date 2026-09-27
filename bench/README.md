@@ -69,3 +69,17 @@ shows how the general arithmetic helper affected the vector workload.
 A [provisional multilanguage matrix](results/2026-09-27-vector-growth-multilang/README.md)
 adds Rust, Java, JavaScript, and Python comparisons after the Go arithmetic
 fast path. Its metadata records the dirty working tree used for that run.
+
+For a UTF-8 scanning workload over `aé中🙂`, run:
+
+```sh
+env -u DISPLAY -u WAYLAND_DISPLAY python3 bench/text_scan.py
+```
+
+The text has 10 bytes and 4 Unicode scalar values; every runtime sample must
+return `148921 * rounds`. The harness compares Ziran source and saved IR to
+C, C++, Go, and `.zib`, plus handwritten C, C++, Go, Rust, Java, JavaScript,
+and Python when installed. It validates generated-source and bundle equality
+and records unavailable tools rather than estimating them. The
+[committed-head result](results/2026-09-27-text-scan-multilang/README.md)
+contains 206 validated samples across 50 phase/case combinations.

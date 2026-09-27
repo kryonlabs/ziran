@@ -141,9 +141,11 @@ found that inlinable wrapping add/multiply helpers halved generated Go's
 elapsed time for that workload. The remaining vector-lowering gap needs a
 profile before assigning its cause. These observations are workload-specific.
 
-Add validated workloads for arrays, records/calls, generic specialization,
-text/UTF-8/JSON scanning, sorting/maps when available, local
-I/O, and real applications. Scale compiler inputs by module count, source size,
+A [validated UTF-8 scanning matrix](../bench/results/2026-09-27-text-scan-multilang/README.md)
+covers source and saved IR through C, C++, Go, and `.zib`, plus handwritten
+C, C++, Go, Rust, Java, JavaScript, and Python. Add validated workloads for
+arrays, records/calls, generic specialization, JSON scanning, sorting/maps
+when available, local I/O, and real applications. Scale compiler inputs by module count, source size,
 generic instances, compile-time evaluation, and laws. Instrument compiler
 phases and allocations; do not present sums of separately sampled phases as
 measured end-to-end builds. Retain raw samples, exact source/input hashes,
