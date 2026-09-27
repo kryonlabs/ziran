@@ -151,3 +151,84 @@ if "$ziran" build --target=go --root "$work" -o "$work/native-go" \
 fi
 grep -Fq '#c_call procedure types require the native C or C++ target' \
     "$work/native-go.out"
+
+# Native callbacks are plain function pointers. Closure slots retain their
+# callable/context representation, including when null is the left operand.
+cat > "$work/compare.zi" <<'ZI'
+Callback :: #type (value: s32) -> s32 #c_call;
+Closure :: #type (value: s32) -> s32;
+Callbacks :: struct {
+    native: Callback
+    closure: Closure
+}
+callback_calls: s32;
+empty_callback: Callback;
+
+Increment :: (value: s32) -> s32 {
+    return value + 1
+}
+
+Different :: (value: s32) -> s32 {
+    return value + 2
+}
+
+Empty :: () -> Callback {
+    callback_calls += 1
+    return empty_callback
+}
+
+#program_export
+main :: () -> s32 {
+    callbacks: Callbacks
+    if callbacks.native != null || null != callbacks.native ||
+        !(callbacks.native == null) || !(null == callbacks.native) {
+        return 1
+    }
+    callbacks.native = Increment
+    if callbacks.native == null || null == callbacks.native ||
+        !(callbacks.native != null) || !(null != callbacks.native) {
+        return 2
+    }
+    same: Callback = Increment
+    other: Callback = Different
+    if callbacks.native != same || callbacks.native == other ||
+        !(callbacks.native == same) || !(callbacks.native != other) {
+        return 3
+    }
+    if callbacks.native(41) != 42 {
+        return 4
+    }
+    if !(null == Empty()) || Empty() != null || callback_calls != 2 {
+        return 5
+    }
+    if callbacks.closure != null || null != callbacks.closure ||
+        !(callbacks.closure == null) || !(null == callbacks.closure) {
+        return 6
+    }
+    callbacks.closure = Increment
+    if callbacks.closure == null || null == callbacks.closure ||
+        !(callbacks.closure != null) || !(null != callbacks.closure) {
+        return 7
+    }
+    return 0
+}
+ZI
+"$ziran" ir --root "$work" -o "$work/compare-ir" "$work/compare.zi"
+for input in source saved; do
+    source="$work/compare.zi"
+    if test "$input" = saved; then
+        source="$work/compare-ir/compare.zir"
+    fi
+    for target in c cpp; do
+        output="$work/compare-$input-$target"
+        "$ziran" build "--target=$target" --root "$work" -o "$output" "$source"
+        if test "$target" = c; then
+            "${CC:-cc}" -std=c11 -Wall -Werror -I"$repo/include" \
+                -iquote "$output" "$output/compare.c" -o "$output/app"
+        else
+            "${CXX:-c++}" -std=c++17 -Wall -Werror -I"$repo/include" \
+                -iquote "$output" "$output/compare.cpp" -o "$output/app"
+        fi
+        "$output/app"
+    done
+done

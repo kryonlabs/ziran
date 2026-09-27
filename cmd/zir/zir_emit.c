@@ -3029,13 +3029,17 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
                            !strcmp(e->fn->exprs[expr->left].name, "null");
         int right_is_null = e->fn->exprs[expr->right].kind == ZIR_EXPR_IDENT &&
                             !strcmp(e->fn->exprs[expr->right].name, "null");
-        if(slot_compare && (left_is_null || right_is_null) &&
-           e->target == ZIR_GO) {
-            const char *callable = left_is_null ?
-                e->fn->exprs[expr->right].name : e->fn->exprs[expr->left].name;
-            format(result, sizeof(result), "%s %s nil", callable, expr->op);
+        if(slot_compare && (left_is_null || right_is_null)) {
+            int value_expr = left_is_null ? expr->right : expr->left;
+            emit_expr(e, value_expr, operand_type, a, sizeof(a));
+            if(e->target == ZIR_GO)
+                format(result, sizeof(result), "%s %s nil", a, expr->op);
+            else if(operand_slot->is_c_call)
+                format(result, sizeof(result), "%s %s NULL", a, expr->op);
+            else
+                format(result, sizeof(result), "%s.call %s NULL", a, expr->op);
             atom = 0;
-            e->pure = 1;
+            pure = e->pure;
             break;
         }
         emit_expr(e,expr->left,operand_type,a,sizeof(a));
@@ -3046,21 +3050,10 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             emit_expr(e,expr->right,"bool",b,sizeof(b));line(e,"%s = %s%s",temp,b,e->target==ZIR_GO?"":";");
             e->indent--;line(e,"}");copy_text(out,size,temp);e->pure=1;return;
         }
-        if(slot_compare && (left_is_null || right_is_null)) {
-            /* The null side never emits; a null slot has a null callable. */
-            const char *value = left_is_null ? b : a;
-            const char *cmp = !strcmp(expr->op, "!=") ? "!=" : "==";
-            if(e->target == ZIR_GO)
-                format(result, sizeof(result), "%s %s nil", value, cmp);
-            else
-                format(result, sizeof(result), "%s.call %s NULL", value, cmp);
-            atom = 0;
-            pure = 1;
-            break;
-        }
         emit_expr(e,expr->right,(!strcmp(expr->op,"<<")||!strcmp(expr->op,">>"))?"s32":operand_type,b,sizeof(b));
         pure = left_pure && e->pure;
-        if(slot_compare && (e->target == ZIR_C || e->target == ZIR_CPP)) {
+        if(slot_compare && !operand_slot->is_c_call &&
+           (e->target == ZIR_C || e->target == ZIR_CPP)) {
             if(!strcmp(expr->op, "=="))
                 format(result, sizeof(result),
                        "(%s.call == %s.call && %s.context == %s.context)", a, b, a, b);
