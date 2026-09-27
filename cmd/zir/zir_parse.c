@@ -2387,13 +2387,18 @@ expand_compile_expr_depth(char *dst, size_t dst_size, const ZirConsts *consts,
             size_t il = 0;
             int found = 0;
 
+            size_t previous = n;
+            while(previous > 0 &&
+                  isspace((unsigned char)dst[previous - 1])) previous--;
+            int member = previous > 0 && dst[previous - 1] == '.';
+
             while(isalnum((unsigned char)*p) || *p == '_') {
                 if(il + 1 < sizeof(ident))
                     ident[il++] = *p;
                 p++;
             }
             ident[il] = '\0';
-            for(i = 0; i < consts->count; i++) {
+            for(i = 0; !member && i < consts->count; i++) {
                 if(strcmp(consts->items[i].name, ident) == 0 &&
                    (!consts->items[i].is_file_private ||
                     strcmp(consts->items[i].path, lookup_path) == 0)) {

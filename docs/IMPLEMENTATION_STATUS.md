@@ -389,8 +389,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   conditions. File-private using declarations respect `#load` boundaries.
   Bare members without `using` are rejected in procedure bodies and file-scope
   global initializers; checked IR lowers opened members to values before native
-  or portable execution. File-scope expression lookup through record and union
-  `using`, and promotion from imported globals, still need coverage.
+  or portable execution. File-scope record and union `using` fields also work
+  in pure global initializers that read earlier initialized globals. The
+  checker folds those startup values for C, C++, Go, and `.zib`, respects
+  local shadowing, and rejects ambiguous or file-private names. General global
+  initialization and promotion from imported globals still need coverage.
   Call arguments and returns accept typed and contextual members. Enum and scalar
   `if`/`case` arms support terminal `#through;` with source, saved IR,
   portable, C, C++, and Go agreement. Integer, boolean, floating, and string

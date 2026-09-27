@@ -992,6 +992,178 @@ activate_using(Checker *c, const char *path, ZirSourceSpan span)
 }
 
 static int
+opened_file_record(Checker *scope, const char *name, ZirSourceSpan span,
+                   char *path, size_t capacity)
+{
+    path[0] = '\0';
+    for(int i = scope->count - 1; i >= 0; i--) {
+        const Binding *binding = &scope->bindings[i];
+        if(!binding->is_using_namespace || binding->is_enum_namespace)
+            continue;
+        const char *type = skip_ws(binding->type);
+        if(*type == '*') type = skip_ws(type + 1);
+        const ZirModule *owner = NULL;
+        const ZirType *record = FindType(scope->module, type, &owner);
+        if(record == NULL) continue;
+        char source_name[ZIR_NAME_MAX];
+        const char *promoted = apply_using_filter(binding->using_filter,
+                                                  name, source_name,
+                                                  sizeof(source_name));
+        if(promoted == NULL) continue;
+        char field_path[ZIR_NAME_MAX], field_type[ZIR_NAME_MAX];
+        int found = ResolveRecordField(owner, record, promoted,
+                                       field_path, sizeof(field_path),
+                                       field_type, sizeof(field_type));
+        if(found == 0) continue;
+        char candidate[ZIR_TEXT_MAX];
+        int length = snprintf(candidate, sizeof(candidate), "%s%s%s.%s",
+                              binding->name,
+                              binding->using_path[0] ? "." : "",
+                              binding->using_path, field_path);
+        if(found < 0 || length < 0 ||
+           (size_t)length >= sizeof(candidate) ||
+           (path[0] && strcmp(path, candidate))) {
+            Diagnostic(span, "check.using_scope",
+                       "ambiguous using field: %s", name);
+            return -1;
+        }
+        copy_text(path, capacity, candidate);
+    }
+    return path[0] != '\0';
+}
+
+static int
+lower_file_record_using(ZirModule *module, char *source, size_t capacity,
+                        ZirSourceSpan span)
+{
+    if(module->using_count == 0 || !source[0]) return 1;
+    char saved_path[ZIR_PATH_MAX];
+    copy_text(saved_path, sizeof(saved_path), module->lookup_path);
+    select_lookup_file(module, span);
+    Checker scope = {.module = module};
+    for(int i = 0; i < module->using_count; i++) {
+        const ZirUsing *using = &module->usings[i];
+        if(!in_lookup_file(module, using->is_file_private, using->span))
+            continue;
+        const ZirType *type = FindType(module, using->path, NULL);
+        if(type != NULL && type->is_enum) continue;
+        activate_using_filtered(&scope, using->path,
+                                using->filter, using->span);
+        if(scope.failed || scope.errors) goto failed;
+    }
+    char output[ZIR_TEXT_MAX];
+    ZirLexer lexer;
+    ZirToken previous = {0};
+    size_t used = 0, copied = 0;
+    LexerInit(&lexer, source, span.path);
+    ZirToken current = LexerNext(&lexer);
+    size_t end = lexer.pos;
+    while(current.kind != ZIR_TOKEN_EOF) {
+        ZirToken next = LexerNext(&lexer);
+        size_t start = end - strlen(current.text);
+        char path[ZIR_TEXT_MAX] = "";
+        int opened = 0;
+        if(current.kind == ZIR_TOKEN_IDENT && !current.truncated &&
+           strcmp(previous.text, ".") != 0 &&
+           strcmp(next.text, "=") != 0 &&
+           strcmp(next.text, ":") != 0 &&
+           !file_scope_symbol_visible(module, current.text))
+            opened = opened_file_record(&scope, current.text, span,
+                                        path, sizeof(path));
+        if(opened > 0) {
+            int64_t enum_value = 0;
+            int enumeration = opened_file_enum(module, current.text,
+                                               span, &enum_value);
+            if(enumeration > 0) {
+                Diagnostic(span, "check.using_scope",
+                           "ambiguous using field: %s", current.text);
+                opened = -1;
+            } else if(enumeration < 0)
+                opened = -1;
+        }
+        if(opened < 0) goto failed;
+        if(opened > 0) {
+            size_t length = strlen(path);
+            if(used + start - copied + length >= sizeof(output)) {
+                Diagnostic(span, "check.using_scope",
+                           "file-scope using expression is too long");
+                goto failed;
+            }
+            memcpy(output + used, source + copied, start - copied);
+            used += start - copied;
+            memcpy(output + used, path, length);
+            used += length;
+            copied = end;
+        }
+        previous = current;
+        current = next;
+        end = lexer.pos;
+    }
+    if(used + strlen(source + copied) >= sizeof(output) ||
+       used + strlen(source + copied) >= capacity) {
+        Diagnostic(span, "check.using_scope",
+                   "file-scope using expression is too long");
+        goto failed;
+    }
+    copy_text(output + used, sizeof(output) - used, source + copied);
+    copy_text(source, capacity, output);
+    free(scope.bindings);
+    copy_text(module->lookup_path, sizeof(module->lookup_path), saved_path);
+    return 1;
+failed:
+    free(scope.bindings);
+    copy_text(module->lookup_path, sizeof(module->lookup_path), saved_path);
+    return 0;
+}
+
+/* Earlier initialized globals have known startup values. Expose those values
+ * only while folding another global initializer; they are still mutable at
+ * runtime and are not compile-time names in #if or #assert. */
+static int
+evaluate_global_startup_literal(const ZirModule *module, int before,
+                                const char *source, ZirSourceSpan span,
+                                char *literal, size_t literal_size,
+                                const ZirModule **type_owner)
+{
+    ZirDefine *values = calloc((size_t)module->define_count + before + 1,
+                               sizeof(*values));
+    if(values == NULL) return 0;
+    int count = module->define_count;
+    if(count > 0)
+        memcpy(values, module->defines, (size_t)count * sizeof(*values));
+    for(int g = 0; g < before; g++) {
+        const ZirGlobal *global = &module->globals[g];
+        if(!global->init[0] ||
+           !in_lookup_file(module, global->is_file_private,
+                           global->span)) continue;
+        int collision = 0;
+        for(int d = 0; d < count; d++)
+            if(strcmp(values[d].name, global->name) == 0) {
+                collision = 1;
+                break;
+            }
+        if(collision) continue;
+        ZirDefine *value = &values[count++];
+        copy_text(value->name, sizeof(value->name), global->name);
+        copy_text(value->value, sizeof(value->value), global->init);
+        value->is_public = !global->is_static;
+        value->is_file_private = global->is_file_private;
+        value->span = global->span;
+    }
+    ZirModule view = *module;
+    view.defines = values;
+    view.define_count = count;
+    const ZirModule *evaluated_owner = NULL;
+    int ok = EvaluateCompileLiteral(&view, source, span, 0,
+                                    literal, literal_size,
+                                    &evaluated_owner);
+    if(type_owner != NULL)
+        *type_owner = evaluated_owner == &view ? module : evaluated_owner;
+    free(values);
+    return ok;
+}
+
+static int
 resolve_using_enum(Checker *c, const char *name,
                    const ZirType **enumeration, char *source, size_t size)
 {
@@ -6886,7 +7058,10 @@ CheckPrograms(ZirProgram **programs, int count)
             copy_text(module->lookup_path, sizeof(module->lookup_path),
                       saved_path);
             for(int g = 0; g < module->global_count; g++)
-                if(!LowerFileScopeUsing(module, module->globals[g].init,
+                if(!lower_file_record_using(module, module->globals[g].init,
+                         sizeof(module->globals[g].init),
+                         module->globals[g].span) ||
+                   !LowerFileScopeUsing(module, module->globals[g].init,
                          sizeof(module->globals[g].init),
                          module->globals[g].span)) return 0;
             for(int d = 0; d < module->define_count; d++)
@@ -6907,13 +7082,20 @@ CheckPrograms(ZirProgram **programs, int count)
                         return 0;
                     }
                 }
-                if(!LowerFileScopeUsing(module, definition->value,
+                if(!lower_file_record_using(module, definition->value,
+                         sizeof(definition->value),
+                         definition->span) ||
+                   !LowerFileScopeUsing(module, definition->value,
                          sizeof(definition->value),
                          definition->span)) return 0;
                 definition->requires_open_enum = 0;
             }
             for(int a = 0; a < module->assert_count; a++)
-                if(!LowerFileScopeUsing(module,
+                if(!lower_file_record_using(module,
+                         module->asserts[a].condition,
+                         sizeof(module->asserts[a].condition),
+                         module->asserts[a].span) ||
+                   !LowerFileScopeUsing(module,
                          module->asserts[a].condition,
                          sizeof(module->asserts[a].condition),
                          module->asserts[a].span)) return 0;
@@ -7073,9 +7255,12 @@ CheckPrograms(ZirProgram **programs, int count)
                 char folded[ZIR_TEXT_MAX];
                 const ZirModule *folded_owner = NULL;
                 if(!literal_initializer && strcmp(global->type, "bool") &&
-                   EvaluateCompileLiteral(module, global->init,
+                   (EvaluateCompileLiteral(module, global->init,
                         global->span, 0, folded, sizeof(folded),
-                        &folded_owner)) {
+                        &folded_owner) ||
+                    evaluate_global_startup_literal(module, g, global->init,
+                        global->span, folded, sizeof(folded),
+                        &folded_owner))) {
                     if(folded_owner != NULL) {
                         CompoundConstant compound = {0};
                         copy_text(compound.literal,

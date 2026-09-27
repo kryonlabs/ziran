@@ -73,8 +73,13 @@ declarations, local shadowing, collisions, `#scope_file` across `#load`, and
 source/saved-IR execution on C, C++, Go, and `.zib`. `using StructType;`
 still rejects a type in place of a value.
 
-Finish record promotion in legal file-scope expressions and verify whether
-Jai opens exported globals from open imports unqualified. Preserve the
+Pure global initializers now resolve fields opened by file-scope record
+`using` and fold references to earlier initialized globals. Source and saved
+IR agree on C, C++, Go, and `.zib`; `tests/data_scope_using.sh` covers nested
+paths, filters, local shadowing, ambiguity with another record or enum, and
+file-private visibility across `#load`. General runtime-dependent global initializers and
+record promotion in compile-time conditions remain open. Verify whether Jai
+opens exported globals from open imports unqualified. Preserve the
 declaring module for imported record types even when the consumer has a
 same-named type. Verify the exact record and union rules with Jai before
 claiming syntax parity. Keep

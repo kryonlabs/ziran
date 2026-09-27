@@ -224,10 +224,47 @@ selected: s64 = WRAPPER.point.value;
 #program_export
 Answer :: () -> s64 { return selected }
 ZI
-if "$ziran" bundle --root "$work" --entry value_shadow:Answer \
-    -o "$work/value_shadow.zib" "$work/value_shadow.zi" \
-    2> "$work/value_shadow.err"; then
-    echo 'open-import constant displaced a local global' >&2
-    exit 1
-fi
-rg -q 'portable global initializers need' "$work/value_shadow.err"
+"$ziran" ir --root "$work" -o "$work/shadow-ir" "$work/value_shadow.zi"
+for input in source saved; do
+    if test "$input" = source; then
+        root=$work
+        file=$work/value_shadow.zi
+    else
+        root=$work/shadow-ir
+        file=$work/shadow-ir/value_shadow.zir
+    fi
+    "$ziran" bundle --root "$root" --entry value_shadow:Answer \
+        -o "$work/value_shadow-$input.zib" "$file"
+    test "$("$ziran" run "$work/value_shadow-$input.zib")" = 7
+    for target in c cpp go; do
+        out="$work/value_shadow-$target-$input"
+        if test "$target" = go; then
+            "$ziran" build --target=go --pkg main --root "$root" \
+                -o "$out" "$file"
+            cat > "$out/main.go" <<'GO'
+package main
+func main() { if ValueShadow_Answer() != 7 { panic("local global shadow") } }
+GO
+            GO111MODULE=off go run "$out"/*.go
+        elif test "$target" = c; then
+            "$ziran" build --target=c --root "$root" -o "$out" "$file"
+            cat > "$out/main.c" <<'C'
+#include "value_shadow.h"
+int main(void) { return Answer() == 7 ? 0 : 1; }
+C
+            "${CC:-cc}" -std=c11 -I"$repo/include" -I"$out" \
+                "$out"/*.c -o "$out/app"
+            "$out/app"
+        else
+            "$ziran" build --target=cpp --root "$root" -o "$out" "$file"
+            cat > "$out/main.cpp" <<'CPP'
+#include "value_shadow.hpp"
+int main() { return Answer() == 7 ? 0 : 1; }
+CPP
+            "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$out" \
+                "$out"/*.cpp -o "$out/app"
+            "$out/app"
+        fi
+    done
+done
+cmp "$work/value_shadow-source.zib" "$work/value_shadow-saved.zib"

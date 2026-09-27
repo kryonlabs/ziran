@@ -85,6 +85,102 @@ CPP
     done
 done
 
+cat > "$work/file_expr.zi" <<'ZI'
+Point :: struct { x: s64; y: s64; }
+Entity :: struct { position: Point; }
+using, map("left" = "x") seed: Point = Point.{.x = 17, .y = 22};
+using, only("y") seed;
+using, map("nested" = "x") entity.position;
+entity: Entity = Entity.{.position = Point.{.x = 1, .y = 0}};
+delta: s64 = 2;
+sum: s64 = left + y + nested + delta;
+#program_export
+Answer :: () -> s64 { return sum }
+ZI
+"$ziran" ir --root "$work" -o "$work/file-ir" "$work/file_expr.zi"
+for input in source saved; do
+    if test "$input" = source; then
+        module=$work/file_expr.zi
+        root=$work
+    else
+        module=$work/file-ir/file_expr.zir
+        root=$work/file-ir
+    fi
+    "$ziran" bundle --root "$root" --entry file_expr:Answer \
+        -o "$work/file-$input.zib" "$module"
+    test "$("$ziran" run "$work/file-$input.zib")" = 42
+    for target in c cpp go; do
+        out="$work/file-$target-$input"
+        if test "$target" = go; then
+            "$ziran" build --target=go --pkg main --root "$root" \
+                -o "$out" "$module"
+            cat > "$out/main.go" <<'GO'
+package main
+func main() { if FileExpr_Answer() != 42 { panic("file using") } }
+GO
+            GO111MODULE=off go run "$out"/*.go
+        elif test "$target" = c; then
+            "$ziran" build --target=c --root "$root" -o "$out" "$module"
+            cat > "$out/main.c" <<'C'
+#include "file_expr.h"
+int main(void) { return Answer() == 42 ? 0 : 1; }
+C
+            "${CC:-cc}" -std=c11 -I"$repo/include" -I"$out" \
+                "$out"/*.c -o "$out/app"
+            "$out/app"
+        else
+            "$ziran" build --target=cpp --root "$root" -o "$out" "$module"
+            cat > "$out/main.cpp" <<'CPP'
+#include "file_expr.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+CPP
+            "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$out" \
+                "$out"/*.cpp -o "$out/app"
+            "$out/app"
+        fi
+    done
+done
+cmp "$work/file-source.zib" "$work/file-saved.zib"
+
+cat > "$work/file_shadow.zi" <<'ZI'
+Point :: struct { x: s64; y: s64; }
+using seed: Point = Point.{.x = 18, .y = 22};
+x :: 40
+sum: s64 = x + seed.y;
+#program_export
+Answer :: () -> s64 { return sum }
+ZI
+"$ziran" bundle --root "$work" --entry file_shadow:Answer \
+    -o "$work/file-shadow.zib" "$work/file_shadow.zi"
+test "$("$ziran" run "$work/file-shadow.zib")" = 62
+
+cat > "$work/file_ambiguous.zi" <<'ZI'
+Point :: struct { x: s64; }
+using first: Point = Point.{.x = 20};
+using second: Point = Point.{.x = 22};
+sum: s64 = x;
+ZI
+if "$ziran" check --root "$work" "$work/file_ambiguous.zi" \
+    2> "$work/file_ambiguous.err"; then
+    echo 'ambiguous file-scope initializer using was accepted' >&2
+    exit 1
+fi
+grep -Fq 'ambiguous using field: x' "$work/file_ambiguous.err"
+
+cat > "$work/file_mixed_ambiguous.zi" <<'ZI'
+Kind :: enum { x :: 1 }
+using Kind;
+Point :: struct { x: s64; }
+using point: Point = Point.{.x = 42};
+sum: s64 = x;
+ZI
+if "$ziran" check --root "$work" "$work/file_mixed_ambiguous.zi" \
+    2> "$work/file_mixed_ambiguous.err"; then
+    echo 'record and enum using exposed the same initializer name' >&2
+    exit 1
+fi
+grep -Fq 'ambiguous using field: x' "$work/file_mixed_ambiguous.err"
+
 cat > "$work/ambiguous.zi" <<'ZI'
 Box :: struct { value: s64; }
 using first: Box;
@@ -147,3 +243,15 @@ if "$ziran" check --root "$work" "$work/private_app.zi" \
     exit 1
 fi
 grep -Fq 'unresolved name: x' "$work/private.err"
+
+cat > "$work/private_init.zi" <<'ZI'
+Point :: struct { x: s64; }
+#load "private.zi";
+sum: s64 = x;
+ZI
+if "$ziran" check --root "$work" "$work/private_init.zi" \
+    2> "$work/private_init.err"; then
+    echo 'file-private using leaked into a global initializer' >&2
+    exit 1
+fi
+grep -Fq 'unresolved name: x' "$work/private_init.err"
