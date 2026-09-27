@@ -209,6 +209,39 @@ fi
 grep -q 'portable global initializers need a scalar, string, record, or array literal value' \
     "$work/error"
 
+cat > "$work/runtime_record.zi" <<'ZI'
+Cell :: struct { value: s32; }
+counter: s32;
+Next :: () -> s32 { counter += 1; return counter }
+cell: Cell = Cell.{.value = Next()};
+#program_export
+Answer :: () -> s32 { return cell.value }
+ZI
+cat > "$work/runtime_array.zi" <<'ZI'
+Cell :: struct { value: s32; }
+counter: s32;
+Next :: () -> s32 { counter += 1; return counter }
+cells: [1]Cell = .[Cell.{.value = Next()}];
+#program_export
+Answer :: () -> s32 { return cells[0].value }
+ZI
+for name in runtime_record runtime_array; do
+    "$ziran" ir --root "$work" -o "$work/runtime-ir" "$work/$name.zi"
+    for input in "$work/$name.zi" "$work/runtime-ir/$name.zir"; do
+        case "$input" in
+            *.zi) root=$work ;;
+            *) root=$work/runtime-ir ;;
+        esac
+        if "$ziran" bundle --root "$root" --entry "$name:Answer" \
+            -o "$work/$name.zib" "$input" >"$work/$name.err" 2>&1; then
+            echo 'runtime aggregate initializer passed portable preflight' >&2
+            exit 1
+        fi
+        grep -Fq 'portable global initializers need a scalar, string, record, or array literal value' \
+            "$work/$name.err"
+    done
+done
+
 cat > "$work/wrong_string.zi" <<'ZI'
 bad: string = 42;
 ZI

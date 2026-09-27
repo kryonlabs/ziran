@@ -1818,6 +1818,34 @@ sequence_guarantees_return(const ZirFunction *function, int begin, int end,
     return 0;
 }
 
+static int
+fold_global_element(Vm *vm, const ZirModule *module, const ZirFunction *probe,
+                    int index, Value *target, const char *type,
+                    ZirSourceSpan span);
+static void free_records(Vm *vm);
+static void free_arrays(Vm *vm);
+static void free_strings(Vm *vm);
+
+/* Check aggregate literals with the same evaluator used during instance
+ * creation, so nested runtime expressions fail before a bundle is written. */
+static int
+verify_global_aggregate(const ZirModule *module, const ZirGlobal *global)
+{
+    ZirFunction probe = {0};
+    Vm scratch = {0};
+    Value target = default_value(&scratch, module, global->type, 0);
+    int root = !scratch.failed ? ParseExprTyped(&probe, module, global->init,
+                                                global->span, global->type) : -1;
+    int valid = root >= 0 && !scratch.failed &&
+        fold_global_element(&scratch, module, &probe, root, &target,
+                            global->type, global->span) && !scratch.failed;
+    free(probe.exprs);
+    free_records(&scratch);
+    free_arrays(&scratch);
+    free_strings(&scratch);
+    return valid;
+}
+
 int
 VmVerify(const ZirProgram *program, const char *entry_module,
             const char *entry_function)
@@ -1940,17 +1968,11 @@ VmVerify(const ZirProgram *program, const char *entry_module,
                        !record->is_procedure_type && !record->is_union &&
                        !SliceElementType(global->type, NULL, 0) &&
                        !ArrayElementType(global->type, NULL, 0, NULL))
-                        literal_ok = 1;
+                        literal_ok = verify_global_aggregate(module, global);
                 }
                 if(!literal_ok &&
-                   ArrayElementType(global->type, NULL, 0, NULL)) {
-                    ZirFunction probe = {0};
-                    int root = ParseExprTyped(&probe, module, init,
-                                              global->span, global->type);
-                    literal_ok = root >= 0 &&
-                        probe.exprs[root].kind == ZIR_EXPR_COMPOUND;
-                    free(probe.exprs);
-                }
+                   ArrayElementType(global->type, NULL, 0, NULL))
+                    literal_ok = verify_global_aggregate(module, global);
                 if(!literal_ok ||
                    SliceElementType(global->type, NULL, 0)) {
                     Diagnostic(global->span, "zib.global",
@@ -3867,6 +3889,9 @@ fold_global_element(Vm *vm, const ZirModule *module, const ZirFunction *probe,
                     ZirSourceSpan span)
 {
     const ZirExpr *expr = &probe->exprs[index];
+    if((target->kind == VALUE_ARRAY || target->kind == VALUE_RECORD) &&
+       expr->kind != ZIR_EXPR_COMPOUND)
+        return 0;
     if(expr->kind == ZIR_EXPR_COMPOUND && target->kind == VALUE_ARRAY) {
         char element[ZIR_NAME_MAX];
         int position = 0;

@@ -291,6 +291,9 @@ scalar, string,
 record, and fixed-array global initializers run portably, including nested
 record and array literals across native targets. Bounded pure procedure calls
 in initializers fold before output; runtime-dependent calls remain open.
+The portable verifier now rejects runtime-dependent calls nested in record
+and array initializers before writing a bundle; `tests/portable_globals.sh`
+checks source and saved IR.
 Host calls support scalar, string, plain-record, pointer, and fixed-array
 arguments and returns, including zero and nested arrays with checked shapes.
 Synchronous scalar, string, and plain-record slice arguments and returns work

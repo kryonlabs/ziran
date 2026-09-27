@@ -515,7 +515,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   mutable initialized globals across calls and byte-identical source and
   saved-IR bundles; C, C++, and Go emit the same initializers natively
   (designated initializers in C, positional in C++, struct literals in Go).
-  String globals and string fields in record and array initializers decode
+  The portable verifier rejects a record or array initializer that contains
+  a runtime-dependent call before writing a bundle. Runtime-dependent global
+  initialization remains unsupported. String globals and string fields in
+  record and array initializers decode
   escapes and retain their bytes for the instance lifetime. Tests compare
   contents across repeated runs and fresh instances. Native C, C++, and Go
   lower nested record and array initializers from the parsed expression tree;
