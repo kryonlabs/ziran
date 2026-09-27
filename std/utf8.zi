@@ -5,28 +5,68 @@ Continuation :: (byte: u8) -> bool {
     return byte >= cast(u8)128 && byte <= cast(u8)191
 }
 
+Decoded :: struct {
+    value: u32
+    after: s32
+    valid: bool
+}
+
+// Decode one scalar. A malformed sequence consumes its lead byte and yields
+// U+FFFD so callers can continue scanning without splitting valid text.
+#program_export
+Decode :: (text: string, at: s32) -> Decoded {
+    result: Decoded
+    if at < 0 { return result }
+    if at >= cast(s32)text.count {
+        result.after = cast(s32)text.count
+        return result
+    }
+    first: u8 = text[at]
+    result.after = at + 1
+    if first < cast(u8)128 {
+        result.value = cast(u32)first
+        result.valid = true
+        return result
+    }
+    result.value = cast(u32)65533
+    count: s32 = 0
+    codepoint: u32 = cast(u32)0
+    minimum: u32 = cast(u32)0
+    if first >= cast(u8)194 && first <= cast(u8)223 {
+        count = 1
+        codepoint = cast(u32)(first & cast(u8)31)
+        minimum = cast(u32)128
+    } else if first >= cast(u8)224 && first <= cast(u8)239 {
+        count = 2
+        codepoint = cast(u32)(first & cast(u8)15)
+        minimum = cast(u32)2048
+    } else if first >= cast(u8)240 && first <= cast(u8)244 {
+        count = 3
+        codepoint = cast(u32)(first & cast(u8)7)
+        minimum = cast(u32)65536
+    }
+    if count == 0 || at + count >= cast(s32)text.count { return result }
+    index: s32 = 1
+    while index <= count {
+        part: u8 = text[at + index]
+        if !Continuation(part) { return result }
+        codepoint = (codepoint << cast(u32)6) | cast(u32)(part & cast(u8)63)
+        index += 1
+    }
+    if codepoint < minimum || codepoint > cast(u32)1114111 ||
+       (codepoint >= cast(u32)55296 && codepoint <= cast(u32)57343) {
+        return result
+    }
+    result.value = codepoint
+    result.after = at + count + 1
+    result.valid = true
+    return result
+}
+
 #program_export
 Next :: (value: string, at: s32) -> s32 {
-    if at < 0 { return 0 }
-    if at >= (cast(s32)value.count) { return (cast(s32)value.count) }
-    lead: u8 = value[at]
-    if lead < cast(u8)128 { return at + 1 }
-    if lead >= cast(u8)194 && lead <= cast(u8)223 && at + 1 < (cast(s32)value.count) &&
-       Continuation(value[at + 1]) { return at + 2 }
-    if lead >= cast(u8)224 && lead <= cast(u8)239 && at + 2 < (cast(s32)value.count) &&
-       Continuation(value[at + 1]) && Continuation(value[at + 2]) {
-        if lead == cast(u8)224 && value[at + 1] < cast(u8)160 { return at + 1 }
-        if lead == cast(u8)237 && value[at + 1] >= cast(u8)160 { return at + 1 }
-        return at + 3
-    }
-    if lead >= cast(u8)240 && lead <= cast(u8)244 && at + 3 < (cast(s32)value.count) &&
-       Continuation(value[at + 1]) && Continuation(value[at + 2]) &&
-       Continuation(value[at + 3]) {
-        if lead == cast(u8)240 && value[at + 1] < cast(u8)144 { return at + 1 }
-        if lead == cast(u8)244 && value[at + 1] >= cast(u8)144 { return at + 1 }
-        return at + 4
-    }
-    return at + 1
+    decoded: Decoded = Decode(value, at)
+    return decoded.after
 }
 
 #program_export

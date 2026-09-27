@@ -7,5 +7,17 @@ SelfTest :: () -> s32 {
     if Next(text, 0) != 1 || Next(text, 1) != 3 ||
        Next(text, 3) != 6 || Next(text, 6) != 10 { return 2 }
     if Next(text, 10) != 10 || Next(text, -1) != 0 { return 3 }
+    ascii: Decoded = Decode(text, 0)
+    accent: Decoded = Decode(text, 1)
+    han: Decoded = Decode(text, 3)
+    emoji: Decoded = Decode(text, 6)
+    if ascii.value != cast(u32)97 || accent.value != cast(u32)233 ||
+       han.value != cast(u32)20013 || emoji.value != cast(u32)128578 ||
+       emoji.after != 10 || !emoji.valid {
+        return 4
+    }
     return 42
 }
+
+#program_export
+main :: () -> s32 { return SelfTest() }
