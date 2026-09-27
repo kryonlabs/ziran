@@ -34,5 +34,6 @@ ziran api --json --root std std/json_scan.zi
 This first schema covers visible imports, constants, globals, procedures, and
 types. It does not yet describe per-symbol target availability, ownership
 preconditions, or tested examples. Use `ziran capabilities --json` for
-target-wide limits, and compile a small call before relying on a target that
-has not been exercised by your project.
+target-wide limits, use [`ziran explain`](DIAGNOSTICS.md) to decode diagnostic
+codes, and compile a small call before relying on a target that has not been
+exercised by your project.

@@ -75,7 +75,8 @@ its own reclaimable-string or region policy.
   shipped behavior.
 - Finish JSON diagnostics across loading, parsing, checking, cleanup, laws,
   lowering, verification, and execution. Some error paths still print plain
-  text under `--diagnostics=json`. Define stable codes, spans, related spans,
+  text under `--diagnostics=json`. `ziran explain` now exposes a tested registry
+  of every emitted code, but diagnostics still need related spans,
   expected/actual types, target capability, and machine-readable suggested
   edits where reliable. Test every negative fixture as JSON lines.
 - Clarify law evidence. `custom` laws evaluate closed compile-time expressions;
@@ -95,9 +96,9 @@ The useful default cycle is query the compiler's guide, capabilities, and
 tests, and inspect structured failures. The first API query includes visible
 imports, constants, globals, types, signatures, defaults, and effects from
 source or saved IR. Extend it with ownership preconditions, target
-availability, and tested examples. Add an
-`explain` command for stable diagnostic codes, then editor diagnostics,
-definition, hover, completion, and rename from compiler data. A watch mode
+availability, and tested examples. Extend the initial `explain` registry with
+per-code conformance IDs, then add editor diagnostics, definition, hover,
+completion, and rename from compiler data. A watch mode
 should reuse checked work safely; live state reload needs an explicit
 state-versioning contract. The formatter should have an idempotence and
 semantic-preservation corpus, especially for strings and newer syntax.

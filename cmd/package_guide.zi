@@ -14,6 +14,8 @@ Guide :: (arguments: []string) -> s32 {
     PkgPrint("  For a ziran.toml project: ziran lock, then ziran check --project --locked.\n\n", false)
     PkgPrint("  ziran capabilities --target=go --json reports target limits.\n\n", false)
     PkgPrint("  ziran api --json --root src src/main.zi lists checked public APIs.\n\n", false)
+    PkgPrint("  ziran explain check.type explains a diagnostic code.\n", false)
+    PkgPrint("  ziran explain --list --json enumerates every registered code.\n\n", false)
     PkgPrint("Source shape:\n", false)
     PkgPrint("  #program_export\n", false)
     PkgPrint("  Answer :: () -> s32 {\n", false)
