@@ -20,6 +20,11 @@ typedef int (*ZirCompileImportResolver)(void *context, ZirProgram *program,
 ZirProgram *parse_file_with_imports(const char *path, const char *root,
                                     ZirCompileImportResolver resolver,
                                     void *context);
+ZirProgram *parse_file_with_imports_defined(const char *path, const char *root,
+                                            ZirCompileImportResolver resolver,
+                                            void *context,
+                                            const char *const *defines,
+                                            int define_count);
 
 /* Parse immutable embedded text with the same frontend and source spans. */
 ZirProgram *parse_source_text(const char *path, const char *source);

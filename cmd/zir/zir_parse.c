@@ -5929,7 +5929,8 @@ typedef struct LoadFrame {
 
 static ZirProgram *
 parse_source(const char *path, const char *root, const char *source,
-             ZirCompileImportResolver resolver, void *resolver_context)
+             ZirCompileImportResolver resolver, void *resolver_context,
+             const char *const *defines, int define_count)
 {
     ZirProgram *program;
     CompileParseContext compile_context = {0};
@@ -5998,6 +5999,20 @@ parse_source(const char *path, const char *root, const char *source,
     if(canonical == NULL)
         die("out of memory tracking source path");
     memset(&consts, 0, sizeof(consts));
+    if(define_count > 0) {
+        consts.items = calloc((size_t)define_count, sizeof(*consts.items));
+        if(consts.items == NULL)
+            die("out of memory recording compiler definitions");
+        consts.capacity = define_count;
+        consts.count = define_count;
+        for(int i = 0; i < define_count; i++) {
+            copy_text(consts.items[i].name,
+                      sizeof(consts.items[i].name), defines[i]);
+            copy_text(consts.items[i].expr,
+                      sizeof(consts.items[i].expr), "1");
+            consts.items[i].is_public = 1;
+        }
+    }
     snprintf(rel, sizeof(rel), "%s", relative_path(root, path));
     const char *basename = strrchr(path, '/');
     basename = basename != NULL ? basename + 1 : path;
@@ -6668,7 +6683,8 @@ parse_source(const char *path, const char *root, const char *source,
             int named = parse_symbol_before_colons(t, alias, sizeof(alias));
             ZirProgram *fragment = parse_source(synthetic_path, root,
                                                 string_source, resolver,
-                                                resolver_context);
+                                                resolver_context,
+                                                defines, define_count);
             free(string_source);
             if(fragment == NULL) {
                 ProgramFree(program);
@@ -7589,9 +7605,20 @@ ZirProgram *
 parse_file_with_imports(const char *path, const char *root,
                         ZirCompileImportResolver resolver, void *context)
 {
+    return parse_file_with_imports_defined(path, root, resolver, context,
+                                           NULL, 0);
+}
+
+ZirProgram *
+parse_file_with_imports_defined(const char *path, const char *root,
+                                ZirCompileImportResolver resolver,
+                                void *context, const char *const *defines,
+                                int define_count)
+{
     char *lowered = read_lowered_source(path);
     ZirProgram *program = parse_source(path, root, lowered,
-                                       resolver, context);
+                                       resolver, context,
+                                       defines, define_count);
     free(lowered);
     return program;
 }
@@ -7606,7 +7633,8 @@ ZirProgram *
 parse_source_text(const char *path, const char *source)
 {
     char *lowered = lower_jai_multiline_strings(source, path);
-    ZirProgram *program = parse_source(path, ".", lowered, NULL, NULL);
+    ZirProgram *program = parse_source(path, ".", lowered, NULL, NULL,
+                                       NULL, 0);
     free(lowered);
     return program;
 }

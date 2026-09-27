@@ -15,6 +15,11 @@ typedef struct ProgramSet {
 int ProgramsLoad(ProgramSet *set, const char *root,
                  const char *const *module_paths, int module_path_count,
                  const char *const *inputs, int input_count);
+int ProgramsLoadWithDefines(ProgramSet *set, const char *root,
+                            const char *const *module_paths,
+                            int module_path_count,
+                            const char *const *defines, int define_count,
+                            const char *const *inputs, int input_count);
 void ProgramsFree(ProgramSet *set);
 
 #endif

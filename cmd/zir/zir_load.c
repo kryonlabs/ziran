@@ -18,6 +18,8 @@ typedef struct LoadContext {
     const char *root;
     const char *const *module_paths;
     int module_path_count;
+    const char *const *defines;
+    int define_count;
     const char *active[32];
     int active_count;
 } LoadContext;
@@ -132,8 +134,10 @@ add_program_named(LoadContext *context, const char *path, const char *root,
     program = lexical == NULL ? NULL :
         lexical_length > 3 &&
         strcmp(lexical + lexical_length - 3, ".zi") == 0 ?
-        parse_file_with_imports(lexical, root, early_resolve_imports,
-                                context) : ProgramLoad(lexical, root);
+        parse_file_with_imports_defined(lexical, root, early_resolve_imports,
+                                        context, context->defines,
+                                        context->define_count) :
+        ProgramLoad(lexical, root);
     context->active_count--;
     free(lexical);
     if(program == NULL) {
@@ -517,12 +521,24 @@ ProgramsLoad(ProgramSet *set, const char *root,
              const char *const *module_paths, int module_path_count,
              const char *const *inputs, int input_count)
 {
+    return ProgramsLoadWithDefines(set, root, module_paths,
+                                   module_path_count, NULL, 0,
+                                   inputs, input_count);
+}
+
+int
+ProgramsLoadWithDefines(ProgramSet *set, const char *root,
+                        const char *const *module_paths, int module_path_count,
+                        const char *const *defines, int define_count,
+                        const char *const *inputs, int input_count)
+{
     char *canonical_root = realpath(root, NULL);
     char **canonical_paths = NULL;
     LoadContext context = {.set = set};
     int ok = 0;
     *set = (ProgramSet){0};
-    if(canonical_root == NULL || input_count <= 0 || module_path_count < 0) {
+    if(canonical_root == NULL || input_count <= 0 || module_path_count < 0 ||
+       define_count < 0 || (define_count > 0 && defines == NULL)) {
         Diagnostic(Span(root, 1, 1), "module.root",
                    "module root is unavailable");
         goto done;
@@ -541,6 +557,8 @@ ProgramsLoad(ProgramSet *set, const char *root,
     context.root = canonical_root;
     context.module_paths = (const char *const *)canonical_paths;
     context.module_path_count = module_path_count;
+    context.defines = defines;
+    context.define_count = define_count;
     for(int i = 0; i < input_count; i++)
         if(!add_program(&context, inputs[i], canonical_root) ||
            !promote_input(set, inputs[i], i))
