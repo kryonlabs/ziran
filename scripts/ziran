@@ -1,4 +1,8 @@
 #!/bin/sh
 set -eu
 bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ "${1:-}" = add ]; then
+    shift
+    exec "$bin_dir/ziran-add" "$bin_dir/ziran" "$@"
+fi
 exec python3 "$bin_dir/ziran_pkg.py" "$@"

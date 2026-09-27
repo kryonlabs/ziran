@@ -18,7 +18,7 @@ LIB_OBJECTS := $(patsubst cmd/zir/%.c,$(BUILD_DIR)/obj/%.o,$(LIB_SOURCES))
 
 .PHONY: all check curl-http-test clean install-user
 CHECK_JOBS ?= 4
-all: $(BIN_DIR)/ziran $(BIN_DIR)/zi-fmt $(BIN_DIR)/zi2zir $(BIN_DIR)/zi-inspect $(BIN_DIR)/zi2c $(BIN_DIR)/zi2go $(BIN_DIR)/zi2cpp $(BIN_DIR)/zi2zib $(BUILD_DIR)/libziran.a
+all: $(BIN_DIR)/ziran $(BIN_DIR)/ziran-add $(BIN_DIR)/zi-fmt $(BIN_DIR)/zi2zir $(BIN_DIR)/zi-inspect $(BIN_DIR)/zi2c $(BIN_DIR)/zi2go $(BIN_DIR)/zi2cpp $(BIN_DIR)/zi2zib $(BUILD_DIR)/libziran.a
 
 USER_BIN ?= $(HOME)/.local/bin
 USER_SHARE ?= $(HOME)/.local/share/ziran/bootstrap
@@ -44,6 +44,11 @@ $(BIN_DIR)/ziran: scripts/ziran scripts/ziran_pkg.py | $(BIN_DIR)
 	cp $< $@
 	chmod +x $@
 	cp scripts/ziran_pkg.py $(BIN_DIR)/ziran_pkg.py
+
+$(BIN_DIR)/ziran-add: cmd/package_add.zi cmd/package_add_main.c std/byte_text_linux.zi std/file_linux.zi std/process_capture_linux.zi std/text.zi $(BIN_DIR)/zi2c
+	$(BIN_DIR)/zi2c --no-main --root cmd --module-path std -o $(BUILD_DIR)/package-add-c cmd/package_add.zi
+	$(CC) $(CFLAGS) -I$(BUILD_DIR)/package-add-c -o $@ \
+	    cmd/package_add_main.c $(BUILD_DIR)/package-add-c/*.c -lm
 
 $(BIN_DIR)/zi-fmt: scripts/zi-fmt.sh | $(BIN_DIR)
 	cp $< $@

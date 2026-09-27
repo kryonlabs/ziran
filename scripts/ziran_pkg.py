@@ -7,7 +7,6 @@ language frontend so bare compiler commands continue to work without a project.
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
@@ -158,10 +157,15 @@ def resolve_lock(root: Path, refresh: str | None = None) -> dict:
     except PackageError:
         pass
     old_entries = {(item["url"], item["ref"]): item for item in old["packages"]} if old else {}
-    if refresh not in (None, "*") and refresh not in dependency_specs(data):
-        raise PackageError(f"unknown dependency: {refresh}")
+    specs = dependency_specs(data)
+    if refresh not in (None, "*"):
+        matches = [alias for alias in specs if alias.casefold() == refresh.casefold()]
+        if len(matches) != 1:
+            detail = "ambiguous" if matches else "unknown"
+            raise PackageError(f"{detail} dependency: {refresh}")
+        refresh = matches[0]
     pending = [("root", alias, spec, refresh in ("*", alias))
-               for alias, spec in dependency_specs(data).items()]
+               for alias, spec in specs.items()]
     if refresh not in (None, "*"):
         pending.sort(key=lambda item: item[1] != refresh)
     entries: dict[tuple[str, str], dict] = {}
@@ -344,7 +348,12 @@ def module_map(root: Path, locked: dict, paths: dict[str, Path], toolchain: Path
             if set(aliases) - set(exports):
                 raise PackageError(f"{directory}: module_aliases names a module {alias} does not export")
             for exported, path in exports.items():
-                if exported not in modules[target_id] or not isinstance(path, str) or modules[target_id][exported] != (packages[target_id][0] / path).resolve():
+                if not isinstance(exported, str) or not exported.isidentifier() or not isinstance(path, str):
+                    raise PackageError(f"{packages[target_id][0]}: invalid export {exported}")
+                source = (packages[target_id][0] / path).resolve()
+                internal = [name for name, module in modules[target_id].items()
+                            if module.resolve() == source]
+                if len(internal) != 1:
                     raise PackageError(f"{packages[target_id][0]}: invalid export {exported}")
                 visible_name = aliases.get(exported, exported)
                 if visible_name in modules[ident]:
@@ -352,7 +361,7 @@ def module_map(root: Path, locked: dict, paths: dict[str, Path], toolchain: Path
                 if visible_name in visible:
                     raise PackageError(f"module {visible_name} is exported by both {visible[visible_name]} and {alias}; set module_aliases")
                 visible[visible_name] = alias
-                lines.append(f"D\t{ident}\t{visible_name}\t{target_id}\t{exported}")
+                lines.append(f"D\t{ident}\t{visible_name}\t{target_id}\t{internal[0]}")
     bridges = packages["root"][1]["package"].get("bridge_modules", [])
     if not isinstance(bridges, list) or not all(
         isinstance(name, str) and name.isidentifier() and name in modules["root"]
@@ -376,7 +385,13 @@ def select_package(locked: dict, selector: str) -> dict:
     direct = locked["root"]["dependencies"]
     if selector in direct:
         return packages[direct[selector]]
-    matches = [item for item in locked["packages"] if item["name"] == selector]
+    aliases = [alias for alias in direct if alias.casefold() == selector.casefold()]
+    if len(aliases) == 1:
+        return packages[direct[aliases[0]]]
+    if len(aliases) > 1:
+        raise PackageError(f"package {selector} matches multiple direct dependencies")
+    matches = [item for item in locked["packages"]
+               if item["name"].casefold() == selector.casefold()]
     direct_matches = [item for item in matches if item["id"] in direct.values()]
     if len(direct_matches) == 1:
         return direct_matches[0]
@@ -457,7 +472,7 @@ def main(argv: list[str]) -> int:
         print("ziran tool PACKAGE run|build|check [--profile NAME]")
         return 0
     command, *arguments = argv
-    if command in ("lock", "update", "fetch", "add", "tool", "pkg"):
+    if command in ("lock", "update", "fetch", "tool", "pkg"):
         root = project_root()
         if command == "lock":
             resolve_lock(root)
@@ -466,32 +481,6 @@ def main(argv: list[str]) -> int:
             if len(arguments) > 1:
                 raise PackageError("usage: ziran update [PACKAGE]")
             resolve_lock(root, arguments[0] if arguments else "*")
-            return 0
-        if command == "add":
-            parser = argparse.ArgumentParser(prog="ziran add")
-            parser.add_argument("name")
-            parser.add_argument("--git", required=True)
-            parser.add_argument("--ref", default="master")
-            options = parser.parse_args(arguments)
-            public_git(options.git)
-            if not options.name.isidentifier() or not options.ref or any(
-                ch in options.ref for ch in "\r\n\t\0"
-            ):
-                raise PackageError("invalid dependency name or Git ref")
-            path = root / "ziran.toml"
-            data = manifest(path)
-            if options.name in dependency_specs(data):
-                raise PackageError(f"dependency {options.name} already exists")
-            before = path.read_text()
-            path.write_text(before +
-                f'\n[dependencies.{options.name}]\n'
-                f'git = {json.dumps(options.git)}\n'
-                f'ref = {json.dumps(options.ref)}\n')
-            try:
-                resolve_lock(root)
-            except Exception:
-                path.write_text(before)
-                raise
             return 0
         locked_mode = "--locked" in arguments
         offline = "--offline" in arguments

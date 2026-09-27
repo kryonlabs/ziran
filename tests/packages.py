@@ -70,8 +70,12 @@ name = "Library"
 module_roots = ["src"]
 [exports]
 Value = "src/Value.zi"
+value = "src/module.zi"
 """)
         write(library / "src/Value.zi", "Value :: () -> s32 { return 1 }\n")
+        write(library / "src/module.zi", '''using Original :: #import "Value";
+LowerValue :: () -> s32 { return Value() }
+''')
         commit(library, env)
         call("git", "branch", "v1", cwd=library, env=env)
         write(library / "src/Value.zi", "Value :: () -> s32 { return 2 }\n")
@@ -92,8 +96,10 @@ ref = "{revision}"
 [exports]
 {name} = "src/{name}.zi"
 ''')
+            imported = "Value" if name == "A" else "value"
+            called = "Value" if name == "A" else "LowerValue"
             write(provider / f"src/{name}.zi",
-                  f'#import "Value"\nFrom{name} :: () -> s32 {{ return Value() }}\n')
+                  f'#import "{imported}"\nFrom{name} :: () -> s32 {{ return {called}() }}\n')
             commit(provider, env)
 
         app = root / "app"
@@ -127,6 +133,8 @@ main :: () -> s32 {
         call(ziran, "lock", cwd=app, env=env)
         saved_lock = (app / "ziran.lock").read_bytes()
         call(ziran, "lock", cwd=app, env=env)
+        assert (app / "ziran.lock").read_bytes() == saved_lock
+        call(ziran, "update", cwd=app, env=env)
         assert (app / "ziran.lock").read_bytes() == saved_lock
         call(ziran, "fetch", "--offline", cwd=app, env=env)
         call(ziran, "check", "--project", cwd=app, env=env)
@@ -195,7 +203,7 @@ ref = "v2"
 A = "src/A.zi"
 ''')
         commit(providers[1], env)
-        call(ziran, "update", "B", cwd=app, env=env)
+        call(ziran, "update", "b", cwd=app, env=env)
         collision = call(ziran, "check", "--project", cwd=app, env=env,
                          succeed=False)
         assert "exported by both" in collision

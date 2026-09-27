@@ -16,22 +16,23 @@ module_roots = ["src"]
 git = "https://github.com/ziranlang/ziran.git"
 ref = "master"
 
-[dependencies.Kryon]
-git = "https://github.com/kryonlabs/kryon.git"
+[dependencies.plot]
+git = "https://github.com/kryonlabs/plot.git"
 ref = "master"
 ```
 
-An exported module is a package-owned file, often `src/ui/Kryon/module.zi`:
+An exported module is a package-owned file. Its public name may differ from
+the file name, so a package can keep the short path `src/module.zi`:
 
 ```toml
 [exports]
-Kryon = "src/ui/Kryon/module.zi"
+plot = "src/module.zi"
 ```
 
 Applications import the public entry by its module name:
 
 ```zi
-using UI :: #import "Kryon";
+using Charts :: #import "plot";
 ```
 
 Each module resolves short imports in its own package, then its direct
@@ -54,20 +55,21 @@ bundles, and native output names. Source code continues to use short imports.
 Commands:
 
 ```sh
-ziran add Kryon --git https://github.com/kryonlabs/kryon.git
+ziran add kryonlabs/plot
 ziran lock
-ziran update Kryon
+ziran update
+ziran update plot
 ziran fetch
 ziran check --project
 ziran ir --project --entry app:main -o build/ir
 ziran build --project --target=c --entry app:main -o build/c
-ziran tool Kryon build
-ziran pkg path Kryon --locked --submodules
+ziran pkg path plot --locked
 ```
 
 `ziran update` refreshes every package and the toolchain to their current refs.
-`ziran update Game2D` refreshes Game2D and its transitive dependencies while
-keeping unrelated packages pinned.
+`ziran update plot` refreshes Plot and its transitive dependencies while
+keeping unrelated packages pinned. For other Git hosts, use
+`ziran add NAME --git https://HOST/OWNER/REPO.git`.
 
 `--locked` requires a matching lock and ignores local development overrides;
 `--offline` requires cached checkouts. The cache is under
