@@ -20,6 +20,87 @@ typedef struct CapabilityName {
 } CapabilityName;
 
 static int
+split_binding_name(const char *text, char *module, char *function)
+{
+    const char *separator = text ? strrchr(text, ':') : NULL;
+    size_t length;
+    if(separator == NULL || separator == text || separator[1] == '\0')
+        return 0;
+    length = (size_t)(separator - text);
+    if(length >= ZIR_NAME_MAX || strlen(separator + 1) >= ZIR_NAME_MAX)
+        return 0;
+    memcpy(module, text, length);
+    module[length] = '\0';
+    strcpy(function, separator + 1);
+    return 1;
+}
+
+int
+BindHostProvider(ZirProgram *program, const char *spec)
+{
+    const char *equals = strchr(spec, '=');
+    char source[2 * ZIR_NAME_MAX], provider[2 * ZIR_NAME_MAX];
+    char source_module[ZIR_NAME_MAX], source_function[ZIR_NAME_MAX];
+    char provider_module[ZIR_NAME_MAX], provider_function[ZIR_NAME_MAX];
+    ZirImport *matched = NULL;
+    const ZirFunction *implementation = NULL;
+    if(equals == NULL || (size_t)(equals - spec) >= sizeof(source) ||
+       strlen(equals + 1) >= sizeof(provider)) {
+        Diagnostic(Span("<command>", 1, 1), "host.bind",
+                   "invalid host binding: %s", spec);
+        return 0;
+    }
+    memcpy(source, spec, (size_t)(equals - spec));
+    source[equals - spec] = '\0';
+    strcpy(provider, equals + 1);
+    if(!split_binding_name(source, source_module, source_function) ||
+       !split_binding_name(provider, provider_module, provider_function)) {
+        Diagnostic(Span("<command>", 1, 1), "host.bind",
+                   "invalid host binding: %s", spec);
+        return 0;
+    }
+    for(int m = 0; m < program->module_count; m++) {
+        ZirModule *module = &program->modules[m];
+        if(strcmp(module->name, source_module) == 0)
+            for(int i = 0; i < module->import_count; i++)
+                if(module->imports[i].kind == ZIR_IMPORT_EXTERN &&
+                   module->imports[i].extern_kind == ZIR_EXTERN_HOST &&
+                   strcmp(module->imports[i].name, source_function) == 0) {
+                    if(matched != NULL) {
+                        Diagnostic(module->imports[i].span, "host.bind",
+                                   "ambiguous host capability: %s", source);
+                        return 0;
+                    }
+                    matched = &module->imports[i];
+                }
+        if(strcmp(module->name, provider_module) == 0)
+            for(int i = 0; i < module->function_count; i++)
+                if(strcmp(module->functions[i].name, provider_function) == 0 &&
+                   module->functions[i].exported &&
+                   !module->functions[i].is_extern) {
+                    if(implementation != NULL) {
+                        Diagnostic(module->functions[i].span, "host.bind",
+                                   "ambiguous Ziran provider: %s", provider);
+                        return 0;
+                    }
+                    implementation = &module->functions[i];
+                }
+    }
+    if(matched == NULL || implementation == NULL ||
+       strncmp(matched->target, "ziran:", 6) == 0) {
+        Diagnostic(Span("<command>", 1, 1), "host.bind",
+                   "host capability or exported Ziran provider is missing or already bound: %s",
+                   spec);
+        return 0;
+    }
+    snprintf(matched->target, sizeof(matched->target), "ziran:%s",
+             provider_module);
+    snprintf(matched->extern_symbol, sizeof(matched->extern_symbol), "%s",
+             provider_function);
+    return 1;
+}
+
+static int
 module_name_order(const void *left, const void *right)
 {
     const ZirModule *a = left;

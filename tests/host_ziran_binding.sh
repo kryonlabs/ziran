@@ -13,24 +13,44 @@ main :: () -> s32 { return Effect(41) }
 ZI
 cat > "$work/provider.zi" <<'ZI'
 #program_export
-Effect :: (value: s32) -> s32 { return value + 1 }
+Produce :: (value: s32) -> s32 { return value + 1 }
 ZI
 cat > "$work/bad_provider.zi" <<'ZI'
 #program_export
-Effect :: (value: bool) -> s32 { return 1 }
+Produce :: (value: bool) -> s32 { return 1 }
 ZI
 
 "$ziran" ir --root "$work" -o "$work/ir" \
     "$work/app.zi" "$work/provider.zi"
 "$ziran" bundle --root "$work" --entry app:main \
-    --bind app:Effect=provider:Effect -o "$work/source.zib" \
+    --bind app:Effect=provider:Produce -o "$work/source.zib" \
     "$work/app.zi" "$work/provider.zi"
 "$ziran" bundle --root "$work/ir" --entry app:main \
-    --bind app:Effect=provider:Effect -o "$work/saved.zib" \
+    --bind app:Effect=provider:Produce -o "$work/saved.zib" \
     "$work/ir/app.zir" "$work/ir/provider.zir"
 cmp "$work/source.zib" "$work/saved.zib"
 test "$("$ziran" run "$work/source.zib")" = 42
 test "$("$ziran" run "$work/saved.zib")" = 42
+
+for input in source saved; do
+    output=$work/go-$input
+    if test "$input" = source; then
+        root=$work
+        app=$work/app.zi
+        provider=$work/provider.zi
+    else
+        root=$work/ir
+        app=$work/ir/app.zir
+        provider=$work/ir/provider.zir
+    fi
+    "$ziran" build --target=go --pkg main --exe --root "$root" \
+        --entry app:main --bind app:Effect=provider:Produce \
+        -o "$output" "$app" "$provider"
+    GO111MODULE=off go build -o "$output/app" "$output"/*.go
+    status=0
+    env -u DISPLAY -u WAYLAND_DISPLAY "$output/app" || status=$?
+    test "$status" = 42
+done
 
 "$ziran" bundle --root "$work" --entry app:main \
     -o "$work/unbound.zib" "$work/app.zi"
@@ -41,7 +61,7 @@ fi
 rg -q 'missing host capability: app:Effect' "$work/unbound.err"
 
 if "$ziran" bundle --root "$work" --entry app:main \
-    --bind app:Effect=bad_provider:Effect -o "$work/bad.zib" \
+    --bind app:Effect=bad_provider:Produce -o "$work/bad.zib" \
     "$work/app.zi" "$work/bad_provider.zi" > "$work/bad.out" 2> "$work/bad.err"; then
     echo 'mismatched provider unexpectedly linked' >&2
     exit 1

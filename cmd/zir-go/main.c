@@ -19,7 +19,8 @@ static void
 usage(void)
 {
     fprintf(stderr,
-            "usage: zi2go [--no-main] [--minify] [--pkg NAME] [--entry module:function] "
+            "usage: zi2go [--no-main] [--exe] [--minify] [--pkg NAME] [--entry module:function] "
+            "[--bind module:function=module:function] "
             "[--diagnostics=text|json] [--module-path DIR] --root DIR -o DIR file.zi|file.zir ...\n");
 }
 
@@ -48,11 +49,14 @@ main(int argc, char **argv)
     const char *entry = NULL;
     char entry_module[ZIR_NAME_MAX], entry_function[ZIR_NAME_MAX];
     int no_main = 0;
+    int executable = 0;
     int minify = 0;
     int check_ok;
     ProgramSet set = {0};
     const char *module_paths[64];
     int module_path_count = 0;
+    const char *bindings[64];
+    int binding_count = 0;
     ZirProgram **progs;
     ZirProgram merged = {0};
     ZirProgram *linked = NULL;
@@ -77,8 +81,13 @@ main(int argc, char **argv)
             pkg = argv[++i];
         } else if(strcmp(argv[i], "--entry") == 0 && i + 1 < argc) {
             entry = argv[++i];
+        } else if(strcmp(argv[i], "--bind") == 0 && i + 1 < argc &&
+                  binding_count < 64) {
+            bindings[binding_count++] = argv[++i];
         } else if(strcmp(argv[i], "--no-main") == 0) {
             no_main = 1;
+        } else if(strcmp(argv[i], "--exe") == 0) {
+            executable = 1;
         } else if(strcmp(argv[i], "--minify") == 0) {
             minify = 1;
         } else if(argv[i][0] == '-') {
@@ -90,7 +99,9 @@ main(int argc, char **argv)
         }
     }
     if(root == NULL || out_dir == NULL || first_file == 0 ||
-       (entry != NULL && !split_entry(entry, entry_module, entry_function))) {
+       (entry != NULL && !split_entry(entry, entry_module, entry_function)) ||
+       (binding_count > 0 && entry == NULL) ||
+       (executable && (entry == NULL || strcmp(pkg, "main") != 0 || no_main))) {
         usage();
         return 1;
     }
@@ -119,11 +130,72 @@ main(int argc, char **argv)
         ZirProgram *merged_ptr = &merged;
         if(!LinkImports(&merged_ptr, 1))
             goto done;
+        for(i = 0; i < binding_count; i++)
+            if(!BindHostProvider(&merged, bindings[i]))
+                goto done;
         linked = NativeLink(&merged, entry_module, entry_function);
         if(linked == NULL)
             goto done;
         const ZirProgram *only = linked;
         result = go_lower(&only, 1, root, out_dir, pkg, no_main) != 0;
+        if(result == 0 && executable) {
+            const ZirModule *module = NULL;
+            const ZirFunction *function = NULL;
+            char symbol[2 * ZIR_NAME_MAX];
+            char path[1024];
+            FILE *file;
+            for(int m = 0; m < linked->module_count; m++) {
+                const ZirModule *candidate = &linked->modules[m];
+                if(strcmp(candidate->name, entry_module) != 0)
+                    continue;
+                for(int f = 0; f < candidate->function_count; f++)
+                    if(strcmp(candidate->functions[f].name,
+                              entry_function) == 0) {
+                        module = candidate;
+                        function = &candidate->functions[f];
+                    }
+            }
+            if(function == NULL) {
+                Diagnostic(Span("<command>", 1, 1), "zir_go.exe",
+                           "executable entry is missing");
+                result = 1;
+                goto done;
+            }
+            if(function->args[0] != '\0' ||
+               (strcmp(function->return_type, "void") != 0 &&
+                strcmp(function->return_type, "s32") != 0 &&
+                strcmp(function->return_type, "s64") != 0 &&
+                strcmp(function->return_type, "integer") != 0 &&
+                strcmp(function->return_type, "bool") != 0)) {
+                Diagnostic(function->span, "zir_go.exe",
+                           "executable entry must take no arguments and return void, bool, or an integer");
+                result = 1;
+                goto done;
+            }
+            NativeGoFunctionName(&only, 1, module, function,
+                                 symbol, sizeof(symbol));
+            snprintf(path, sizeof(path), "%s/ziran_entry.go", out_dir);
+            file = fopen(path, "wb");
+            if(file == NULL) {
+                Diagnostic(Span(path, 1, 1), "zir_go.exe",
+                           "cannot write Go executable entry");
+                result = 1;
+                goto done;
+            }
+            if(function->return_type[0] == '\0' ||
+               strcmp(function->return_type, "void") == 0) {
+                fprintf(file, "package main\nfunc main() { %s() }\n", symbol);
+            } else if(strcmp(function->return_type, "bool") == 0) {
+                fprintf(file, "package main\nimport \"os\"\n"
+                              "func main() { if %s() { os.Exit(1) } }\n",
+                              symbol);
+            } else {
+                fprintf(file, "package main\nimport \"os\"\n"
+                              "func main() { os.Exit(int(%s())) }\n", symbol);
+            }
+            if(fclose(file) != 0)
+                result = 1;
+        }
     } else {
         result = go_lower((const ZirProgram *const *)progs, file_count,
                           root, out_dir, pkg, no_main) != 0;

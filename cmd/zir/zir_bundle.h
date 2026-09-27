@@ -9,6 +9,8 @@ ZirProgram *BundleLink(const ZirProgram *program, const char *entry_module,
 /* Native entry pruning also retains exported implementations of host effects. */
 ZirProgram *NativeLink(const ZirProgram *program, const char *entry_module,
                        const char *entry_function);
+/* Bind one declared host capability to an exported Ziran implementation. */
+int BindHostProvider(ZirProgram *program, const char *spec);
 int BundleWrite(FILE *out, const ZirProgram *program,
                    const char *entry_module, const char *entry_function);
 typedef struct ZibLawRecord {

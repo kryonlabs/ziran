@@ -101,67 +101,9 @@ bundle_command(int argc, char **argv)
     ZirProgram *merged_ptr = &merged;
     if(!LinkImports(&merged_ptr, 1))
         goto done;
-    for(int binding = 0; binding < binding_count; binding++) {
-        const char *spec = bindings[binding];
-        const char *equals = strchr(spec, '=');
-        char source[2 * ZIR_NAME_MAX], provider[2 * ZIR_NAME_MAX];
-        char source_module[ZIR_NAME_MAX], source_function[ZIR_NAME_MAX];
-        char provider_module[ZIR_NAME_MAX], provider_function[ZIR_NAME_MAX];
-        ZirImport *matched = NULL;
-        const ZirFunction *implementation = NULL;
-        if(equals == NULL || (size_t)(equals - spec) >= sizeof(source) ||
-           strlen(equals + 1) >= sizeof(provider)) {
-            Diagnostic(Span("<command>", 1, 1), "zib.bind",
-                       "invalid host binding: %s", spec);
+    for(int binding = 0; binding < binding_count; binding++)
+        if(!BindHostProvider(&merged, bindings[binding]))
             goto done;
-        }
-        memcpy(source, spec, (size_t)(equals - spec));
-        source[equals - spec] = '\0';
-        strcpy(provider, equals + 1);
-        if(!split_entry(source, source_module, source_function) ||
-           !split_entry(provider, provider_module, provider_function)) {
-            Diagnostic(Span("<command>", 1, 1), "zib.bind",
-                       "invalid host binding: %s", spec);
-            goto done;
-        }
-        for(int m = 0; m < merged.module_count; m++) {
-            ZirModule *module = &merged.modules[m];
-            if(strcmp(module->name, source_module) == 0)
-                for(int i = 0; i < module->import_count; i++)
-                    if(module->imports[i].kind == ZIR_IMPORT_EXTERN &&
-                       module->imports[i].extern_kind == ZIR_EXTERN_HOST &&
-                       strcmp(module->imports[i].name, source_function) == 0) {
-                        if(matched != NULL) {
-                            Diagnostic(module->imports[i].span, "zib.bind",
-                                       "ambiguous host capability: %s", source);
-                            goto done;
-                        }
-                        matched = &module->imports[i];
-                    }
-            if(strcmp(module->name, provider_module) == 0)
-                for(int i = 0; i < module->function_count; i++)
-                    if(strcmp(module->functions[i].name, provider_function) == 0 &&
-                       module->functions[i].exported &&
-                       !module->functions[i].is_extern) {
-                        if(implementation != NULL) {
-                            Diagnostic(module->functions[i].span, "zib.bind",
-                                       "ambiguous Ziran provider: %s", provider);
-                            goto done;
-                        }
-                        implementation = &module->functions[i];
-                    }
-        }
-        if(matched == NULL || implementation == NULL ||
-           strncmp(matched->target, "ziran:", 6) == 0) {
-            Diagnostic(Span("<command>", 1, 1), "zib.bind",
-                       "host capability or exported Ziran provider is missing or already bound: %s", spec);
-            goto done;
-        }
-        snprintf(matched->target, sizeof(matched->target), "ziran:%s",
-                 provider_module);
-        snprintf(matched->extern_symbol, sizeof(matched->extern_symbol), "%s",
-                 provider_function);
-    }
     linked = BundleLink(&merged, entry_module, entry_function);
     if(linked == NULL || !VmVerify(linked, entry_module, entry_function))
         goto done;

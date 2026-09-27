@@ -250,6 +250,16 @@ go_global_function_index(const ZirModule *module, const char *name, size_t len)
     return -1;
 }
 
+static const char *
+go_bound_provider(const char *module, const char *function)
+{
+    for(int i = 0; i < g_function_count; i++)
+        if(strcmp(g_functions[i].module->name, module) == 0 &&
+           strcmp(g_functions[i].source, function) == 0)
+            return g_functions[i].go;
+    return NULL;
+}
+
 static void
 go_build_global_functions(const ZirProgram *const *progs, int prog_count)
 {
@@ -301,6 +311,8 @@ typedef struct {
     char ret[ZIR_GO_NAME_MAX];
     char host_var[ZIR_GO_NAME_MAX + 8];   /* guard-prefixed host var */
     int direct_go;
+    int direct_ziran;
+    char provider_go[ZIR_GO_NAME_MAX * 2];
 } ZirGoExtern;
 
 typedef struct {
@@ -427,7 +439,8 @@ extern_direct_go_target(const char *target, char *import_path,
 /* Register one extern (idempotent: first declaration wins). */
 static void
 add_extern(const char *source, const char *args, const char *ret,
-           const char *target, ZirSourceSpan span)
+           const char *target, const char *provider_symbol,
+           ZirSourceSpan span)
 {
     ZirGoExtern *ex;
     if(target && !strncmp(target, "c.", 2)) {
@@ -442,11 +455,23 @@ add_extern(const char *source, const char *args, const char *ret,
     snprintf(ex->source, sizeof(ex->source), "%s", source);
     snprintf(ex->ret, sizeof(ex->ret), "%s", ret);
     split_params(args, ex);
-    extern_go_name(target, source, ex->go, sizeof(ex->go));
-    ex->direct_go = extern_direct_go_target(target, ex->go_import_path,
-                                            sizeof(ex->go_import_path),
-                                            ex->go_import_alias,
-                                            sizeof(ex->go_import_alias));
+    if(target != NULL && strncmp(target, "ziran:", 6) == 0) {
+        const char *bound = go_bound_provider(target + 6, provider_symbol);
+        if(bound == NULL) {
+            Diagnostic(span, "zir_go.bind",
+                       "bound Ziran host provider is missing: %s:%s",
+                       target + 6, provider_symbol);
+            exit(1);
+        }
+        ex->direct_ziran = 1;
+        snprintf(ex->provider_go, sizeof(ex->provider_go), "%s", bound);
+    } else {
+        extern_go_name(target, source, ex->go, sizeof(ex->go));
+        ex->direct_go = extern_direct_go_target(target, ex->go_import_path,
+                                                sizeof(ex->go_import_path),
+                                                ex->go_import_alias,
+                                                sizeof(ex->go_import_alias));
+    }
     /* Derive the host variable name from the module guard. */
     snprintf(ex->host_var, sizeof(ex->host_var), "%c%sHost",
              (char)tolower((unsigned char)g_guard[0]), g_guard + 1);
@@ -499,7 +524,7 @@ parse_extern_import(const ZirImport *imp)
             target[n] = '\0';
         }
     }
-    add_extern(imp->name, args, ret, target, imp->span);
+    add_extern(imp->name, args, ret, target, imp->extern_symbol, imp->span);
 }
 
 /* Parse enum body members. The parser may deliver them newline-separated or
@@ -599,9 +624,9 @@ go_set_module(const ZirModule *m, const char *guard)
             continue;
         if(fn->extern_target[0] != '\0')
             add_extern(fn->name, fn->args, fn->return_type,
-                       fn->extern_target, fn->span);
+                       fn->extern_target, "", fn->span);
         else
-            add_extern(fn->name, fn->args, fn->return_type, "", fn->span);
+            add_extern(fn->name, fn->args, fn->return_type, "", "", fn->span);
     }
     for(int i = 0; i < m->type_count; i++) {
         if(m->types[i].is_enum)
@@ -898,7 +923,11 @@ tx_expr(const ZirModule *m, const char *src, char *dst, size_t dst_size)
                     if(*ae == ')')
                         ae++;
                     p = ae;
-                    if(g_externs[xi].direct_go)
+                    if(g_externs[xi].direct_ziran)
+                        dn += (size_t)snprintf(dst + dn, ZIR_GO_TEXT_MAX - dn,
+                                               "%s(",
+                                               g_externs[xi].provider_go);
+                    else if(g_externs[xi].direct_go)
                         dn += (size_t)snprintf(dst + dn, ZIR_GO_TEXT_MAX - dn,
                                                "%s.%s(",
                                                g_externs[xi].go_import_alias,
@@ -1297,7 +1326,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 int host_count = 0;
 
                 for(int i = 0; i < g_extern_count; i++) {
-                    if(g_externs[i].direct_go)
+                    if(g_externs[i].direct_go || g_externs[i].direct_ziran)
                         continue;
                     if(first_host < 0)
                         first_host = i;
@@ -1312,7 +1341,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                     const ZirGoExtern *ex = &g_externs[i];
                     char gt[ZIR_GO_NAME_MAX];
 
-                    if(ex->direct_go)
+                    if(ex->direct_go || ex->direct_ziran)
                         continue;
                     fprintf(f, "\t%s(", ex->go);
                     for(int a = 0; a < ex->pcount; a++) {
