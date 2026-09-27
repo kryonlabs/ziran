@@ -15,10 +15,12 @@ PORTABLE := cmd/zir/zir_bundle.c cmd/zir/zir_vm.c
 HEADERS := $(wildcard cmd/zir/*.h) $(wildcard include/*.h)
 LIB_SOURCES := $(FRONTEND) $(PORTABLE) cmd/zir/zir_host.c
 LIB_OBJECTS := $(patsubst cmd/zir/%.c,$(BUILD_DIR)/obj/%.o,$(LIB_SOURCES))
+RUNTIME_SOURCES := runtime/file_linux.c
+RUNTIME_OBJECTS := $(patsubst runtime/%.c,$(BUILD_DIR)/runtime/%.o,$(RUNTIME_SOURCES))
 
 .PHONY: all check curl-http-test clean install-user
 CHECK_JOBS ?= 4
-all: $(BIN_DIR)/ziran $(BIN_DIR)/zi-fmt $(BIN_DIR)/zi2zir $(BIN_DIR)/zi-inspect $(BIN_DIR)/zi2c $(BIN_DIR)/zi2go $(BIN_DIR)/zi2cpp $(BIN_DIR)/zi2zib $(BUILD_DIR)/libziran.a
+all: $(BIN_DIR)/ziran $(BIN_DIR)/zi-fmt $(BIN_DIR)/zi2zir $(BIN_DIR)/zi-inspect $(BIN_DIR)/zi2c $(BIN_DIR)/zi2go $(BIN_DIR)/zi2cpp $(BIN_DIR)/zi2zib $(BUILD_DIR)/libziran.a $(BUILD_DIR)/libziran-runtime.a
 
 USER_BIN ?= $(HOME)/.local/bin
 USER_SHARE ?= $(HOME)/.local/share/ziran/bootstrap
@@ -36,6 +38,14 @@ $(BUILD_DIR)/obj/%.o: cmd/zir/%.c $(HEADERS)
 $(BUILD_DIR)/libziran.a: $(LIB_OBJECTS) Makefile
 	$(RM) $@
 	$(AR) rcs $@ $(LIB_OBJECTS)
+
+$(BUILD_DIR)/runtime/%.o: runtime/%.c
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/libziran-runtime.a: $(RUNTIME_OBJECTS) Makefile
+	$(RM) $@
+	$(AR) rcs $@ $(RUNTIME_OBJECTS)
 
 $(BIN_DIR):
 	mkdir -p $@
