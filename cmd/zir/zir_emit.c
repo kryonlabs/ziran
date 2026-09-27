@@ -587,31 +587,42 @@ NativeCModuleInitName(const ZirModule *module, char *out, size_t size)
            (unsigned long long)hash);
 }
 
-typedef struct ModuleVisit {
-    const ZirModule *module;
-    const struct ModuleVisit *previous;
-} ModuleVisit;
+typedef struct ModuleVisits {
+    const ZirModule **items;
+    size_t count;
+    size_t capacity;
+} ModuleVisits;
 
 static int
-module_needs_startup(const ZirModule *module, const ModuleVisit *previous)
+module_needs_startup(const ZirModule *module, ModuleVisits *visits)
 {
     if(module == NULL) return 0;
-    for(const ModuleVisit *visit = previous; visit != NULL;
-        visit = visit->previous)
-        if(visit->module == module) return 0;
+    for(size_t i = 0; i < visits->count; i++)
+        if(visits->items[i] == module) return 0;
+    if(visits->count == visits->capacity) {
+        size_t capacity = visits->capacity ? visits->capacity * 2 : 64;
+        const ZirModule **items = realloc(visits->items,
+                                           capacity * sizeof(*items));
+        if(items == NULL) abort();
+        visits->items = items;
+        visits->capacity = capacity;
+    }
+    visits->items[visits->count++] = module;
     for(int f = 0; f < module->function_count; f++)
         if(module->functions[f].is_global_initializer) return 1;
-    ModuleVisit visit = {module, previous};
     for(int i = 0; i < module->import_count; i++)
         if(module_needs_startup(module->imports[i].resolved_module,
-                                &visit)) return 1;
+                                visits)) return 1;
     return 0;
 }
 
 int
 ModuleNeedsStartup(const ZirModule *module)
 {
-    return module_needs_startup(module, NULL);
+    ModuleVisits visits = {0};
+    int result = module_needs_startup(module, &visits);
+    free(visits.items);
+    return result;
 }
 
 static void
