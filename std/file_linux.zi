@@ -6,16 +6,45 @@
 libc :: #system_library "libc";
 OpenRaw :: (path: *u8, flags: s32, mode: s32) -> s32 #foreign libc "open";
 CloseRaw :: (fd: s32) -> s32 #foreign libc "close";
-SeekRaw :: (fd: s32, offset: s64, origin: s32) -> s64 #foreign libc "lseek";
-ReadAtRaw :: (fd: s32, output: *u8, count: u64, offset: s64) -> s64 #foreign libc "pread";
-WriteAtRaw :: (fd: s32, input: *u8, count: u64, offset: s64) -> s64 #foreign libc "pwrite";
+#if #defined(ANDROID_BUILD) {
+    // Android's 32-bit off_t is narrower than the public file offset. The
+    // explicit large-file entry points are available from API 21 onward.
+    SeekRaw :: (fd: s32, offset: s64, origin: s32) -> s64 #foreign libc "lseek64";
+    ReadAtRaw :: (fd: s32, output: *u8, count: usize, offset: s64) -> isize #foreign libc "pread64";
+    WriteAtRaw :: (fd: s32, input: *u8, count: usize, offset: s64) -> isize #foreign libc "pwrite64";
+}
+#if !#defined(ANDROID_BUILD) {
+    SeekRaw :: (fd: s32, offset: s64, origin: s32) -> s64 #foreign libc "lseek";
+    ReadAtRaw :: (fd: s32, output: *u8, count: usize, offset: s64) -> isize #foreign libc "pread";
+    WriteAtRaw :: (fd: s32, input: *u8, count: usize, offset: s64) -> isize #foreign libc "pwrite";
+}
 MakeDirectoryRaw :: (path: *u8, mode: s32) -> s32 #foreign libc "mkdir";
 UnlinkRaw :: (path: *u8) -> s32 #foreign libc "unlink";
 LinkRaw :: (source: *u8, destination: *u8) -> s32 #foreign libc "link";
 RenameAtRaw :: (old_directory: s32, source: *u8,
     new_directory: s32, destination: *u8) -> s32 #foreign libc "renameat";
-RenameAt2Raw :: (old_directory: s32, source: *u8,
-    new_directory: s32, destination: *u8, flags: u32) -> s32 #foreign libc "renameat2";
+#if #defined(ANDROID_BUILD) {
+    // Bionic exports renameat2 only from API 30. Call the kernel operation
+    // directly on older API levels, retaining atomic no-replace semantics.
+    RenameSystemCall :: (number: isize, old_directory: isize, source: *u8,
+        new_directory: isize, destination: *u8, flags: usize) -> isize #foreign libc "syscall";
+    #if #defined(__aarch64__) {
+        RenameAt2Number :: 276;
+    }
+    #if #defined(__arm__) {
+        RenameAt2Number :: 382;
+    }
+    #if #defined(__i386__) {
+        RenameAt2Number :: 353;
+    }
+    #if #defined(__x86_64__) {
+        RenameAt2Number :: 316;
+    }
+}
+#if !#defined(ANDROID_BUILD) {
+    RenameAt2Raw :: (old_directory: s32, source: *u8,
+        new_directory: s32, destination: *u8, flags: u32) -> s32 #foreign libc "renameat2";
+}
 SyncRaw :: (fd: s32) -> s32 #foreign libc "fsync";
 
 #scope_export
@@ -100,7 +129,14 @@ RenameNoReplace :: (source: string, destination: string) -> bool {
     new_name: [4096]u8
     if !CopyCString(source, old_name[:]) ||
     !CopyCString(destination, new_name[:]) { return false }
-    return RenameAt2Raw(-100, *old_name[0], -100, *new_name[0], 1) == 0
+    #if #defined(ANDROID_BUILD) {
+        // ENOSYS on an old kernel is a safe failure: neither path is changed.
+        return RenameSystemCall(cast(isize)RenameAt2Number, cast(isize)-100,
+            *old_name[0], cast(isize)-100, *new_name[0], cast(usize)1) == cast(isize)0
+    }
+    #if !#defined(ANDROID_BUILD) {
+        return RenameAt2Raw(-100, *old_name[0], -100, *new_name[0], 1) == 0
+    }
 }
 
 #program_export
@@ -138,14 +174,14 @@ FileSize :: (file: FileHandle) -> s64 {
 ReadAt :: (file: FileHandle, output: []u8, offset: s64) -> s64 {
     if !file.valid || offset < 0 { return -1 }
     if output.count == 0 { return 0 }
-    return ReadAtRaw(file.fd, *output[0], cast(u64)output.count, offset)
+    return cast(s64)ReadAtRaw(file.fd, *output[0], cast(usize)output.count, offset)
 }
 
 #program_export
 WriteAt :: (file: FileHandle, input: []u8, offset: s64) -> s64 {
     if !file.valid || offset < 0 { return -1 }
     if input.count == 0 { return 0 }
-    return WriteAtRaw(file.fd, *input[0], cast(u64)input.count, offset)
+    return cast(s64)WriteAtRaw(file.fd, *input[0], cast(usize)input.count, offset)
 }
 
 // Copy immutable text through a bounded buffer before writing it. The string
