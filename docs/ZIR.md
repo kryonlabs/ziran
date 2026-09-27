@@ -1,6 +1,6 @@
 # Ziran intermediate representation (`.zir`)
 
-This is the target contract. An experimental binary version 39 now exists for
+This is the target contract. An experimental binary version 40 now exists for
 the tested C/C++/Go and portable scalar/record/enum subsets. It is not yet the complete contract below; see
 [Implementation status](IMPLEMENTATION_STATUS.md).
 
@@ -31,7 +31,7 @@ unrelated imported function with the same type shape.
 `.zir` is the compiler interchange and cache format. Portable distribution
 uses a linked `.zib`, not an unlinked `.zir`. See [Bundle format](ZIB.md).
 
-## Experimental version 39
+## Experimental version 40
 
 The current writer emits `ZIR` followed by a zero byte, a little-endian
 version number, and length-prefixed checked module records. Strings and
@@ -51,6 +51,9 @@ order, then pass values in parameter order. Procedure declarations retain their
 default expressions; omitted arguments are materialized as checked call
 expressions before serialization. Concrete defaults use checked procedures in
 the declaring module so their names keep that module's scope.
+Runtime-dependent global initializers lower to private checked startup
+functions. Their startup flag is serialized and validated; the linker retains
+them with reachable modules and their call dependencies.
 For checked functions, statement text is source metadata; the expression graph
 and explicit branch flags and loop target IDs determine behavior. The checker
 requires each named loop exit to point to a unique enclosing loop. Exhaustive
@@ -60,7 +63,7 @@ statement to reinterpret. Source `variant`, payload `match`, postfix `?`,
 `guard`, C-style `switch` and `goto` with labels, `state` blocks, C-style
 locals, and raw C statements are rejected. The validating reader rejects
 retired statement kinds. The postfix increment/decrement expression kind has
-been removed; version 39 rejects earlier files before graph validation.
+been removed; version 40 rejects earlier files before graph validation.
 Variant fields, generated variant function slots,
 retained-state fields, and unused statement callee/argument text are absent
 from the IR schema.

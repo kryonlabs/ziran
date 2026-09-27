@@ -577,6 +577,43 @@ NativeCFunctionName(const ZirModule *module, const ZirFunction *fn,
         copy_text(out, size, fn->name);
 }
 
+void
+NativeCModuleInitName(const ZirModule *module, char *out, size_t size)
+{
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for(const unsigned char *p = (const unsigned char *)module->name; *p; p++)
+        hash = (hash ^ *p) * UINT64_C(1099511628211);
+    format(out, size, "zir_module_init_%016llx",
+           (unsigned long long)hash);
+}
+
+typedef struct ModuleVisit {
+    const ZirModule *module;
+    const struct ModuleVisit *previous;
+} ModuleVisit;
+
+static int
+module_needs_startup(const ZirModule *module, const ModuleVisit *previous)
+{
+    if(module == NULL) return 0;
+    for(const ModuleVisit *visit = previous; visit != NULL;
+        visit = visit->previous)
+        if(visit->module == module) return 0;
+    for(int f = 0; f < module->function_count; f++)
+        if(module->functions[f].is_global_initializer) return 1;
+    ModuleVisit visit = {module, previous};
+    for(int i = 0; i < module->import_count; i++)
+        if(module_needs_startup(module->imports[i].resolved_module,
+                                &visit)) return 1;
+    return 0;
+}
+
+int
+ModuleNeedsStartup(const ZirModule *module)
+{
+    return module_needs_startup(module, NULL);
+}
+
 static void
 go_file_stem(const char *source, char *out, size_t size)
 {

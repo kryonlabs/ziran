@@ -202,12 +202,16 @@ Answer :: () -> s32 {
     return initial
 }
 ZI
-if "$ziran" bundle --root "$work" --entry invalid:Answer \
-    -o "$work/invalid.zib" "$work/invalid.zi" >"$work/error" 2>&1; then
-    exit 1
-fi
-grep -q 'portable global initializers need a scalar, string, record, or array literal value' \
-    "$work/error"
+"$ziran" ir --root "$work" -o "$work/runtime-ir" "$work/invalid.zi"
+for input in "$work/invalid.zi" "$work/runtime-ir/invalid.zir"; do
+    case "$input" in
+        *.zi) root=$work ;;
+        *) root=$work/runtime-ir ;;
+    esac
+    "$ziran" bundle --root "$root" --entry invalid:Answer \
+        -o "$work/invalid.zib" "$input"
+    test "$("$ziran" run "$work/invalid.zib")" = 1
+done
 
 cat > "$work/runtime_record.zi" <<'ZI'
 Cell :: struct { value: s32; }
@@ -221,7 +225,7 @@ cat > "$work/runtime_array.zi" <<'ZI'
 Cell :: struct { value: s32; }
 counter: s32;
 Next :: () -> s32 { counter += 1; return counter }
-cells: [1]Cell = .[Cell.{.value = Next()}];
+cells: [1]Cell = Cell.[Cell.{.value = Next()}];
 #program_export
 Answer :: () -> s32 { return cells[0].value }
 ZI
@@ -232,13 +236,9 @@ for name in runtime_record runtime_array; do
             *.zi) root=$work ;;
             *) root=$work/runtime-ir ;;
         esac
-        if "$ziran" bundle --root "$root" --entry "$name:Answer" \
-            -o "$work/$name.zib" "$input" >"$work/$name.err" 2>&1; then
-            echo 'runtime aggregate initializer passed portable preflight' >&2
-            exit 1
-        fi
-        grep -Fq 'portable global initializers need a scalar, string, record, or array literal value' \
-            "$work/$name.err"
+        "$ziran" bundle --root "$root" --entry "$name:Answer" \
+            -o "$work/$name.zib" "$input"
+        test "$("$ziran" run "$work/$name.zib")" = 1
     done
 done
 

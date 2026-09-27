@@ -3957,6 +3957,36 @@ fold_global_element(Vm *vm, const ZirModule *module, const ZirFunction *probe,
 }
 
 static int
+initialize_module_startup(Vm *vm, const ZirProgram *program, int index,
+                          unsigned char *state)
+{
+    const ZirModule *module = &program->modules[index];
+    if(state[index] == 2) return 1;
+    if(state[index] == 1) {
+        Diagnostic(module->span, "zib.global",
+                   "cyclic module startup dependency: %s", module->name);
+        vm->failed = 1;
+        return 0;
+    }
+    state[index] = 1;
+    for(int i = 0; i < module->import_count; i++) {
+        const ZirModule *dependency = module->imports[i].resolved_module;
+        if(dependency == NULL) continue;
+        for(int m = 0; m < program->module_count; m++)
+            if(dependency == &program->modules[m] &&
+               !initialize_module_startup(vm, program, m, state))
+                return 0;
+    }
+    for(int f = 0; f < module->function_count; f++)
+        if(module->functions[f].is_global_initializer) {
+            run_function(vm, module, &module->functions[f], NULL, 0);
+            if(vm->failed) return 0;
+        }
+    state[index] = 2;
+    return 1;
+}
+
+static int
 initialize_globals(Vm *vm, const ZirProgram *program)
 {
     int count = 0;
@@ -4031,7 +4061,13 @@ initialize_globals(Vm *vm, const ZirProgram *program)
                 return 0;
         }
     }
-    return 1;
+    unsigned char *state = calloc((size_t)program->module_count, 1);
+    if(state == NULL) return 0;
+    int initialized = 1;
+    for(int m = 0; m < program->module_count && initialized; m++)
+        initialized = initialize_module_startup(vm, program, m, state);
+    free(state);
+    return initialized;
 }
 
 VmInstance *

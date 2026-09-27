@@ -18,6 +18,8 @@ void NativeExportName(const ZirModule *module, const ZirFunction *fn,
                       char *out, size_t size);
 void NativeCFunctionName(const ZirModule *module, const ZirFunction *fn,
                          char *out, size_t size);
+void NativeCModuleInitName(const ZirModule *module, char *out, size_t size);
+int ModuleNeedsStartup(const ZirModule *module);
 void NativeGoModuleIdentity(const ZirProgram *const *programs, int count,
                             const ZirModule *module, char *file_stem,
                             size_t file_size, char *guard, size_t guard_size);

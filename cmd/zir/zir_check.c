@@ -7477,12 +7477,56 @@ CheckPrograms(ZirProgram **programs, int count)
                         return 0;
                     }
                 }
+                int runtime_initializer = 0;
+                if(valid)
+                    for(int e = 0; e < expression.expr_count; e++) {
+                        const ZirExpr *node = &expression.exprs[e];
+                        const ZirModule *owner = NULL;
+                        const ZirGlobal *referenced = NULL;
+                        if(node->kind == ZIR_EXPR_CALL ||
+                           (node->kind == ZIR_EXPR_IDENT &&
+                            ResolveGlobalAt(module, node->name,
+                                            global->span.path, &owner,
+                                            &referenced) == 1)) {
+                            runtime_initializer = 1;
+                            break;
+                        }
+                    }
                 free(expression.exprs);
                 if(!valid) {
                     Diagnostic(global->span, "check.global",
                                "invalid file-scope initializer: %s",
                                global->init);
                     return 0;
+                }
+                if(runtime_initializer) {
+                    char name[ZIR_NAME_MAX], assignment[ZIR_TEXT_MAX];
+                    int serial = 0, collision;
+                    do {
+                        snprintf(name, sizeof(name), "__global_init_%d_%d",
+                                 g, serial++);
+                        collision = 0;
+                        for(int f = 0; f < module->function_count; f++)
+                            collision |= strcmp(module->functions[f].name,
+                                                name) == 0;
+                    } while(collision);
+                    int written = snprintf(assignment, sizeof(assignment),
+                                           "%s = %s", global->name,
+                                           global->init);
+                    if(written < 0 || (size_t)written >= sizeof(assignment)) {
+                        Diagnostic(global->span, "check.global",
+                                   "global initializer expression is too large");
+                        return 0;
+                    }
+                    ZirFunction *startup = ModuleAddFunction(module, name,
+                        "", "void", 0, global->span);
+                    if(startup == NULL ||
+                       FunctionAddStmt(startup, ZIR_STMT_ASSIGN, assignment,
+                                       global->span) == NULL)
+                        return 0;
+                    startup->is_global_initializer = 1;
+                    startup->is_file_private = 1;
+                    global->init[0] = '\0';
                 }
             }
             for(int d = 0; d < module->define_count; d++)

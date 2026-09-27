@@ -77,7 +77,8 @@ Pure global initializers now resolve fields opened by file-scope record
 `using` and fold references to earlier initialized globals. Source and saved
 IR agree on C, C++, Go, and `.zib`; `tests/data_scope_using.sh` covers nested
 paths, filters, local shadowing, ambiguity with another record or enum, and
-file-private visibility across `#load`. General runtime-dependent global initializers and
+file-private visibility across `#load`. Checked runtime-dependent global
+initializers now run once per module instance; broader startup effects and
 record promotion in compile-time conditions remain open. Verify whether Jai
 opens exported globals from open imports unqualified. Named and open imported
 globals now retain their declaring record type when the consumer has a
@@ -235,8 +236,8 @@ record parameters or results and qualified record literals also work in the
 tested runtime expressions. File-scope field
 selection, indexing, scalar arithmetic, and `#ifx` selection fold to typed
 literals before native or portable output. Bounded pure procedure calls also
-fold in globals; runtime-dependent calls remain unsupported by the portable
-bundle. General file-scope initialization,
+fold in globals; checked runtime-dependent calls execute during module startup
+in the portable bundle. General file-scope initialization,
 effects, and general metaprogramming remain open.
 `#caller_location` defaults now capture the call site in compile-time
 `#run`, `#assert`, and local or imported `#if` calls, including nested calls and
@@ -290,10 +291,11 @@ records, unions with non-scalar fields, and several host shapes. Literal
 scalar, string,
 record, and fixed-array global initializers run portably, including nested
 record and array literals across native targets. Bounded pure procedure calls
-in initializers fold before output; runtime-dependent calls remain open.
-The portable verifier now rejects runtime-dependent calls nested in record
-and array initializers before writing a bundle; `tests/portable_globals.sh`
-checks source and saved IR.
+in initializers fold before output. Checked runtime initializers now execute
+once per module instance, with imports initialized first; `tests/runtime_globals.sh`
+checks scalar, record, and array results on C, C++, Go, and `.zib` from source
+and saved IR. Broader startup effects and cycle diagnostics remain open.
+Go rejects startup calls that need a host binding before `init` runs.
 Host calls support scalar, string, plain-record, pointer, and fixed-array
 arguments and returns, including zero and nested arrays with checked shapes.
 Synchronous scalar, string, and plain-record slice arguments and returns work

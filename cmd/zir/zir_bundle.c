@@ -2,6 +2,7 @@
 #include "zir_check.h"
 #include "zir_law.h"
 #include "zir_diagnostic.h"
+#include "zir_emit.h"
 #include "zir_serial.h"
 #include "zir_text.h"
 
@@ -10,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { ZIB_VERSION = 23, ZIB_MAX_IR_BYTES = 256 * 1024 * 1024,
+enum { ZIB_VERSION = 24, ZIB_MAX_IR_BYTES = 256 * 1024 * 1024,
        ZIB_MAX_CAPABILITIES = 4096 };
 
 typedef struct CapabilityName {
@@ -986,6 +987,17 @@ import_is_used(const ZirProgram *program, const ZirModule *module,
     return 0;
 }
 
+static int
+import_has_startup_path(const ZirProgram *program,
+                        const unsigned char *startup_path,
+                        const ZirImport *import)
+{
+    for(int m = 0; m < program->module_count; m++)
+        if(import->resolved_module == &program->modules[m])
+            return startup_path[m] != 0;
+    return 0;
+}
+
 static ZirProgram *
 link_checked_entry(const ZirProgram *program, const char *entry_module,
            const char *entry_function, int native)
@@ -994,6 +1006,7 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
     unsigned char **keep_types = NULL;
     unsigned char **keep_defines = NULL;
     unsigned char *keep_modules = NULL;
+    unsigned char *startup_path = NULL;
     ZirProgram *linked = NULL;
     int entry_m = -1, entry_f = -1;
     int selected_modules = 0;
@@ -1004,8 +1017,9 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
     keep_types = calloc((size_t)program->module_count, sizeof(*keep_types));
     keep_defines = calloc((size_t)program->module_count, sizeof(*keep_defines));
     keep_modules = calloc((size_t)program->module_count, 1);
+    startup_path = calloc((size_t)program->module_count, 1);
     if(keep == NULL || keep_types == NULL || keep_defines == NULL ||
-       keep_modules == NULL)
+       keep_modules == NULL || startup_path == NULL)
         goto failed;
     for(int m = 0; m < program->module_count; m++) {
         const ZirModule *module = &program->modules[m];
@@ -1047,6 +1061,35 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
         changed = 0;
         for(int m = 0; m < program->module_count; m++) {
             const ZirModule *module = &program->modules[m];
+            int active = m == entry_m || startup_path[m];
+            for(int f = 0; f < module->function_count; f++)
+                active |= keep[m][f] != 0;
+            if(!active)
+                for(int g = 0; g < module->global_count; g++)
+                    if(global_is_used(program, keep, module,
+                                      &module->globals[g])) {
+                        active = 1;
+                        break;
+                    }
+            if(active)
+                for(int f = 0; f < module->function_count; f++)
+                    if(module->functions[f].is_global_initializer &&
+                       !keep[m][f]) {
+                        keep[m][f] = 1;
+                        changed = 1;
+                    }
+            if(active)
+                for(int i = 0; i < module->import_count; i++) {
+                    const ZirModule *dependency =
+                        module->imports[i].resolved_module;
+                    if(!ModuleNeedsStartup(dependency)) continue;
+                    for(int d = 0; d < program->module_count; d++)
+                        if(dependency == &program->modules[d] &&
+                           !startup_path[d]) {
+                            startup_path[d] = 1;
+                            changed = 1;
+                        }
+                }
             for(int f = 0; f < module->function_count; f++) {
                 const ZirFunction *function = &module->functions[f];
                 if(!keep[m][f])
@@ -1250,6 +1293,7 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
     }
     for(int m = 0; m < program->module_count; m++)
         keep_modules[m] =
+            startup_path[m] ||
             memchr(keep[m], 1, (size_t)program->modules[m].function_count) != NULL ||
             memchr(keep_types[m], 1, (size_t)program->modules[m].type_count) != NULL ||
             memchr(keep_defines[m], 1, (size_t)program->modules[m].define_count) != NULL;
@@ -1474,6 +1518,8 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
         }
         for(int i = 0; i < source->import_count; i++)
             kept_imports += source->imports[i].is_using ||
+                           import_has_startup_path(program, startup_path,
+                                                   &source->imports[i]) ||
                            import_is_used(program, source, keep[m],
                                            keep_types, keep_defines,
                                            &source->imports[i]) ||
@@ -1487,6 +1533,8 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
             int next_import = 0;
             for(int i = 0; i < source->import_count; i++)
                 if(source->imports[i].is_using ||
+                   import_has_startup_path(program, startup_path,
+                                           &source->imports[i]) ||
                    import_is_used(program, source, keep[m], keep_types,
                                   keep_defines,
                                   &source->imports[i]) ||
@@ -1511,6 +1559,7 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
     free(keep_types);
     free(keep_defines);
     free(keep_modules);
+    free(startup_path);
     return linked;
 failed:
     if(keep != NULL)
@@ -1526,6 +1575,7 @@ failed:
     free(keep_types);
     free(keep_defines);
     free(keep_modules);
+    free(startup_path);
     ProgramFree(linked);
     return NULL;
 }

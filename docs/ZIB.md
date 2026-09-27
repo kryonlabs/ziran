@@ -3,7 +3,7 @@
 This describes the target contract and the experimental subset that ships now.
 See [Implementation status](IMPLEMENTATION_STATUS.md) for the remaining work.
 
-## Experimental version 23
+## Experimental version 24
 
 `zi2zib bundle --root DIR [--module-path DIR] [--bind caller:capability=provider:function] --entry module:function -o FILE file.zi|file.zir ...`
 loads explicit inputs and their extensionless imports, then links reachable
@@ -24,10 +24,11 @@ or `-`; other constant expressions remain outside this subset. The bundle is
 `ZIB` plus a zero byte, a little-endian version, length-prefixed entry module
 and function names, a host capability count and its required module/function
 names, and a
-length-prefixed version 39 `.zir` payload. The current linker follows direct
+length-prefixed version 40 `.zir` payload. The current linker follows direct
 function calls from the entry, keeps record and enum declarations used by
 those functions (including types from imported modules and nested record
-fields), and removes unreachable functions, modules, types, and imports before
+fields), and retains imported startup paths even when no symbol from them is
+called. It removes other unreachable functions, modules, types, and imports before
 writing the payload. Compile-time definitions and imported modules needed by
 array bound expressions remain available when the bundle rechecks saved IR. Enum
 member references keep their declaration even when
@@ -65,12 +66,13 @@ procedure type aliases with imported named functions run from
 source and saved IR. Fixed arrays with numeric or resolved integer
 constant-expression capacities support defaults,
 positional literals, element reads and writes, and value copies, including
-nested arrays and `u8` arrays inside imported records. Indexing is bounds-checked. Version 23 is
+nested arrays and `u8` arrays inside imported records. Indexing is bounds-checked. Version 24 is
 experimental and has no compatibility promise. Host calls with procedure
 slots remain unsupported. Default-initialized module globals of
 portable value types work within one `BundleRun`; each call starts with fresh
 global values. `BundleInstantiate` creates an instance whose globals persist
-across `BundleInstanceRun` calls. Runtime-dependent global initializers, complete
+across `BundleInstanceRun` calls. Checked runtime global initializers run once
+when an instance opens, after imported modules initialize. Complete
 graphical runtime integration, slice fields/globals and unsupported host return shapes,
 unresolved fixed-array bounds,
 module state, custom `for_expansion` iteration, and `switch` remain unsupported.

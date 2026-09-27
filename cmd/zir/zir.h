@@ -151,6 +151,7 @@ typedef struct ZirFunction {
     int is_file_private;
     int is_template; /* Jai $T procedure declaration; no native body */
     int is_specialization; /* checked instance generated from a template */
+    int is_global_initializer; /* private startup body generated from a global */
     char template_param[ZIR_NAME_MAX];
     char specialization_type[ZIR_NAME_MAX];
     int checked;    /* shared checker resolved the function without errors */

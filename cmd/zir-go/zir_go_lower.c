@@ -1219,6 +1219,13 @@ go_lower(const ZirProgram *const *progs, int prog_count,
 
             NativeGoModuleIdentity(progs, prog_count, m, stem, sizeof(stem),
                                    guard, sizeof(guard));
+            for(int fi = 0; fi < m->function_count; fi++)
+                if(m->functions[fi].is_global_initializer &&
+                   m->functions[fi].uses_host) {
+                    Diagnostic(m->functions[fi].span, "zir_go.global",
+                               "Go global startup cannot call a host before binding");
+                    return 1;
+                }
             snprintf(path, sizeof(path), "%s/%s.go", out_dir, stem);
             mkdir_parent(path);
             f = tmpfile();
@@ -1514,6 +1521,35 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 if(m->functions[i].is_extern || m->functions[i].is_template)
                     continue;
                 lower_function(f, m, &m->functions[i], guard);
+            }
+            int startup_count = 0;
+            for(int i = 0; i < m->function_count; i++)
+                startup_count += m->functions[i].is_global_initializer;
+            fprintf(f, "var %s_ziranInitState uint8\n"
+                       "func %s_ziranInit() {\n"
+                       "\tif %s_ziranInitState == 2 { return }\n"
+                       "\tif %s_ziranInitState == 1 { panic(\"cyclic module startup\") }\n"
+                       "\t%s_ziranInitState = 1\n",
+                    guard, guard, guard, guard, guard);
+            for(int i = 0; i < m->import_count; i++) {
+                const ZirModule *dependency = m->imports[i].resolved_module;
+                if(ModuleNeedsStartup(dependency)) {
+                    char stem[ZIR_PATH_MAX], dep_guard[ZIR_GO_NAME_MAX];
+                    NativeGoModuleIdentity(progs, prog_count,
+                        dependency, stem, sizeof(stem), dep_guard,
+                        sizeof(dep_guard));
+                    fprintf(f, "\t%s_ziranInit()\n", dep_guard);
+                }
+            }
+            for(int i = 0; i < m->function_count; i++)
+                if(m->functions[i].is_global_initializer) {
+                    char name[ZIR_GO_NAME_MAX];
+                    camel_ident(m->functions[i].name, name, sizeof(name));
+                    fprintf(f, "\t%s_%s()\n", guard, name);
+                }
+            fprintf(f, "\t%s_ziranInitState = 2\n}\n\n", guard);
+            if(startup_count) {
+                fprintf(f, "func init() { %s_ziranInit() }\n\n", guard);
             }
 
             rewind(f);

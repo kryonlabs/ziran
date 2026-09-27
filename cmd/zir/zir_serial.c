@@ -39,7 +39,7 @@ typedef struct Reader {
 #define SPAN_FIELD(type, name) \
     {offsetof(type, name), sizeof(((type *)0)->name), FIELD_SPAN}
 #define FIELD_COUNT(fields) (sizeof(fields) / sizeof((fields)[0]))
-#define ZIR_FORMAT_VERSION 39u
+#define ZIR_FORMAT_VERSION 40u
 
 static const Field import_fields[] = {
     INTEGER_FIELD(ZirImport, kind), INTEGER_FIELD(ZirImport, extern_kind),
@@ -87,6 +87,7 @@ static const Field function_fields[] = {
     INTEGER_FIELD(ZirFunction, is_file_private),
     INTEGER_FIELD(ZirFunction, is_template),
     INTEGER_FIELD(ZirFunction, is_specialization),
+    INTEGER_FIELD(ZirFunction, is_global_initializer),
     STRING_FIELD(ZirFunction, template_param),
     STRING_FIELD(ZirFunction, specialization_type),
     INTEGER_FIELD(ZirFunction, checked),
@@ -607,6 +608,15 @@ validate_program(const ZirProgram *program)
                (function->using_parameters && !function->is_template) ||
                (function->is_specialization != 0 &&
                 function->is_specialization != 1) ||
+               (function->is_global_initializer != 0 &&
+                function->is_global_initializer != 1) ||
+               (function->is_global_initializer &&
+                (function->exported || function->is_public ||
+                 function->is_extern || function->is_template ||
+                 function->is_specialization ||
+                 !function->is_file_private || function->args[0] ||
+                 strcmp(function->return_type, "void") != 0 ||
+                 function->stmt_count == 0)) ||
                (function->is_template &&
                 (function->is_specialization || function->is_extern ||
                  function->exported || !function->template_param[0] ||

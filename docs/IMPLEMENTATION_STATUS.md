@@ -197,7 +197,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.krb` are rejected by the shared loader. Kryon owns the UI test fixtures;
   Ziran keeps a non-UI array and UTF-8 byte law fixture that runs from source
   and saved IR through native C, C++, and Go.
-- `zi2zir` writes experimental binary `.zir` version 39 after checking all
+- `zi2zir` writes experimental binary `.zir` version 40 after checking all
   input modules together. C, C++, and Go can read saved modules without reparsing
   `.zi`; their imports are relinked from serialized module identities. The
   reader rejects malformed headers, versions, truncated data, invalid
@@ -221,7 +221,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   independent union value copies across all four targets. Unions with string,
   record, array, or pointer fields remain C/C++-only.
 - `zi2zib bundle --root DIR --entry module:function -o FILE` builds an
-  experimental version 23 `.zib` from source or saved IR. `zi2zib run FILE`
+  experimental version 24 `.zib` from source or saved IR. `zi2zib run FILE`
   loads and executes the validated scalar, plain record, enum, and fixed-array
   subset without a
   display or Kryon.
@@ -515,15 +515,16 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   mutable initialized globals across calls and byte-identical source and
   saved-IR bundles; C, C++, and Go emit the same initializers natively
   (designated initializers in C, positional in C++, struct literals in Go).
-  The portable verifier rejects a record or array initializer that contains
-  a runtime-dependent call before writing a bundle. Runtime-dependent global
-  initialization remains unsupported. String globals and string fields in
+  Checked runtime initializers can call procedures and read globals. Source
+  and saved IR agree on C, C++, Go, and `.zib`; imported modules initialize
+  before consumers, including imports used only for startup effects, and each
+  portable instance initializes once. String globals and string fields in
   record and array initializers decode
   escapes and retain their bytes for the instance lifetime. Tests compare
   contents across repeated runs and fresh instances. Native C, C++, and Go
   lower nested record and array initializers from the parsed expression tree;
   the cross-target test covers reordered fields and string escapes.
-  Initializers that call procedures remain rejected. The VM reads and writes
+  The VM reads and writes
   globals across
   imported function calls, and reclaims replaced values without losing
   globals reached by a caller. Source and saved `.zir`, `.zib`, C, C++, and Go

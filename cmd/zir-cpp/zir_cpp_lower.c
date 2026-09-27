@@ -770,7 +770,8 @@ rewrite_global_scalar(const ZirModule *module, const char *source,
 }
 
 static void
-lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_count, const char *out_dir)
+lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_count,
+             const char *out_dir)
 {
     char stem[512];
     char guard[600];
@@ -1194,6 +1195,44 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
         lower_body(c, m, restab, restab_count, fn);
         fprintf(c, "}\n");
     }
+    int startup_count = 0;
+    for(i = 0; i < m->function_count; i++)
+        startup_count += m->functions[i].is_global_initializer;
+    char init_name[LOWER_NAME_MAX];
+    NativeCModuleInitName(m, init_name, sizeof(init_name));
+    for(i = 0; i < m->import_count; i++) {
+        const ZirModule *dependency = m->imports[i].resolved_module;
+        if(ModuleNeedsStartup(dependency)) {
+            char name[LOWER_NAME_MAX];
+            NativeCModuleInitName(dependency, name, sizeof(name));
+            fprintf(c, "void %s(void);\n", name);
+        }
+    }
+    fprintf(c, "\nstatic int %s_state;\nvoid\n%s(void)\n{\n"
+               "    if(%s_state == 2) return;\n"
+               "    if(%s_state == 1) abort();\n"
+               "    %s_state = 1;\n",
+            init_name, init_name, init_name, init_name, init_name);
+    for(i = 0; i < m->import_count; i++) {
+        const ZirModule *dependency = m->imports[i].resolved_module;
+        if(ModuleNeedsStartup(dependency)) {
+            char name[LOWER_NAME_MAX];
+            NativeCModuleInitName(dependency, name, sizeof(name));
+            fprintf(c, "    %s();\n", name);
+        }
+    }
+    for(i = 0; i < m->function_count; i++)
+        if(m->functions[i].is_global_initializer) {
+            char name[LOWER_NAME_MAX];
+            function_c_name(m, &m->functions[i], name, sizeof(name));
+            fprintf(c, "    %s();\n", name);
+        }
+    fprintf(c, "    %s_state = 2;\n}\n", init_name);
+    if(startup_count) {
+        fprintf(c, "\n__attribute__((constructor)) static void\n"
+                   "%s_constructor(void)\n{\n"
+                   "    %s();\n}\n", init_name, init_name);
+    }
     fprintf(c, "\n#ifdef __cplusplus\n}\n#endif\n");
     fclose(c);
 }
@@ -1207,7 +1246,8 @@ cpp_lower(const ZirProgram *program, const char *root, const char *out_dir, cons
     if(program == NULL)
         return;
     for(i = 0; i < program->module_count; i++)
-        lower_module(&program->modules[i], restab, restab_count, out_dir);
+        lower_module(&program->modules[i], restab, restab_count,
+                     out_dir);
 }
 
 void
