@@ -380,6 +380,17 @@ def select_package(locked: dict, selector: str) -> dict:
     raise PackageError(f"package {selector} is not locked")
 
 
+def pinned_driver(toolchain: Path, argv: list[str]) -> int | None:
+    """Use the project's pinned package driver after the bootstrap reads its lock."""
+    if os.environ.get("ZIRAN_PINNED_DRIVER") == "1" or toolchain.resolve() == SOURCE.resolve():
+        return None
+    run("make", "-C", str(toolchain), "build/bin/ziran")
+    environment = os.environ.copy()
+    environment["ZIRAN_PINNED_DRIVER"] = "1"
+    return subprocess.run([str(toolchain / "build/bin/ziran"), *argv],
+                          env=environment).returncode
+
+
 def dispatch_native(command: str, arguments: list[str], toolchain: Path, map_path: Path | None) -> int:
     binaries = {"check": "zi2zir", "ir": "zi2zir", "inspect": "zi-inspect",
                 "fmt": "zi-fmt", "bundle": "zi2zib", "run": "zi2zib"}
@@ -458,6 +469,10 @@ def main(argv: list[str]) -> int:
         arguments = [value for value in arguments if value not in ("--locked", "--offline")]
         locked = lock_file(root)
         paths, toolchain = checkout_graph(root, locked, offline=offline, allow_override=not locked_mode)
+        if command in ("tool", "fetch"):
+            delegated = pinned_driver(toolchain, argv)
+            if delegated is not None:
+                return delegated
         if command == "fetch":
             return 0
         if command == "pkg":
@@ -499,6 +514,9 @@ def main(argv: list[str]) -> int:
         root = project_root()
         locked = lock_file(root)
         paths, toolchain = checkout_graph(root, locked, offline, not locked_mode)
+        delegated = pinned_driver(toolchain, argv)
+        if delegated is not None:
+            return delegated
         if not (toolchain / "build" / "bin" / "zi2zir").is_file():
             run("make", "-C", str(toolchain), "all")
         map_path = module_map(root, locked, paths, toolchain)

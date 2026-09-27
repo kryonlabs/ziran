@@ -126,6 +126,12 @@ main :: () -> s32 {
         assert (app / "ziran.lock").read_bytes() == saved_lock
         call(ziran, "fetch", "--offline", cwd=app, env=env)
         call(ziran, "check", "--project", cwd=app, env=env)
+        bootstrap = root / "bootstrap/build/bin"
+        bootstrap.mkdir(parents=True)
+        shutil.copy2(compiler / "build/bin/ziran", bootstrap / "ziran")
+        shutil.copy2(compiler / "scripts/ziran_pkg.py", bootstrap / "ziran_pkg.py")
+        call(str(bootstrap / "ziran"), "check", "--project", cwd=app,
+             env=env)
         module_map = (app / "build/.ziran/module-map.tsv").read_text()
         assert len([line for line in module_map.splitlines()
                     if line.startswith("M\t") and line.split("\t")[2] == "Value"]) == 2
