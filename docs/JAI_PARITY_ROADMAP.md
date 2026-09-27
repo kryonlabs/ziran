@@ -40,7 +40,7 @@ including `#enum`, `variant`, postfix `?`, `#global`, `#export`, `#private`,
 `#extern`, C pointer suffixes, C conditional expressions, and old Kryon file
 extensions. The rejection tests should stay.
 
-The full local `make check` suite has 112 checks. Re-run it after any change to
+Re-run the full local `make check` suite after any change to
 the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 
 | Area | Current subset | Next proof of parity |
@@ -222,8 +222,8 @@ field selection, array indexing, `.count`, and assertions. Local aggregate
 definitions now bind to checked runtime expression graphs; direct global
 initializers can use them. Public aggregates resolve through named, open,
 and using imports with their declaring record type preserved. The checker
-still rejects a conflicting consumer record name in this aggregate path;
-native output now assigns distinct names to colliding record types.
+now preserves imported aggregate type ownership even when the consumer
+declares same-named records; native output assigns distinct names to them.
 `tests/compile_values.sh` and
 `tests/imported_aggregate_constants.sh` check source and saved IR across
 all four targets, including imported record fields and array elements in

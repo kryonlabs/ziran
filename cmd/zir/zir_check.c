@@ -2008,8 +2008,6 @@ compound_type_at_use(const ZirModule *module,
         return strlen(source) < size;
     }
     const ZirType *visible = FindType(module, source, NULL);
-    if(visible != NULL && visible != declared)
-        return 0;
     if(visible == declared) {
         copy_text(target, size, source);
         return strlen(source) < size;
@@ -2017,10 +2015,11 @@ compound_type_at_use(const ZirModule *module,
     if(declaring == compound->owner && compound->qualifier[0]) {
         int written = snprintf(target, size, "%s.%s",
                                compound->qualifier, source);
-        return written >= 0 && (size_t)written < size &&
-               FindType(module, target, NULL) == declared;
+        if(written >= 0 && (size_t)written < size &&
+           FindType(module, target, NULL) == declared)
+            return 1;
     }
-    if(FindType(module, source, NULL) != declared)
+    if(visible != declared)
         return 0;
     copy_text(target, size, source);
     return strlen(source) < size;
@@ -2040,6 +2039,10 @@ record_field_type_at_use(const ZirModule *module,
         memcpy(context.qualifier, record_name,
                (size_t)(dot - record_name));
         context.qualifier[dot - record_name] = '\0';
+    } else if(record_owner != module) {
+        const char *alias = import_type_alias(module, record_owner);
+        if(alias != NULL)
+            copy_text(context.qualifier, sizeof(context.qualifier), alias);
     }
     char qualified[ZIR_NAME_MAX];
     if(!compound_type_at_use(module, &context, field_type, qualified,
@@ -2259,6 +2262,13 @@ bound_compound_constant(const ZirModule *module, const char *name, int depth,
                 copy_text(result->qualifier,
                           sizeof(result->qualifier),
                           selected_import->name);
+            else if(selected_import != NULL &&
+                    selected_import->kind == ZIR_IMPORT_OPEN) {
+                const char *alias = import_type_alias(module, owner);
+                if(alias != NULL)
+                    copy_text(result->qualifier,
+                              sizeof(result->qualifier), alias);
+            }
             status = 1;
         }
     } else if(expression.exprs[root].kind == ZIR_EXPR_IDENT) {
@@ -2272,6 +2282,13 @@ bound_compound_constant(const ZirModule *module, const char *name, int depth,
                 copy_text(result->qualifier,
                           sizeof(result->qualifier),
                           selected_import->name);
+            else if(selected_import != NULL &&
+                    selected_import->kind == ZIR_IMPORT_OPEN) {
+                const char *alias = import_type_alias(module, owner);
+                if(alias != NULL)
+                    copy_text(result->qualifier,
+                              sizeof(result->qualifier), alias);
+            }
         }
     }
     free(expression.exprs);
@@ -2418,10 +2435,33 @@ flags_type(Checker *c, const char *name)
 }
 
 static int
+same_declared_type(const ZirModule *module, const char *to,
+                   const char *from, int depth)
+{
+    if(depth > 16) return 0;
+    const ZirType *target = FindType(module, to, NULL);
+    const ZirType *source = FindType(module, from, NULL);
+    if(target != NULL && target == source) return 1;
+    char to_element[ZIR_NAME_MAX], from_element[ZIR_NAME_MAX];
+    int to_capacity, from_capacity;
+    if(ArrayElementType(to, to_element, sizeof(to_element), &to_capacity) &&
+       ArrayElementType(from, from_element, sizeof(from_element),
+                        &from_capacity) &&
+       to_capacity >= 0 && to_capacity == from_capacity)
+        return same_declared_type(module, to_element, from_element,
+                                  depth + 1);
+    if(*to == '*' && *from == '*')
+        return same_declared_type(module, skip_ws(to + 1),
+                                  skip_ws(from + 1), depth + 1);
+    return 0;
+}
+
+static int
 compatible_checked(Checker *c, const char *to, const char *from)
 {
     if(flags_type(c, to) != NULL && integer_type(from)) return 1;
-    return compatible(to, from);
+    return compatible(to, from) ||
+           same_declared_type(c->module, to, from, 0);
 }
 
 static int
@@ -3849,6 +3889,8 @@ expression_type(Checker *c, int index)
             actual++;
         }
         if(args) {
+            char saved_checked_type[ZIR_NAME_MAX];
+            copy_text(saved_checked_type, sizeof(saved_checked_type), e->type);
             type = return_type;
             if(specialized_return[0]) {
                 copy_text(e->type, sizeof(e->type), specialized_return);
@@ -3863,6 +3905,10 @@ expression_type(Checker *c, int index)
                     error(c, e->span,
                           "imported procedure result type is shadowed",
                           e->name);
+                if(saved_checked_type[0] &&
+                   same_declared_type(c->module, e->type,
+                                      saved_checked_type, 0))
+                    copy_text(e->type, sizeof(e->type), saved_checked_type);
                 type = e->type;
             }
             if(actual < fixed && !c->inference_only)
@@ -3918,7 +3964,8 @@ expression_type(Checker *c, int index)
                 error(c, e->span, "unsupported enum_flags operation", e->op);
             break;
         }
-        if(!compatible(left, right) && !compatible(right, left) && !slot_null_compare)
+        if(!compatible_checked(c, left, right) &&
+           !compatible_checked(c, right, left) && !slot_null_compare)
             error(c, e->span, "operand types differ; use an explicit cast", e->op);
         if(!strcmp(e->op, "==") || !strcmp(e->op, "!=") || !strcmp(e->op, "<") ||
            !strcmp(e->op, "<=") || !strcmp(e->op, ">") || !strcmp(e->op, ">=") ||
@@ -3974,7 +4021,8 @@ expression_type(Checker *c, int index)
     case ZIR_EXPR_CONDITIONAL: {
         const char *third = expression_type(c, e->third);
         if(strcmp(left, "bool")) error(c, e->span, "conditional requires bool", left);
-        if(!compatible(right, third) && !compatible(third, right))
+        if(!compatible_checked(c, right, third) &&
+           !compatible_checked(c, third, right))
             error(c, e->span, "conditional arms have different types", "");
         type = !strcmp(right, "integer") || !strcmp(right, "null") ?
                third : right;

@@ -197,7 +197,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.krb` are rejected by the shared loader. Kryon owns the UI test fixtures;
   Ziran keeps a non-UI array and UTF-8 byte law fixture that runs from source
   and saved IR through native C, C++, and Go.
-- `zi2zir` writes experimental binary `.zir` version 38 after checking all
+- `zi2zir` writes experimental binary `.zir` version 39 after checking all
   input modules together. C, C++, and Go can read saved modules without reparsing
   `.zi`; their imports are relinked from serialized module identities. The
   reader rejects malformed headers, versions, truncated data, invalid
@@ -221,7 +221,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   independent union value copies across all four targets. Unions with string,
   record, array, or pointer fields remain C/C++-only.
 - `zi2zib bundle --root DIR --entry module:function -o FILE` builds an
-  experimental version 22 `.zib` from source or saved IR. `zi2zib run FILE`
+  experimental version 23 `.zib` from source or saved IR. `zi2zib run FILE`
   loads and executes the validated scalar, plain record, enum, and fixed-array
   subset without a
   display or Kryon.
@@ -348,12 +348,13 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   field selection, a later named import in `#if`, private visibility, and source/saved IR
   across the same targets. Imported procedures with record parameters or
   results map those types into the caller's namespace; the same test covers
-  direct calls and rejects a shadowed result type. Qualified record literals
+  direct calls, including parameter and result types shadowed by local records.
+  Qualified record literals
   such as `Lib.Point.{...}` work in globals and bodies, including nested
   inferred record fields; `tests/imported_aggregate_constants.sh` checks
-  source and saved IR on all four targets. A conflicting consumer
-  record name is rejected
-  during checking because native C still emits colliding record tags.
+  source and saved IR on all four targets. Conflicting consumer record names
+  retain the imported owner through named, open, and using imports; nested
+  record constants, arrays, calls, and parameter passing agree on all targets.
   Pure file-scope initializers now fold imported record-field and fixed-array
   selections, scalar expressions built from them, and tested `#ifx` selections
   before native or portable output. Bounded pure procedure calls also fold in

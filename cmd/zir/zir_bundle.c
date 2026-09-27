@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { ZIB_VERSION = 22, ZIB_MAX_IR_BYTES = 256 * 1024 * 1024,
+enum { ZIB_VERSION = 23, ZIB_MAX_IR_BYTES = 256 * 1024 * 1024,
        ZIB_MAX_CAPABILITIES = 4096 };
 
 typedef struct CapabilityName {

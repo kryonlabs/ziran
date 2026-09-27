@@ -28,7 +28,7 @@ if "$ziran" build --target=c99 --root "$work" \
     echo 'removed C99 target alias was accepted' >&2
     exit 1
 fi
-grep -Fq 'usage:' "$work/c99-alias.err"
+grep -Fq 'build needs --target=c|cpp|go' "$work/c99-alias.err"
 
 # Native C output uses the saved IR and keeps only code reachable from the
 # selected entry, including Ziran implementations of foreign host effects.

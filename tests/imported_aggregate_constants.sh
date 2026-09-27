@@ -125,11 +125,50 @@ Lib :: #import "library";
 #program_export
 Answer :: () -> s64 { return SELECTED }
 ZI
-for name in open_case using_case forward_case; do
+cat > "$work/shadow_case.zi" <<'ZI'
+Lib :: #import "library";
+Point :: struct { decoy: s64; }
+Wrapper :: struct { decoy: s64; }
+#program_export
+Answer :: () -> s64 {
+    local: Point
+    local.decoy = 1
+    return Lib.WRAPPER.point.value + Lib.RECORDS[1].value +
+        Lib.Make().point.value + Lib.Read(Lib.WRAPPER.point) + local.decoy - 127
+}
+ZI
+cat > "$work/open_shadow_case.zi" <<'ZI'
+#import "library";
+Point :: struct { decoy: s64; }
+Wrapper :: struct { decoy: s64; }
+#program_export
+Answer :: () -> s64 {
+    local: Point
+    local.decoy = 1
+    return WRAPPER.point.value + RECORDS[1].value +
+        Make().point.value + Read(WRAPPER.point) + local.decoy - 127
+}
+ZI
+cat > "$work/using_shadow_case.zi" <<'ZI'
+using Lib :: #import "library";
+Point :: struct { decoy: s64; }
+Wrapper :: struct { decoy: s64; }
+#program_export
+Answer :: () -> s64 {
+    local: Point
+    local.decoy = 1
+    return WRAPPER.point.value + RECORDS[1].value +
+        Make().point.value + Read(WRAPPER.point) + local.decoy - 127
+}
+ZI
+for name in open_case using_case forward_case shadow_case open_shadow_case using_shadow_case; do
     case "$name" in
         open_case) go_entry=OpenCase_Answer ;;
         using_case) go_entry=UsingCase_Answer ;;
         forward_case) go_entry=ForwardCase_Answer ;;
+        shadow_case) go_entry=ShadowCase_Answer ;;
+        open_shadow_case) go_entry=OpenShadowCase_Answer ;;
+        using_shadow_case) go_entry=UsingShadowCase_Answer ;;
     esac
     "$ziran" ir --root "$work" -o "$work/ir" "$work/$name.zi"
     for input in "$work/$name.zi" "$work/ir/$name.zir"; do
@@ -190,32 +229,6 @@ if "$ziran" check --root "$work" "$work/private.zi" \
 fi
 rg -q 'invalid or ambiguous constant: Lib.Hidden|unresolved name: Lib.Hidden' \
     "$work/private.err"
-
-cat > "$work/shadow.zi" <<'ZI'
-Lib :: #import "library";
-Point :: struct { decoy: s64; }
-Bad :: () -> s64 { return Lib.WRAPPER.point.value }
-ZI
-if "$ziran" check --root "$work" "$work/shadow.zi" \
-    2> "$work/shadow.err"; then
-    echo 'shadowed imported aggregate type was silently accepted' >&2
-    exit 1
-fi
-rg -q 'cannot bind aggregate constant|imported record field type is shadowed' \
-    "$work/shadow.err"
-
-cat > "$work/call_shadow.zi" <<'ZI'
-Lib :: #import "library";
-Wrapper :: struct { decoy: s64; }
-Bad :: () -> s64 { return Lib.Make().point.value }
-ZI
-if "$ziran" check --root "$work" "$work/call_shadow.zi" \
-    2> "$work/call_shadow.err"; then
-    echo 'shadowed imported procedure result type was silently accepted' >&2
-    exit 1
-fi
-grep -Fq 'imported procedure result type is shadowed' \
-    "$work/call_shadow.err"
 
 cat > "$work/value_shadow.zi" <<'ZI'
 #import "library";
