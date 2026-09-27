@@ -140,8 +140,11 @@ ZI
 cat > "$work/type_loaded.zi" <<'ZI'
 #scope_export
 Loaded :: () -> s64 { return 7 }
+LoadedValue :: (value: s64) -> s64 { return value + 1 }
+LoadedPrivateValue :: () -> s64 { return LoadedPrivateConstant }
 LoadedGlobal: s32;
 #scope_file
+LoadedPrivateConstant :: 9;
 Secret :: () -> s64 { return 9 }
 SecretGlobal: s64;
 ZI
@@ -190,6 +193,51 @@ SELECTED_FIELD_IF :: 1;
 } else {
 SELECTED_FIELD_IF :: 0;
 }
+#if LaterValue(2) == 42 {
+SELECTED_CALL_IF :: 1;
+} else {
+SELECTED_CALL_IF :: 0;
+}
+#if LoadedValue(7) == 8 {
+SELECTED_LOADED_CALL_IF :: 1;
+} else {
+SELECTED_LOADED_CALL_IF :: 0;
+}
+#if Multiline(2) == 2 {
+SELECTED_MULTILINE_CALL_IF :: 1;
+} else {
+SELECTED_MULTILINE_CALL_IF :: 0;
+}
+#if LaterDefault() == 42 {
+SELECTED_DEFAULT_CALL_IF :: 1;
+} else {
+SELECTED_DEFAULT_CALL_IF :: 0;
+}
+#if LaterDefault(value = 43) == 43 {
+SELECTED_NAMED_CALL_IF :: 1;
+} else {
+SELECTED_NAMED_CALL_IF :: 0;
+}
+#if LaterConstantValue() == 6 {
+SELECTED_CONSTANT_CALL_IF :: 1;
+} else {
+SELECTED_CONSTANT_CALL_IF :: 0;
+}
+#if LoadedPrivateValue() == 9 {
+SELECTED_PRIVATE_CONSTANT_CALL_IF :: 1;
+} else {
+SELECTED_PRIVATE_CONSTANT_CALL_IF :: 0;
+}
+#if #defined(LATER_CONSTANT) {
+SELECTED_DEFINED_CONSTANT_IF :: 1;
+} else {
+SELECTED_DEFINED_CONSTANT_IF :: 0;
+}
+#if #defined(LoadedPrivateConstant) {
+SELECTED_HIDDEN_CONSTANT_IF :: 0;
+} else {
+SELECTED_HIDDEN_CONSTANT_IF :: 1;
+}
 global_size: s64 = size_of(type_of(Later()));
 #program_export
 Answer :: () -> s64 {
@@ -198,9 +246,20 @@ Answer :: () -> s64 {
            SELECTED_FORWARD_IF + SELECTED_LOADED_IF +
            SELECTED_MULTILINE_IF + SELECTED_GLOBAL_IF +
            SELECTED_LOADED_GLOBAL_IF + SELECTED_FIELD_IF +
+           SELECTED_CALL_IF + SELECTED_LOADED_CALL_IF +
+           SELECTED_MULTILINE_CALL_IF + SELECTED_DEFAULT_CALL_IF +
+           SELECTED_NAMED_CALL_IF + SELECTED_CONSTANT_CALL_IF +
+           SELECTED_PRIVATE_CONSTANT_CALL_IF +
+           SELECTED_DEFINED_CONSTANT_IF + SELECTED_HIDDEN_CONSTANT_IF +
            global_size + 5
 }
 Later :: () -> s64 { return 42 }
+LaterDefault :: (value: s64 = 42) -> s64 { return value }
+LaterConstantValue :: () -> s64 { return LATER_CONSTANT + 1 }
+LATER_CONSTANT :: 5;
+LaterValue :: (value: s64) -> s64 {
+    return value + 40
+}
 LaterGlobal: s64;
 LaterRecord: Payload;
 Payload :: struct { value: s32; }
@@ -224,20 +283,20 @@ for input in source saved; do
     fi
     "$ziran" bundle --root "$root" --entry deferred_type_of:Answer \
         -o "$work/deferred-$input.zib" "$module"
-    test "$("$ziran" run "$work/deferred-$input.zib")" = 57
+    test "$("$ziran" run "$work/deferred-$input.zib")" = 66
     for target in c cpp go; do
         output=$work/deferred-$target-$input
         "$ziran" build "--target=$target" --root "$root" \
             -o "$output" "$module"
         case "$target" in
             c)
-                printf '#include "deferred_type_of.h"\nint main(void) { return Answer() == 57 ? 0 : 1; }\n' > "$work/deferred-main.c"
+                printf '#include "deferred_type_of.h"\nint main(void) { return Answer() == 66 ? 0 : 1; }\n' > "$work/deferred-main.c"
                 "${CC:-cc}" -std=c11 -I"$repo/include" -I"$output" \
                     "$output"/*.c "$work/deferred-main.c" -o "$output/app"
                 "$output/app"
                 ;;
             cpp)
-                printf '#include "deferred_type_of.hpp"\nint main() { return Answer() == 57 ? 0 : 1; }\n' > "$work/deferred-main.cpp"
+                printf '#include "deferred_type_of.hpp"\nint main() { return Answer() == 66 ? 0 : 1; }\n' > "$work/deferred-main.cpp"
                 "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$output" \
                     "$output"/*.cpp "$work/deferred-main.cpp" -o "$output/app"
                 "$output/app"
@@ -247,7 +306,7 @@ for input in source saved; do
 package ziran
 import "testing"
 func TestDeferredTypeOf(t *testing.T) {
-    if DeferredTypeOf_Answer() != 57 { t.Fatal("deferred type_of") }
+    if DeferredTypeOf_Answer() != 66 { t.Fatal("deferred type_of") }
 }
 GO
                 GO111MODULE=off go test "$output"/*.go
@@ -326,3 +385,46 @@ if "$ziran" check --root "$work" "$work/forward_global_value.zi" \
     exit 1
 fi
 rg -q 'not a compile-time constant' "$work/forward_global_value.err"
+
+cat > "$work/forward_effectful_call.zi" <<'ZI'
+#if Effectful() == 1 {
+SELECTED :: 1;
+}
+count: s32;
+Effectful :: () -> s32 {
+    count += 1
+    return count
+}
+ZI
+if "$ziran" check --root "$work" "$work/forward_effectful_call.zi" \
+    2> "$work/forward_effectful_call.err"; then
+    echo 'effectful forward procedure ran during branch selection' >&2
+    exit 1
+fi
+rg -q 'not a compile-time constant' "$work/forward_effectful_call.err"
+
+cat > "$work/private_loaded_call.zi" <<'ZI'
+#if Secret() == 9 {
+SELECTED :: 1;
+}
+#load "type_loaded.zi";
+ZI
+if "$ziran" check --root "$work" "$work/private_loaded_call.zi" \
+    2> "$work/private_loaded_call.err"; then
+    echo 'file-private loaded procedure ran from another file' >&2
+    exit 1
+fi
+rg -q 'not a compile-time constant' "$work/private_loaded_call.err"
+
+cat > "$work/forward_recursive_call.zi" <<'ZI'
+#if Recursive() == 1 {
+SELECTED :: 1;
+}
+Recursive :: () -> s32 { return Recursive() }
+ZI
+if "$ziran" check --root "$work" "$work/forward_recursive_call.zi" \
+    2> "$work/forward_recursive_call.err"; then
+    echo 'recursive forward procedure exceeded the compile-time limit' >&2
+    exit 1
+fi
+rg -q 'not a compile-time constant' "$work/forward_recursive_call.err"

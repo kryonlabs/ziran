@@ -2744,8 +2744,12 @@ eval_primary(ZirEval *ev)
                     }
                     if(!found && ev->module != NULL) {
                         for(int d = 0; d < ev->module->define_count; d++) {
-                            if(strcmp(ev->module->defines[d].name,
-                                      name) == 0) {
+                            const ZirDefine *definition =
+                                &ev->module->defines[d];
+                            if(strcmp(definition->name, name) == 0 &&
+                               (!definition->is_file_private ||
+                                strcmp(definition->span.path,
+                                       ev->lookup_path) == 0)) {
                                 found = 1;
                                 break;
                             }
@@ -4340,6 +4344,39 @@ visible_compile_usings(const ZirModule *parsed, const ZirUsings *future)
 }
 
 static void
+add_visible_compile_defines(ZirModule *visible, const ZirModule *parsed,
+                            const ZirConsts *constants)
+{
+    visible->defines = calloc((size_t)parsed->define_count +
+                              (size_t)constants->count + 1,
+                              sizeof(*visible->defines));
+    if(visible->defines == NULL)
+        die("out of memory resolving compile-time constants");
+    visible->define_count = 0;
+    for(int i = 0; i < parsed->define_count; i++)
+        visible->defines[visible->define_count++] = parsed->defines[i];
+    for(int i = 0; i < constants->count; i++) {
+        const ZirConst *constant = &constants->items[i];
+        int present = 0;
+        for(int j = 0; j < parsed->define_count; j++)
+            if(!strcmp(parsed->defines[j].name, constant->name) &&
+               !strcmp(parsed->defines[j].span.path, constant->path)) {
+                present = 1;
+                break;
+            }
+        if(present) continue;
+        ZirDefine *definition = &visible->defines[visible->define_count++];
+        copy_text(definition->name, sizeof(definition->name),
+                  constant->name);
+        copy_text(definition->value, sizeof(definition->value),
+                  constant->expr);
+        definition->is_public = constant->is_public;
+        definition->is_file_private = constant->is_file_private;
+        definition->span = Span(constant->path, constant->source_line, 1);
+    }
+}
+
+static void
 add_visible_compile_imports(ZirModule *visible, const ZirModule *parsed,
                             const ZirImports *future)
 {
@@ -4462,6 +4499,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
         context != NULL ? context->future_constants : NULL);
     ZirModule using_scope = visible_compile_usings(module,
         context != NULL ? context->future_usings : NULL);
+    add_visible_compile_defines(&using_scope, module, &visible);
     add_visible_compile_imports(&using_scope, module,
         context != NULL ? context->future_imports : NULL);
     add_visible_compile_types(&using_scope, module,
@@ -4527,6 +4565,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
         die_at(span, "#if condition is not a compile-time constant: %s",
                expanded);
     free(using_scope.usings);
+    free(using_scope.defines);
     free(using_scope.imports);
     free(using_scope.types);
     free(using_scope.functions);
@@ -5408,6 +5447,37 @@ discover_function_header(const char *source, const char *path,
     function->is_file_private = scope_file;
 }
 
+/* Keep a single return expression for forward compile-time calls. The typed
+ * evaluator still decides whether that expression is pure and bounded. */
+static void
+discover_simple_return(ZirFunction *function, const char *body)
+{
+    char text[ZIR_TEXT_MAX];
+    if(strlen(body) >= sizeof(text)) return;
+    copy_text(text, sizeof(text), body);
+    char *close = strrchr(text, '}');
+    if(close == NULL || *skip_ws(close + 1) != '\0') return;
+    *close = '\0';
+    trim_in_place(text);
+    if(!starts_word(text, "return")) return;
+    char *value = (char *)skip_ws(text + strlen("return"));
+    if(*value == '\0' || strchr(value, '\n') != NULL ||
+       strchr(value, '\r') != NULL) return;
+    char *semicolon = find_unquoted_text(value, ";");
+    if(semicolon != NULL) {
+        if(*skip_ws(semicolon + 1) != '\0') return;
+        *semicolon = '\0';
+        trim_in_place(value);
+    }
+    if(*value == '\0') return;
+    char statement[ZIR_TEXT_MAX];
+    int written = snprintf(statement, sizeof(statement), "return %s", value);
+    if(written < 0 || (size_t)written >= sizeof(statement)) return;
+    if(FunctionAddStmt(function, ZIR_STMT_RETURN, statement,
+                       function->span) == NULL)
+        die("out of memory discovering procedure body");
+}
+
 static void
 discover_typed_global(const char *source, const char *path,
                       const char *rel, int line_no,
@@ -5477,6 +5547,16 @@ free_discovered_files(ZirDiscoveredFiles *files)
     free(files->paths);
 }
 
+static void
+free_discovered_functions(ZirFunctions *functions)
+{
+    for(int i = 0; i < functions->count; i++) {
+        free(functions->items[i].stmts);
+        free(functions->items[i].exprs);
+    }
+    free(functions->items);
+}
+
 static int
 possible_function_header(const char *line)
 {
@@ -5487,9 +5567,9 @@ possible_function_header(const char *line)
     return *body == '(' && strchr(body, ';') == NULL;
 }
 
-/* Discover only unconditional file-scope declarations. Conditional bodies,
- * type bodies, and procedure bodies are opaque: branch selection must never
- * gain names from a discarded branch. */
+/* Discover only unconditional file-scope declarations. Conditional and type
+ * bodies stay opaque; only a one-expression return is retained from a
+ * procedure body for bounded compile-time evaluation. */
 static void
 discover_file_scope(const char *source, const char *path, const char *rel,
                     const char *root,
@@ -5503,6 +5583,7 @@ discover_file_scope(const char *source, const char *path, const char *rel,
     char line[SOURCE_LINE_MAX];
     char type_source[ZIR_TEXT_MAX * 2 + SOURCE_LINE_MAX] = "";
     char function_source[ZIR_TEXT_MAX * 2 + SOURCE_LINE_MAX] = "";
+    char simple_body[ZIR_TEXT_MAX * 2 + SOURCE_LINE_MAX] = "";
     int line_no = 0;
     int comment_depth = 0;
     int brace_depth = 0;
@@ -5518,13 +5599,25 @@ discover_file_scope(const char *source, const char *path, const char *rel,
     int function_start_line = 0;
     int function_scope_file = 0;
     int function_scope_public = 1;
+    int simple_body_index = -1;
+    int simple_body_overflow = 0;
 
     while(read_source_line(line, sizeof(line), &source, path, line_no) != NULL) {
         line_no++;
         strip_block_comments(line, &comment_depth);
         char *t = trim(line);
         int brace_delta = net_block_braces(t);
-        if(collecting_type ||
+        if(simple_body_index >= 0) {
+            append_type_source(simple_body, sizeof(simple_body), t,
+                               &simple_body_overflow);
+            if(brace_depth + brace_delta == 0) {
+                if(!simple_body_overflow)
+                    discover_simple_return(
+                        &future_functions->items[simple_body_index],
+                        simple_body);
+                simple_body_index = -1;
+            }
+        } else if(collecting_type ||
            (brace_depth == 0 && is_named_type_header(t))) {
             if(!collecting_type) {
                 collecting_type = 1;
@@ -5562,11 +5655,27 @@ discover_file_scope(const char *source, const char *path, const char *rel,
             if(closing != NULL &&
                (strchr(closing + 1, '{') != NULL ||
                 strstr(closing + 1, "#foreign") != NULL)) {
+                int previous = future_functions->count;
                 discover_function_header(function_source, path, rel,
                                          function_start_line,
                                          function_scope_public,
                                          function_scope_file,
                                          future_functions);
+                const char *open = strchr(closing + 1, '{');
+                if(open != NULL && future_functions->count > previous) {
+                    simple_body_index = previous;
+                    simple_body_overflow = 0;
+                    simple_body[0] = '\0';
+                    append_type_source(simple_body, sizeof(simple_body),
+                                       open + 1, &simple_body_overflow);
+                    if(brace_depth + brace_delta == 0) {
+                        if(!simple_body_overflow)
+                            discover_simple_return(
+                                &future_functions->items[simple_body_index],
+                                simple_body);
+                        simple_body_index = -1;
+                    }
+                }
                 collecting_function = 0;
             } else if((closing != NULL &&
                        strchr(closing + 1, ';') != NULL) ||
@@ -6893,7 +7002,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_usings.items);
                 free(future_imports.items);
                 free(future_types.items);
-                free(future_functions.items);
+                free_discovered_functions(&future_functions);
                 free(future_globals.items);
                 free_discovered_files(&discovered_files);
                 free(canonical);
@@ -7774,7 +7883,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_usings.items);
                 free(future_imports.items);
                 free(future_types.items);
-                free(future_functions.items);
+                free_discovered_functions(&future_functions);
                 free(future_globals.items);
                 free_discovered_files(&discovered_files);
                 free(canonical);
@@ -7787,7 +7896,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_usings.items);
                 free(future_imports.items);
                 free(future_types.items);
-                free(future_functions.items);
+                free_discovered_functions(&future_functions);
                 free(future_globals.items);
                 free_discovered_files(&discovered_files);
                 free(canonical);
@@ -7802,7 +7911,7 @@ parse_source(const char *path, const char *root, const char *source,
     free(future_usings.items);
     free(future_imports.items);
     free(future_types.items);
-    free(future_functions.items);
+    free_discovered_functions(&future_functions);
     free(future_globals.items);
     free_discovered_files(&discovered_files);
     free(canonical);
