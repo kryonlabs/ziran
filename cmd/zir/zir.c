@@ -186,13 +186,14 @@ file_scope_visible_at(const char *source_path, int is_file_private,
            strcmp(source_path, span.path) == 0;
 }
 
-int
-ResolveFunctionAt(const ZirModule *module, const char *name,
-                  const char *source_path, const ZirModule **owner,
-                  const ZirFunction **function)
+static int
+resolve_function_depth(const ZirModule *module, const char *name,
+                       const char *source_path, const ZirModule **owner,
+                       const ZirFunction **function, int depth)
 {
     *owner = NULL;
     *function = NULL;
+    if(depth > 32) return 0;
     const char *dot = strchr(name, '.');
     if(dot != NULL) {
         size_t alias_length = (size_t)(dot - name);
@@ -219,6 +220,16 @@ ResolveFunctionAt(const ZirModule *module, const char *name,
                     *function = candidate;
                 }
             }
+            const ZirModule *nested_owner = NULL;
+            const ZirFunction *nested = NULL;
+            int status = resolve_function_depth(target, dot + 1, NULL,
+                &nested_owner, &nested, depth + 1);
+            if(status < 0) return -1;
+            if(status > 0 && nested->is_public && !nested->is_file_private) {
+                if(*function != NULL && *function != nested) return -1;
+                *owner = nested_owner;
+                *function = nested;
+            }
         }
         return *function != NULL;
     }
@@ -244,6 +255,7 @@ ResolveFunctionAt(const ZirModule *module, const char *name,
     if(*function != NULL)
         return 1;
     for(int i = 0; i < module->import_count; i++) {
+        if(depth > 0 && !module->imports[i].is_using) continue;
         if((module->imports[i].kind != ZIR_IMPORT_OPEN &&
             !(module->imports[i].kind == ZIR_IMPORT_MODULE &&
               module->imports[i].is_using)) ||
@@ -266,8 +278,27 @@ ResolveFunctionAt(const ZirModule *module, const char *name,
             *owner = imported;
             *function = candidate;
         }
+        const ZirModule *nested_owner = NULL;
+        const ZirFunction *nested = NULL;
+        int status = resolve_function_depth(imported, name, NULL,
+            &nested_owner, &nested, depth + 1);
+        if(status < 0) return -1;
+        if(status > 0 && nested->is_public && !nested->is_file_private) {
+            if(*function != NULL && *function != nested) return -1;
+            *owner = nested_owner;
+            *function = nested;
+        }
     }
     return *function != NULL;
+}
+
+int
+ResolveFunctionAt(const ZirModule *module, const char *name,
+                  const char *source_path, const ZirModule **owner,
+                  const ZirFunction **function)
+{
+    return resolve_function_depth(module, name, source_path, owner,
+                                  function, 0);
 }
 
 int
@@ -278,14 +309,15 @@ ResolveFunction(const ZirModule *module, const char *name,
                              owner, function);
 }
 
-int
-ResolveGlobalAt(const ZirModule *module, const char *name,
-                const char *source_path, const ZirModule **owner,
-                const ZirGlobal **global)
+static int
+resolve_global_depth(const ZirModule *module, const char *name,
+                     const char *source_path, const ZirModule **owner,
+                     const ZirGlobal **global, int depth)
 {
     const char *dot = strchr(name, '.');
     *owner = NULL;
     *global = NULL;
+    if(depth > 32) return 0;
     if(dot == NULL) {
         for(int g = 0; g < module->global_count; g++) {
             const ZirGlobal *candidate = &module->globals[g];
@@ -314,6 +346,7 @@ ResolveGlobalAt(const ZirModule *module, const char *name,
 
     for(int i = 0; i < module->import_count; i++) {
         const ZirImport *import = &module->imports[i];
+        if(depth > 0 && !import->is_using) continue;
         const ZirModule *target = import->resolved_module;
         if(target == NULL ||
            !file_scope_visible_at(source_path, import->is_file_private,
@@ -342,8 +375,26 @@ ResolveGlobalAt(const ZirModule *module, const char *name,
             *owner = target;
             *global = candidate;
         }
+        const ZirModule *nested_owner = NULL;
+        const ZirGlobal *nested = NULL;
+        int status = resolve_global_depth(target, symbol, NULL,
+            &nested_owner, &nested, depth + 1);
+        if(status < 0) return -1;
+        if(status > 0 && !nested->is_file_private && !nested->is_static) {
+            if(*global != NULL && *global != nested) return -1;
+            *owner = nested_owner;
+            *global = nested;
+        }
     }
     return *global != NULL;
+}
+
+int
+ResolveGlobalAt(const ZirModule *module, const char *name,
+                const char *source_path, const ZirModule **owner,
+                const ZirGlobal **global)
+{
+    return resolve_global_depth(module, name, source_path, owner, global, 0);
 }
 
 int
@@ -364,8 +415,9 @@ BuiltinType(const char *name)
     return strcmp(name, location.name) == 0 ? &location : NULL;
 }
 
-const ZirType *
-FindType(const ZirModule *module, const char *name, const ZirModule **owner)
+static const ZirType *
+find_type_depth(const ZirModule *module, const char *name,
+                const ZirModule **owner, int depth)
 {
     const ZirType *found = NULL;
     const ZirModule *scope = NULL;
@@ -373,6 +425,7 @@ FindType(const ZirModule *module, const char *name, const ZirModule **owner)
 
     if(owner)
         *owner = NULL;
+    if(depth > 32) return NULL;
 
     if(dot != NULL) {
         size_t alias_length = (size_t)(dot - name);
@@ -395,6 +448,14 @@ FindType(const ZirModule *module, const char *name, const ZirModule **owner)
                     return NULL;
                 found = candidate;
                 scope = target;
+            }
+            const ZirModule *nested_owner = NULL;
+            const ZirType *nested = find_type_depth(target, dot + 1,
+                                                    &nested_owner, depth + 1);
+            if(nested != NULL && nested->is_public && !nested->is_file_private) {
+                if(found != NULL && found != nested) return NULL;
+                found = nested;
+                scope = nested_owner;
             }
         }
         if(owner)
@@ -422,6 +483,7 @@ FindType(const ZirModule *module, const char *name, const ZirModule **owner)
     }
     for(int i = 0; i < module->import_count; i++) {
         const ZirImport *import = &module->imports[i];
+        if(depth > 0 && !import->is_using) continue;
         const ZirModule *target = import->resolved_module;
         if((import->kind != ZIR_IMPORT_OPEN &&
             !(import->kind == ZIR_IMPORT_MODULE && import->is_using)) ||
@@ -438,6 +500,14 @@ FindType(const ZirModule *module, const char *name, const ZirModule **owner)
             found = candidate;
             scope = target;
         }
+        const ZirModule *nested_owner = NULL;
+        const ZirType *nested = find_type_depth(target, name,
+                                                &nested_owner, depth + 1);
+        if(nested != NULL && nested->is_public && !nested->is_file_private) {
+            if(found != NULL && found != nested) return NULL;
+            found = nested;
+            scope = nested_owner;
+        }
     }
     if(owner)
         *owner = scope;
@@ -447,6 +517,12 @@ FindType(const ZirModule *module, const char *name, const ZirModule **owner)
     if(found != NULL && owner != NULL)
         *owner = module;
     return found;
+}
+
+const ZirType *
+FindType(const ZirModule *module, const char *name, const ZirModule **owner)
+{
+    return find_type_depth(module, name, owner, 0);
 }
 
 static int

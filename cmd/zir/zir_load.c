@@ -2,6 +2,7 @@
 #include "zir_check.h"
 #include "zir_diagnostic.h"
 #include "zir_parse.h"
+#include "zir_packages.h"
 #include "zir_serial.h"
 
 #include <ctype.h>
@@ -22,6 +23,7 @@ typedef struct LoadContext {
     int define_count;
     const char *active[32];
     int active_count;
+    ZirPackageMap *packages;
 } LoadContext;
 
 static int early_resolve_imports(void *context, ZirProgram *program,
@@ -159,6 +161,39 @@ add_program_named(LoadContext *context, const char *path, const char *root,
         snprintf(program->modules[0].name,
                  sizeof(program->modules[0].name), "%s", identity);
     }
+    if(context->packages != NULL && !PathIsIR(path)) {
+        const char *mapped = PackageModuleName(context->packages, canonical);
+        const char *owner = PackageOwner(context->packages, canonical);
+        if(owner == NULL) {
+            Diagnostic(Span(path, 1, 1), "package.scope",
+                       "source file is outside the package graph: %s", path);
+            ProgramFree(program);
+            free(canonical);
+            return 0;
+        }
+        if(strcmp(owner, "root") != 0 && mapped == NULL) {
+            Diagnostic(Span(path, 1, 1), "package.module",
+                       "source file is not a declared package module: %s", path);
+            ProgramFree(program);
+            free(canonical);
+            return 0;
+        }
+        if(mapped != NULL) {
+            if(program->module_count != 1 ||
+               snprintf(program->modules[0].name,
+                        sizeof(program->modules[0].name), "%s", mapped) >=
+                   (int)sizeof(program->modules[0].name) ||
+               snprintf(program->modules[0].source_path,
+                        sizeof(program->modules[0].source_path), "%s.zi",
+                        mapped) >= (int)sizeof(program->modules[0].source_path)) {
+                Diagnostic(Span(path, 1, 1), "package.identity",
+                           "invalid mapped module identity");
+                ProgramFree(program);
+                free(canonical);
+                return 0;
+            }
+        }
+    }
     for(int m = 0; m < program->module_count; m++)
         if(module_named(set, program->modules[m].name)) {
             Diagnostic(program->modules[m].span, "module.duplicate",
@@ -255,7 +290,7 @@ try_module(LoadContext *context, const char *directory, const char *load_root,
 
 static int
 load_import(LoadContext *context, const char *owner_source,
-            const char *owner_root, const ZirImport *import)
+            const char *owner_root, ZirImport *import)
 {
     ProgramSet *set = context->set;
     const char *target = import->target;
@@ -264,6 +299,31 @@ load_import(LoadContext *context, const char *owner_source,
     struct stat owner_info;
     const char *owner_path = owner_source;
     int prefer_ir = PathIsIR(owner_source);
+    if(context->packages != NULL && !prefer_ir) {
+        if(import->resolved_module != NULL &&
+           module_loaded(set, import->target)) return 1;
+        const char *owner = PackageOwner(context->packages, owner_source);
+        char mapped_path[ZIR_PATH_MAX * 3];
+        char mapped_name[ZIR_NAME_MAX];
+        if(owner == NULL || !PackageResolve(context->packages, owner,
+                    target, mapped_path, sizeof(mapped_path), mapped_name,
+                    sizeof(mapped_name))) {
+            Diagnostic(import->span, "package.not_found",
+                       "module %s is not in package %s or its direct dependencies (%s)",
+                       target, owner == NULL ? "?" : owner, owner_source);
+            return 0;
+        }
+        snprintf(import->target, sizeof(import->target), "%s", mapped_name);
+        if(module_loaded(set, mapped_name)) return 1;
+        char parent[ZIR_PATH_MAX * 3];
+        snprintf(parent, sizeof(parent), "%s", mapped_path);
+        char *slash = strrchr(parent, '/');
+        if(slash == NULL) return 0;
+        *slash = '\0';
+        return add_program_named(context, mapped_path, parent,
+                                 strcmp(slash + 1, "module.zi") == 0 ?
+                                 mapped_name : NULL);
+    }
     if(!prefer_ir && import->span.path[0] != '\0') {
         if(import->span.path[0] == '/')
             owner_path = import->span.path;
@@ -469,7 +529,8 @@ early_resolve_imports(void *opaque, ZirProgram *program,
            import->kind != ZIR_IMPORT_MODULE) continue;
         if(!load_all && !condition_needs_import(condition, import,
                                                 need_open_layout)) continue;
-        ZirModule *target = early_target(context, program, import);
+        ZirModule *target = context->packages == NULL ?
+            early_target(context, program, import) : NULL;
         if(target == NULL) {
             if(!load_import(context, source_path, root, import))
                 return 0;
@@ -559,6 +620,11 @@ ProgramsLoadWithDefines(ProgramSet *set, const char *root,
     context.module_path_count = module_path_count;
     context.defines = defines;
     context.define_count = define_count;
+    const char *package_path = getenv("ZIRAN_PACKAGE_MAP");
+    if(package_path != NULL && package_path[0] != '\0') {
+        context.packages = PackageMapLoad(package_path);
+        if(context.packages == NULL) goto done;
+    }
     for(int i = 0; i < input_count; i++)
         if(!add_program(&context, inputs[i], canonical_root) ||
            !promote_input(set, inputs[i], i))
@@ -567,7 +633,7 @@ ProgramsLoadWithDefines(ProgramSet *set, const char *root,
         for(int m = 0; m < set->programs[p]->module_count; m++) {
             const ZirModule *module = &set->programs[p]->modules[m];
             for(int i = 0; i < module->import_count; i++) {
-                const ZirImport *import = &module->imports[i];
+                ZirImport *import = &module->imports[i];
                 if((import->kind != ZIR_IMPORT_OPEN &&
                     import->kind != ZIR_IMPORT_MODULE) ||
                    !module_target(import->target))
@@ -584,6 +650,7 @@ done:
             free(canonical_paths[i]);
     free(canonical_paths);
     free(canonical_root);
+    PackageMapFree(context.packages);
     if(!ok)
         ProgramsFree(set);
     return ok;

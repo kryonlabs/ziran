@@ -1361,6 +1361,27 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
             }
         }
     }
+    /* A public module entry may contain only `using Alias :: #import` lines.
+     * Its own declarations can be empty even while retained callers need its
+     * import graph to resolve types during saved-IR code generation. */
+    for(int changed = 1; changed;) {
+        changed = 0;
+        for(int m = 0; m < program->module_count; m++) {
+            if(!keep_modules[m]) continue;
+            const ZirModule *module = &program->modules[m];
+            for(int i = 0; i < module->import_count; i++) {
+                const ZirImport *import = &module->imports[i];
+                if(!import->is_using || import->resolved_module == NULL)
+                    continue;
+                for(int d = 0; d < program->module_count; d++)
+                    if(import->resolved_module == &program->modules[d] &&
+                       !keep_modules[d]) {
+                        keep_modules[d] = 1;
+                        changed = 1;
+                    }
+            }
+        }
+    }
     for(int m = 0; m < program->module_count; m++)
         selected_modules += keep_modules[m] != 0;
     linked = ProgramNew();
@@ -1452,7 +1473,8 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
                     target->types[next++] = source->types[t];
         }
         for(int i = 0; i < source->import_count; i++)
-            kept_imports += import_is_used(program, source, keep[m],
+            kept_imports += source->imports[i].is_using ||
+                           import_is_used(program, source, keep[m],
                                            keep_types, keep_defines,
                                            &source->imports[i]) ||
                            law_names_import(source, &source->imports[i]);
@@ -1464,7 +1486,8 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
             target->import_count = target->import_cap = kept_imports;
             int next_import = 0;
             for(int i = 0; i < source->import_count; i++)
-                if(import_is_used(program, source, keep[m], keep_types,
+                if(source->imports[i].is_using ||
+                   import_is_used(program, source, keep[m], keep_types,
                                   keep_defines,
                                   &source->imports[i]) ||
                    law_names_import(source, &source->imports[i]))
