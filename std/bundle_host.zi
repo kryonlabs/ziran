@@ -1,0 +1,76 @@
+// Native C ABI for embedding a portable Ziran bundle. The runtime owns the
+// bundle and instance; callers own binding contexts and borrowed result data.
+#scope_export
+runtime :: #system_library "ziran";
+
+HostValueKind :: enum {
+    HostVoid :: 0
+    HostInteger :: 1
+    HostUnsigned :: 2
+    HostReal :: 3
+    HostString :: 4
+    HostRecord :: 5
+    HostSlice :: 6
+    HostPointer :: 7
+    HostArray :: 8
+}
+
+HostValue :: struct {
+    kind: s32
+    type_name: *u8
+    integer: s64
+    bits: u64
+    real: float64
+    data: *u8
+    length: u64
+    fields: *HostField
+    field_count: u64
+    elements: *HostValue
+    pointer: *void
+}
+
+HostField :: struct {
+    name: *u8
+    value: HostValue
+}
+
+HostCall :: #type (context: *void, module: *u8, function: *u8,
+    arguments: *HostValue, count: s32, result: *HostValue) -> s32 #c_call;
+
+HostBinding :: struct {
+    module: *u8
+    function: *u8
+    call: HostCall
+    context: *void
+}
+
+#scope_file
+RawBundleOpen :: (path: *u8) -> *void #foreign runtime "BundleOpen";
+RawBundleClose :: (bundle: *void) #foreign runtime "BundleClose";
+RawBundleInstantiate :: (bundle: *void, bindings: *HostBinding,
+    count: u64) -> *void #foreign runtime "BundleInstantiate";
+RawBundleInstanceRun :: (instance: *void, result: *s64,
+    has_result: *s32) -> s32 #foreign runtime "BundleInstanceRun";
+RawBundleInstanceClose :: (instance: *void) #foreign runtime "BundleInstanceClose";
+
+#scope_export
+#program_export
+OpenBundle :: (path: *u8) -> *void { return RawBundleOpen(path) }
+
+#program_export
+CloseBundle :: (bundle: *void) { RawBundleClose(bundle) }
+
+#program_export
+InstantiateBundle :: (bundle: *void, bindings: *HostBinding,
+                      count: u64) -> *void {
+    return RawBundleInstantiate(bundle, bindings, count)
+}
+
+#program_export
+RunBundleInstance :: (instance: *void, result: *s64,
+                     has_result: *s32) -> s32 {
+    return RawBundleInstanceRun(instance, result, has_result)
+}
+
+#program_export
+CloseBundleInstance :: (instance: *void) { RawBundleInstanceClose(instance) }
