@@ -5447,12 +5447,34 @@ discover_function_header(const char *source, const char *path,
     function->is_file_private = scope_file;
 }
 
-/* Retain straight-line procedure bodies for forward compile-time calls. An
- * unsupported statement leaves only the discovered signature; the typed
- * evaluator still decides whether the body is pure and bounded. */
+static int
+discover_body_statement(ZirFunction *function, char *source, int line,
+                        int block_header, int *saw_return)
+{
+    char *part = trim(source);
+    if(*part == '\0') return !block_header;
+    ZirStmtKind kind = classify_stmt(part);
+    if(block_header) {
+        if(kind != ZIR_STMT_IF && kind != ZIR_STMT_WHILE &&
+           kind != ZIR_STMT_BLOCK_OPEN) return 0;
+    } else if(kind != ZIR_STMT_DECL && kind != ZIR_STMT_ASSIGN &&
+              kind != ZIR_STMT_EXPR && kind != ZIR_STMT_RETURN &&
+              kind != ZIR_STMT_BREAK && kind != ZIR_STMT_CONTINUE)
+        return 0;
+    if(strlen(part) >= ZIR_TEXT_MAX) return 0;
+    if(FunctionAddStmt(function, kind, part,
+                       Span(function->span.path, line, 1)) == NULL)
+        die("out of memory discovering procedure body");
+    if(kind == ZIR_STMT_RETURN) *saw_return = 1;
+    return 1;
+}
+
+/* Retain bounded procedure bodies for forward compile-time calls. Unsupported
+ * syntax leaves only the discovered signature; the typed evaluator still
+ * decides whether each executed statement is pure. */
 static void
-discover_straight_body(ZirFunction *function, const char *body,
-                       int start_line)
+discover_compile_body(ZirFunction *function, const char *body,
+                      int start_line)
 {
     char *text = strdup(body);
     if(text == NULL) die("out of memory discovering procedure body");
@@ -5460,7 +5482,7 @@ discover_straight_body(ZirFunction *function, const char *body,
     if(close == NULL || *skip_ws(close + 1) != '\0') goto unsupported;
     *close = '\0';
     int line = start_line, statement_line = start_line;
-    int nesting = 0, quote = 0, saw_return = 0;
+    int nesting = 0, blocks = 0, quote = 0, saw_return = 0;
     char *statement = text;
     for(char *cursor = text; ; cursor++) {
         char byte = *cursor;
@@ -5473,34 +5495,60 @@ discover_straight_body(ZirFunction *function, const char *body,
             while(*cursor != '\0' && *cursor != '\n')
                 *cursor++ = ' ';
             byte = *cursor;
-        } else if(byte == '(' || byte == '[' || byte == '{') {
+        } else if(byte == '(' || byte == '[') {
             nesting++;
-        } else if(byte == ')' || byte == ']' || byte == '}') {
+        } else if(byte == ')' || byte == ']') {
             if(--nesting < 0) goto unsupported;
+        } else if(byte == '{') {
+            if(nesting == 0) {
+                char after = cursor[1];
+                cursor[1] = '\0';
+                char *header = trim(statement);
+                ZirStmtKind kind = classify_stmt(header);
+                int control = kind == ZIR_STMT_IF ||
+                              kind == ZIR_STMT_WHILE ||
+                              kind == ZIR_STMT_BLOCK_OPEN;
+                if(control && (!discover_body_statement(function, header,
+                                    statement_line, 1, &saw_return) ||
+                                ++blocks > 32)) goto unsupported;
+                cursor[1] = after;
+                if(control) {
+                    statement = cursor + 1;
+                    statement_line = line;
+                    continue;
+                }
+            }
+            nesting++;
+        } else if(byte == '}') {
+            if(nesting > 0) nesting--;
+            else if(blocks > 0) {
+                *cursor = '\0';
+                if(!discover_body_statement(function, statement,
+                                            statement_line, 0, &saw_return))
+                    goto unsupported;
+                if(FunctionAddStmt(function, ZIR_STMT_BLOCK_CLOSE, "}",
+                                   Span(function->span.path, line, 1)) == NULL)
+                    die("out of memory discovering procedure body");
+                blocks--;
+                statement = cursor + 1;
+                statement_line = line;
+                continue;
+            } else goto unsupported;
         }
         if(byte == '\0' || ((byte == ';' || byte == '\n') &&
                             quote == 0 && nesting == 0)) {
             *cursor = '\0';
-            char *part = trim(statement);
-            if(*part != '\0') {
-                ZirStmtKind kind = classify_stmt(part);
-                if(kind != ZIR_STMT_DECL && kind != ZIR_STMT_ASSIGN &&
-                   kind != ZIR_STMT_EXPR && kind != ZIR_STMT_RETURN)
-                    goto unsupported;
-                if(strlen(part) >= ZIR_TEXT_MAX) goto unsupported;
-                if(FunctionAddStmt(function, kind, part,
-                                   Span(function->span.path,
-                                        statement_line, 1)) == NULL)
-                    die("out of memory discovering procedure body");
-                if(kind == ZIR_STMT_RETURN) saw_return = 1;
-            }
+            if(!discover_body_statement(function, statement,
+                                        statement_line, 0, &saw_return))
+                goto unsupported;
             statement = cursor + 1;
             statement_line = line + (byte == '\n');
         }
         if(byte == '\n') line++;
         if(byte == '\0') break;
     }
-    if(quote || nesting != 0 || !saw_return) goto unsupported;
+    if(quote || nesting != 0 || blocks != 0 || !saw_return)
+        goto unsupported;
     free(text);
     return;
 unsupported:
@@ -5601,8 +5649,8 @@ possible_function_header(const char *line)
 }
 
 /* Discover only unconditional file-scope declarations. Conditional and type
- * bodies stay opaque; supported straight-line procedure bodies are retained
- * for bounded compile-time evaluation. */
+ * bodies stay opaque; supported procedure bodies are retained for bounded
+ * compile-time evaluation. */
 static void
 discover_file_scope(const char *source, const char *path, const char *rel,
                     const char *root,
@@ -5646,7 +5694,7 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                                &simple_body_overflow);
             if(brace_depth + brace_delta == 0) {
                 if(!simple_body_overflow)
-                    discover_straight_body(
+                    discover_compile_body(
                         &future_functions->items[simple_body_index],
                         simple_body, simple_body_start_line);
                 simple_body_index = -1;
@@ -5705,7 +5753,7 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                                        open + 1, &simple_body_overflow);
                     if(brace_depth + brace_delta == 0) {
                         if(!simple_body_overflow)
-                            discover_straight_body(
+                            discover_compile_body(
                                 &future_functions->items[simple_body_index],
                                 simple_body, simple_body_start_line);
                         simple_body_index = -1;

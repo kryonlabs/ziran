@@ -243,6 +243,16 @@ SELECTED_LOADED_STEPS_CALL_IF :: 1;
 } else {
 SELECTED_LOADED_STEPS_CALL_IF :: 0;
 }
+#if LaterBranch(3) == 6 {
+SELECTED_BRANCH_CALL_IF :: 1;
+} else {
+SELECTED_BRANCH_CALL_IF :: 0;
+}
+#if LaterLoop(6) == 7 {
+SELECTED_LOOP_CALL_IF :: 1;
+} else {
+SELECTED_LOOP_CALL_IF :: 0;
+}
 #if #defined(LATER_CONSTANT) {
 SELECTED_DEFINED_CONSTANT_IF :: 1;
 } else {
@@ -254,6 +264,7 @@ SELECTED_HIDDEN_CONSTANT_IF :: 0;
 SELECTED_HIDDEN_CONSTANT_IF :: 1;
 }
 RUN_STEPS :: #run LaterSteps(2);
+RUN_LOOP :: #run LaterLoop(6);
 global_size: s64 = size_of(type_of(Later()));
 #program_export
 Answer :: () -> s64 {
@@ -267,8 +278,9 @@ Answer :: () -> s64 {
            SELECTED_NAMED_CALL_IF + SELECTED_CONSTANT_CALL_IF +
            SELECTED_PRIVATE_CONSTANT_CALL_IF +
            SELECTED_STEPS_CALL_IF + SELECTED_LOADED_STEPS_CALL_IF +
+           SELECTED_BRANCH_CALL_IF + SELECTED_LOOP_CALL_IF +
            SELECTED_DEFINED_CONSTANT_IF + SELECTED_HIDDEN_CONSTANT_IF +
-           RUN_STEPS + global_size + 5
+           RUN_STEPS + RUN_LOOP + global_size + 5
 }
 Later :: () -> s64 { return 42 }
 LaterDefault :: (value: s64 = 42) -> s64 { return value }
@@ -283,6 +295,26 @@ LaterSteps :: (value: s64) -> s64 {
     return second
 }
 LaterIncrement :: (value: s64) -> s64 { return value + 1 }
+LaterBranch :: (value: s64) -> s64 {
+    if value > 3 {
+        return 99
+    } else if value > 2 {
+        return value * 2
+    } else {
+        return value + 2
+    }
+}
+LaterLoop :: (limit: s64) -> s64 {
+    total := 0
+    index := 0
+    while index < limit {
+        index += 1
+        if index == 3 { continue }
+        if index == 5 { break }
+        total += index
+    }
+    return total
+}
 LaterGlobal: s64;
 LaterRecord: Payload;
 Payload :: struct { value: s32; }
@@ -306,20 +338,20 @@ for input in source saved; do
     fi
     "$ziran" bundle --root "$root" --entry deferred_type_of:Answer \
         -o "$work/deferred-$input.zib" "$module"
-    test "$("$ziran" run "$work/deferred-$input.zib")" = 76
+    test "$("$ziran" run "$work/deferred-$input.zib")" = 85
     for target in c cpp go; do
         output=$work/deferred-$target-$input
         "$ziran" build "--target=$target" --root "$root" \
             -o "$output" "$module"
         case "$target" in
             c)
-                printf '#include "deferred_type_of.h"\nint main(void) { return Answer() == 76 ? 0 : 1; }\n' > "$work/deferred-main.c"
+                printf '#include "deferred_type_of.h"\nint main(void) { return Answer() == 85 ? 0 : 1; }\n' > "$work/deferred-main.c"
                 "${CC:-cc}" -std=c11 -I"$repo/include" -I"$output" \
                     "$output"/*.c "$work/deferred-main.c" -o "$output/app"
                 "$output/app"
                 ;;
             cpp)
-                printf '#include "deferred_type_of.hpp"\nint main() { return Answer() == 76 ? 0 : 1; }\n' > "$work/deferred-main.cpp"
+                printf '#include "deferred_type_of.hpp"\nint main() { return Answer() == 85 ? 0 : 1; }\n' > "$work/deferred-main.cpp"
                 "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$output" \
                     "$output"/*.cpp "$work/deferred-main.cpp" -o "$output/app"
                 "$output/app"
@@ -329,7 +361,7 @@ for input in source saved; do
 package ziran
 import "testing"
 func TestDeferredTypeOf(t *testing.T) {
-    if DeferredTypeOf_Answer() != 76 { t.Fatal("deferred type_of") }
+    if DeferredTypeOf_Answer() != 85 { t.Fatal("deferred type_of") }
 }
 GO
                 GO111MODULE=off go test "$output"/*.go
@@ -451,3 +483,19 @@ if "$ziran" check --root "$work" "$work/forward_recursive_call.zi" \
     exit 1
 fi
 rg -q 'not a compile-time constant' "$work/forward_recursive_call.err"
+
+cat > "$work/forward_unbounded_loop.zi" <<'ZI'
+#if Unbounded() == 1 {
+SELECTED :: 1;
+}
+Unbounded :: () -> s64 {
+    while true { }
+    return 1
+}
+ZI
+if "$ziran" check --root "$work" "$work/forward_unbounded_loop.zi" \
+    2> "$work/forward_unbounded_loop.err"; then
+    echo 'unbounded forward procedure exceeded the compile-time limit' >&2
+    exit 1
+fi
+rg -q 'not a compile-time constant' "$work/forward_unbounded_loop.err"

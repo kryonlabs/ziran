@@ -424,14 +424,15 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   without evaluating the operand. Procedure parameter lists may span lines;
   global member queries can use a later record type. Inactive and
   file-private names stay hidden.
-  Forward `#if` calls to unconditional procedures with a straight-line body
-  run through the bounded compile-time evaluator. Local declarations,
-  assignments, calls to another later procedure, and a return are retained;
-  `#run` also accepts these calls. Multiline headers, defaults, named
+  Forward `#if` calls to unconditional procedures with local declarations,
+  assignments, braced `if`/`else if`/`else`, and bounded `while` loops run
+  through the compile-time evaluator. `break`, `continue`, calls to another
+  later procedure, and returns work in the tested subset; `#run` accepts these
+  calls too. Multiline headers, defaults, named
   arguments, later constants, and later `#load` files work. A procedure in a
-  loaded file can use that file's private constant; effectful bodies remain
-  rejected and recursion stays bounded. Forward branches and loops still need
-  body discovery.
+  loaded file can use that file's private constant; executed effects are
+  rejected, and recursion and loops share an instruction budget. Other body
+  forms still need discovery.
   `tests/file_type_of.sh` checks source and saved IR on C, C++, Go, and `.zib`.
   Standalone `type_of` values and broader forward `#if` queries remain
   unsupported.
