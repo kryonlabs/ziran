@@ -5438,11 +5438,11 @@ check_template_declaration(Checker *c, ZirFunction *fn)
 static int
 normalize_function_arrays(const ZirModule *module, ZirFunction *fn)
 {
-    if(fn->return_type[0] != '[' && strchr(fn->args, '[') == NULL)
-        return 1;
     char parts[64][ZIR_TEXT_MAX];
     char arguments[sizeof(fn->args)];
     size_t used = 0;
+    int array_arguments = strchr(fn->args, '[') != NULL;
+    int argument_alias_changed = 0;
     int count = *skip_ws(fn->args) ?
         split_top_level(fn->args, parts[0], 64, sizeof(parts[0])) : 0;
     arguments[0] = '\0';
@@ -5459,6 +5459,11 @@ normalize_function_arrays(const ZirModule *module, ZirFunction *fn)
             trim_in_place(type);
             capacity = sizeof(parts[i]) - (size_t)(type - parts[i]);
         }
+        char original_type[ZIR_TEXT_MAX];
+        copy_text(original_type, sizeof(original_type), type);
+        normalize_array(module, type, capacity);
+        if(i >= 0 && strcmp(original_type, type) != 0)
+            argument_alias_changed = 1;
         int host_buffer = i >= 0 && ArrayElementType(type, NULL, 0, NULL) &&
                           !ArrayValueType(type);
         if(type[0] == '[' && !host_buffer) {
@@ -5474,7 +5479,6 @@ normalize_function_arrays(const ZirModule *module, ZirFunction *fn)
                 Diagnostic(fn->span, "check.array_signature", "%s: %s", problem, type);
                 return 0;
             }
-            normalize_array(module, type, capacity);
         }
         if(i >= 0) {
             int length = snprintf(arguments + used, sizeof(arguments) - used,
@@ -5486,7 +5490,43 @@ normalize_function_arrays(const ZirModule *module, ZirFunction *fn)
             used += (size_t)length;
         }
     }
-    copy_text(fn->args, sizeof(fn->args), arguments);
+    if(array_arguments || argument_alias_changed)
+        copy_text(fn->args, sizeof(fn->args), arguments);
+    if(argument_alias_changed && fn->default_args[0]) {
+        char (*defaults)[ZIR_TEXT_MAX] = calloc(64, sizeof(*defaults));
+        if(defaults == NULL) return 0;
+        int default_count = split_top_level(fn->default_args, defaults[0],
+                                            64, sizeof(defaults[0]));
+        char normalized[sizeof(fn->default_args)];
+        size_t written = 0;
+        normalized[0] = '\0';
+        if(default_count != count) {
+            free(defaults);
+            Diagnostic(fn->span, "check.signature",
+                       "default arguments do not match procedure parameters");
+            return 0;
+        }
+        for(int i = 0; i < count; i++) {
+            char *assignment = top_level_assignment(defaults[i]);
+            const char *default_value = assignment == NULL ? "" :
+                                        skip_ws(assignment + 1);
+            int length = snprintf(normalized + written,
+                                  sizeof(normalized) - written,
+                                  "%s%s%s%s", i ? ", " : "", parts[i],
+                                  assignment == NULL ? "" : " = ",
+                                  default_value);
+            if(length < 0 || (size_t)length >=
+                             sizeof(normalized) - written) {
+                free(defaults);
+                Diagnostic(fn->span, "check.signature",
+                           "default argument signature exceeds size limit");
+                return 0;
+            }
+            written += (size_t)length;
+        }
+        copy_text(fn->default_args, sizeof(fn->default_args), normalized);
+        free(defaults);
+    }
     return 1;
 }
 
@@ -7176,7 +7216,15 @@ CheckPrograms(ZirProgram **programs, int count)
         for(int m = 0; m < programs[p]->module_count; m++) {
             ZirModule *module = &programs[p]->modules[m];
             for(int f = 0; f < module->function_count; f++) {
-                if(!normalize_function_arrays(module, &module->functions[f]))
+                char saved_path[ZIR_PATH_MAX];
+                copy_text(saved_path, sizeof(saved_path),
+                          module->lookup_path);
+                select_lookup_file(module, module->functions[f].span);
+                int normalized = normalize_function_arrays(
+                    module, &module->functions[f]);
+                copy_text(module->lookup_path, sizeof(module->lookup_path),
+                          saved_path);
+                if(!normalized)
                     return 0;
             }
         }

@@ -38,6 +38,11 @@ global_literal: [0]s32 = s32.[];
 
 Count :: (values: [0]s32) -> s64 { return values.count }
 ReturnEmpty :: () -> [0]s32 { return s32.[] }
+AliasCount :: (values: EmptyAlias) -> s64 { return values.count }
+AliasReturn :: () -> EmptyAlias { return s32.[] }
+AliasDefault :: (values: EmptyAlias = s32.[]) -> s64 {
+    return values.count
+}
 
 #program_export
 Answer :: () -> s32 {
@@ -46,6 +51,8 @@ Answer :: () -> s32 {
     returned: [0]s32 = ReturnEmpty()
     view: []s32 = typed[:]
     aliased: EmptyAlias = s32.[]
+    alias_returned: EmptyAlias = AliasReturn()
+    alias_matrix: [2]EmptyAlias
     record_empty := Box.[]
     matrix: [2][0]s32
     box: Box
@@ -55,9 +62,12 @@ Answer :: () -> s32 {
     if typed.count != 0 || contextual.count != 0 ||
        returned.count != 0 || view.count != 0 || global_empty.count != 0 ||
        global_literal.count != 0 ||
-       aliased.count != 0 || record_empty.count != 0 || matrix.count != 2 ||
+       aliased.count != 0 || alias_returned.count != 0 ||
+       alias_matrix.count != 2 || alias_matrix[0].count != 0 ||
+       record_empty.count != 0 || matrix.count != 2 ||
        matrix[0].count != 0 || box.empty.count != 0 ||
        nested.empty.empty.count != 0 || Count(typed) != 0 ||
+       AliasCount(aliased) != 0 || AliasDefault() != 0 ||
        typed.data != null || contextual.data != null ||
        returned.data != null || global_empty.data != null ||
        global_literal.data != null ||
