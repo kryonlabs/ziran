@@ -5324,6 +5324,33 @@ mark_expr_moves(Checker *c, int index)
     mark_expr_moves(c, e->third);
 }
 
+/* A fresh vector returned by a call has one owner. It can become a binding,
+ * return value, or ordinary call argument, or be dropped as a whole statement.
+ * Reading a member of an unbound temporary would otherwise lose its owner. */
+static void
+check_vec_call_results(Checker *c, int index, int transferred, int discarded)
+{
+    if(index < 0 || index >= c->fn->expr_count)
+        return;
+    const ZirExpr *expr = &c->fn->exprs[index];
+    if(expr->kind == ZIR_EXPR_CALL &&
+       VecElementType(c->module, expr->type, NULL, 0) &&
+       !transferred && !discarded)
+        error(c, expr->span,
+              "temporary Vec result must be bound or passed to an owning call",
+              expr->name);
+    for(int child = expr->first_child; child >= 0;
+        child = c->fn->exprs[child].next_sibling) {
+        int child_transfer = expr->kind == ZIR_EXPR_CALL &&
+            !vec_primitive_name(expr->name) &&
+            VecElementType(c->module, c->fn->exprs[child].type, NULL, 0);
+        check_vec_call_results(c, child, child_transfer, 0);
+    }
+    check_vec_call_results(c, expr->left, 0, 0);
+    check_vec_call_results(c, expr->right, 0, 0);
+    check_vec_call_results(c, expr->third, 0, 0);
+}
+
 static int
 check_function(Checker *c, ZirFunction *fn)
 {
@@ -5529,6 +5556,23 @@ restart:
             }
             if(!consumed_root)
                 mark_expr_moves(c, st->expr_root);
+            int root_transfer =
+                (st->kind == ZIR_STMT_DECL || st->kind == ZIR_STMT_ASSIGN ||
+                 st->kind == ZIR_STMT_RETURN) &&
+                VecElementType(c->module, fn->exprs[st->expr_root].type,
+                               NULL, 0);
+            int root_discard = st->kind == ZIR_STMT_EXPR ||
+                               st->kind == ZIR_STMT_UNUSED;
+            check_vec_call_results(c, st->expr_root, root_transfer,
+                                   root_discard);
+            if(root_discard &&
+               VecElementType(c->module, fn->exprs[st->expr_root].type,
+                              NULL, 0) &&
+               fn->exprs[st->expr_root].kind != ZIR_EXPR_IDENT &&
+               fn->exprs[st->expr_root].kind != ZIR_EXPR_CALL)
+                error(c, st->span,
+                      "discarded Vec value must be a binding or call result",
+                      st->text);
             /* An assignment into a moved-from Vec binding re-owns it with
              * the transferred or fresh value. The handoff form
              * `v = Take(v)` also re-owns: the right side moved this binding
@@ -5689,6 +5733,13 @@ restart:
                     error(c, st->span, "assignment type mismatch", st->text);
             }
         } else if(st->kind == ZIR_STMT_RETURN) {
+            if(VecElementType(c->module, c->fn->return_type, NULL, 0) &&
+               st->expr_root >= 0 &&
+               fn->exprs[st->expr_root].kind != ZIR_EXPR_IDENT &&
+               fn->exprs[st->expr_root].kind != ZIR_EXPR_CALL)
+                error(c, st->span,
+                      "Vec return moves a binding or takes a call result",
+                      c->fn->name);
             if(!compatible_checked(c, c->fn->return_type, type)) {
                 const char *converted = try_conversion(c, st->expr_root,
                                                        c->fn->return_type,

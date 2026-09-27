@@ -37,7 +37,17 @@ Check :: () -> s32 {
 }
 ZI
 
-for name in double read_after push_after; do
+cat > "$work/temporary_member.zi" <<'ZI'
+#import "vec"
+Make :: () -> Vec(s32) {
+    values: Vec(s32)
+    VecPush(values, 7)
+    return values
+}
+Check :: () -> s64 { return Make().count }
+ZI
+
+for name in double read_after push_after temporary_member; do
     if "$ziran" check --diagnostics=json --root "$work" \
         --module-path "$repo/std" "$work/$name.zi" \
         > "$work/$name.out" 2> "$work/$name.err"; then
@@ -51,7 +61,8 @@ import sys
 
 diagnostics = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
 assert any('Vec binding is used after moving' in item['message'] or
-           'Vec operation moves its storage in an argument' in item['message']
+           'Vec operation moves its storage in an argument' in item['message'] or
+           'temporary Vec result must be bound' in item['message']
            for item in diagnostics), diagnostics
 PY
 done

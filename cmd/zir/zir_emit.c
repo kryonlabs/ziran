@@ -1428,6 +1428,21 @@ drop_locals(Emitter *e, int first)
     }
 }
 
+static void
+drop_temporary_vec(Emitter *e, const char *name)
+{
+    if(e->target == ZIR_GO) {
+        line(e, "%s.Data = nil", name);
+        line(e, "%s.Capacity = 0", name);
+        line(e, "%s.Count = 0", name);
+    } else {
+        line(e, "free(%s.data);", name);
+        line(e, "%s.data = NULL;", name);
+        line(e, "%s.capacity = 0;", name);
+        line(e, "%s.count = 0;", name);
+    }
+}
+
 static int
 has_owned_locals(const Emitter *e)
 {
@@ -3719,8 +3734,17 @@ emit_sequence(Emitter *e,int begin,int end)
             e->local_count=saved;e->depth--;e->sequence_terminated=1;return;
         case ZIR_STMT_EXPR:case ZIR_STMT_UNUSED:
             if(st->expr_root>=0) {
-                emit_expr(e,st->expr_root,e->fn->exprs[st->expr_root].type,value,sizeof(value));
-                if(*value)line(e,e->target==ZIR_GO?"_ = %s":"(void)%s;",value);
+                const ZirExpr *expr = &e->fn->exprs[st->expr_root];
+                emit_expr(e, st->expr_root, expr->type, value,
+                          sizeof(value));
+                if(*value && expr->kind == ZIR_EXPR_CALL &&
+                   VecElementType(e->module, expr->type, NULL, 0)) {
+                    char temporary[ZIR_NAME_MAX];
+                    fresh(e, temporary);
+                    declare(e, temporary, expr->type, value);
+                    drop_temporary_vec(e, temporary);
+                } else if(*value)
+                    line(e,e->target==ZIR_GO?"_ = %s":"(void)%s;",value);
             }break;
         default:break;
         }

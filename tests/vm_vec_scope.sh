@@ -49,6 +49,8 @@ Check :: () -> s32 {
     if ProbeHost() != 0 { return 6 }
     if Take(Make()) != 7 { return 7 }
     if ProbeHost() != 0 { return 8 }
+    Make()
+    if ProbeHost() != 0 { return 9 }
     return 0
 }
 ZI

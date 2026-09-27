@@ -3328,9 +3328,17 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
             vm->failed = 1;
             return FLOW_ERROR;
         case ZIR_STMT_EXPR:
-        case ZIR_STMT_UNUSED:
-            (void)eval(frame, statement->expr_root, 0);
+        case ZIR_STMT_UNUSED: {
+            Value unused = eval(frame, statement->expr_root, 0);
+            if(!vm->failed && statement->expr_root >= 0 &&
+               function->exprs[statement->expr_root].kind == ZIR_EXPR_CALL &&
+               VecElementType(frame->module,
+                   function->exprs[statement->expr_root].type, NULL, 0)) {
+                retire_value(vm, unused, 0);
+                release_retired(vm);
+            }
             break;
+        }
         case ZIR_STMT_IF: {
             int branch = s;
             int executed = 0;

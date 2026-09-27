@@ -43,7 +43,7 @@ main(int argc, char **argv)
                                     host_call, &probe);
     assert(probe.instance != NULL);
     assert(VmInstanceRun(probe.instance, &result, &has_result));
-    assert(has_result && result == 0 && probe.calls == 5);
+    assert(has_result && result == 0 && probe.calls == 6);
     VmInstanceClose(probe.instance);
     ZibLawTableFree(&laws);
     ProgramFree(program);

@@ -23,6 +23,11 @@ automatic drops require recursive ownership checking. The rest of this page
 describes the intended contract, not a guarantee that every case is enforced
 today.
 
+A fresh `Vec` call result used as a whole expression statement is dropped
+immediately. A result used for member or index access must first be bound to a
+local so its lifetime is explicit; an ordinary call can consume the fresh
+result directly.
+
 `BuilderFinish` consumes the builder: the returned `string` keeps the builder's
 bytes without copying them. C99 and C++ detach the buffer instead of freeing
 it, so a finished string stays valid for the remaining process lifetime; Go
