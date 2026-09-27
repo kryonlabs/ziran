@@ -152,8 +152,10 @@ main :: () -> s32 {
         saved_lock = (app / "ziran.lock").read_bytes()
         call(ziran, "lock", cwd=app, env=env)
         assert (app / "ziran.lock").read_bytes() == saved_lock
+        write(app / "ziran.local.toml", f'[overrides]\nziran = "{compiler}"\nA = "{providers[1]}"\n')
         call(ziran, "update", "ziran", cwd=app, env=env)
         assert (app / "ziran.lock").read_bytes() == saved_lock
+        write(app / "ziran.local.toml", f'[overrides]\nziran = "{compiler}"\n')
         call(ziran, "update", cwd=app, env=env)
         assert (app / "ziran.lock").read_bytes() == saved_lock
         call(ziran, "fetch", "--offline", cwd=app, env=env)

@@ -198,15 +198,21 @@ PkgRemoteCommit :: (url: string, ref: string) -> string {
     args[3] = ref
     result: PkgProcessResult = PkgCapture(args[:], "")
     if result.code != 0 || result.text.count < 40 { return "" }
-    commit: string = result.text[0:40]
-    if !PkgValidCommit(commit) || result.text.count < 41 ||
-       result.text[40] != cast(u8)9 { return "" }
-    index: s64 = 41
-    while index < cast(s64)result.text.count {
-        if result.text[index] == cast(u8)10 { return "" }
-        index += 1
+    chosen: string = ""
+    at: s64 = 0
+    while at < cast(s64)result.text.count {
+        end: s64 = at
+        while end < cast(s64)result.text.count &&
+            result.text[end] != cast(u8)10 { end += 1 }
+        if end - at < 41 || result.text[at + 40] != cast(u8)9 { return "" }
+        commit: string = result.text[at:at + 40]
+        if !PkgValidCommit(commit) || (chosen.count > 0 && commit != chosen) {
+            return ""
+        }
+        chosen = commit
+        at = end + 1
     }
-    return PkgJoin("", commit)
+    return PkgJoin("", chosen)
 }
 
 PkgCacheRoot :: () -> string {
@@ -363,6 +369,34 @@ PkgResolveLock :: (root: string, refresh: string) -> bool {
     if !PkgParseManifest(PkgJoin(root, "/ziran.toml"), current) ||
        !PkgParseOverrides(PkgJoin(root, "/ziran.local.toml"), overrides) { return false }
     PkgReadLock(PkgJoin(root, "/ziran.lock"), old)
+    if refresh == "ziran" {
+        if !old.valid || current.name != old.root_name ||
+           current.tool_git != old.tool_url ||
+           current.tool_ref != old.tool_ref ||
+           current.dependency_count != old.root_edge_count {
+            PkgFail("toolchain update needs a matching ziran.lock")
+            return false
+        }
+        index: s32 = 0
+        while index < current.dependency_count {
+            dep: *PkgDependency = *current.dependencies[index]
+            id: string = PkgEdgeValue(*old.root_edges[0],
+                old.root_edge_count, dep.alias)
+            target: s32 = PkgFindById(old, id)
+            if target < 0 || old.packages[target].url != dep.git ||
+                old.packages[target].ref != dep.ref {
+                PkgFail("dependencies differ from ziran.lock; run ziran lock")
+                return false
+            }
+            index += 1
+        }
+        old.tool_commit = PkgRemoteCommit(old.tool_url, old.tool_ref)
+        if !PkgValidCommit(old.tool_commit) {
+            PkgFail("cannot resolve Ziran toolchain ref")
+            return false
+        }
+        return PkgWriteLock(root, old)
+    }
     if refresh != "" && refresh != "*" && refresh != "ziran" {
         found: bool = false
         index: s32 = 0
