@@ -388,17 +388,17 @@ def select_package(locked: dict, selector: str) -> dict:
 
 
 def prepare_submodules(package_root: Path, offline: bool) -> None:
-    if offline:
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(package_root), "submodule", "status", "--recursive"],
-                check=True, text=True, capture_output=True,
-            )
-        except (OSError, subprocess.CalledProcessError) as exc:
-            raise PackageError(f"cannot inspect submodules in {package_root}: {exc}") from exc
-        if any(line and line[0] != " " for line in result.stdout.splitlines()):
-            raise PackageError(f"submodules in {package_root} are missing or differ from the offline package")
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(package_root), "submodule", "status", "--recursive"],
+            check=True, text=True, capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise PackageError(f"cannot inspect submodules in {package_root}: {exc}") from exc
+    if all(not line or line[0] == " " for line in result.stdout.splitlines()):
         return
+    if offline:
+        raise PackageError(f"submodules in {package_root} are missing or differ from the offline package")
     try:
         subprocess.run(
             ["git", "-C", str(package_root), "submodule", "update", "--init", "--recursive"],
