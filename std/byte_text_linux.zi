@@ -1,8 +1,8 @@
-// Borrow UTF-8 bytes as a Ziran string on glibc Linux C targets.
+// Borrow UTF-8 bytes as a Ziran string at native foreign-function boundaries.
 // The caller must keep the byte storage alive while the string is in use.
 TextDescriptor :: struct {
     data: *u8
-    length: u64
+    length: usize
 }
 
 ByteDescriptor :: struct {
@@ -12,14 +12,7 @@ ByteDescriptor :: struct {
 
 #program_export
 TextFromBytes :: (buffer: []u8) -> string {
-    if buffer.count == 0 { return "" }
-    descriptor: TextDescriptor
-    descriptor.data = *buffer[0]
-    descriptor.length = cast(u64)buffer.count
-    result: string = ""
-    result_view: *TextDescriptor = cast(*TextDescriptor)(*result)
-    result_view.* = descriptor
-    return result
+    return TextView(buffer)
 }
 
 // Borrow native storage at a foreign-function boundary. The caller must keep
@@ -46,6 +39,6 @@ TextFromCString :: (value: *u8) -> string {
     result: string = ""
     descriptor: *TextDescriptor = cast(*TextDescriptor)(*result)
     descriptor.data = value
-    descriptor.length = length
+    descriptor.length = cast(usize)length
     return result
 }
