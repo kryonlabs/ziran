@@ -669,7 +669,8 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   qualified uses, fields, signatures, globals, literals, and source/saved-IR
   execution on all four targets. Go output gives modules distinct filenames
   and function prefixes when case or identifier normalization would collide;
-  C and C++ headers use distinct guards. `tests/module_symbol_names.sh`
+  C and C++ headers use distinct guards and give private functions valid names
+  when a root source filename contains punctuation. `tests/module_symbol_names.sh`
   checks both source and saved IR on all four targets.
   `Vec(T)` now provides growable
   storage for locals, globals, and record fields across C99, C++, Go, and

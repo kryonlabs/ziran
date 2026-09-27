@@ -554,6 +554,20 @@ NativeCFunctionName(const ZirModule *module, const ZirFunction *fn,
     if(module->name[0] && strcmp(module->name, "main")) {
         char prefix[256];
         size_t used = 0;
+        int needs_encoding = isdigit((unsigned char)module->name[0]);
+        for(const unsigned char *p = (const unsigned char *)module->name;
+            *p; p++)
+            if(!isalnum(*p) && *p != '_')
+                needs_encoding = 1;
+        if(needs_encoding) {
+            uint64_t hash = UINT64_C(14695981039346656037);
+            for(const unsigned char *p = (const unsigned char *)module->name;
+                *p; p++)
+                hash = (hash ^ *p) * UINT64_C(1099511628211);
+            format(out, size, "zir_m_%016llx_%s",
+                   (unsigned long long)hash, fn->name);
+            return;
+        }
         for(const char *p = module->name;
             *p && used + 1 < sizeof(prefix); p++)
             prefix[used++] = *p == '.' ? '_' : *p;

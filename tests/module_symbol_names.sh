@@ -18,6 +18,11 @@ ZI
 cat > "$work/FooBar.zi" <<'ZI'
 Get :: () -> s64 { return 9 }
 ZI
+cat > "$work/foo-bar.zi" <<'ZI'
+Get :: () -> s64 { return 13 }
+#program_export
+Answer :: () -> s64 { return Get() + 29 }
+ZI
 cat > "$work/app.zi" <<'ZI'
 A :: #import "Foo";
 B :: #import "foo";
@@ -73,3 +78,52 @@ CPP
     done
 done
 cmp "$work/source.zib" "$work/saved.zib"
+
+"$ziran" ir --root "$work" -o "$work/ir" "$work/foo-bar.zi"
+for input in source saved; do
+    if test "$input" = source; then
+        root=$work
+        file=$work/foo-bar.zi
+    else
+        root=$work/ir
+        file=$work/ir/foo-bar.zir
+    fi
+    "$ziran" bundle --root "$root" --entry foo-bar:Answer \
+        -o "$work/hyphen-$input.zib" "$file"
+    test "$("$ziran" run "$work/hyphen-$input.zib")" = 42
+    for target in c cpp go; do
+        out=$work/hyphen-$target-$input
+        "$ziran" build --target="$target" --root "$root" -o "$out" "$file"
+        case "$target" in
+            c)
+                cat > "$out/main.c" <<'C'
+#include "foo-bar.h"
+int main(void) { return Answer() == 42 ? 0 : 1; }
+C
+                "${CC:-cc}" -std=c11 -I"$repo/include" -I"$out" \
+                    "$out"/*.c -o "$out/program"
+                "$out/program"
+                ;;
+            cpp)
+                cat > "$out/main.cpp" <<'CPP'
+#include "foo-bar.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+CPP
+                "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$out" \
+                    "$out"/*.cpp -o "$out/program"
+                "$out/program"
+                ;;
+            go)
+                cat > "$out/main_test.go" <<'GO'
+package ziran
+import "testing"
+func TestHyphenModule(t *testing.T) {
+    if FooBar_Answer() != 42 { t.Fatal("hyphen module") }
+}
+GO
+                GO111MODULE=off go test "$out"/*.go
+                ;;
+        esac
+    done
+done
+cmp "$work/hyphen-source.zib" "$work/hyphen-saved.zib"
