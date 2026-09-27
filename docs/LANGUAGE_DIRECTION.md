@@ -257,8 +257,9 @@ An ordinary record may still declare a field named `length`; generated C ABI
 structures also retain their internal length fields.
 Array declarations accept `.[values]` with an expected fixed-array type and
 explicit typed literals such as `s32.[1, 2]` or `Module.Point.[first, second]`.
-Saved `.zir` preserves these spellings. Zero-element typed literals still need
-zero-capacity array support. C-style casts and compound literals
+Saved `.zir` preserves these spellings. Zero-element typed and contextual
+literals work in locals, globals, records, returns, defaults, and generic calls
+across C, C++, Go, and portable bundles. C-style casts and compound literals
 are rejected at the source boundary.
 Jai `#this` selects the enclosing procedure for recursive calls and typed
 procedure values, even if a local binding has the same name. In record field
@@ -291,7 +292,8 @@ as a string, including when used in a default or a `#run` call.
 `Source_Code_Location` record with `fully_pathed_filename` and `line_number`
 from the call site; an explicit argument overrides the default. The record is
 available on C, C++, Go, and portable builds. Compile-time `#run` execution of
-procedures that consume this record remains outside the current evaluator.
+procedures that consume this record also captures the call-site path and line,
+including imported and nested calls; `#assert` and `#if` can use those results.
 ASCII byte characters use `#char "A"` and infer `s64`, as integer literals
 do; single-quoted character literals are rejected.
 Jai raw multiline strings use `#string END` followed by their exact text and
