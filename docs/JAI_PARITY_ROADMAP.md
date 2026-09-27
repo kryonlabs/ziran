@@ -49,8 +49,8 @@ the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 | Values and expressions | Record literals, typed arrays including zero capacity, direct generic calls, `ifx` in typed expressions and call arguments | Jai ABI verification and full `.data` contract, broader lazy-expression audit, fuller type queries |
 | Procedures | Named values, defaults, named arguments, direct polymorphism | Overload/variadic/operator and broader procedure-form audit |
 | Compile time | Bounded pure scalars, strings, floats, and record/array results used at compile time, in checked runtime expressions, and in selected file-scope initializers, including public imports | Full file-scope initialization semantics, verified effect rules |
-| Native output | C/C++/Go checked body graphs; C/C++ unions; imported and keyword record, union, enum, global, and constant names, including global/constant and function/value collisions; C/C++ keyword exports and header guards; Go module filenames and prefixes | Declaration lowering, remaining whole-program names, Go union layout |
-| Portable output | Verified `.zib` scalar/record/array subset and host calls | Globals, aggregates, pointers/handles, unions, host shapes |
+| Native output | C/C++/Go checked body graphs; C/C++ unions and scalar Go unions; imported and keyword record, union, enum, global, and constant names, including global/constant and function/value collisions; C/C++ keyword exports and header guards; Go module filenames and prefixes | Declaration lowering, remaining whole-program names, non-scalar Go union layout |
+| Portable output | Verified `.zib` scalar/record/array subset, scalar unions, and host calls | Remaining globals, aggregates, pointers/handles, non-scalar unions, host shapes |
 | Ownership | Scoped `Vec(T)` operations | Move, drop, pop, lookup, builder, borrowing across calls |
 
 This matrix records known implementation work, not an exhaustive catalog of
@@ -263,17 +263,21 @@ underscores. Test C99, C++, Go, mixed source/IR input, and malformed saved
 IR. Bump the experimental `.zir` version whenever its contract changes and
 reject earlier versions; there is no migration path to maintain.
 
-Unions are another concrete parity gap: C/C++ have overlapping storage, while
-Go and `.zib` reject reachable unions. Select a layout-preserving Go and VM
-representation before claiming those targets support union programs. Include
-size, alignment, field overlap, and copy tests.
+Scalar and enum unions overlap storage on C, C++, Go, and `.zib`. Go uses a
+byte backing with the largest field's alignment; `tests/union.sh` checks 1-,
+2-, 4-, and 8-byte C, C++, and Go sizes and alignments, plus overlapping
+scalar field access and independent value copies from source and saved IR on
+all four targets. String, record, array, and pointer fields
+remain unsupported on Go and `.zib`. Select layout-preserving representations
+for those fields, then test nested layouts, copies, and host boundaries.
 
 ### 8. Expand `.zib` and host capabilities
 
 The portable verifier and VM support a useful scalar/record/array subset, and
 carry raw pointers as opaque host handles that can be stored, compared, and
 passed across host capabilities. They still reject slices inside globals or
-records, reachable unions, and several host shapes. Literal scalar, string,
+records, unions with non-scalar fields, and several host shapes. Literal
+scalar, string,
 record, and fixed-array global initializers run portably, including nested
 record and array literals across native targets. Bounded pure procedure calls
 in initializers fold before output; runtime-dependent calls remain open.

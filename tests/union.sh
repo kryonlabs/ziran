@@ -32,14 +32,29 @@ Answer :: () -> s32 {
 ZI
 
 cat > "$work/scalar.zi" <<'ZI'
+Narrow :: union { value: u8 }
+Half :: union { value: u16 }
+Word :: union { value: u32 }
 Scalar :: union {
     narrow: u8
     wide: u64
     real: float64
 }
+#assert size_of(Narrow) == 1
+#assert size_of(Half) == 2
+#assert size_of(Word) == 4
+#assert size_of(Scalar) == 8
 
 #program_export
 Overlap :: () -> s32 {
+    narrow_cell: Narrow
+    narrow_cell.value = cast(u8)1
+    half_cell: Half
+    half_cell.value = cast(u16)2
+    word_cell: Word
+    word_cell.value = cast(u32)3
+    if narrow_cell.value != 1 || half_cell.value != 2 ||
+       word_cell.value != 3 { return 5 }
     cell: Scalar
     cell.narrow = cast(u8)255
     if cell.wide != 255 { return 1 }
@@ -49,6 +64,10 @@ Overlap :: () -> s32 {
     cell.wide = cast(u64)10
     cell.wide += cast(u64)32
     if cell.narrow != 42 { return 3 }
+    copied: Scalar = cell
+    if copied.wide != 42 { return 5 }
+    copied.narrow = cast(u8)1
+    if cell.wide != 42 || copied.narrow != 1 { return 6 }
     stored: Scalar
     stored.real = 2.0
     if stored.real != 2.0 { return 4 }
@@ -108,9 +127,47 @@ CPP
         --root "$scalar_root" -o "$work/go-$input" "$scalar"
     cat > "$work/go-$input/main.go" <<'GO'
 package main
-func main() { if Scalar_Overlap() != 42 { panic("union overlap go") } }
+import "unsafe"
+func main() {
+    if unsafe.Sizeof(Narrow{}) != 1 || unsafe.Alignof(Narrow{}) != 1 ||
+       unsafe.Sizeof(Half{}) != 2 || unsafe.Alignof(Half{}) != 2 ||
+       unsafe.Sizeof(Word{}) != 4 || unsafe.Alignof(Word{}) != 4 ||
+       unsafe.Sizeof(Scalar{}) != 8 || unsafe.Alignof(Scalar{}) != 8 {
+        panic("union layout go")
+    }
+    if Scalar_Overlap() != 42 { panic("union overlap go") }
+}
 GO
     GO111MODULE=off go run "$work/go-$input"/*.go
+    for target in c cpp; do
+        out="$work/scalar-$target-$input"
+        "$ziran" build --target="$target" --entry scalar:Overlap \
+            --root "$scalar_root" -o "$out" "$scalar"
+        if test "$target" = c; then
+            cat > "$out/main.c" <<'C'
+#include "scalar.h"
+_Static_assert(sizeof(Narrow) == 1 && _Alignof(Narrow) == 1, "narrow union");
+_Static_assert(sizeof(Half) == 2 && _Alignof(Half) == 2, "half union");
+_Static_assert(sizeof(Word) == 4 && _Alignof(Word) == 4, "word union");
+_Static_assert(sizeof(Scalar) == 8 && _Alignof(Scalar) == 8, "wide union");
+int main(void) { return Overlap() == 42 ? 0 : 1; }
+C
+            "${CC:-cc}" -std=c11 -I"$repo/include" -I"$out" \
+                "$out"/*.c -o "$out/app"
+        else
+            cat > "$out/main.cpp" <<'CPP'
+#include "scalar.hpp"
+static_assert(sizeof(Narrow) == 1 && alignof(Narrow) == 1, "narrow union");
+static_assert(sizeof(Half) == 2 && alignof(Half) == 2, "half union");
+static_assert(sizeof(Word) == 4 && alignof(Word) == 4, "word union");
+static_assert(sizeof(Scalar) == 8 && alignof(Scalar) == 8, "wide union");
+int main() { return Overlap() == 42 ? 0 : 1; }
+CPP
+            "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$out" \
+                "$out"/*.cpp -o "$out/app"
+        fi
+        "$out/app"
+    done
     "$ziran" bundle --root "$scalar_root" --entry scalar:Overlap \
         -o "$work/overlap-$input.zib" "$scalar"
     test "$("$ziran" run "$work/overlap-$input.zib")" = 42

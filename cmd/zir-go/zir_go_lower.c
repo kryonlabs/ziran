@@ -106,7 +106,7 @@ scalar_byte_width(const char *type)
        !strcmp(type, "float32"))
         return 4;
     if(!strcmp(type, "s64") || !strcmp(type, "u64") ||
-       !strcmp(type, "u64") || !strcmp(type, "float64") ||
+       !strcmp(type, "float64") ||
        !strcmp(type, "integer"))
         return 8;
     return 0;
@@ -1342,7 +1342,7 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 if(t->is_union) {
                     size_t offset = 0;
                     ZirTypeField field;
-                    size_t size = 0;
+                    size_t size = 0, alignment = 1;
                     while(TypeNextField(t, &offset, &field) == 1) {
                         const char *backing = field.type;
                         const ZirType *enumeration = FindType(m, field.type,
@@ -1358,13 +1358,15 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                         }
                         if(width > size)
                             size = width;
+                        if(width > alignment)
+                            alignment = width;
                     }
                     if(size == 0)
                         size = 1;
                     fprintf(f, "type %s struct {\n"
-                           "\t_ [0]uint64\n"
+                           "\t_ [0]uint%zu\n"
                            "\tdata [%zu]byte\n"
-                           "}\n\n", native, size);
+                           "}\n\n", native, alignment * 8, size);
                     g_union_unsafe = 1;
                     continue;
                 }

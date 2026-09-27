@@ -212,7 +212,10 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   all scalars or enums also build and run on Go, through an aligned byte
   backing with `unsafe` typed access, and in portable bundles, where the VM
   keeps raw bits in one slot and reinterprets every member read, write, and
-  compound assignment through the declared field type. Unions with string,
+  compound assignment through the declared field type. Go union storage now
+  uses the largest scalar field's alignment; `tests/union.sh` checks the exact
+  1-, 2-, 4-, and 8-byte sizes and alignments on C, C++, and Go, plus
+  independent union value copies across all four targets. Unions with string,
   record, array, or pointer fields remain C/C++-only.
 - `zi2zib bundle --root DIR --entry module:function -o FILE` builds an
   experimental version 20 `.zib` from source or saved IR. `zi2zib run FILE`
