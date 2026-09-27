@@ -4485,6 +4485,36 @@ add_visible_compile_globals(ZirModule *visible, const ZirModule *parsed,
     }
 }
 
+static ZirModule
+visible_compile_module(const ZirModule *parsed,
+                       const CompileParseContext *context,
+                       const ZirConsts *constants)
+{
+    ZirModule visible = visible_compile_usings(parsed,
+        context != NULL ? context->future_usings : NULL);
+    add_visible_compile_defines(&visible, parsed, constants);
+    add_visible_compile_imports(&visible, parsed,
+        context != NULL ? context->future_imports : NULL);
+    add_visible_compile_types(&visible, parsed,
+        context != NULL ? context->future_types : NULL);
+    add_visible_compile_functions(&visible, parsed,
+        context != NULL ? context->future_functions : NULL);
+    add_visible_compile_globals(&visible, parsed,
+        context != NULL ? context->future_globals : NULL);
+    return visible;
+}
+
+static void
+free_visible_compile_module(ZirModule *visible)
+{
+    free(visible->usings);
+    free(visible->defines);
+    free(visible->imports);
+    free(visible->types);
+    free(visible->functions);
+    free(visible->globals);
+}
+
 static int
 select_compile_condition(ZirModule *module, const ZirConsts *consts,
                          const char *source, ZirSourceSpan span,
@@ -4497,17 +4527,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
     int known;
     ZirConsts visible = visible_compile_constants(consts,
         context != NULL ? context->future_constants : NULL);
-    ZirModule using_scope = visible_compile_usings(module,
-        context != NULL ? context->future_usings : NULL);
-    add_visible_compile_defines(&using_scope, module, &visible);
-    add_visible_compile_imports(&using_scope, module,
-        context != NULL ? context->future_imports : NULL);
-    add_visible_compile_types(&using_scope, module,
-        context != NULL ? context->future_types : NULL);
-    add_visible_compile_functions(&using_scope, module,
-        context != NULL ? context->future_functions : NULL);
-    add_visible_compile_globals(&using_scope, module,
-        context != NULL ? context->future_globals : NULL);
+    ZirModule using_scope = visible_compile_module(module, context, &visible);
     module = &using_scope;
     consts = &visible;
     expand_compile_expr(expanded, sizeof(expanded), consts, source, span.path);
@@ -4564,12 +4584,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
     if(!known)
         die_at(span, "#if condition is not a compile-time constant: %s",
                expanded);
-    free(using_scope.usings);
-    free(using_scope.defines);
-    free(using_scope.imports);
-    free(using_scope.types);
-    free(using_scope.functions);
-    free(using_scope.globals);
+    free_visible_compile_module(&using_scope);
     free(visible.items);
     return value != 0;
 }
@@ -7402,12 +7417,15 @@ parse_source(const char *path, const char *root, const char *source,
                         int folded;
                         ZirConsts visible = visible_compile_constants(
                             &consts, &future_constants);
+                        ZirModule run_scope = visible_compile_module(
+                            module, &compile_context, &visible);
 
                         expand_compile_expr(expanded, sizeof(expanded),
                                             &visible, trim((char *)(expr + 4)),
                                             rel);
                         folded = strstr(expanded, "size_of") == NULL &&
-                                 eval_const_condition(expanded, &value, module,
+                                 eval_const_condition(expanded, &value,
+                                                     &run_scope,
                                                      &visible, rel, line_no, 1);
                         if(folded)
                             snprintf(run_value, sizeof(run_value),
@@ -7418,10 +7436,10 @@ parse_source(const char *path, const char *root, const char *source,
                             if(compile_context.resolver != NULL &&
                                !compile_context.resolver(
                                    compile_context.resolver_context, program,
-                                   module, path, root, expanded))
+                                   &run_scope, path, root, expanded))
                                 die_at(Span(rel, line_no, 1),
                                        "cannot resolve imports for #run expression");
-                            if(evaluate_typed_expression(module, &visible,
+                            if(evaluate_typed_expression(&run_scope, &visible,
                                     expanded, Span(rel, line_no, 1), 1,
                                     &fuel, &typed) &&
                                typed.kind != COMPILE_INVALID) {
@@ -7440,6 +7458,7 @@ parse_source(const char *path, const char *root, const char *source,
                                        "#run expression is too long");
                             deferred_run = 1;
                         }
+                        free_visible_compile_module(&run_scope);
                         free(visible.items);
                         expr = run_value;
                     }

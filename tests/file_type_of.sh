@@ -265,6 +265,11 @@ SELECTED_HIDDEN_CONSTANT_IF :: 1;
 }
 RUN_STEPS :: #run LaterSteps(2);
 RUN_LOOP :: #run LaterLoop(6);
+#if RUN_LOOP == 7 {
+SELECTED_RUN_LOOP_IF :: 1;
+} else {
+SELECTED_RUN_LOOP_IF :: 0;
+}
 global_size: s64 = size_of(type_of(Later()));
 #program_export
 Answer :: () -> s64 {
@@ -279,6 +284,7 @@ Answer :: () -> s64 {
            SELECTED_PRIVATE_CONSTANT_CALL_IF +
            SELECTED_STEPS_CALL_IF + SELECTED_LOADED_STEPS_CALL_IF +
            SELECTED_BRANCH_CALL_IF + SELECTED_LOOP_CALL_IF +
+           SELECTED_RUN_LOOP_IF +
            SELECTED_DEFINED_CONSTANT_IF + SELECTED_HIDDEN_CONSTANT_IF +
            RUN_STEPS + RUN_LOOP + global_size + 5
 }
@@ -338,20 +344,20 @@ for input in source saved; do
     fi
     "$ziran" bundle --root "$root" --entry deferred_type_of:Answer \
         -o "$work/deferred-$input.zib" "$module"
-    test "$("$ziran" run "$work/deferred-$input.zib")" = 85
+    test "$("$ziran" run "$work/deferred-$input.zib")" = 86
     for target in c cpp go; do
         output=$work/deferred-$target-$input
         "$ziran" build "--target=$target" --root "$root" \
             -o "$output" "$module"
         case "$target" in
             c)
-                printf '#include "deferred_type_of.h"\nint main(void) { return Answer() == 85 ? 0 : 1; }\n' > "$work/deferred-main.c"
+                printf '#include "deferred_type_of.h"\nint main(void) { return Answer() == 86 ? 0 : 1; }\n' > "$work/deferred-main.c"
                 "${CC:-cc}" -std=c11 -I"$repo/include" -I"$output" \
                     "$output"/*.c "$work/deferred-main.c" -o "$output/app"
                 "$output/app"
                 ;;
             cpp)
-                printf '#include "deferred_type_of.hpp"\nint main() { return Answer() == 85 ? 0 : 1; }\n' > "$work/deferred-main.cpp"
+                printf '#include "deferred_type_of.hpp"\nint main() { return Answer() == 86 ? 0 : 1; }\n' > "$work/deferred-main.cpp"
                 "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$output" \
                     "$output"/*.cpp "$work/deferred-main.cpp" -o "$output/app"
                 "$output/app"
@@ -361,7 +367,7 @@ for input in source saved; do
 package ziran
 import "testing"
 func TestDeferredTypeOf(t *testing.T) {
-    if DeferredTypeOf_Answer() != 85 { t.Fatal("deferred type_of") }
+    if DeferredTypeOf_Answer() != 86 { t.Fatal("deferred type_of") }
 }
 GO
                 GO111MODULE=off go test "$output"/*.go
@@ -470,6 +476,21 @@ if "$ziran" check --root "$work" "$work/private_loaded_call.zi" \
     exit 1
 fi
 rg -q 'not a compile-time constant' "$work/private_loaded_call.err"
+
+cat > "$work/private_loaded_run.zi" <<'ZI'
+VALUE :: #run Secret();
+#if VALUE == 9 {
+SELECTED :: 1;
+}
+#load "type_loaded.zi";
+ZI
+if "$ziran" check --root "$work" "$work/private_loaded_run.zi" \
+    2> "$work/private_loaded_run.err"; then
+    echo 'file-private loaded procedure ran through a forward #run' >&2
+    exit 1
+fi
+rg -q 'not a compile-time constant|unresolved|private' \
+    "$work/private_loaded_run.err"
 
 cat > "$work/forward_recursive_call.zi" <<'ZI'
 #if Recursive() == 1 {

@@ -138,6 +138,8 @@ loop cases. Defaults, named arguments, and
 later constants use the bounded evaluator, including a loaded procedure's
 file-private constant; recursion and loops share an instruction budget. Other
 forward body forms still require discovery; executed effects are rejected.
+File-scope `#run` now uses the same discovered module scope, so a constant
+computed by a later procedure can select a following `#if` branch.
 Token normalization now waits for branch selection, so obsolete
 primitive spellings in inactive top-level, type, and procedure branches are
 ignored while selected `else #if` conditions still use Jai scalar aliases.

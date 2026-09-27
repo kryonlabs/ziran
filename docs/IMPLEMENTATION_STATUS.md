@@ -433,6 +433,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   loaded file can use that file's private constant; executed effects are
   rejected, and recursion and loops share an instruction budget. Other body
   forms still need discovery.
+  A file-scope `#run` that calls such a later procedure now folds before a
+  following `#if` tests the result; loaded file-private procedures remain
+  hidden from callers in other files.
   `tests/file_type_of.sh` checks source and saved IR on C, C++, Go, and `.zib`.
   Standalone `type_of` values and broader forward `#if` queries remain
   unsupported.
