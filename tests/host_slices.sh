@@ -19,6 +19,9 @@ Answer :: () -> s32 {
     values: [4]u8 = .[9, 1, 2, 9]
     empty: []u8 = values[:0]
     if Fill(empty) != 0 { return -1 }
+    no_storage: [0]u8
+    empty_fixed: []u8 = no_storage[:]
+    if Fill(empty_fixed) != 0 { return -4 }
     middle: []u8 = values[1:3]
     if Fill(middle) != 2 || values[0] != 9 ||
         values[1] != 40 || values[2] != 2 || values[3] != 9 {
@@ -153,6 +156,8 @@ for input in source saved; do
     "$ziran" bundle --root "$returned_root" --entry returned:Answer \
         -o "$work/returned-$input.zib" "$returned"
     "$host_test" "$work/returned-$input.zib" return_view
+    "$host_test" "$work/returned-$input.zib" return_empty
+    "$host_test" "$work/returned-$input.zib" return_huge
 done
 cmp "$work/returned-source.zib" "$work/returned-saved.zib"
 

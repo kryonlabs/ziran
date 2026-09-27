@@ -3498,7 +3498,11 @@ host_return(Vm *vm, const ZirModule *module, const char *type,
         /* A host-returned slice is copied into VM-owned storage; the caller
          * owns the elements from here on. */
         Array *owned;
-        if(input->kind != VM_HOST_SLICE || input->elements == NULL) {
+        if(input->kind != VM_HOST_SLICE ||
+           (input->length > 0 && input->elements == NULL) ||
+           input->length >
+               (VM_MAX_ARRAY_BYTES - sizeof(Array)) / sizeof(Value) ||
+           input->field_count != 0 || input->fields != NULL) {
             vm->failed = 1;
             return result;
         }

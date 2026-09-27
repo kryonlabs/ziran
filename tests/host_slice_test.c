@@ -1,6 +1,7 @@
 #include "ziran_host.h"
 
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -43,7 +44,7 @@ fill(void *context, const char *module, const char *function,
     assert(args[0].elements[0].bits == 1);
     assert(args[0].elements[1].bits == 2);
     args[0].elements[0].bits = 40;
-    if(*calls == 5)
+    if(*calls == 7)
         args[0].elements[1].kind = VM_HOST_INTEGER;
     return 1;
 }
@@ -55,7 +56,8 @@ return_view(void *context, const char *module, const char *function,
             const VmHostValue *args, int arg_count, VmHostValue *result)
 {
     static VmHostValue elements[3];
-    (void)context; (void)args; (void)arg_count;
+    int mode = *(const int *)context;
+    (void)args; (void)arg_count;
     if(strcmp(module, "returned") != 0 || strcmp(function, "MakeView") != 0)
         return 0;
     for(int i = 0; i < 3; i++) {
@@ -67,6 +69,16 @@ return_view(void *context, const char *module, const char *function,
     result->type = "[]s32";
     result->elements = elements;
     result->length = 3;
+    if(mode == 1) {
+        result->elements = NULL;
+        result->length = 0;
+    } else if(mode == 2) {
+#if SIZE_MAX > UINT_MAX
+        result->length = (size_t)UINT_MAX + 1;
+#else
+        result->length = SIZE_MAX;
+#endif
+    }
     return 1;
 }
 
@@ -77,22 +89,22 @@ main(int argc, char **argv)
     int has_result = 0, calls = 0;
     assert(argc == 2 ||
            (argc == 3 && (strcmp(argv[2], "overlap") == 0 ||
-                          strcmp(argv[2], "return_view") == 0)));
+                          strcmp(argv[2], "return_view") == 0 ||
+                          strcmp(argv[2], "return_empty") == 0 ||
+                          strcmp(argv[2], "return_huge") == 0)));
     Bundle *bundle = BundleOpen(argv[1]);
     assert(bundle != NULL);
-    if(argc == 3 && strcmp(argv[2], "return_view") == 0) {
-        HostBinding make = {"returned", "MakeView", fill, &calls};
+    if(argc == 3 && strncmp(argv[2], "return_", 7) == 0) {
+        int mode = strcmp(argv[2], "return_empty") == 0 ? 1 :
+                   strcmp(argv[2], "return_huge") == 0 ? 2 : 0;
         assert(BundleCapabilityCount(bundle) == 1);
-        (void)make;
-        {
-            HostBinding bindings[1] = {{"returned", "MakeView",
-                                        return_view, &calls}};
-            if(!BundleRun(bundle, bindings, 1, &result, &has_result)) {
-                fprintf(stderr, "returned view run failed\n");
-                return 1;
-            }
-            assert(has_result && result == 60);
-        }
+        HostBinding bindings[1] = {{"returned", "MakeView",
+                                    return_view, &mode}};
+        int ran = BundleRun(bundle, bindings, 1, &result, &has_result);
+        if(mode == 2)
+            assert(!ran);
+        else
+            assert(ran && has_result && result == (mode == 1 ? -1 : 60));
         BundleClose(bundle);
         return 0;
     }
@@ -113,9 +125,9 @@ main(int argc, char **argv)
         fprintf(stderr, "slice host run failed after %d calls\n", calls);
         return 1;
     }
-    assert(has_result && result == 42 && calls == 3);
+    assert(has_result && result == 42 && calls == 4);
     assert(!BundleRun(bundle, bindings, 2, &result, &has_result));
-    assert(calls == 5);
+    assert(calls == 7);
     BundleClose(bundle);
     return 0;
 }

@@ -55,6 +55,8 @@ struct VmHostField {
  * Their elements may be inspected during the call; mutations to argument
  * elements are not copied back. A zero-length array has no elements.
  * Returned array elements must remain valid until BundleRun returns.
+ * A returned zero-length slice may have a null elements pointer. Longer
+ * slices need elements for their declared length; oversized lengths fail.
  * A declared pointer type crosses as kind VM_HOST_POINTER with the raw address
  * in `pointer`; the VM treats it as an opaque handle and never dereferences
  * it, so the host owns the storage behind it. */

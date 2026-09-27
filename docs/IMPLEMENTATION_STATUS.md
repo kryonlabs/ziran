@@ -463,6 +463,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   back into the borrowed Ziran array. Source and saved bundles and generated
   C, C++, and Go run the same buffer example. The VM rejects overlapping
   mutable host slice arguments and invalid returned element types.
+  Empty fixed arrays can be borrowed as zero-length slices for synchronous
+  host calls. Host-returned zero-length slices may have no elements; oversized
+  returned lengths fail before allocation.
   Fixed arrays also cross the portable host boundary by value, including
   zero-length arrays and arrays of records with array fields. Returned shapes
   are checked recursively; `tests/host_arrays.sh` covers source and saved

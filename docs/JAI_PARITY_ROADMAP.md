@@ -40,7 +40,7 @@ including `#enum`, `variant`, postfix `?`, `#global`, `#export`, `#private`,
 `#extern`, C pointer suffixes, C conditional expressions, and old Kryon file
 extensions. The rejection tests should stay.
 
-The full local `make check` suite has 111 checks. Re-run it after any change to
+The full local `make check` suite has 112 checks. Re-run it after any change to
 the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 
 | Area | Current subset | Next proof of parity |
@@ -187,11 +187,13 @@ GNU-compatible zero-array extensions, which compile under the strict C99 and
 C++ modes used by the test. The portable VM allocates an array descriptor with
 zero elements. No fake element contributes to layout or storage.
 
-Broaden the zero-length slice borrowing audit and nested and imported
-zero-bound alias cases. `tests/host_arrays.sh` checks fixed-array foreign
-arguments and returns on C99, C++17, Go, and portable bundles; compare the
-native ABI with Jai before claiming parity. Nonempty arrays also need the
-full Jai `.data` contract rather than using native C array layout as proof.
+`tests/host_slices.sh` covers a zero-length slice borrowed from a zero-capacity
+array and a host-returned empty slice across source and saved IR. Broaden the
+slice borrowing audit and nested and imported zero-bound alias cases.
+`tests/host_arrays.sh` checks fixed-array foreign arguments and returns on
+C99, C++17, Go, and portable bundles; compare the native ABI with Jai before
+claiming parity. Nonempty arrays also need the full Jai `.data` contract
+rather than using native C array layout as proof.
 The OpenJai reference describes an empty typed literal with count zero and
 a null data pointer; verify that behavior with Jai itself before claiming
 exact language parity.
