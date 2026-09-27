@@ -50,3 +50,10 @@ match it. The portable VM runs the small input only. Raw commands, samples,
 source and tool hashes, and caveats are written alongside the report. These
 workloads remain a smoke and collection baseline; they do not cover text,
 records, generics, larger module graphs, or real applications.
+
+The [vector-growth baseline](results/2026-09-27-vector-growth/benchmark.md)
+contains three measured compilation and five measured execution samples per
+case on one machine. The generated C and C++ runs were close to their
+handwritten comparisons for the large input; generated Go took about 22 ms
+versus 8 ms for handwritten Go. This identifies a workload for investigating
+vector lowering, not a general performance ranking.

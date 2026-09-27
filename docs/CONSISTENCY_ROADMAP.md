@@ -15,8 +15,10 @@ modules. `ziran guide` supplies a compiler-local starting point. The
 [benchmark harness](../bench/README.md) measures source/saved-IR compilation,
 downstream native builds, and validated runtime output for all four current
 execution paths. Its [first baseline](../bench/results/2026-09-27/benchmark.md)
-contains 206 samples across 50 cases on one machine. That integer kernel is a
-smoke check, not a general speed ranking.
+contains 206 samples across 50 cases on one machine. A second
+[vector-growth baseline](../bench/results/2026-09-27-vector-growth/benchmark.md)
+adds 160 samples for collection growth and scanning. Both are workload-specific
+smoke checks, not a general speed ranking.
 
 Recent differential tests aligned narrow integer shifts, narrowing casts,
 and floating division between native and portable execution. Cleanup and one
@@ -118,16 +120,18 @@ not the general language runtime.
 
 ## Performance evidence to collect next
 
-The current benchmark covers one integer recurrence, with process startup in
-runtime timings. It separates Ziran emission from host compiler work and marks
-Go build times as cache-warm. Generated C/C++ were close to handwritten
-equivalents on this kernel. Generated Go took about 2.6 times handwritten Go
-runtime in the initial audit; its emitted loop calls general numeric helpers
-five times per iteration, a focused backend optimization candidate. This
-observation is workload-specific and needs a before/after measurement.
+The current benchmarks cover an integer recurrence and vector growth followed
+by a scan, with process startup in runtime timings. They separate Ziran
+emission from host compiler work and mark Go build times as cache-warm.
+Generated C/C++ were close to handwritten equivalents on these kernels.
+Generated Go took about 2.6 times handwritten Go on the integer kernel and
+about 2.8 times on the large vector-growth case. The integer loop calls
+general numeric helpers five times per iteration; vector lowering needs its
+own profile before assigning its overhead to a specific cause. These
+observations need focused before/after measurements.
 
 Add validated workloads for arrays, records/calls, generic specialization,
-vector growth, text/UTF-8/JSON scanning, sorting/maps when available, local
+text/UTF-8/JSON scanning, sorting/maps when available, local
 I/O, and real applications. Scale compiler inputs by module count, source size,
 generic instances, compile-time evaluation, and laws. Instrument compiler
 phases and allocations; do not present sums of separately sampled phases as
