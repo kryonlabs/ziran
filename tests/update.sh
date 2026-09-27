@@ -41,6 +41,14 @@ Check :: () -> s32 {
     if malformed.valid {
         return 5
     }
+    bad_version := ParseAppcast("{\"version\":\"v1..2\"}", "")
+    if bad_version.valid {
+        return 6
+    }
+    overflow_size := ParseAppcast("{\"version\":\"2\",\"channels\":{\"appimage-amd64\":{\"url\":\"https://example.test/a\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"size\":9223372036854775808}}}", "appimage-amd64")
+    if overflow_size.valid {
+        return 7
+    }
     return 0
 }
 ZI

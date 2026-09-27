@@ -1,4 +1,5 @@
 #import "json_scan"
+#import "text_buffer"
 
 // Release metadata and version decisions are portable. Downloading and
 // installing an artifact remain explicit host operations.
@@ -16,11 +17,13 @@ Appcast :: struct {
     valid: bool
 }
 
+#scope_file
 VersionNumbers :: struct {
     parts: [4]s64
     valid: bool
 }
 
+#scope_file
 ReadVersion :: (version: string) -> VersionNumbers {
     result: VersionNumbers
     if version.count == 0 {
@@ -63,6 +66,7 @@ ReadVersion :: (version: string) -> VersionNumbers {
     return result
 }
 
+#scope_export
 #program_export
 CompareVersions :: (left: string, right: string) -> s32 {
     a := ReadVersion(left)
@@ -83,6 +87,7 @@ CompareVersions :: (left: string, right: string) -> s32 {
     return 0
 }
 
+#scope_file
 CopyJsonText :: (json: string, at: s32, output: []u8) -> bool {
     if output.count == 0 {
         return false
@@ -109,6 +114,7 @@ CopyJsonText :: (json: string, at: s32, output: []u8) -> bool {
     return true
 }
 
+#scope_file
 ReadSize :: (json: string, at: s32) -> s64 {
     if at < 0 || at >= cast(s32)json.count {
         return -1
@@ -137,6 +143,7 @@ ReadSize :: (json: string, at: s32) -> s64 {
     return value
 }
 
+#scope_file
 ValidDigest :: (digest: []u8) -> bool {
     if digest.count < 65 || digest[64] != cast(u8)0 {
         return false
@@ -154,6 +161,7 @@ ValidDigest :: (digest: []u8) -> bool {
 
 // Select one channel from the release manifest. A missing channel still
 // yields a valid appcast: package-managed installs show the release page.
+#scope_export
 #program_export
 ParseAppcast :: (json: string, channel: string) -> Appcast {
     result: Appcast
@@ -163,7 +171,8 @@ ParseAppcast :: (json: string, channel: string) -> Appcast {
     }
     version_at := FieldAt(json, 0, "version")
     if !CopyJsonText(json, version_at, result.version[:]) ||
-        result.version[0] == cast(u8)0 {
+        result.version[0] == cast(u8)0 ||
+        !ReadVersion(TextUntilNul(result.version[:])).valid {
         return result
     }
     notes_at := FieldAt(json, 0, "notes_url")
