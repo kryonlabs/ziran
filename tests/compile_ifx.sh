@@ -6,6 +6,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/choice.zi" <<'EOF'
+Point :: struct { x: s32; y: s32; }
 ENABLED :: true;
 CALCULATED :: #run 2 + 2;
 VALUE :: #ifx CALCULATED == 4 then 40 else MissingValue();
@@ -14,11 +15,24 @@ NESTED :: #ifx ENABLED then #ifx false then MissingValue() else 0 else MissingVa
 NESTED_CONDITION :: #ifx (#ifx true then true else false) then 0 else MissingValue();
 SKIP :: #ifx true then 0 else (#ifx Unknown then 1 else 2);
 PLATFORM :: #ifx OS == .LINUX || OS != .LINUX then 0 else MissingValue();
+CHOSEN_POINT :: #ifx true then Point.{.x = 40, .y = 2} else MissingValue();
+CHOSEN_ARRAY :: #ifx true then s32.[40, 2] else MissingValue();
+chosen_global: Point = #ifx true then Point.{.x = 40, .y = 2} else MissingValue();
 counter: s32;
+TakePoint :: (point: Point) -> s32 { return point.x + point.y }
+TakeArray :: (values: [2]s32) -> s32 { return values[0] + values[1] }
 
 #program_export
 Answer :: () -> s32 {
     counter += 1
+    chosen_local: Point = #ifx true then Point.{.x = 40, .y = 2} else MissingValue()
+    if CHOSEN_POINT.x != 40 || CHOSEN_POINT.y != 2 ||
+       CHOSEN_ARRAY[0] != 40 || CHOSEN_ARRAY[1] != 2 ||
+       chosen_global.x != 40 || chosen_global.y != 2 ||
+       chosen_local.x != 40 || chosen_local.y != 2 { return 0 }
+    if TakePoint(#ifx true then Point.{.x = 40, .y = 2} else MissingValue()) != 42 ||
+       TakePoint(point = #ifx true then Point.{.x = 40, .y = 2} else MissingValue()) != 42 ||
+       TakeArray(#ifx true then s32.[40, 2] else MissingValue()) != 42 { return 0 }
     selected: s32 = #ifx ENABLED then VALUE + OFFSET + NESTED + NESTED_CONDITION + SKIP + PLATFORM else MissingValue()
     inferred := #ifx true then 42; else MissingValue();
     if inferred != 42 { return 0 }

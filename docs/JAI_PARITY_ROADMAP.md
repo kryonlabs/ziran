@@ -174,7 +174,10 @@ procedure-type values.
 
 `ifx` and `#ifx` now work as positional and named call arguments in the
 tested scalar subset, including source/saved-IR builds and entry pruning.
-Audit remaining lazy-expression placements and aggregate result types.
+`#ifx` also selects record and fixed-array results in file constants, global
+initializers, local definitions, and call arguments; `tests/compile_ifx.sh` checks source and
+saved IR on C, C++, Go, and `.zib`. Audit remaining lazy-expression placements
+and aggregate forms.
 Forward and imported `size_of(type_of(...))` operands now resolve in tested
 file-scope constants, global initializers, `#run`, and `#ifx`; imported
 operands also work in `#if`. `tests/file_type_of.sh` checks source and saved

@@ -317,8 +317,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   arm before strict checking and saved-IR generation. It accepts the Jai
   semicolon before `else`, nested selections, boolean and integer constants,
   constant aliases, and compiler-host `OS` comparisons with `.WINDOWS`,
-  `.MACOS`, or `.LINUX`; unused arms are not type-checked. `#run`, `#if`,
-  `#ifx`, and `#assert` evaluate pure procedures with signed integer (up to
+  `.MACOS`, or `.LINUX`; unused arms are not type-checked.
+  `#ifx` also selects record and fixed-array values in file constants, global
+  initializers, local definitions, and call arguments on C, C++, Go, and `.zib` from source
+  and saved IR. `#run`, `#if`, `#ifx`, and `#assert` evaluate pure procedures
+  with signed integer (up to
   `s64`), unsigned integer (up to `u32`), or boolean parameters/results. Local
   declarations and assignments, branches, bounded `while` and numeric range
   loops, nested calls, and imported calls work in `#run`, `#if`, `#ifx`, and
