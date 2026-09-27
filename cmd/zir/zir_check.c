@@ -1651,9 +1651,9 @@ lexical_vec_binding(Checker *c, int index)
         return NULL;
     for(int i = c->count - 1; i >= 0; i--)
         if(!c->bindings[i].is_using_namespace &&
-           !strcmp(c->bindings[i].name, e->name) &&
-           owned_vec_binding_type(c, c->bindings[i].type))
-            return &c->bindings[i];
+           !strcmp(c->bindings[i].name, e->name))
+            return owned_vec_binding_type(c, c->bindings[i].type) ?
+                &c->bindings[i] : NULL;
     return NULL;
 }
 
@@ -5281,14 +5281,26 @@ mark_expr_moves(Checker *c, int index)
     if(index < 0 || index >= c->fn->expr_count)
         return;
     e = &c->fn->exprs[index];
+    if(e->kind == ZIR_EXPR_IDENT) {
+        Binding *binding = lexical_vec_binding(c, index);
+        if(binding != NULL && binding->moved)
+            error(c, e->span, "Vec binding is used after moving", e->name);
+        return;
+    }
     primitive = e->kind == ZIR_EXPR_CALL && vec_primitive_name(e->name);
     for(int child = e->first_child; child >= 0;
         child = c->fn->exprs[child].next_sibling) {
-        Binding *binding = lexical_vec_binding(c, child);
-        if(binding == NULL)
-            continue;
-        if(!primitive || !strcmp(e->name, "VecFree") ||
-           !strcmp(e->name, "BuilderFinish")) {
+        Binding *binding = e->kind == ZIR_EXPR_CALL ?
+            lexical_vec_binding(c, child) : NULL;
+        int consumes = binding != NULL &&
+            (!primitive || !strcmp(e->name, "VecFree") ||
+             !strcmp(e->name, "BuilderFinish"));
+        if(consumes) {
+            if(binding->moved) {
+                error(c, c->fn->exprs[child].span,
+                      "Vec binding is used after moving", binding->name);
+                continue;
+            }
             if(binding->borrow_count > 0)
                 error(c, e->span,
                       "cannot move a Vec with a live borrowed view",
@@ -5296,8 +5308,8 @@ mark_expr_moves(Checker *c, int index)
             binding->moved = 1;
             if(!primitive)
                 c->fn->exprs[child].is_move = 1;
-        }
-        mark_expr_moves(c, child);
+        } else
+            mark_expr_moves(c, child);
     }
     mark_expr_moves(c, e->left);
     mark_expr_moves(c, e->right);
@@ -5495,6 +5507,7 @@ restart:
         }
         if(c->errors == errors_at_statement && st->expr_root >= 0) {
             Binding *moved_from = lexical_vec_binding(c, st->expr_root);
+            int consumed_root = 0;
             if(moved_from != NULL &&
                (st->kind == ZIR_STMT_DECL || st->kind == ZIR_STMT_ASSIGN ||
                 st->kind == ZIR_STMT_RETURN)) {
@@ -5504,8 +5517,10 @@ restart:
                           moved_from->name);
                 moved_from->moved = 1;
                 c->fn->exprs[st->expr_root].is_move = 1;
+                consumed_root = 1;
             }
-            mark_expr_moves(c, st->expr_root);
+            if(!consumed_root)
+                mark_expr_moves(c, st->expr_root);
             /* An assignment into a moved-from Vec binding re-owns it with
              * the transferred or fresh value. The handoff form
              * `v = Take(v)` also re-owns: the right side moved this binding

@@ -19,6 +19,10 @@ Take :: (items: Vec(s32)) -> s32 {
     return items[0]
 }
 
+Relay :: (items: Vec(s32)) -> Vec(s32) {
+    return items
+}
+
 Early :: (stop: bool) -> s32 {
     values: Vec(s32)
     VecPush(values, 3)
@@ -56,6 +60,8 @@ Check :: () -> s32 {
     result += Shadowed()
     moved: Vec(s32) = Make()
     result += Take(moved)
+    nested: Vec(s32) = Make()
+    result += Take(Relay(nested))
     for_index: s32 = 0
     while for_index < 3 {
         values: Vec(s32)
@@ -103,7 +109,7 @@ void __wrap_free(void *p) {
 }
 
 int main(void) {
-    if (Check() != 25) return 1;
+    if (Check() != 32) return 1;
     return outstanding == 0 ? 0 : 2;
 }
 C
