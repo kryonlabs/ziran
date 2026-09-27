@@ -419,10 +419,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   initializers, `#run`, `#assert`, `#if`, and `#ifx`; the operand is not run.
   Forward and imported operands also work in tested file-scope constants,
   global initializers, `#run`, and `#ifx`; imported operands work in `#if`.
-  Unconditional procedure headers in the same file or a later `#load`
-  resolve forward `#if size_of(type_of(Call()))` queries without running the
-  call, including multiline parameter lists; inactive and file-private
-  procedures stay hidden.
+  Unconditional procedure headers and single-line typed globals in the same
+  file or a later `#load` resolve forward `#if size_of(type_of(...))` queries
+  without evaluating the operand. Procedure parameter lists may span lines;
+  global member queries can use a later record type. Inactive and
+  file-private names stay hidden.
   `tests/file_type_of.sh` checks source and saved IR on C, C++, Go, and `.zib`.
   Standalone `type_of` values and broader forward `#if` queries remain
   unsupported.

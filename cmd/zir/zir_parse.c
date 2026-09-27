@@ -2256,6 +2256,12 @@ typedef struct {
 } ZirFunctions;
 
 typedef struct {
+    ZirGlobal *items;
+    int count;
+    int capacity;
+} ZirGlobals;
+
+typedef struct {
     char **paths;
     int count;
     int capacity;
@@ -4277,6 +4283,7 @@ typedef struct CompileParseContext {
     const ZirImports *future_imports;
     const ZirTypes *future_types;
     const ZirFunctions *future_functions;
+    const ZirGlobals *future_globals;
 } CompileParseContext;
 
 static ZirConsts
@@ -4413,6 +4420,34 @@ add_visible_compile_functions(ZirModule *visible, const ZirModule *parsed,
     }
 }
 
+static void
+add_visible_compile_globals(ZirModule *visible, const ZirModule *parsed,
+                            const ZirGlobals *future)
+{
+    int extra = future != NULL ? future->count : 0;
+    visible->globals = calloc((size_t)parsed->global_count +
+                              (size_t)extra + 1,
+                              sizeof(*visible->globals));
+    if(visible->globals == NULL)
+        die("out of memory resolving compile-time globals");
+    visible->global_count = 0;
+    for(int i = 0; i < parsed->global_count; i++)
+        visible->globals[visible->global_count++] = parsed->globals[i];
+    for(int i = 0; i < extra; i++) {
+        const ZirGlobal *candidate = &future->items[i];
+        int present = 0;
+        for(int j = 0; j < parsed->global_count; j++)
+            if(!strcmp(parsed->globals[j].span.path,
+                       candidate->span.path) &&
+               parsed->globals[j].span.line == candidate->span.line) {
+                present = 1;
+                break;
+            }
+        if(!present)
+            visible->globals[visible->global_count++] = *candidate;
+    }
+}
+
 static int
 select_compile_condition(ZirModule *module, const ZirConsts *consts,
                          const char *source, ZirSourceSpan span,
@@ -4433,6 +4468,8 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
         context != NULL ? context->future_types : NULL);
     add_visible_compile_functions(&using_scope, module,
         context != NULL ? context->future_functions : NULL);
+    add_visible_compile_globals(&using_scope, module,
+        context != NULL ? context->future_globals : NULL);
     module = &using_scope;
     consts = &visible;
     expand_compile_expr(expanded, sizeof(expanded), consts, source, span.path);
@@ -4493,6 +4530,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
     free(using_scope.imports);
     free(using_scope.types);
     free(using_scope.functions);
+    free(using_scope.globals);
     free(visible.items);
     return value != 0;
 }
@@ -5370,6 +5408,39 @@ discover_function_header(const char *source, const char *path,
     function->is_file_private = scope_file;
 }
 
+static void
+discover_typed_global(const char *source, const char *path,
+                      const char *rel, int line_no,
+                      int scope_public, int scope_file,
+                      ZirGlobals *future)
+{
+    size_t length = strlen(source);
+    if(length == 0 || source[length - 1] != ';' ||
+       strchr(source, ':') == NULL || strstr(source, "::") != NULL ||
+       (!isalpha((unsigned char)source[0]) && source[0] != '_'))
+        return;
+    char line[SOURCE_LINE_MAX];
+    ZirModule parsed = {0};
+    copy_text(line, sizeof(line), source);
+    normalize_jai_source_tokens(line, rel, path, line_no);
+    parse_file_global(&parsed, line, Span(rel, line_no, 1),
+                      scope_public, scope_file, NULL, 0);
+    if(parsed.global_count != 1) {
+        free(parsed.globals);
+        return;
+    }
+    if(future->count == future->capacity) {
+        int capacity = future->capacity > 0 ? future->capacity * 2 : 8;
+        ZirGlobal *items = realloc(future->items,
+                                   (size_t)capacity * sizeof(*items));
+        if(items == NULL) die("out of memory discovering globals");
+        future->items = items;
+        future->capacity = capacity;
+    }
+    future->items[future->count++] = parsed.globals[0];
+    free(parsed.globals);
+}
+
 static char *read_lowered_source(const char *path);
 
 static int
@@ -5425,6 +5496,7 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                     ZirConsts *future_constants, ZirUsings *future_usings,
                     ZirImports *future_imports, ZirTypes *future_types,
                     ZirFunctions *future_functions,
+                    ZirGlobals *future_globals,
                     ZirDiscoveredFiles *files, int depth)
 {
     if(depth >= 32 || !remember_discovered_file(files, path)) return;
@@ -5543,6 +5615,7 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                                         loaded_rel, root, future_constants,
                                         future_usings, future_imports,
                                         future_types, future_functions,
+                                        future_globals,
                                         files, depth + 1);
                                     free(loaded);
                                     free(loaded_path);
@@ -5586,6 +5659,9 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                     }
                 }
             } else {
+                discover_typed_global(t, path, rel, line_no,
+                                      scope_public, scope_file,
+                                      future_globals);
                 const char *colons = strstr(t, "::");
                 const char *declaration = colons != NULL ?
                     skip_ws(colons + 2) : t;
@@ -6093,6 +6169,7 @@ parse_source(const char *path, const char *root, const char *source,
     ZirImports future_imports = {0};
     ZirTypes future_types = {0};
     ZirFunctions future_functions = {0};
+    ZirGlobals future_globals = {0};
     ZirDiscoveredFiles discovered_files = {0};
     int body_mdepth[8];
     int body_mselected[8];
@@ -6155,6 +6232,7 @@ parse_source(const char *path, const char *root, const char *source,
     compile_context.future_imports = &future_imports;
     compile_context.future_types = &future_types;
     compile_context.future_functions = &future_functions;
+    compile_context.future_globals = &future_globals;
 
     module = ProgramAddModule(program, module_name, rel, Span(rel, 1, 1));
     if(module == NULL)
@@ -6167,7 +6245,7 @@ parse_source(const char *path, const char *root, const char *source,
     }
     discover_file_scope(source, path, rel, root, &future_constants,
                         &future_usings, &future_imports, &future_types,
-                        &future_functions,
+                        &future_functions, &future_globals,
                         &discovered_files, 0);
 
     for(;;) {
@@ -6816,6 +6894,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_imports.items);
                 free(future_types.items);
                 free(future_functions.items);
+                free(future_globals.items);
                 free_discovered_files(&discovered_files);
                 free(canonical);
                 return NULL;
@@ -7696,6 +7775,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_imports.items);
                 free(future_types.items);
                 free(future_functions.items);
+                free(future_globals.items);
                 free_discovered_files(&discovered_files);
                 free(canonical);
                 return NULL;
@@ -7708,6 +7788,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_imports.items);
                 free(future_types.items);
                 free(future_functions.items);
+                free(future_globals.items);
                 free_discovered_files(&discovered_files);
                 free(canonical);
                 return NULL;
@@ -7722,6 +7803,7 @@ parse_source(const char *path, const char *root, const char *source,
     free(future_imports.items);
     free(future_types.items);
     free(future_functions.items);
+    free(future_globals.items);
     free_discovered_files(&discovered_files);
     free(canonical);
     return program;

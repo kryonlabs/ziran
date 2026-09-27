@@ -140,8 +140,10 @@ ZI
 cat > "$work/type_loaded.zi" <<'ZI'
 #scope_export
 Loaded :: () -> s64 { return 7 }
+LoadedGlobal: s32;
 #scope_file
 Secret :: () -> s64 { return 9 }
+SecretGlobal: s64;
 ZI
 cat > "$work/deferred_type_of.zi" <<'ZI'
 #import "type_lib"
@@ -173,15 +175,35 @@ SELECTED_MULTILINE_IF :: 1;
 } else {
 SELECTED_MULTILINE_IF :: 0;
 }
+#if size_of(type_of(LaterGlobal)) == 8 {
+SELECTED_GLOBAL_IF :: 1;
+} else {
+SELECTED_GLOBAL_IF :: 0;
+}
+#if size_of(type_of(LoadedGlobal)) == 4 {
+SELECTED_LOADED_GLOBAL_IF :: 1;
+} else {
+SELECTED_LOADED_GLOBAL_IF :: 0;
+}
+#if size_of(type_of(LaterRecord.value)) == 4 {
+SELECTED_FIELD_IF :: 1;
+} else {
+SELECTED_FIELD_IF :: 0;
+}
 global_size: s64 = size_of(type_of(Later()));
 #program_export
 Answer :: () -> s64 {
     return FORWARD + IMPORTED + QUALIFIED + FIELD + RUN +
            RUN_IMPORTED + SELECTED + SELECTED_IF +
            SELECTED_FORWARD_IF + SELECTED_LOADED_IF +
-           SELECTED_MULTILINE_IF + global_size + 5
+           SELECTED_MULTILINE_IF + SELECTED_GLOBAL_IF +
+           SELECTED_LOADED_GLOBAL_IF + SELECTED_FIELD_IF +
+           global_size + 5
 }
 Later :: () -> s64 { return 42 }
+LaterGlobal: s64;
+LaterRecord: Payload;
+Payload :: struct { value: s32; }
 Multiline :: (
     value: s64
 ) -> s64 {
@@ -202,20 +224,20 @@ for input in source saved; do
     fi
     "$ziran" bundle --root "$root" --entry deferred_type_of:Answer \
         -o "$work/deferred-$input.zib" "$module"
-    test "$("$ziran" run "$work/deferred-$input.zib")" = 54
+    test "$("$ziran" run "$work/deferred-$input.zib")" = 57
     for target in c cpp go; do
         output=$work/deferred-$target-$input
         "$ziran" build "--target=$target" --root "$root" \
             -o "$output" "$module"
         case "$target" in
             c)
-                printf '#include "deferred_type_of.h"\nint main(void) { return Answer() == 54 ? 0 : 1; }\n' > "$work/deferred-main.c"
+                printf '#include "deferred_type_of.h"\nint main(void) { return Answer() == 57 ? 0 : 1; }\n' > "$work/deferred-main.c"
                 "${CC:-cc}" -std=c11 -I"$repo/include" -I"$output" \
                     "$output"/*.c "$work/deferred-main.c" -o "$output/app"
                 "$output/app"
                 ;;
             cpp)
-                printf '#include "deferred_type_of.hpp"\nint main() { return Answer() == 54 ? 0 : 1; }\n' > "$work/deferred-main.cpp"
+                printf '#include "deferred_type_of.hpp"\nint main() { return Answer() == 57 ? 0 : 1; }\n' > "$work/deferred-main.cpp"
                 "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$output" \
                     "$output"/*.cpp "$work/deferred-main.cpp" -o "$output/app"
                 "$output/app"
@@ -225,7 +247,7 @@ for input in source saved; do
 package ziran
 import "testing"
 func TestDeferredTypeOf(t *testing.T) {
-    if DeferredTypeOf_Answer() != 54 { t.Fatal("deferred type_of") }
+    if DeferredTypeOf_Answer() != 57 { t.Fatal("deferred type_of") }
 }
 GO
                 GO111MODULE=off go test "$output"/*.go
@@ -238,6 +260,7 @@ cmp "$work/deferred-source.zib" "$work/deferred-saved.zib"
 cat > "$work/inactive_forward.zi" <<'ZI'
 #if false {
 Hidden :: () -> s64 { return 7 }
+HiddenGlobal: s64;
 }
 #if size_of(type_of(Hidden())) == 8 {
 SELECTED :: 1;
@@ -249,6 +272,21 @@ if "$ziran" check --root "$work" "$work/inactive_forward.zi" \
     exit 1
 fi
 rg -q 'unresolved function|checked expression' "$work/inactive_forward.err"
+
+cat > "$work/inactive_global.zi" <<'ZI'
+#if false {
+HiddenGlobal: s64;
+}
+#if size_of(type_of(HiddenGlobal)) == 8 {
+SELECTED :: 1;
+}
+ZI
+if "$ziran" check --root "$work" "$work/inactive_global.zi" \
+    2> "$work/inactive_global.err"; then
+    echo 'inactive global leaked into a forward #if query' >&2
+    exit 1
+fi
+rg -q 'unknown|checked expression' "$work/inactive_global.err"
 
 cat > "$work/private_loaded.zi" <<'ZI'
 #if size_of(type_of(Secret())) == 8 {
@@ -262,3 +300,29 @@ if "$ziran" check --root "$work" "$work/private_loaded.zi" \
     exit 1
 fi
 rg -q 'unresolved function|checked expression' "$work/private_loaded.err"
+
+cat > "$work/private_loaded_global.zi" <<'ZI'
+#if size_of(type_of(SecretGlobal)) == 8 {
+SELECTED :: 1;
+}
+#load "type_loaded.zi";
+ZI
+if "$ziran" check --root "$work" "$work/private_loaded_global.zi" \
+    2> "$work/private_loaded_global.err"; then
+    echo 'file-private loaded global leaked into a #if query' >&2
+    exit 1
+fi
+rg -q 'unknown|checked expression' "$work/private_loaded_global.err"
+
+cat > "$work/forward_global_value.zi" <<'ZI'
+#if LaterGlobal == 1 {
+SELECTED :: 1;
+}
+LaterGlobal: s32 = 1;
+ZI
+if "$ziran" check --root "$work" "$work/forward_global_value.zi" \
+    2> "$work/forward_global_value.err"; then
+    echo 'mutable global value became a compile-time constant' >&2
+    exit 1
+fi
+rg -q 'not a compile-time constant' "$work/forward_global_value.err"

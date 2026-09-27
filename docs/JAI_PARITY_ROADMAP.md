@@ -124,12 +124,13 @@ all four targets. Imported aggregate fields and array elements also work in
 tested `#if` conditions, including a later named import;
 `tests/imported_aggregate_constants.sh` covers this. Broader import forms
 remain open.
-Unconditional procedure headers in the current file or a later `#load`
-now resolve forward `#if size_of(type_of(Call()))` queries without executing
-the call, including multiline parameter lists. `tests/file_type_of.sh` checks
-source and saved IR on C, C++, Go,
-and `.zib`, and keeps inactive and file-private procedures hidden. Forward
-procedure calls as condition values still need separate evaluation rules.
+Unconditional procedure headers and single-line typed globals in the current
+file or a later `#load` now resolve forward `#if size_of(type_of(...))`
+queries without evaluating the operand. Procedure parameter lists may span
+lines; global member queries can use a later record type. `tests/file_type_of.sh`
+checks source and saved IR on C, C++, Go, and `.zib`, and keeps inactive and
+file-private names hidden. Forward procedure calls as condition values still
+need separate evaluation rules.
 Token normalization now waits for branch selection, so obsolete
 primitive spellings in inactive top-level, type, and procedure branches are
 ignored while selected `else #if` conditions still use Jai scalar aliases.
