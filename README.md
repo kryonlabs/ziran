@@ -17,7 +17,8 @@ remaining language work, and [Migration](docs/MIGRATION.md) for the
 two-repository cutover.
 
 The current compiler can check and compile a tested
-subset of non-UI `.zi` to C, C++, and native Go. It can also save that subset as an
+subset of non-UI `.zi` to C, C++, and native Go; `plan9-c` provides an
+experimental Plan 9 C path through a post-pass today. It can also save that subset as an
 experimental versioned `.zir` and build each native target from saved modules. It
 can build and run experimental `.zib` bundles for a non-graphical subset with
 scalars, strings, plain records, enums, fixed arrays, borrowed slices, owned
@@ -44,7 +45,8 @@ then reports their public types and procedure signatures; see the
 `ziran check|ir|api|inspect|build|bundle|run|fmt` remains a convenience dispatcher
 for the same tools. [Cross-target benchmarks](bench/README.md) measure the
 compiler, downstream toolchains, and validated runtime cases separately.
-Use `ziran build --target=c` for C99 output.
+Use `ziran build --target=c` for C99 output. Use
+`ziran build --target=plan9-c` for the experimental Plan 9 C output path.
 Pass `--entry module:function` to a C99 build to retain functions, types,
 globals, and constants reachable from that entry. A native host implementation
 of a called foreign function is retained when it is among the input modules.

@@ -25,3 +25,8 @@ if rg -n 'plan9-c' "$work/generated"/*.c "$work/generated"/*.h; then
     echo 'plan9-c leaked dispatcher metadata into generated C' >&2
     exit 1
 fi
+
+zi2c="${ziran%/*}/zi2c"
+"$zi2c" --target=plan9-c --root "$work/src" \
+    -o "$work/direct" "$work/src/main.zi"
+cmp "$work/generated/main.c" "$work/direct/main.c"

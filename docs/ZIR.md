@@ -37,7 +37,7 @@ The current writer emits `ZIR` followed by a zero byte, a little-endian
 version number, and length-prefixed checked module records. Strings and
 integers are encoded explicitly; process pointers and C struct padding are
 not serialized. The reader rejects wrong versions, truncated records,
-oversized fields, invalid references, and trailing bytes. The C, C++, and native Go
+oversized fields, invalid references, and trailing bytes. The C, C++, native Go, and experimental Plan 9 C
 commands can build saved `.zir` modules, including an imported two-module
 typed record call example. The experimental `.zib` bundler also consumes saved `.zir`
 for its restricted scalar, record, and enum subset. Native and bundle builds rerun
