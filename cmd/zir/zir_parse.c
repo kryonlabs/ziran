@@ -5919,11 +5919,13 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                     while(expr_length > 0 &&
                           isspace((unsigned char)expr[expr_length - 1]))
                         expr_length--;
+                    size_t value_length = expr_length;
+                    if(value_length > 0 && expr[value_length - 1] == ';')
+                        value_length--;
                     if((expr[0] != '#' ||
                         starts_word(expr, "#defined")) &&
                        name_length > 0 && name_length < sizeof(name) &&
-                       expr_length > 1 && expr[expr_length - 1] == ';' &&
-                       expr_length - 1 < ZIR_TEXT_MAX) {
+                       value_length > 0 && value_length < ZIR_TEXT_MAX) {
                         memcpy(name, t, name_length);
                         name[name_length] = '\0';
                         trim_in_place(name);
@@ -5944,8 +5946,8 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                             memset(constant, 0, sizeof(*constant));
                             copy_text(constant->name, sizeof(constant->name),
                                       name);
-                            memcpy(constant->expr, expr, expr_length - 1);
-                            constant->expr[expr_length - 1] = '\0';
+                            memcpy(constant->expr, expr, value_length);
+                            constant->expr[value_length] = '\0';
                             trim_in_place(constant->expr);
                             copy_text(constant->path, sizeof(constant->path),
                                       rel);

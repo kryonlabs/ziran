@@ -428,7 +428,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   including implicit flags, explicit values, `#specified` backing types, and
   a later `#load`. Inactive and file-private flags stay hidden;
   `tests/forward_type_conditions.sh` checks source and saved IR on C, C++, Go,
-  and `.zib`.
+  and `.zib`. The same test covers a later generic record and a one-line
+  concrete alias without a semicolon in `#if size_of` and `#run size_of`;
+  aliases inside inactive branches or private loaded files stay hidden.
   Forward `#if` calls to unconditional procedures with local declarations,
   assignments, braced `if`/`else if`/`else`, and bounded `while` loops run
   through the compile-time evaluator. `break`, `continue`, calls to another

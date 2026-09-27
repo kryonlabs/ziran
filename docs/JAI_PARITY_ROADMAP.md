@@ -112,14 +112,17 @@ and plain enum declarations with known bodies are discovered for conditions;
 on all four targets, and inactive type isolation. Unconditional later
 `enum_flags` types provide implicit and explicit members in conditions,
 including `#specified` types and a later `#load`; the test also covers
-file-private and inactive visibility. Multiline record fields with semicolons
+file-private and inactive visibility. Direct `size_of(Box(s64))` and a later
+one-line concrete alias `LaterBox :: Box(s64)` also resolve in `#if` and
+`#run`; the alias works without a trailing semicolon, while inactive and
+file-private aliases remain hidden. Multiline record fields with semicolons
 lower the same way as inline fields. Unconditional nested
 `#load` files also contribute public constants, types, `using` declarations,
 and imports to earlier conditions; file-private names remain visible only in
 their declaring file. `tests/forward_load_conditions.sh` checks source and
 saved IR on all four targets, private visibility, and inactive loads. This is
-still a limited pass: types with conditional bodies, generic instances,
-embedded source imports, and imports in conditionally selected `#load`
+still a limited pass: types with conditional bodies, other generic-instance
+declaration forms, embedded source imports, and imports in conditionally selected `#load`
 files have ordering limits. Named imported real and string constants work in
 `#if` and `#run`, including an import declared later in the file;
 `tests/imported_typed_constants.sh` checks them on source and saved IR across
