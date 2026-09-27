@@ -5288,6 +5288,9 @@ mark_expr_moves(Checker *c, int index)
         return;
     }
     primitive = e->kind == ZIR_EXPR_CALL && vec_primitive_name(e->name);
+    Binding *storage = primitive && e->first_child >= 0 ?
+        lexical_vec_binding(c, e->first_child) : NULL;
+    int storage_was_moved = storage != NULL && storage->moved;
     for(int child = e->first_child; child >= 0;
         child = c->fn->exprs[child].next_sibling) {
         Binding *binding = e->kind == ZIR_EXPR_CALL ?
@@ -5311,6 +5314,11 @@ mark_expr_moves(Checker *c, int index)
         } else
             mark_expr_moves(c, child);
     }
+    if(primitive && storage != NULL && !storage_was_moved &&
+       storage->moved && strcmp(e->name, "VecFree") &&
+       strcmp(e->name, "BuilderFinish"))
+        error(c, e->span, "Vec operation moves its storage in an argument",
+              storage->name);
     mark_expr_moves(c, e->left);
     mark_expr_moves(c, e->right);
     mark_expr_moves(c, e->third);

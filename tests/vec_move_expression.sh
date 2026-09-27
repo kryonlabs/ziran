@@ -26,7 +26,18 @@ Check :: () -> s64 {
 }
 ZI
 
-for name in double read_after; do
+cat > "$work/push_after.zi" <<'ZI'
+#import "vec"
+Take :: (value: Vec(s32)) -> s32 { return value[0] }
+Check :: () -> s32 {
+    values: Vec(s32)
+    VecPush(values, 7)
+    VecPush(values, Take(values))
+    return 0
+}
+ZI
+
+for name in double read_after push_after; do
     if "$ziran" check --diagnostics=json --root "$work" \
         --module-path "$repo/std" "$work/$name.zi" \
         > "$work/$name.out" 2> "$work/$name.err"; then
@@ -39,7 +50,8 @@ from pathlib import Path
 import sys
 
 diagnostics = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
-assert any('Vec binding is used after moving' in item['message']
+assert any('Vec binding is used after moving' in item['message'] or
+           'Vec operation moves its storage in an argument' in item['message']
            for item in diagnostics), diagnostics
 PY
 done
