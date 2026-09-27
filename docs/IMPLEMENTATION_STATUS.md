@@ -466,7 +466,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   Fixed arrays also cross the portable host boundary by value, including
   zero-length arrays and arrays of records with array fields. Returned shapes
   are checked recursively; `tests/host_arrays.sh` covers source and saved
-  bundles and malformed host results.
+  bundles, malformed host results, and native C, C++, and Go foreign calls.
   `BundleRun` checks all required bindings before execution.
   The CLI runner also checks required bindings before execution. Source and
   saved-IR bundles, unused extern pruning, list tampering, missing binding
@@ -614,8 +614,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   and null `.data`. `tests/zero_arrays.sh` covers locals, globals, aliases,
   nested arrays and records, arguments, returns, and invalid indexing from
   source and saved IR on C, C++, Go, and `.zib`. C/C++ use a GNU-compatible
-  zero-array extension for zero-byte storage; the native foreign array ABI
-  and nonempty `.data` behavior remain open.
+  zero-array extension for zero-byte storage. Native C/C++ foreign array
+  returns use a hidden result parameter; exact Jai ABI conformance and
+  nonempty `.data` behavior remain open.
   Jai `#this` resolves the enclosing procedure for calls and
   typed procedure values across native and portable targets, and resolves the
   enclosing type in plain and polymorphic struct fields. Saved IR preserves

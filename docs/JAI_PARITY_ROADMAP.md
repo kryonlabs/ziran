@@ -46,7 +46,7 @@ the checker, IR, or emitters, with `DISPLAY` and `WAYLAND_DISPLAY` unset.
 | Area | Current subset | Next proof of parity |
 | --- | --- | --- |
 | Names and scopes | Local/field record `using`; local/data enum `using`; imported record globals in procedures; named imports | File-scope record lookup, full imported type ownership, order independence |
-| Values and expressions | Record literals, typed arrays including zero capacity, direct generic calls, `ifx` in typed expressions and call arguments | Native array host ABI and full `.data` contract, broader lazy-expression audit, fuller type queries |
+| Values and expressions | Record literals, typed arrays including zero capacity, direct generic calls, `ifx` in typed expressions and call arguments | Jai ABI verification and full `.data` contract, broader lazy-expression audit, fuller type queries |
 | Procedures | Named values, defaults, named arguments, direct polymorphism | Overload/variadic/operator and broader procedure-form audit |
 | Compile time | Bounded pure scalars, strings, floats, and record/array results used at compile time, in checked runtime expressions, and in selected file-scope initializers, including public imports | Full file-scope initialization semantics, verified effect rules |
 | Native output | C/C++/Go checked body graphs; C/C++ unions; imported and keyword record, union, enum, global, and constant names, including global/constant and function/value collisions; C/C++ keyword exports and header guards; Go module filenames and prefixes | Declaration lowering, remaining whole-program names, Go union layout |
@@ -187,13 +187,14 @@ GNU-compatible zero-array extensions, which compile under the strict C99 and
 C++ modes used by the test. The portable VM allocates an array descriptor with
 zero elements. No fake element contributes to layout or storage.
 
-Finish the native host ABI and broader zero-length slice borrowing audit, expand
-nested and imported zero-bound alias cases, and test the generated native ABI
-on supported compilers. Nonempty arrays also need the full Jai `.data`
-contract rather than using native C array layout as proof. The OpenJai
-reference describes an empty typed literal with count zero and a null data
-pointer; verify that behavior with Jai itself before claiming exact language
-parity.
+Broaden the zero-length slice borrowing audit and nested and imported
+zero-bound alias cases. `tests/host_arrays.sh` checks fixed-array foreign
+arguments and returns on C99, C++17, Go, and portable bundles; compare the
+native ABI with Jai before claiming parity. Nonempty arrays also need the
+full Jai `.data` contract rather than using native C array layout as proof.
+The OpenJai reference describes an empty typed literal with count zero and
+a null data pointer; verify that behavior with Jai itself before claiming
+exact language parity.
 
 ## Priority 2: make the checked language portable and predictable
 
@@ -269,8 +270,8 @@ record and array literals across native targets. Bounded pure procedure calls
 in initializers fold before output; runtime-dependent calls remain open.
 Host calls support scalar, string, plain-record, pointer, and fixed-array
 arguments and returns, including zero and nested arrays with checked shapes.
-Selected synchronous slice arguments and returns also work. Native array
-foreign ABI, slots, and record-slice shapes remain open. Implement each boundary as
+Selected synchronous slice arguments and returns also work. Slots and
+record-slice shapes remain open. Implement each boundary as
 a versioned checked contract in `cmd/zir/zir_bundle.c`, `cmd/zir/zir_vm.c`, and
 `include/ziran_host.h`. Retain preflight verification so a bundle cannot reach
 an unsupported operation at runtime. Test ownership and repeated instance

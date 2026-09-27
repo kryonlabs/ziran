@@ -718,6 +718,7 @@ emit_extern_prototype(FILE *c, const ZirModule *m, const ZirImport *imp)
     char ret[LOWER_NAME_MAX];
     char return_type[LOWER_NAME_MAX];
     char cargs[LOWER_TEXT_MAX];
+    char abi_args[LOWER_TEXT_MAX];
     char conv[LOWER_TEXT_MAX];
     char symbol[LOWER_NAME_MAX];
     const char *cname = imp->name;
@@ -725,7 +726,13 @@ emit_extern_prototype(FILE *c, const ZirModule *m, const ZirImport *imp)
     extract_extern_signature(imp, ret, sizeof(ret), cargs, sizeof(cargs));
     strip_alias_type(m, ret, return_type, sizeof(return_type));
     copy_text(ret, sizeof(ret), return_type);
-    convert_args(m, NULL, cargs, conv, sizeof(conv));
+    ZirFunction abi = {0};
+    copy_text(abi.args, sizeof(abi.args), cargs);
+    copy_text(abi.return_type, sizeof(abi.return_type), ret);
+    ArrayAbiArgs(&abi, abi_args, sizeof(abi_args));
+    convert_args(m, NULL, abi_args, conv, sizeof(conv));
+    if(ArrayElementType(ret, NULL, 0, NULL))
+        copy_text(ret, sizeof(ret), "void");
     if(c_extern_symbol(imp, symbol, sizeof(symbol))) {
         cname = symbol;
         fprintf(c, "%s %s(%s);\n", ret[0] ? ret : "void", cname, conv);
@@ -738,7 +745,7 @@ emit_extern_prototype(FILE *c, const ZirModule *m, const ZirImport *imp)
             }
             char call[LOWER_TEXT_MAX];
 
-            extern_call_args(cargs, call, sizeof(call));
+            extern_call_args(abi_args, call, sizeof(call));
             fprintf(c, "static %s\n%s(%s)\n{\n",
                     ret[0] ? ret : "void", imp->name, conv);
             if(ret[0] != '\0' && strcmp(ret, "void") != 0)
