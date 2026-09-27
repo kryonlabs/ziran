@@ -44,9 +44,11 @@ env -u DISPLAY -u WAYLAND_DISPLAY python3 bench/vector_growth.py
 
 This measures source and saved-IR checks and emissions to C, C++, Go, and
 portable `.zib`, downstream native builds, and whole-process execution.
-Handwritten C, C++, and Go versions provide algorithm-level comparisons. The
-checksum uses a closed-form arithmetic oracle, and every runtime sample must
-match it. The portable VM runs the small input only. Raw commands, samples,
+Handwritten C, C++, Go, Rust, Java, JavaScript, and Python versions provide
+algorithm-level comparisons when their toolchains are installed; unavailable
+tools are recorded explicitly. The checksum uses a closed-form arithmetic
+oracle, and every runtime sample must match it. The portable VM runs the small
+input only. Raw commands, samples,
 source and tool hashes, and caveats are written alongside the report. These
 workloads remain a smoke and collection baseline; they do not cover text,
 records, generics, larger module graphs, or real applications.

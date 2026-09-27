@@ -96,7 +96,9 @@ def source_hashes():
 
 def versions():
     tools = {'gcc': ['gcc', '--version'], 'g++': ['g++', '--version'],
-             'go': ['go', 'version'], 'python': ['python3', '--version']}
+             'go': ['go', 'version'], 'rustc': ['rustc', '--version'],
+             'javac': ['javac', '-version'], 'java': ['java', '-version'],
+             'node': ['node', '--version'], 'python': ['python3', '--version']}
     result = {}
     for name, command in tools.items():
         if not shutil.which(command[0]):
@@ -184,6 +186,51 @@ func main() {
     fmt.Println(total)
 }
 ''')
+RUST = write('hand.rs', '''fn main() {
+    let n: i32 = std::env::args().nth(1).unwrap().parse().unwrap();
+    let mut values: Vec<i32> = Vec::new();
+    for i in 0..n { values.push(i * 37 + 11); }
+    let mut total: i64 = 0;
+    for value in values { total += i64::from(value); }
+    println!("{}", total);
+}
+''')
+JAVA = write('CollectionGrowth.java', '''class CollectionGrowth {
+    public static void main(String[] args) {
+        int n = Integer.parseInt(args[0]);
+        int[] values = new int[0];
+        int count = 0;
+        for (int i = 0; i < n; i++) {
+            if (count == values.length) {
+                int[] grown = new int[values.length == 0 ? 8 : values.length * 2];
+                System.arraycopy(values, 0, grown, 0, count);
+                values = grown;
+            }
+            values[count++] = i * 37 + 11;
+        }
+        long total = 0;
+        for (int i = 0; i < count; i++) total += values[i];
+        System.out.println(total);
+    }
+}
+''')
+JS = write('hand.js', '''const n = Number(process.argv[2]);
+const values = [];
+for (let i = 0; i < n; i++) values.push(i * 37 + 11);
+let total = 0n;
+for (const value of values) total += BigInt(value);
+console.log(total.toString());
+''')
+PYTHON = write('hand.py', '''import sys
+n = int(sys.argv[1])
+values = []
+for i in range(n):
+    values.append(i * 37 + 11)
+total = 0
+for value in values:
+    total += value
+print(total)
+''')
 
 
 def main():
@@ -208,10 +255,12 @@ def main():
                              'run': args.run_repetitions, 'discarded_warmups': 1},
                 caveats=['Fresh processes include startup, loading, printing, and shutdown.',
                          'Go build uses a dedicated warm cache; it is not a forced recompilation.',
-                         'C uses a doubling array, C++ uses std::vector, Go uses append.',
+                         'C and Java use doubling arrays; C++, Go, Rust, JavaScript, and Python use growable collections.',
+                         'JavaScript uses BigInt for the sum to preserve exact checksums.',
                          'No CPU isolation; medians are not regression thresholds.',
                          'VM large run omitted because its instruction budget is too small.',
-                         'RSS from wait4 includes launcher accounting and is omitted from the table.'])
+                         'RSS from wait4 includes launcher accounting and is omitted from the table.'],
+                unsupported=[])
     root_args = ['--root', FIX, '--module-path', ROOT / 'std']
     repeated([BIN / 'zi2zir', '--check-only', *root_args, ZI], 'ziran', 'source check')
     IR = OUT / 'ir'
@@ -265,14 +314,33 @@ def main():
                   '-o', OUT / f'{kind}.zib', source], 'ziran', f'{kind} to zib')
     if (OUT / 'source.zib').read_bytes() != (OUT / 'saved.zib').read_bytes():
         raise AssertionError('source and saved bundles differ')
-    for name, command in {
+    comparisons = {
         'hand C': ['gcc', '-O2', '-std=c99', C, '-o', FIX / 'hand-c'],
         'hand C++': ['g++', '-O2', '-std=c++17', CPP, '-o', FIX / 'hand-cpp'],
         'hand Go': ['go', 'build', '-o', FIX / 'hand-go', GO],
-    }.items():
+    }
+    if shutil.which('rustc'):
+        comparisons['hand Rust'] = ['rustc', '-C', 'opt-level=2', RUST,
+                                    '-o', FIX / 'hand-rust']
+    else:
+        meta['unsupported'].append('Rust comparison: rustc unavailable')
+    if shutil.which('javac') and shutil.which('java'):
+        comparisons['hand Java'] = ['javac', '-d', FIX, JAVA]
+    else:
+        meta['unsupported'].append('Java comparison: javac/java unavailable')
+    for name, command in comparisons.items():
         repeated(command, 'cached go build' if name == 'hand Go' else 'comparison compile', name)
     runtime.update({'hand C': [FIX / 'hand-c'], 'hand C++': [FIX / 'hand-cpp'],
-                    'hand Go': [FIX / 'hand-go']})
+                    'hand Go': [FIX / 'hand-go'],
+                    'Python': ['python3', PYTHON]})
+    if 'hand Rust' in comparisons:
+        runtime['hand Rust'] = [FIX / 'hand-rust']
+    if 'hand Java' in comparisons:
+        runtime['hand Java'] = ['java', '-cp', FIX, 'CollectionGrowth']
+    if shutil.which('node'):
+        runtime['JavaScript'] = ['node', JS]
+    else:
+        meta['unsupported'].append('JavaScript comparison: node unavailable')
     for n in [args.small, args.large]:
         cases = list(runtime.items())
         if n == args.small:
@@ -305,6 +373,11 @@ def main():
             directory = OUT / f'{target}-{kind}'
             products.extend(directory.glob(f'*.{extension}'))
             products.append(directory / 'app')
+    products += [FIX / 'hand-c', FIX / 'hand-cpp', FIX / 'hand-go']
+    if 'hand Rust' in comparisons:
+        products.append(FIX / 'hand-rust')
+    if 'hand Java' in comparisons:
+        products.append(FIX / 'CollectionGrowth.class')
     meta['artifact_hashes'] = {
         str(path.relative_to(OUT)): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in products
@@ -331,6 +404,8 @@ def main():
     table += ['', 'Expected checksums: ' + json.dumps(meta['expected']), '',
               'Generated source equality: ' + json.dumps(equality), '',
               'Source and saved-IR bundles are byte-identical.', '',
+              'Unavailable comparisons: ' +
+              (', '.join(meta['unsupported']) if meta['unsupported'] else 'none'), '',
               *('- ' + caveat for caveat in meta['caveats'])]
     (OUT / 'benchmark.md').write_text('\n'.join(table) + '\n')
     print('DONE: ' + str(OUT / 'benchmark.md'), flush=True)
