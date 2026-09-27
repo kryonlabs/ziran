@@ -66,7 +66,7 @@ typedef struct RecordField {
 struct Record {
     Record *next;
     int retired;
-    int pinned;
+    uint64_t pinned;
     uint64_t allocation;
     const ZirModule *owner;
     const ZirType *type;
@@ -77,7 +77,7 @@ struct Record {
 struct Array {
     Array *next;
     int retired;
-    int pinned;
+    uint64_t pinned;
     uint64_t allocation;
     const ZirModule *owner;
     char element_type[ZIR_NAME_MAX];
@@ -111,7 +111,10 @@ typedef struct Vm {
     int failed;
     size_t record_bytes;
     size_t array_bytes;
+    size_t allocated_since_collection;
     uint64_t allocation;
+    uint64_t pin_generation;
+    uint64_t retire_floor;
     Record *records;
     Array *arrays;
     StringLiteral *strings;
@@ -514,6 +517,7 @@ allocate_record(Vm *vm, const ZirModule *owner,
     record->field_count = count;
     vm->records = record;
     vm->record_bytes += bytes;
+    vm->allocated_since_collection += bytes;
     return record;
 }
 
@@ -543,6 +547,7 @@ allocate_array_try(Vm *vm, const ZirModule *owner, const char *element,
     array->length = length;
     vm->arrays = array;
     vm->array_bytes += bytes;
+    vm->allocated_since_collection += bytes;
     return array;
 }
 
@@ -815,24 +820,30 @@ coerce_expression(Vm *vm, const ZirModule *module,
  * value. Owned record and array trees can then be reclaimed immediately;
  * this bounds repeated updates of large value records. */
 static void
-retire_value(Value value, int depth)
+retire_value(Vm *vm, Value value, int depth)
 {
     if(depth >= VM_MAX_DEPTH)
         return;
     if(value.kind == VALUE_RECORD && value.record != NULL &&
        !value.record->retired) {
         value.record->retired = 1;
+        if(vm->retire_floor == 0 ||
+           value.record->allocation < vm->retire_floor)
+            vm->retire_floor = value.record->allocation;
         for(int i = 0; i < value.record->field_count; i++)
-            retire_value(value.record->fields[i].value, depth + 1);
+            retire_value(vm, value.record->fields[i].value, depth + 1);
     } else if(value.kind == VALUE_ARRAY && value.array != NULL &&
               !value.array->retired) {
         value.array->retired = 1;
+        if(vm->retire_floor == 0 ||
+           value.array->allocation < vm->retire_floor)
+            vm->retire_floor = value.array->allocation;
         for(int i = 0; i < value.array->length; i++)
-            retire_value(value.array->elements[i], depth + 1);
+            retire_value(vm, value.array->elements[i], depth + 1);
     }
 }
 
-static void pin_value(Value value, int depth);
+static void pin_value(Vm *vm, Value value, int depth);
 
 static int
 array_has_active_slice(Vm *vm, const Array *array)
@@ -851,38 +862,50 @@ array_has_active_slice(Vm *vm, const Array *array)
 static void
 release_retired(Vm *vm)
 {
+    if(vm->retire_floor == 0)
+        return;
+    uint64_t floor = vm->retire_floor;
+    uint64_t remaining = 0;
+    vm->pin_generation++;
     for(Frame *frame = vm->active_frame; frame != NULL;
         frame = frame->caller) {
         for(int i = 0; i < frame->local_count; i++)
             if(frame->locals[i].value.kind == VALUE_SLICE)
-                pin_value(frame->locals[i].value, 0);
+                pin_value(vm, frame->locals[i].value, 0);
     }
     Record **record = &vm->records;
-    while(*record != NULL) {
-        if((*record)->retired && !(*record)->pinned) {
+    while(*record != NULL && (*record)->allocation >= floor) {
+        if((*record)->retired &&
+           (*record)->pinned != vm->pin_generation) {
             Record *dead = *record;
             *record = dead->next;
             vm->record_bytes -= sizeof(Record) +
                 (size_t)dead->field_count * sizeof(RecordField);
             free(dead);
         } else {
-            (*record)->pinned = 0;
+            if((*record)->retired &&
+               (remaining == 0 || (*record)->allocation < remaining))
+                remaining = (*record)->allocation;
             record = &(*record)->next;
         }
     }
     Array **array = &vm->arrays;
-    while(*array != NULL) {
-        if((*array)->retired && !(*array)->pinned) {
+    while(*array != NULL && (*array)->allocation >= floor) {
+        if((*array)->retired &&
+           (*array)->pinned != vm->pin_generation) {
             Array *dead = *array;
             *array = dead->next;
             vm->array_bytes -= sizeof(Array) +
                 (size_t)dead->length * sizeof(Value);
             free(dead);
         } else {
-            (*array)->pinned = 0;
+            if((*array)->retired &&
+               (remaining == 0 || (*array)->allocation < remaining))
+                remaining = (*array)->allocation;
             array = &(*array)->next;
         }
     }
+    vm->retire_floor = remaining;
 }
 
 static int
@@ -2810,10 +2833,10 @@ eval(Frame *frame, int index, int depth)
                     if(frame->vm->failed)
                         break;
                     if(dest_data->kind == VALUE_ARRAY && dest_data->array != NULL)
-                        retire_value(*dest_data, 0);
+                        retire_value(frame->vm, *dest_data, 0);
                 } else if(dest_data->kind == VALUE_ARRAY &&
                           dest_data->array != NULL) {
-                    retire_value(*dest_data, 0);
+                    retire_value(frame->vm, *dest_data, 0);
                 }
                 *dest_data = copy != NULL ?
                     (Value){.kind = VALUE_ARRAY, .array = copy} :
@@ -2964,7 +2987,7 @@ eval(Frame *frame, int index, int depth)
                         string_value((const unsigned char *)"", 0);
                     if(data->kind == VALUE_ARRAY && count->integer > 0) {
                         for(int i = 0; i < count->integer; i++)
-                            retire_value(data->array->elements[i], 0);
+                            retire_value(frame->vm, data->array->elements[i], 0);
                     }
                     *data = (Value){.kind = VALUE_ARRAY};
                     *count = int_value(0);
@@ -3009,7 +3032,7 @@ eval(Frame *frame, int index, int depth)
                                 grown->elements[i] = data->array->elements[i];
                                 data->array->elements[i] = (Value){0};
                             }
-                            retire_value(*data, 0);
+                            retire_value(frame->vm, *data, 0);
                         }
                         *data = (Value){.kind = VALUE_ARRAY, .array = grown};
                         *capacity = int_value(next_capacity);
@@ -3053,7 +3076,7 @@ eval(Frame *frame, int index, int depth)
                             grown->elements[i] = data->array->elements[i];
                             data->array->elements[i] = (Value){0};
                         }
-                        retire_value(*data, 0);
+                        retire_value(frame->vm, *data, 0);
                     }
                     *data = (Value){.kind = VALUE_ARRAY, .array = grown};
                     *capacity = int_value(next_capacity);
@@ -3066,13 +3089,13 @@ eval(Frame *frame, int index, int depth)
             } else {
                 if(data->array != NULL) {
                     for(int i = 0; i < count->integer; i++) {
-                        retire_value(data->array->elements[i], 0);
+                        retire_value(frame->vm, data->array->elements[i], 0);
                         data->array->elements[i] = (Value){0};
                     }
                 }
                 *count = int_value(0);
                 if(!strcmp(expression->name, "VecFree")) {
-                    retire_value(*data, 0);
+                    retire_value(frame->vm, *data, 0);
                     *data = (Value){.kind = VALUE_ARRAY};
                     *capacity = int_value(0);
                 }
@@ -3144,6 +3167,8 @@ eval(Frame *frame, int index, int depth)
                              expression->type);
 }
 
+static void collect_unreachable(Vm *vm);
+
 static Flow
 execute_sequence(Frame *frame, int begin, int end, int depth,
                  Value *result)
@@ -3153,6 +3178,12 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
     if(depth >= VM_MAX_DEPTH)
         return FLOW_ERROR;
     for(int s = begin; s < end && !vm->failed; s++) {
+        /* At a top-level statement boundary no expression temporaries are
+         * live outside Frame.locals. Batch reclamation here instead of
+         * walking growing globals after every helper call. */
+        if(vm->depth == 1 &&
+           vm->allocated_since_collection >= 4 * 1024 * 1024)
+            collect_unreachable(vm);
         const ZirStmt *statement = &function->stmts[s];
         int close;
         int saved_locals;
@@ -3223,13 +3254,13 @@ execute_sequence(Frame *frame, int begin, int end, int depth,
                         replacement.array->elements[element];
                     replacement.array->elements[element] = old;
                 }
-                retire_value(replacement, 0);
+                retire_value(vm, replacement, 0);
                 release_retired(vm);
                 break;
             }
             *slot = replacement;
             if(previous.kind == VALUE_RECORD || previous.kind == VALUE_ARRAY) {
-                retire_value(previous, 0);
+                retire_value(vm, previous, 0);
                 release_retired(vm);
             }
             break;
@@ -3598,7 +3629,7 @@ host_copy_back(Vm *vm, const ZirModule *module, const char *type,
             Value *slot = &target.array->elements[target.offset + i];
             Value previous = *slot;
             *slot = updates[i];
-            retire_value(previous, 0);
+            retire_value(vm, previous, 0);
         }
         release_retired(vm);
     }
@@ -3655,22 +3686,22 @@ parameter_read_only(const ZirFunction *function, const char *name)
 /* Globals can receive values during a call. Keep every allocation reachable
  * from them when reclaiming completed call temporaries. */
 static void
-pin_value(Value value, int depth)
+pin_value(Vm *vm, Value value, int depth)
 {
     if(depth >= VM_MAX_DEPTH)
         return;
     if(value.kind == VALUE_RECORD && value.record != NULL &&
-       !value.record->pinned) {
-        value.record->pinned = 1;
+       value.record->pinned != vm->pin_generation) {
+        value.record->pinned = vm->pin_generation;
         for(int i = 0; i < value.record->field_count; i++)
-            pin_value(value.record->fields[i].value, depth + 1);
+            pin_value(vm, value.record->fields[i].value, depth + 1);
     } else if(value.kind == VALUE_ARRAY && value.array != NULL &&
-              !value.array->pinned) {
-        value.array->pinned = 1;
+              value.array->pinned != vm->pin_generation) {
+        value.array->pinned = vm->pin_generation;
         for(int i = 0; i < value.array->length; i++)
-            pin_value(value.array->elements[i], depth + 1);
+            pin_value(vm, value.array->elements[i], depth + 1);
     } else if(value.kind == VALUE_SLICE && value.array != NULL) {
-        pin_value((Value){.kind = VALUE_ARRAY, .array = value.array},
+        pin_value(vm, (Value){.kind = VALUE_ARRAY, .array = value.array},
                   depth + 1);
     }
 }
@@ -3679,7 +3710,7 @@ static void
 pin_globals(Vm *vm)
 {
     for(int i = 0; i < vm->global_count; i++)
-        pin_value(vm->globals[i].value, 0);
+        pin_value(vm, vm->globals[i].value, 0);
 }
 
 /* A callee may write through a slice borrowed from a caller. Its newly
@@ -3691,7 +3722,50 @@ pin_active_frames(Vm *vm)
     for(Frame *frame = vm->active_frame; frame != NULL;
         frame = frame->caller)
         for(int i = 0; i < frame->local_count; i++)
-            pin_value(frame->locals[i].value, 0);
+            pin_value(vm, frame->locals[i].value, 0);
+}
+
+static void
+collect_unreachable(Vm *vm)
+{
+    uint64_t remaining_retired = 0;
+    vm->pin_generation++;
+    pin_globals(vm);
+    pin_active_frames(vm);
+    Record **record = &vm->records;
+    while(*record != NULL) {
+        Record *current = *record;
+        if(current->pinned != vm->pin_generation) {
+            *record = current->next;
+            vm->record_bytes -= sizeof(Record) +
+                (size_t)current->field_count * sizeof(RecordField);
+            free(current);
+        } else {
+            if(current->retired &&
+               (remaining_retired == 0 ||
+                current->allocation < remaining_retired))
+                remaining_retired = current->allocation;
+            record = &current->next;
+        }
+    }
+    Array **array = &vm->arrays;
+    while(*array != NULL) {
+        Array *current = *array;
+        if(current->pinned != vm->pin_generation) {
+            *array = current->next;
+            vm->array_bytes -= sizeof(Array) +
+                (size_t)current->length * sizeof(Value);
+            free(current);
+        } else {
+            if(current->retired &&
+               (remaining_retired == 0 ||
+                current->allocation < remaining_retired))
+                remaining_retired = current->allocation;
+            array = &current->next;
+        }
+    }
+    vm->retire_floor = remaining_retired;
+    vm->allocated_since_collection = 0;
 }
 
 /* Result coercion creates its own deep copy after before_result. Reclaim
@@ -3704,13 +3778,15 @@ release_call_records(Vm *vm, uint64_t entry, uint64_t before_result)
     while(*record != NULL) {
         Record *current = *record;
         if(current->allocation > entry &&
-           current->allocation <= before_result && !current->pinned) {
+           current->allocation <= before_result &&
+           current->pinned != vm->pin_generation) {
             *record = current->next;
             vm->record_bytes -= sizeof(Record) +
                 (size_t)current->field_count * sizeof(RecordField);
             free(current);
         } else {
-            current->pinned = 0;
+            if(current->allocation <= entry)
+                break;
             record = &current->next;
         }
     }
@@ -3723,13 +3799,15 @@ release_call_arrays(Vm *vm, uint64_t entry, uint64_t before_result)
     while(*array != NULL) {
         Array *current = *array;
         if(current->allocation > entry &&
-           current->allocation <= before_result && !current->pinned) {
+           current->allocation <= before_result &&
+           current->pinned != vm->pin_generation) {
             *array = current->next;
             vm->array_bytes -= sizeof(Array) +
                 (size_t)current->length * sizeof(Value);
             free(current);
         } else {
-            current->pinned = 0;
+            if(current->allocation <= entry)
+                break;
             array = &current->next;
         }
     }
@@ -3840,7 +3918,13 @@ run_function(Vm *vm, const ZirModule *module, const ZirFunction *function,
     /* Named Ziran procedure values carry no borrowed frame context. The
      * returned value has already been copied, so slot-using calls can drop
      * temporaries by the same reachability rule as direct calls. */
-    if(!vm->failed) {
+    /* Nested calls are collected at a top-level statement boundary. A call
+     * with unusually large live storage still reclaims its own temporaries
+     * before the VM's allocation limits are reached. */
+    if(!vm->failed && (vm->depth == 0 ||
+       vm->record_bytes > VM_MAX_RECORD_BYTES / 2 ||
+       vm->array_bytes > VM_MAX_ARRAY_BYTES / 2)) {
+        vm->pin_generation++;
         pin_globals(vm);
         pin_active_frames(vm);
         release_call_records(vm, allocation_entry, allocation_before_result);
