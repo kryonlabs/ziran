@@ -198,7 +198,20 @@ PkgRemoteCommit :: (url: string, ref: string) -> string {
     args[3] = ref
     result: PkgProcessResult = PkgCapture(args[:], "")
     if result.code != 0 || result.text.count < 40 { return "" }
-    chosen: string = ""
+    head_ref: string = ref
+    tag_ref: string = ref
+    if ref.count < 5 || ref[0:5] != "refs/" {
+        head_ref = PkgJoin("refs/heads/", ref)
+        tag_ref = PkgJoin("refs/tags/", ref)
+    } else if ref.count >= 10 && ref[0:10] == "refs/tags/" {
+        head_ref = ""
+    } else if ref.count >= 11 && ref[0:11] == "refs/heads/" {
+        tag_ref = ""
+    }
+    peeled_ref: string = PkgJoin(tag_ref, "^{}")
+    head: string = ""
+    tag: string = ""
+    peeled: string = ""
     at: s64 = 0
     while at < cast(s64)result.text.count {
         end: s64 = at
@@ -206,13 +219,23 @@ PkgRemoteCommit :: (url: string, ref: string) -> string {
             result.text[end] != cast(u8)10 { end += 1 }
         if end - at < 41 || result.text[at + 40] != cast(u8)9 { return "" }
         commit: string = result.text[at:at + 40]
-        if !PkgValidCommit(commit) || (chosen.count > 0 && commit != chosen) {
-            return ""
+        if !PkgValidCommit(commit) { return "" }
+        name: string = result.text[at + 41:end]
+        if name == head_ref {
+            if head.count > 0 && head != commit { return "" }
+            head = commit
+        } else if name == tag_ref {
+            if tag.count > 0 && tag != commit { return "" }
+            tag = commit
+        } else if name == peeled_ref {
+            if peeled.count > 0 && peeled != commit { return "" }
+            peeled = commit
         }
-        chosen = commit
         at = end + 1
     }
-    return PkgJoin("", chosen)
+    if head.count > 0 { return PkgJoin("", head) }
+    if peeled.count > 0 { return PkgJoin("", peeled) }
+    return PkgJoin("", tag)
 }
 
 PkgCacheRoot :: () -> string {

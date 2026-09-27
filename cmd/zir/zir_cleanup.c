@@ -1,4 +1,5 @@
 #include "zir_cleanup.h"
+#include "zir_diagnostic.h"
 #include "zir_text.h"
 #include "zir_token.h"
 #include "zir_expr.h"
@@ -20,8 +21,7 @@ static int append(ZirFunction *out, const ZirStmt *st);
 static int
 fail(const ZirStmt *st, const char *message)
 {
-    fprintf(stderr, "%s:%d:%d: %s\n", st->span.path, st->span.line,
-            st->span.column, message);
+    Diagnostic(st->span, "check.cleanup", "%s", message);
     return 0;
 }
 

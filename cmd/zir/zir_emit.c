@@ -1220,8 +1220,7 @@ line(Emitter *e, const char *format, ...)
 static void
 fatal(const ZirExpr *expr, const char *message)
 {
-    fprintf(stderr, "%s:%d:%d: %s: %s\n", expr->span.path, expr->span.line,
-            expr->span.column, message, expr->text);
+    Diagnostic(expr->span, "emit.expression", "%s: %s", message, expr->text);
     exit(1);
 }
 

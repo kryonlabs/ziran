@@ -5,6 +5,13 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
 
 ## Working now
 
+- Source and saved-IR portable runs use the declared width for `s8`, `u8`,
+  `s16`, and `u16` conversions and shifts. Shifting by a negative count or by
+  the operand's bit width or more fails at execution on every target. Runtime
+  `float32` and `float64` division can produce infinity or NaN on native and
+  portable targets; converting a nonfinite float to an integer remains an
+  error. `tests/numeric_semantics.sh` checks these boundaries from source and
+  saved IR on C, C++, Go, and `.zib`.
 - Jai `using record: Type` parameters and local declarations, plus `using
   record;` and nested paths such as `using entity.position;` in a procedure
   body, promote record fields into lexical lookup. Explicit local bindings

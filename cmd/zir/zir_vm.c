@@ -744,12 +744,11 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         double number = as_real(value);
         if(strcmp(type, "float32") == 0)
             number = (float)number;
-        if(!isfinite(number))
-            vm->failed = 1;
         return real_value(number);
     }
     if(value.kind == VALUE_REAL) {
         int unsigned_type = strcmp(type, "u32") == 0 ||
+                            strcmp(type, "u16") == 0 ||
                             strcmp(type, "u8") == 0 ||
                             strcmp(type, "u64") == 0;
         double lower = unsigned_type ? 0.0 :
@@ -761,8 +760,13 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
                        9223372036854775808.0 :
                        strcmp(type, "u32") == 0 ?
                        (double)UINT32_MAX + 1.0 :
+                       strcmp(type, "u16") == 0 ? 65536.0 :
                        strcmp(type, "u8") == 0 ? 256.0 :
+                       strcmp(type, "s16") == 0 ? 32768.0 :
+                       strcmp(type, "s8") == 0 ? 128.0 :
                        (double)INT32_MAX + 1.0;
+        if(strcmp(type, "s8") == 0) lower = -128.0;
+        if(strcmp(type, "s16") == 0) lower = -32768.0;
         if(!isfinite(value.real) || value.real < lower ||
            value.real >= upper) {
             vm->failed = 1;
@@ -776,6 +780,12 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
             return int_value((uint32_t)value.real);
         if(strcmp(type, "u8") == 0)
             return int_value((uint8_t)value.real);
+        if(strcmp(type, "u16") == 0)
+            return int_value((uint16_t)value.real);
+        if(strcmp(type, "s8") == 0)
+            return int_value((int8_t)value.real);
+        if(strcmp(type, "s16") == 0)
+            return int_value((int16_t)value.real);
         return int_value((int32_t)value.real);
     }
     if(strcmp(type, "u64") == 0)
@@ -787,6 +797,12 @@ coerce(Vm *vm, const ZirModule *module, Value value, const char *type)
         return int_value(bits);
     if(strcmp(type, "u8") == 0)
         return int_value((uint8_t)bits);
+    if(strcmp(type, "u16") == 0)
+        return int_value((uint16_t)bits);
+    if(strcmp(type, "s8") == 0)
+        return int_value((int8_t)bits);
+    if(strcmp(type, "s16") == 0)
+        return int_value((int16_t)bits);
     return int_value(bits <= INT32_MAX ? (int64_t)bits :
                      (int64_t)bits - 4294967296LL);
 }
@@ -2323,7 +2339,7 @@ binary_value(Vm *vm, const char *op, Value left, Value right,
         if(strcmp(op, "+") == 0) return real_value(a + b);
         if(strcmp(op, "-") == 0) return real_value(a - b);
         if(strcmp(op, "*") == 0) return real_value(a * b);
-        if(strcmp(op, "/") == 0 && b != 0.0) return real_value(a / b);
+        if(strcmp(op, "/") == 0) return real_value(a / b);
         goto failed;
     }
     if(bitwise_operator(op)) {
@@ -2358,16 +2374,23 @@ binary_value(Vm *vm, const char *op, Value left, Value right,
             return int_value(a_bits | b_bits);
         if(strcmp(op, "^") == 0)
             return int_value(a_bits ^ b_bits);
-        if((!right.unsigned64 && right.integer < 0) || right_bits >= 32)
+        unsigned width = !strcmp(left_type, "u8") ||
+                         !strcmp(left_type, "s8") ? 8 :
+                         !strcmp(left_type, "u16") ||
+                         !strcmp(left_type, "s16") ? 16 : 32;
+        if((!right.unsigned64 && right.integer < 0) || right_bits >= width)
             goto failed;
         unsigned amount = (unsigned)right_bits;
+        uint32_t mask = width == 32 ? UINT32_MAX :
+                        (UINT32_C(1) << width) - 1;
+        a_bits &= mask;
         if(strcmp(op, "<<") == 0)
-            return int_value(a_bits << amount);
+            return int_value((a_bits << amount) & mask);
         uint32_t shifted = a_bits >> amount;
-        if(strcmp(left_type, "u32") != 0 &&
-           (a_bits & UINT32_C(0x80000000)) != 0 && amount > 0)
-            shifted |= UINT32_MAX << (32 - amount);
-        return int_value(shifted);
+        if(left_type[0] != 'u' &&
+           (a_bits & (UINT32_C(1) << (width - 1))) != 0 && amount > 0)
+            shifted |= mask ^ (mask >> amount);
+        return int_value(shifted & mask);
     }
     if(unsigned64) {
         if(strcmp(op, "+") == 0) return uint_value(left_bits + right_bits);
