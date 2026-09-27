@@ -1,0 +1,327 @@
+#import "package_common"
+#import "file_linux"
+
+#scope_export
+PkgNamedValue :: struct {
+    name: string
+    value: string
+}
+
+PkgDependency :: struct {
+    alias: string
+    git: string
+    ref: string
+    aliases: [24]PkgNamedValue
+    alias_count: s32
+}
+
+PkgManifest :: struct {
+    name: string
+    entry: string
+    roots: [16]string
+    root_count: s32
+    bridges: [16]string
+    bridge_count: s32
+    tool_git: string
+    tool_ref: string
+    project_tool: string
+    dependencies: [24]PkgDependency
+    dependency_count: s32
+    exports: [32]PkgNamedValue
+    export_count: s32
+    valid: bool
+}
+
+PkgOverrides :: struct {
+    values: [32]PkgNamedValue
+    count: s32
+    valid: bool
+}
+
+PkgNewManifest :: () -> *PkgManifest {
+    return cast(*PkgManifest)(PkgAllocZero(cast(u64)size_of(PkgManifest)))
+}
+
+PkgNewOverrides :: () -> *PkgOverrides {
+    return cast(*PkgOverrides)(PkgAllocZero(cast(u64)size_of(PkgOverrides)))
+}
+
+PkgIdentifier :: (value: string) -> bool {
+    if value.count == 0 { return false }
+    index: s64 = 0
+    while index < cast(s64)value.count {
+        ch: u8 = value[index]
+        if !((ch >= cast(u8)65 && ch <= cast(u8)90) ||
+             (ch >= cast(u8)97 && ch <= cast(u8)122) ||
+             ch == cast(u8)95 ||
+             (index > 0 && ch >= cast(u8)48 && ch <= cast(u8)57)) {
+            return false
+        }
+        index += 1
+    }
+    return true
+}
+
+PkgPackageName :: (value: string) -> bool {
+    if value.count == 0 { return false }
+    index: s64 = 0
+    while index < cast(s64)value.count {
+        ch: u8 = value[index]
+        if !((ch >= cast(u8)65 && ch <= cast(u8)90) ||
+             (ch >= cast(u8)97 && ch <= cast(u8)122) ||
+             (ch >= cast(u8)48 && ch <= cast(u8)57) ||
+             ch == cast(u8)95 || ch == cast(u8)45) { return false }
+        index += 1
+    }
+    return true
+}
+
+PkgGitURL :: (value: string) -> bool {
+    if value.count > 8 && value[0:8] == "https://" {
+        index: s64 = 8
+        host: bool = false
+        while index < cast(s64)value.count && value[index] != cast(u8)47 {
+            if value[index] == cast(u8)64 || value[index] <= cast(u8)32 ||
+                value[index] == cast(u8)34 || value[index] == cast(u8)92 { return false }
+            host = true
+            index += 1
+        }
+        return host && index < cast(s64)value.count - 1
+    }
+    return PkgGetenv("ZIRAN_TEST_ALLOW_LOCAL_GIT") == "1" &&
+        value.count > 7 && value[0:7] == "file://"
+}
+
+PkgTomlText :: (value: string) -> string {
+    value = PkgTrim(value)
+    if value.count < 2 || value[0] != cast(u8)34 ||
+       value[cast(s64)value.count - 1] != cast(u8)34 { return "" }
+    index: s64 = 1
+    while index < cast(s64)value.count - 1 {
+        if value[index] == cast(u8)34 || value[index] == cast(u8)92 ||
+           value[index] < cast(u8)32 { return "" }
+        index += 1
+    }
+    return value[1:cast(s64)value.count - 1]
+}
+
+PkgStripComment :: (line: string) -> string {
+    quoted: bool = false
+    index: s64 = 0
+    while index < cast(s64)line.count {
+        if line[index] == cast(u8)34 { quoted = !quoted }
+        if line[index] == cast(u8)35 && !quoted { return PkgTrim(line[0:index]) }
+        index += 1
+    }
+    return PkgTrim(line)
+}
+
+PkgTomlArray :: (raw: string, values: []string) -> s32 {
+    raw = PkgTrim(raw)
+    if raw.count < 2 || raw[0] != cast(u8)91 ||
+       raw[cast(s64)raw.count - 1] != cast(u8)93 { return -1 }
+    at: s64 = 1
+    count: s32 = 0
+    while at < cast(s64)raw.count - 1 {
+        while at < cast(s64)raw.count - 1 &&
+            (raw[at] == cast(u8)32 || raw[at] == cast(u8)9 ||
+             raw[at] == cast(u8)44) { at += 1 }
+        if at >= cast(s64)raw.count - 1 { break }
+        if raw[at] != cast(u8)34 || count >= cast(s32)values.count { return -1 }
+        end: s64 = at + 1
+        while end < cast(s64)raw.count - 1 && raw[end] != cast(u8)34 { end += 1 }
+        if end >= cast(s64)raw.count - 1 { return -1 }
+        values[count] = PkgTomlText(raw[at:end + 1])
+        if values[count].count == 0 { return -1 }
+        count += 1
+        at = end + 1
+        while at < cast(s64)raw.count - 1 &&
+            (raw[at] == cast(u8)32 || raw[at] == cast(u8)9) { at += 1 }
+        if at < cast(s64)raw.count - 1 && raw[at] != cast(u8)44 { return -1 }
+    }
+    return count
+}
+
+PkgTomlAliases :: (raw: string, output: *PkgDependency) -> bool {
+    raw = PkgTrim(raw)
+    if raw.count < 2 || raw[0] != cast(u8)123 ||
+       raw[cast(s64)raw.count - 1] != cast(u8)125 { return false }
+    at: s64 = 1
+    while at < cast(s64)raw.count - 1 {
+        while at < cast(s64)raw.count - 1 &&
+            (raw[at] == cast(u8)32 || raw[at] == cast(u8)9 ||
+             raw[at] == cast(u8)44) { at += 1 }
+        if at >= cast(s64)raw.count - 1 { break }
+        equal: s64 = at
+        while equal < cast(s64)raw.count - 1 && raw[equal] != cast(u8)61 { equal += 1 }
+        if equal >= cast(s64)raw.count - 1 || output.alias_count >= 24 { return false }
+        name: string = PkgTrim(raw[at:equal])
+        value_start: s64 = equal + 1
+        while value_start < cast(s64)raw.count - 1 &&
+            (raw[value_start] == cast(u8)32 || raw[value_start] == cast(u8)9) {
+            value_start += 1
+        }
+        if value_start >= cast(s64)raw.count - 1 ||
+            raw[value_start] != cast(u8)34 { return false }
+        end: s64 = value_start + 1
+        while end < cast(s64)raw.count - 1 && raw[end] != cast(u8)34 { end += 1 }
+        if end >= cast(s64)raw.count - 1 { return false }
+        value: string = PkgTomlText(raw[value_start:end + 1])
+        if !PkgIdentifier(name) || !PkgIdentifier(value) { return false }
+        output.aliases[output.alias_count].name = name
+        output.aliases[output.alias_count].value = value
+        output.alias_count += 1
+        at = end + 1
+        while at < cast(s64)raw.count - 1 &&
+            (raw[at] == cast(u8)32 || raw[at] == cast(u8)9) { at += 1 }
+        if at < cast(s64)raw.count - 1 && raw[at] != cast(u8)44 { return false }
+    }
+    return true
+}
+
+PkgParseManifest :: (path: string, output: *PkgManifest) -> bool {
+    content: PkgReadResult = PkgRead(path)
+    if !content.valid { return false }
+    output.entry = "src/app.zi"
+    output.roots[0] = "src"
+    output.root_count = 1
+    output.tool_ref = "master"
+    section: string = ""
+    at: s64 = 0
+    while at < cast(s64)content.text.count {
+        end: s64 = at
+        while end < cast(s64)content.text.count &&
+            content.text[end] != cast(u8)10 { end += 1 }
+        line: string = PkgStripComment(content.text[at:end])
+        at = end + 1
+        if line.count == 0 { continue }
+        if line[0] == cast(u8)91 {
+            if line.count < 3 || line[cast(s64)line.count - 1] != cast(u8)93 { return false }
+            section = line[1:cast(s64)line.count - 1]
+            if section.count > 13 && section[0:13] == "dependencies." {
+                if output.dependency_count >= 24 { return false }
+                alias: string = section[13:]
+                if !PkgIdentifier(alias) { return false }
+                duplicate: s32 = 0
+                while duplicate < output.dependency_count {
+                    if PkgFoldEqual(output.dependencies[duplicate].alias, alias) {
+                        return false
+                    }
+                    duplicate += 1
+                }
+                dep: *PkgDependency = *output.dependencies[output.dependency_count]
+                dep.alias = alias
+                dep.ref = "master"
+                output.dependency_count += 1
+            }
+            continue
+        }
+        equal: s64 = 0
+        while equal < cast(s64)line.count && line[equal] != cast(u8)61 { equal += 1 }
+        if equal >= cast(s64)line.count { return false }
+        key: string = PkgTrim(line[0:equal])
+        raw: string = PkgTrim(line[equal + 1:])
+        value: string = PkgTomlText(raw)
+        if section == "package" {
+            if key == "name" { output.name = value }
+            if key == "entry" { output.entry = value }
+            if key == "module_roots" {
+                output.root_count = PkgTomlArray(raw, output.roots[:])
+                if output.root_count < 0 { return false }
+            }
+            if key == "bridge_modules" {
+                output.bridge_count = PkgTomlArray(raw, output.bridges[:])
+                if output.bridge_count < 0 { return false }
+            }
+        } else if section == "toolchain" {
+            if key == "git" { output.tool_git = value }
+            if key == "ref" { output.tool_ref = value }
+        } else if section == "tool" {
+            if key == "project" { output.project_tool = value }
+        } else if section == "exports" {
+            if output.export_count >= 32 || !PkgIdentifier(key) || value.count == 0 {
+                return false
+            }
+            duplicate: s32 = 0
+            while duplicate < output.export_count {
+                if output.exports[duplicate].name == key { return false }
+                duplicate += 1
+            }
+            output.exports[output.export_count].name = key
+            output.exports[output.export_count].value = value
+            output.export_count += 1
+        } else if section.count > 13 && section[0:13] == "dependencies." {
+            if output.dependency_count == 0 { return false }
+            dep: *PkgDependency = *output.dependencies[output.dependency_count - 1]
+            if key == "git" { dep.git = value }
+            if key == "ref" { dep.ref = value }
+            if key == "module_aliases" && !PkgTomlAliases(raw, dep) { return false }
+        }
+    }
+    if !PkgPackageName(output.name) { return false }
+    index: s32 = 0
+    while index < output.dependency_count {
+        if !PkgGitURL(output.dependencies[index].git) ||
+            output.dependencies[index].ref.count == 0 { return false }
+        index += 1
+    }
+    output.valid = true
+    return true
+}
+
+PkgParseOverrides :: (path: string, output: *PkgOverrides) -> bool {
+    if !PathExists(path) { output.valid = true; return true }
+    content: PkgReadResult = PkgRead(path)
+    if !content.valid { return false }
+    section: string = ""
+    at: s64 = 0
+    while at < cast(s64)content.text.count {
+        end: s64 = at
+        while end < cast(s64)content.text.count &&
+            content.text[end] != cast(u8)10 { end += 1 }
+        line: string = PkgStripComment(content.text[at:end])
+        at = end + 1
+        if line.count == 0 { continue }
+        if line[0] == cast(u8)91 {
+            if line.count < 3 || line[cast(s64)line.count - 1] != cast(u8)93 { return false }
+            section = line[1:cast(s64)line.count - 1]
+            continue
+        }
+        if section != "overrides" { continue }
+        equal: s64 = 0
+        while equal < cast(s64)line.count && line[equal] != cast(u8)61 { equal += 1 }
+        if equal >= cast(s64)line.count || output.count >= 32 { return false }
+        key: string = PkgTrim(line[0:equal])
+        value: string = PkgTomlText(line[equal + 1:])
+        if !PkgIdentifier(key) || value.count == 0 { return false }
+        output.values[output.count].name = key
+        output.values[output.count].value = value
+        output.count += 1
+    }
+    output.valid = true
+    return true
+}
+
+PkgFindOverride :: (overrides: *PkgOverrides, name: string, root: string) -> string {
+    index: s32 = 0
+    while index < overrides.count {
+        if PkgFoldEqual(overrides.values[index].name, name) {
+            path: string = overrides.values[index].value
+            if path[0] != cast(u8)47 { path = PkgJoin3(root, "/", path) }
+            return PkgCanonical(path)
+        }
+        index += 1
+    }
+    return ""
+}
+
+PkgAliasName :: (dependency: *PkgDependency, exported: string) -> string {
+    index: s32 = 0
+    while index < dependency.alias_count {
+        if dependency.aliases[index].name == exported {
+            return PkgJoin("", dependency.aliases[index].value)
+        }
+        index += 1
+    }
+    return exported
+}

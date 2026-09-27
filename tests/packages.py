@@ -104,6 +104,24 @@ ref = "{revision}"
 
         app = root / "app"
         app.mkdir()
+        add_app = root / "add-app"
+        add_app.mkdir()
+        write(add_app / "ziran.toml", f'''[package]
+name = "AddConsumer"
+entry = "src/app.zi"
+[toolchain]
+git = "{compiler.as_uri()}"
+ref = "master"
+''')
+        write(add_app / "ziran.local.toml", f'[overrides]\nziran = "{compiler}"\n')
+        write(add_app / "src/app.zi", '#import "value"\n')
+        add_env = env.copy()
+        add_env["GIT_CONFIG_COUNT"] = "2"
+        add_env["GIT_CONFIG_KEY_1"] = f"url.{library.as_uri()}.insteadOf"
+        add_env["GIT_CONFIG_VALUE_1"] = "https://github.com/example/library.git"
+        call(ziran, "add", "example/library", cwd=add_app, env=add_env)
+        assert '[dependencies.library]' in (add_app / "ziran.toml").read_text()
+        call(ziran, "check", "--project", cwd=add_app, env=add_env)
         base_manifest = f'''[package]
 name = "App"
 entry = "src/app.zi"
@@ -142,7 +160,6 @@ main :: () -> s32 {
         bootstrap = root / "bootstrap/build/bin"
         bootstrap.mkdir(parents=True)
         shutil.copy2(compiler / "build/bin/ziran", bootstrap / "ziran")
-        shutil.copy2(compiler / "scripts/ziran_pkg.py", bootstrap / "ziran_pkg.py")
         call(str(bootstrap / "ziran"), "check", "--project", cwd=app,
              env=env)
         module_map = (app / "build/.ziran/module-map.tsv").read_text()

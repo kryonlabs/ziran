@@ -1,0 +1,567 @@
+#import "package_common"
+#import "package_manifest"
+#import "json_scan"
+#import "file_linux"
+#import "byte_text_linux"
+
+#scope_export
+libc :: #system_library "libc";
+PkgLockSizeRaw :: () -> u64 #foreign libc "ziran_package_lock_size";
+
+PkgLocked :: struct {
+    id: string
+    name: string
+    url: string
+    ref: string
+    commit: string
+    path: string
+    edges: [24]PkgNamedValue
+    edge_count: s32
+    manifest: PkgManifest
+}
+
+PkgLock :: struct {
+    packages: [64]PkgLocked
+    count: s32
+    root_name: string
+    root_edges: [24]PkgNamedValue
+    root_edge_count: s32
+    tool_url: string
+    tool_ref: string
+    tool_commit: string
+    tool_path: string
+    valid: bool
+}
+
+PkgPending :: struct {
+    owner: s32
+    alias: string
+    url: string
+    ref: string
+    refresh: bool
+}
+
+PkgBuilder :: struct {
+    bytes: []u8
+    at: s64
+    valid: bool
+}
+
+PkgNewLock :: () -> *PkgLock {
+    return cast(*PkgLock)(PkgAllocZero(PkgLockSizeRaw()))
+}
+
+PkgJsonText :: (json: string, at: s32) -> string {
+    span: JsonSpan = ReadString(json, at)
+    if !span.valid { return "" }
+    return json[span.start:span.end]
+}
+
+PkgJsonField :: (json: string, object: s32, name: string) -> string {
+    return PkgJsonText(json, FieldAt(json, object, name))
+}
+
+PkgParseEdges :: (json: string, object: s32, output: *PkgNamedValue,
+    count: *s32) -> bool {
+    if object < 0 || object >= cast(s32)json.count || json[object] != cast(u8)123 {
+        return false
+    }
+    cursor: s32 = Space(json, object + 1)
+    while cursor < cast(s32)json.count && json[cursor] != cast(u8)125 {
+        if count.* >= 24 { return false }
+        key: JsonSpan = ReadString(json, cursor)
+        if !key.valid { return false }
+        cursor = Space(json, key.after)
+        if cursor >= cast(s32)json.count || json[cursor] != cast(u8)58 { return false }
+        cursor = Space(json, cursor + 1)
+        value: string = PkgJsonText(json, cursor)
+        if value.count == 0 { return false }
+        output[count.*].name = json[key.start:key.end]
+        output[count.*].value = value
+        count.* += 1
+        cursor = ValueEnd(json, cursor, 0)
+        if cursor < 0 { return false }
+        cursor = Space(json, cursor)
+        if cursor < cast(s32)json.count && json[cursor] == cast(u8)44 {
+            cursor = Space(json, cursor + 1)
+        } else if cursor < cast(s32)json.count && json[cursor] != cast(u8)125 {
+            return false
+        }
+    }
+    return cursor < cast(s32)json.count && json[cursor] == cast(u8)125
+}
+
+PkgReadLock :: (path: string, output: *PkgLock) -> bool {
+    content: PkgReadResult = PkgRead(path)
+    if !content.valid { return false }
+    json: string = content.text
+    start: s32 = Space(json, 0)
+    if start < 0 || start >= cast(s32)json.count ||
+       json[start] != cast(u8)123 { return false }
+    format_at: s32 = FieldAt(json, 0, "format")
+    if format_at < 0 || json[format_at] != cast(u8)49 { return false }
+    packages_at: s32 = FieldAt(json, 0, "packages")
+    count: s32 = ArrayCount(json, packages_at)
+    if count < 0 || count > 64 { return false }
+    index: s32 = 0
+    while index < count {
+        item: s32 = ElementAt(json, packages_at, index)
+        if item < 0 { return false }
+        locked: *PkgLocked = *output.packages[index]
+        locked.id = PkgJsonField(json, item, "id")
+        locked.name = PkgJsonField(json, item, "name")
+        locked.url = PkgJsonField(json, item, "url")
+        locked.ref = PkgJsonField(json, item, "ref")
+        locked.commit = PkgJsonField(json, item, "commit")
+        if locked.id.count == 0 || locked.name.count == 0 ||
+            locked.url.count == 0 || locked.ref.count == 0 ||
+            locked.commit.count != 40 ||
+            !PkgParseEdges(json, FieldAt(json, item, "dependencies"),
+                *locked.edges[0], *locked.edge_count) { return false }
+        index += 1
+    }
+    output.count = count
+    root: s32 = FieldAt(json, 0, "root")
+    output.root_name = PkgJsonField(json, root, "name")
+    if output.root_name.count == 0 || !PkgParseEdges(json,
+        FieldAt(json, root, "dependencies"), *output.root_edges[0],
+        *output.root_edge_count) { return false }
+    tool: s32 = FieldAt(json, 0, "toolchain")
+    output.tool_url = PkgJsonField(json, tool, "url")
+    output.tool_ref = PkgJsonField(json, tool, "ref")
+    output.tool_commit = PkgJsonField(json, tool, "commit")
+    if output.tool_url.count == 0 || output.tool_ref.count == 0 ||
+       output.tool_commit.count != 40 { return false }
+    output.valid = true
+    return true
+}
+
+PkgEdgeValue :: (edges: *PkgNamedValue, count: s32, name: string) -> string {
+    index: s32 = 0
+    while index < count {
+        if edges[index].name == name { return PkgJoin("", edges[index].value) }
+        index += 1
+    }
+    return ""
+}
+
+PkgFindById :: (locked: *PkgLock, id: string) -> s32 {
+    index: s32 = 0
+    while index < locked.count {
+        if locked.packages[index].id == id { return index }
+        index += 1
+    }
+    return -1
+}
+
+PkgFindBySource :: (locked: *PkgLock, url: string, ref: string) -> s32 {
+    index: s32 = 0
+    while index < locked.count {
+        if locked.packages[index].url == url && locked.packages[index].ref == ref {
+            return index
+        }
+        index += 1
+    }
+    return -1
+}
+
+PkgValidCommit :: (commit: string) -> bool {
+    if commit.count != 40 { return false }
+    index: s64 = 0
+    while index < 40 {
+        ch: u8 = commit[index]
+        if !((ch >= cast(u8)48 && ch <= cast(u8)57) ||
+             (ch >= cast(u8)97 && ch <= cast(u8)102)) { return false }
+        index += 1
+    }
+    return true
+}
+
+PkgGitHead :: (directory: string) -> string {
+    args: [6]string
+    args[0] = "git"
+    args[1] = "-C"
+    args[2] = directory
+    args[3] = "rev-parse"
+    args[4] = "HEAD"
+    result: PkgProcessResult = PkgCapture(args[0:5], "")
+    if result.code != 0 || !PkgValidCommit(result.text) { return "" }
+    return PkgJoin("", result.text)
+}
+
+PkgRemoteCommit :: (url: string, ref: string) -> string {
+    if !PkgGitURL(url) { return "" }
+    args: [4]string
+    args[0] = "git"
+    args[1] = "ls-remote"
+    args[2] = url
+    args[3] = ref
+    result: PkgProcessResult = PkgCapture(args[:], "")
+    if result.code != 0 || result.text.count < 40 { return "" }
+    commit: string = result.text[0:40]
+    if !PkgValidCommit(commit) || result.text.count < 41 ||
+       result.text[40] != cast(u8)9 { return "" }
+    index: s64 = 41
+    while index < cast(s64)result.text.count {
+        if result.text[index] == cast(u8)10 { return "" }
+        index += 1
+    }
+    return PkgJoin("", commit)
+}
+
+PkgCacheRoot :: () -> string {
+    cache: string = PkgGetenv("XDG_CACHE_HOME")
+    if cache.count == 0 { cache = PkgJoin(PkgGetenv("HOME"), "/.cache") }
+    return PkgJoin(cache, "/ziran")
+}
+
+PkgCheckout :: (url: string, commit: string, offline: bool) -> string {
+    if !PkgGitURL(url) || !PkgValidCommit(commit) { return "" }
+    destination: string = PkgJoin3(PkgCacheRoot(), "/sources/",
+        PkgSourceId(url, commit))
+    if PathExists(destination) {
+        if PkgGitHead(destination) == commit { return destination }
+        return ""
+    }
+    if offline || !PkgMkdirs(PkgJoin(PkgCacheRoot(), "/sources")) { return "" }
+    args: [6]string
+    args[0] = "git"
+    args[1] = "clone"
+    args[2] = "--no-checkout"
+    args[3] = url
+    args[4] = destination
+    names: [0]string
+    values: [0]string
+    if PkgRun(args[0:5], "", names[:], values[:]) != 0 { return "" }
+    args[0] = "git"
+    args[1] = "-C"
+    args[2] = destination
+    args[3] = "checkout"
+    args[4] = "--detach"
+    args[5] = commit
+    if PkgRun(args[:], "", names[:], values[:]) != 0 ||
+        PkgGitHead(destination) != commit { return "" }
+    return destination
+}
+
+PkgAppend :: (builder: *PkgBuilder, value: string) -> void {
+    if !builder.valid { return }
+    next: s64 = PkgCopy(builder.bytes, builder.at, value)
+    if next < 0 { builder.valid = false; return }
+    builder.at = next
+}
+
+PkgAppendJson :: (builder: *PkgBuilder, value: string) -> void {
+    PkgAppend(builder, "\"")
+    index: s64 = 0
+    while index < cast(s64)value.count {
+        ch: u8 = value[index]
+        if ch == cast(u8)34 { PkgAppend(builder, "\\\"") }
+        else if ch == cast(u8)92 { PkgAppend(builder, "\\\\") }
+        else if ch == cast(u8)10 { PkgAppend(builder, "\\n") }
+        else if ch < cast(u8)32 { builder.valid = false }
+        else { PkgAppend(builder, value[index:index + 1]) }
+        index += 1
+    }
+    PkgAppend(builder, "\"")
+}
+
+PkgWriteEdges :: (builder: *PkgBuilder, edges: *PkgNamedValue, count: s32) -> void {
+    PkgAppend(builder, "{")
+    written: s32 = 0
+    while written < count {
+        best: s32 = -1
+        index: s32 = 0
+        while index < count {
+            earlier: s32 = 0
+            other: s32 = 0
+            while other < count {
+                if PkgLexLess(edges[other].name, edges[index].name) { earlier += 1 }
+                other += 1
+            }
+            if earlier == written { best = index; break }
+            index += 1
+        }
+        if best < 0 { builder.valid = false; return }
+        if written > 0 { PkgAppend(builder, ", ") }
+        PkgAppendJson(builder, edges[best].name)
+        PkgAppend(builder, ": ")
+        PkgAppendJson(builder, edges[best].value)
+        written += 1
+    }
+    PkgAppend(builder, "}")
+}
+
+PkgWriteLock :: (root: string, locked: *PkgLock) -> bool {
+    memory: *u8 = PkgAlloc(4194304)
+    if memory == null { return false }
+    builder: PkgBuilder
+    builder.bytes = BytesFromPointer(memory, 4194304)
+    builder.valid = true
+    PkgAppend(*builder, "{\n  \"format\": 1,\n  \"packages\": [\n")
+    written: s32 = 0
+    while written < locked.count {
+        best: s32 = -1
+        index: s32 = 0
+        while index < locked.count {
+            earlier: s32 = 0
+            other: s32 = 0
+            while other < locked.count {
+                if PkgLexLess(locked.packages[other].id,
+                    locked.packages[index].id) {
+                    earlier += 1
+                }
+                other += 1
+            }
+            if earlier == written { best = index; break }
+            index += 1
+        }
+        if best < 0 { return false }
+        item: *PkgLocked = *locked.packages[best]
+        if written > 0 { PkgAppend(*builder, ",\n") }
+        PkgAppend(*builder, "    {\n      \"commit\": ")
+        PkgAppendJson(*builder, item.commit)
+        PkgAppend(*builder, ",\n      \"dependencies\": ")
+        PkgWriteEdges(*builder, *item.edges[0], item.edge_count)
+        PkgAppend(*builder, ",\n      \"id\": ")
+        PkgAppendJson(*builder, item.id)
+        PkgAppend(*builder, ",\n      \"name\": ")
+        PkgAppendJson(*builder, item.name)
+        PkgAppend(*builder, ",\n      \"ref\": ")
+        PkgAppendJson(*builder, item.ref)
+        PkgAppend(*builder, ",\n      \"url\": ")
+        PkgAppendJson(*builder, item.url)
+        PkgAppend(*builder, "\n    }")
+        written += 1
+    }
+    PkgAppend(*builder, "\n  ],\n  \"root\": {\n    \"dependencies\": ")
+    PkgWriteEdges(*builder, *locked.root_edges[0], locked.root_edge_count)
+    PkgAppend(*builder, ",\n    \"name\": ")
+    PkgAppendJson(*builder, locked.root_name)
+    PkgAppend(*builder, "\n  },\n  \"toolchain\": {\n    \"commit\": ")
+    PkgAppendJson(*builder, locked.tool_commit)
+    PkgAppend(*builder, ",\n    \"ref\": ")
+    PkgAppendJson(*builder, locked.tool_ref)
+    PkgAppend(*builder, ",\n    \"url\": ")
+    PkgAppendJson(*builder, locked.tool_url)
+    PkgAppend(*builder, "\n  }\n}\n")
+    if !builder.valid { return false }
+    path: string = PkgJoin(root, "/ziran.lock")
+    temporary: string = PkgJoin(root, "/ziran.lock.tmp")
+    if !PkgWrite(temporary, TextFromBytes(builder.bytes[0:builder.at])) { return false }
+    return RenamePath(temporary, path)
+}
+
+PkgResolveLock :: (root: string, refresh: string) -> bool {
+    current: *PkgManifest = PkgNewManifest()
+    old: *PkgLock = PkgNewLock()
+    resolved: *PkgLock = PkgNewLock()
+    overrides: *PkgOverrides = PkgNewOverrides()
+    if current == null || old == null || resolved == null || overrides == null {
+        return false
+    }
+    if !PkgParseManifest(PkgJoin(root, "/ziran.toml"), current) ||
+       !PkgParseOverrides(PkgJoin(root, "/ziran.local.toml"), overrides) { return false }
+    PkgReadLock(PkgJoin(root, "/ziran.lock"), old)
+    if refresh != "" && refresh != "*" {
+        found: bool = false
+        index: s32 = 0
+        while index < current.dependency_count {
+            if PkgFoldEqual(current.dependencies[index].alias, refresh) { found = true }
+            index += 1
+        }
+        if !found { return false }
+    }
+    pending: [256]PkgPending
+    pending_count: s32 = 0
+    index: s32 = 0
+    while index < current.dependency_count {
+        dependency: *PkgDependency = *current.dependencies[index]
+        pending[pending_count].owner = -1
+        pending[pending_count].alias = dependency.alias
+        pending[pending_count].url = dependency.git
+        pending[pending_count].ref = dependency.ref
+        pending[pending_count].refresh = refresh == "*" ||
+            (refresh != "" && PkgFoldEqual(refresh, dependency.alias))
+        pending_count += 1
+        index += 1
+    }
+    if refresh != "" && refresh != "*" {
+        index = 0
+        while index < pending_count {
+            if pending[index].refresh {
+                first: PkgPending = pending[0]
+                pending[0] = pending[index]
+                pending[index] = first
+                break
+            }
+            index += 1
+        }
+    }
+    while pending_count > 0 {
+        next: PkgPending = pending[0]
+        index = 1
+        while index < pending_count {
+            pending[index - 1] = pending[index]
+            index += 1
+        }
+        pending_count -= 1
+        found: s32 = PkgFindBySource(resolved, next.url, next.ref)
+        if found < 0 {
+            if resolved.count >= 64 { return false }
+            found = resolved.count
+            item: *PkgLocked = *resolved.packages[found]
+            item.url = next.url
+            item.ref = next.ref
+            override: string = PkgFindOverride(overrides, next.alias, root)
+            if override.count > 0 {
+                item.commit = PkgGitHead(override)
+                item.path = override
+            } else {
+                previous: s32 = PkgFindBySource(old, next.url, next.ref)
+                if previous >= 0 && !next.refresh {
+                    item.commit = old.packages[previous].commit
+                } else {
+                    item.commit = PkgRemoteCommit(next.url, next.ref)
+                }
+                item.path = PkgCheckout(next.url, item.commit, false)
+            }
+            if !PkgValidCommit(item.commit) || item.path.count == 0 ||
+               !PkgParseManifest(PkgJoin(item.path, "/ziran.toml"), *item.manifest) {
+                return false
+            }
+            item.name = item.manifest.name
+            item.id = PkgSourceId(item.url, item.commit)
+            resolved.count += 1
+            index = 0
+            while index < item.manifest.dependency_count {
+                if pending_count >= 256 { return false }
+                child: *PkgDependency = *item.manifest.dependencies[index]
+                entry: PkgPending
+                entry.owner = found
+                entry.alias = child.alias
+                entry.url = child.git
+                entry.ref = child.ref
+                entry.refresh = next.refresh
+                if next.refresh {
+                    shift: s32 = pending_count
+                    while shift > index {
+                        pending[shift] = pending[shift - 1]
+                        shift -= 1
+                    }
+                    pending[index] = entry
+                } else {
+                    pending[pending_count] = entry
+                }
+                pending_count += 1
+                index += 1
+            }
+        }
+        if next.owner < 0 {
+            if resolved.root_edge_count >= 24 { return false }
+            resolved.root_edges[resolved.root_edge_count].name = next.alias
+            resolved.root_edges[resolved.root_edge_count].value = resolved.packages[found].id
+            resolved.root_edge_count += 1
+        } else {
+            parent: *PkgLocked = *resolved.packages[next.owner]
+            if parent.edge_count >= 24 { return false }
+            parent.edges[parent.edge_count].name = next.alias
+            parent.edges[parent.edge_count].value = resolved.packages[found].id
+            parent.edge_count += 1
+        }
+    }
+    if !PkgGitURL(current.tool_git) { return false }
+    resolved.root_name = current.name
+    resolved.tool_url = current.tool_git
+    resolved.tool_ref = current.tool_ref
+    tool_override: string = PkgFindOverride(overrides, "ziran", root)
+    if tool_override.count > 0 {
+        resolved.tool_commit = PkgGitHead(tool_override)
+    } else if old.valid && old.tool_url == resolved.tool_url &&
+        old.tool_ref == resolved.tool_ref && refresh != "*" {
+        resolved.tool_commit = old.tool_commit
+    } else {
+        resolved.tool_commit = PkgRemoteCommit(resolved.tool_url, resolved.tool_ref)
+    }
+    if !PkgValidCommit(resolved.tool_commit) { return false }
+    return PkgWriteLock(root, resolved)
+}
+
+PkgCheckoutGraph :: (root: string, locked: *PkgLock, offline: bool,
+    locked_mode: bool, current: *PkgManifest) -> bool {
+    overrides: *PkgOverrides = PkgNewOverrides()
+    if overrides == null ||
+       !PkgParseOverrides(PkgJoin(root, "/ziran.local.toml"), overrides) ||
+       !PkgParseManifest(PkgJoin(root, "/ziran.toml"), current) { return false }
+    if locked_mode && overrides.count > 0 {
+        PkgFail("local overrides are not allowed with --locked")
+        return false
+    }
+    if current.name != locked.root_name ||
+       current.dependency_count != locked.root_edge_count ||
+       current.tool_git != locked.tool_url || current.tool_ref != locked.tool_ref {
+        PkgFail("dependencies differ from ziran.lock; run ziran lock")
+        return false
+    }
+    index: s32 = 0
+    while index < current.dependency_count {
+        dep: *PkgDependency = *current.dependencies[index]
+        id: string = PkgEdgeValue(*locked.root_edges[0], locked.root_edge_count,
+            dep.alias)
+        found: s32 = PkgFindById(locked, id)
+        if found < 0 || locked.packages[found].url != dep.git ||
+           locked.packages[found].ref != dep.ref {
+            PkgFail("dependencies differ from ziran.lock; run ziran lock")
+            return false
+        }
+        index += 1
+    }
+    index = 0
+    while index < locked.count {
+        item: *PkgLocked = *locked.packages[index]
+        override: string = PkgFindOverride(overrides, item.name, root)
+        item.path = override
+        if item.path.count == 0 {
+            item.path = PkgCheckout(item.url, item.commit, offline)
+        }
+        if item.path.count == 0 ||
+           !PkgParseManifest(PkgJoin(item.path, "/ziran.toml"), *item.manifest) ||
+           item.manifest.name != item.name ||
+           item.manifest.dependency_count != item.edge_count { return false }
+        child: s32 = 0
+        while child < item.manifest.dependency_count {
+            dep: *PkgDependency = *item.manifest.dependencies[child]
+            id: string = PkgEdgeValue(*item.edges[0], item.edge_count, dep.alias)
+            target: s32 = PkgFindById(locked, id)
+            if target < 0 || locked.packages[target].url != dep.git ||
+                locked.packages[target].ref != dep.ref { return false }
+            child += 1
+        }
+        index += 1
+    }
+    locked.tool_path = PkgFindOverride(overrides, "ziran", root)
+    if locked.tool_path.count == 0 {
+        locked.tool_path = PkgCheckout(locked.tool_url, locked.tool_commit, offline)
+    }
+    return locked.tool_path.count > 0
+}
+
+PkgSelect :: (locked: *PkgLock, selector: string) -> s32 {
+    index: s32 = 0
+    while index < locked.root_edge_count {
+        if PkgFoldEqual(locked.root_edges[index].name, selector) {
+            return PkgFindById(locked, locked.root_edges[index].value)
+        }
+        index += 1
+    }
+    found: s32 = -1
+    index = 0
+    while index < locked.count {
+        if PkgFoldEqual(locked.packages[index].name, selector) {
+            if found >= 0 { return -1 }
+            found = index
+        }
+        index += 1
+    }
+    return found
+}

@@ -1,0 +1,264 @@
+#import "package_common"
+#import "package_manifest"
+#import "package_lock"
+#import "package_map"
+#import "package_add"
+#import "file_linux"
+
+PkgLauncherDirectory :: (launcher: string) -> string {
+    path: string = PkgCanonical(launcher)
+    if path.count == 0 { return "" }
+    end: s64 = cast(s64)path.count - 1
+    while end > 0 && path[end] != cast(u8)47 { end -= 1 }
+    return PkgJoin("", path[0:end])
+}
+
+PkgHasArgument :: (arguments: []string, expected: string) -> bool {
+    index: s32 = 0
+    while index < cast(s32)arguments.count {
+        if arguments[index] == expected { return true }
+        index += 1
+    }
+    return false
+}
+
+PkgPrepareSubmodules :: (directory: string, offline: bool) -> bool {
+    args: [7]string
+    args[0] = "git"
+    args[1] = "-C"
+    args[2] = directory
+    args[3] = "submodule"
+    args[4] = "status"
+    args[5] = "--recursive"
+    result: PkgProcessResult = PkgCaptureRaw(args[0:6], "")
+    if result.code != 0 { return false }
+    at: s64 = 0
+    while at < cast(s64)result.text.count {
+        if result.text[at] != cast(u8)32 {
+            if offline { return false }
+            args[4] = "update"
+            args[5] = "--init"
+            args[6] = "--recursive"
+            updated: PkgProcessResult = PkgCapture(args[:], "")
+            return updated.code == 0
+        }
+        while at < cast(s64)result.text.count &&
+            result.text[at] != cast(u8)10 { at += 1 }
+        at += 1
+    }
+    return true
+}
+
+PkgDispatch :: (command: string, arguments: []string, project: bool,
+    root: string, locked: *PkgLock, current: *PkgManifest,
+    launcher: string) -> s32 {
+    executable: string = ""
+    check: bool = command == "check"
+    bundle: bool = command == "bundle" || command == "run"
+    build: bool = command == "build"
+    if check || command == "ir" { executable = "zi2zir" }
+    else if command == "inspect" { executable = "zi-inspect" }
+    else if command == "fmt" { executable = "zi-fmt" }
+    else if bundle { executable = "zi2zib" }
+    else if build {
+        target: string = ""
+        index: s32 = 0
+        while index < cast(s32)arguments.count {
+            if arguments[index] == "--target=c" ||
+               arguments[index] == "--target=cpp" ||
+               arguments[index] == "--target=go" { target = arguments[index] }
+            index += 1
+        }
+        if target == "--target=c" { executable = "zi2c" }
+        else if target == "--target=cpp" { executable = "zi2cpp" }
+        else if target == "--target=go" { executable = "zi2go" }
+        else { return PkgFail("build needs --target=c|cpp|go") }
+    }
+    if executable.count == 0 { return PkgFail("unknown Ziran command") }
+    tool_directory: string = PkgLauncherDirectory(launcher)
+    if project { tool_directory = PkgJoin(locked.tool_path, "/build/bin") }
+    if tool_directory.count == 0 { return PkgFail("cannot find Ziran binaries") }
+    binary: string = PkgJoin3(tool_directory, "/", executable)
+    names: [1]string
+    values: [1]string
+    names[0] = "ZIRAN_PACKAGE_MAP"
+    values[0] = ""
+    if project {
+        if !PathExists(binary) {
+            make_args: [4]string
+            make_args[0] = "make"
+            make_args[1] = "-C"
+            make_args[2] = locked.tool_path
+            make_args[3] = "all"
+            empty: [0]string
+            if PkgRun(make_args[:], "", empty[:], empty[:]) != 0 {
+                return PkgFail("cannot build pinned Ziran compiler")
+            }
+        }
+        values[0] = PkgWriteMap(root, locked, current)
+        if values[0].count == 0 { return PkgFail("cannot build project import map") }
+    }
+    child: [260]string
+    count: s32 = 0
+    child[count] = binary
+    count += 1
+    if check { child[count] = "--check-only"; count += 1 }
+    if bundle { child[count] = command; count += 1 }
+    if project && !PkgHasArgument(arguments, "--root") {
+        child[count] = "--root"
+        count += 1
+        child[count] = PkgJoin(root, "/src")
+        count += 1
+    }
+    has_source: bool = false
+    index: s32 = 0
+    while index < cast(s32)arguments.count {
+        part: string = arguments[index]
+        if !(build && (part == "--target=c" || part == "--target=cpp" ||
+            part == "--target=go")) {
+            if count >= 259 { return PkgFail("too many arguments") }
+            child[count] = part
+            count += 1
+            if PkgEndsWith(part, ".zi") || PkgEndsWith(part, ".zir") {
+                has_source = true
+            }
+        }
+        index += 1
+    }
+    if project && !has_source &&
+       (check || command == "ir" || build || command == "bundle") {
+        child[count] = PkgJoin3(root, "/", current.entry)
+        count += 1
+    }
+    return PkgRun(child[0:count], "", names[:], values[:])
+}
+
+#program_export
+PackageMain :: (launcher: string, arguments: []string) -> s32 {
+    if arguments.count == 0 || arguments[0] == "help" ||
+       arguments[0] == "--help" || arguments[0] == "-h" {
+        PkgPrint("usage: ziran lock|update|fetch|add|pkg|tool|check|ir|build|bundle|run|fmt|inspect ...\n", false)
+        PkgPrint("project commands: --project [--locked] [--offline]\n", false)
+        return 0
+    }
+    command: string = arguments[0]
+    if command == "add" { return Add(launcher, arguments[1:]) }
+    root: string = ""
+    if command == "lock" || command == "update" || command == "fetch" ||
+       command == "tool" || command == "pkg" ||
+       PkgHasArgument(arguments, "--project") {
+        root = PkgProjectRoot()
+        if root.count == 0 { return PkgFail("no ziran.toml found") }
+    }
+    if command == "lock" {
+        if PkgResolveLock(root, "") { return 0 }
+        return PkgFail("cannot resolve project lock")
+    }
+    if command == "update" {
+        if arguments.count > 2 { return PkgFail("usage: ziran update [PACKAGE]") }
+        refresh: string = "*"
+        if arguments.count == 2 { refresh = arguments[1] }
+        if PkgResolveLock(root, refresh) { return 0 }
+        return PkgFail("cannot update project lock")
+    }
+    project: bool = PkgHasArgument(arguments, "--project")
+    locked_mode: bool = PkgHasArgument(arguments, "--locked")
+    offline: bool = PkgHasArgument(arguments, "--offline")
+    filtered: [256]string
+    count: s32 = 0
+    index: s32 = 1
+    while index < cast(s32)arguments.count {
+        part: string = arguments[index]
+        if part != "--project" && part != "--locked" && part != "--offline" {
+            if count >= 256 { return PkgFail("too many arguments") }
+            filtered[count] = part
+            count += 1
+        }
+        index += 1
+    }
+    if project && PkgHasArgument(filtered[0:count], "--module-path") {
+        return PkgFail("--module-path is for standalone commands")
+    }
+    locked: *PkgLock = null
+    current: *PkgManifest = null
+    if project || command == "fetch" || command == "pkg" || command == "tool" {
+        locked = PkgNewLock()
+        current = PkgNewManifest()
+        if locked == null || current == null ||
+           !PkgReadLock(PkgJoin(root, "/ziran.lock"), locked) {
+            return PkgFail("cannot read ziran.lock; run ziran lock")
+        }
+        if !PkgCheckoutGraph(root, locked, offline, locked_mode, current) {
+            return PkgFail("cannot fetch locked packages")
+        }
+    }
+    if command == "fetch" { return 0 }
+    if command == "pkg" {
+        if count < 2 || count > 3 || filtered[0] != "path" ||
+           (count == 3 && filtered[2] != "--submodules") {
+            return PkgFail("usage: ziran pkg path PACKAGE [--submodules]")
+        }
+        if filtered[1] == "ziran" {
+            if count == 3 { return PkgFail("Ziran has no package submodules") }
+            PkgPrint(locked.tool_path, false)
+            PkgPrint("\n", false)
+            return 0
+        }
+        selected: s32 = PkgSelect(locked, filtered[1])
+        if selected < 0 { return PkgFail("package is not locked") }
+        if count == 3 && !PkgPrepareSubmodules(locked.packages[selected].path,
+            offline) { return PkgFail("package submodules are missing") }
+        PkgPrint(locked.packages[selected].path, false)
+        PkgPrint("\n", false)
+        return 0
+    }
+    if command == "tool" {
+        if count < 2 { return PkgFail("usage: ziran tool PACKAGE COMMAND") }
+        selected: s32 = PkgSelect(locked, filtered[0])
+        if selected < 0 { return PkgFail("package is not locked") }
+        item: *PkgLocked = *locked.packages[selected]
+        relative: string = PkgJoin("", item.manifest.project_tool)
+        if relative.count == 0 || relative[0] == cast(u8)47 {
+            return PkgFail("package has no project tool")
+        }
+        at: s64 = 0
+        while at + 1 < cast(s64)relative.count {
+            if relative[at] == cast(u8)46 &&
+               relative[at + 1] == cast(u8)46 { return PkgFail("invalid project tool") }
+            at += 1
+        }
+        binary: string = PkgJoin3(item.path, "/", relative)
+        if !PathExists(binary) {
+            make_args: [5]string
+            make_args[0] = "make"
+            make_args[1] = "-C"
+            make_args[2] = item.path
+            make_args[3] = relative
+            make_args[4] = PkgJoin("ZIRAN_DIR=", locked.tool_path)
+            empty: [0]string
+            if PkgRun(make_args[:], "", empty[:], empty[:]) != 0 {
+                return PkgFail("cannot build package tool")
+            }
+        }
+        names: [4]string
+        values: [4]string
+        names[0] = "ZIRAN_PROJECT_ROOT"
+        names[1] = "ZIRAN_PACKAGE_ROOT"
+        names[2] = "ZIRAN_PACKAGE_ID"
+        names[3] = "ZIRAN_TOOLCHAIN_ROOT"
+        values[0] = root
+        values[1] = item.path
+        values[2] = item.id
+        values[3] = locked.tool_path
+        child: [256]string
+        child[0] = binary
+        index = 1
+        while index < count {
+            child[index] = filtered[index]
+            index += 1
+        }
+        return PkgRun(child[0:count], root, names[:], values[:])
+    }
+    return PkgDispatch(command, filtered[0:count], project, root, locked,
+        current, launcher)
+}

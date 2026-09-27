@@ -1,9 +1,10 @@
 # Packages and project imports
 
 A Ziran application is a package with a `ziran.toml` and a committed
-`ziran.lock`. Dependencies and the compiler are fetched from public HTTPS Git
+`ziran.lock`. The package command is compiled from Ziran source. Dependencies
+and the compiler are fetched from public HTTPS Git
 repositories and pinned to full commits in the lock. `make install-user`
-installs a bootstrap `ziran` command; project commands build and use the
+installs the native `ziran` command; project commands build and use the
 compiler pinned by the application lock.
 
 ```toml

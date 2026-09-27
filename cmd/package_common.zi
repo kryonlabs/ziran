@@ -1,0 +1,245 @@
+#import "byte_text_linux"
+#import "c_string"
+#import "file_linux"
+#import "text"
+
+#scope_export
+libc :: #system_library "libc";
+crypto :: #system_library "crypto";
+PkgMallocRaw :: (size: u64) -> *u8 #foreign libc "malloc";
+PkgCallocRaw :: (count: u64, size: u64) -> *u8 #foreign libc "calloc";
+PkgGetenvRaw :: (name: *u8) -> *u8 #foreign libc "getenv";
+PkgGetcwdRaw :: (buffer: *u8, size: u64) -> *u8 #foreign libc "getcwd";
+PkgRealpathRaw :: (path: *u8, resolved: *u8) -> *u8 #foreign libc "realpath";
+PkgWriteRaw :: (fd: s32, bytes: *u8, count: u64) -> s64 #foreign libc "write";
+PkgSha256Raw :: (input: *u8, size: u64, digest: *u8) -> *u8 #foreign crypto "SHA256";
+PkgHostRun :: (args: []string, cwd: string, names: []string,
+    values: []string, output: []u8) -> s32 #foreign libc "ziran_package_run";
+
+PkgReadResult :: struct {
+    text: string
+    valid: bool
+}
+
+PkgProcessResult :: struct {
+    text: string
+    code: s32
+}
+
+#program_export
+PkgAlloc :: (size: u64) -> *u8 { return PkgMallocRaw(size) }
+
+#program_export
+PkgAllocZero :: (size: u64) -> *u8 { return PkgCallocRaw(1, size) }
+
+PkgCopy :: (target: []u8, at: s64, value: string) -> s64 {
+    if at < 0 || at + cast(s64)value.count > cast(s64)target.count { return -1 }
+    index: s64 = 0
+    while index < cast(s64)value.count {
+        target[at + index] = value[index]
+        index += 1
+    }
+    return at + cast(s64)value.count
+}
+
+PkgJoin :: (left: string, right: string) -> string {
+    total: u64 = cast(u64)left.count + cast(u64)right.count
+    if total > 16777216 { return "" }
+    memory: *u8 = PkgMallocRaw(total + 1)
+    if memory == null { return "" }
+    buffer: []u8 = BytesFromPointer(memory, total + 1)
+    at: s64 = PkgCopy(buffer, 0, left)
+    at = PkgCopy(buffer, at, right)
+    buffer[at] = cast(u8)0
+    return TextFromBytes(buffer[0:at])
+}
+
+PkgJoin3 :: (first: string, second: string, third: string) -> string {
+    return PkgJoin(PkgJoin(first, second), third)
+}
+
+PkgGetenv :: (name: string) -> string {
+    buffer: [256]u8
+    if !CopyCString(name, buffer[:]) { return "" }
+    return TextFromCString(PkgGetenvRaw(*buffer[0]))
+}
+
+PkgCanonical :: (path: string) -> string {
+    buffer: [4096]u8
+    if !CopyCString(path, buffer[:]) { return "" }
+    return TextFromCString(PkgRealpathRaw(*buffer[0], null))
+}
+
+PkgCwd :: () -> string {
+    memory: *u8 = PkgMallocRaw(4096)
+    if memory == null || PkgGetcwdRaw(memory, 4096) == null { return "" }
+    return TextFromCString(memory)
+}
+
+PkgProjectRoot :: () -> string {
+    current: string = PkgCwd()
+    while current.count > 0 {
+        if PathExists(PkgJoin(current, "/ziran.toml")) { return current }
+        if current == "/" { break }
+        last: s64 = cast(s64)current.count - 1
+        while last > 0 && current[last] != cast(u8)47 { last -= 1 }
+        if last == 0 { current = "/" }
+        else { current = current[0:last] }
+    }
+    return ""
+}
+
+PkgRead :: (path: string) -> PkgReadResult {
+    result: PkgReadResult
+    file: FileHandle = OpenRead(path)
+    if !file.valid { return result }
+    size: s64 = FileSize(file)
+    if size < 0 || size > 16777216 {
+        CloseFile(file)
+        return result
+    }
+    memory: *u8 = PkgMallocRaw(cast(u64)size + 1)
+    if memory == null {
+        CloseFile(file)
+        return result
+    }
+    bytes: []u8 = BytesFromPointer(memory, cast(u64)size + 1)
+    if size > 0 && ReadAt(file, bytes[0:size], 0) != size {
+        CloseFile(file)
+        return result
+    }
+    CloseFile(file)
+    bytes[size] = cast(u8)0
+    result.text = TextFromBytes(bytes[0:size])
+    result.valid = true
+    return result
+}
+
+PkgWrite :: (path: string, content: string) -> bool {
+    file: FileHandle = OpenReplace(path)
+    if !file.valid { return false }
+    valid: bool = WriteTextAt(file, content, 0) == cast(s64)content.count
+    if valid { valid = SyncFile(file) }
+    CloseFile(file)
+    return valid
+}
+
+PkgMkdirs :: (path: string) -> bool {
+    if path.count == 0 || path.count > 4095 { return false }
+    index: s64 = 1
+    while index < cast(s64)path.count {
+        if path[index] == cast(u8)47 {
+            if !CreateDirectory(path[0:index]) { return false }
+        }
+        index += 1
+    }
+    return CreateDirectory(path)
+}
+
+PkgTrim :: (value: string) -> string {
+    start: s64 = 0
+    finish: s64 = cast(s64)value.count
+    while start < finish && (value[start] == cast(u8)32 ||
+        value[start] == cast(u8)9 || value[start] == cast(u8)10 ||
+        value[start] == cast(u8)13) { start += 1 }
+    while finish > start && (value[finish - 1] == cast(u8)32 ||
+        value[finish - 1] == cast(u8)9 || value[finish - 1] == cast(u8)10 ||
+        value[finish - 1] == cast(u8)13) { finish -= 1 }
+    return value[start:finish]
+}
+
+PkgFoldEqual :: (left: string, right: string) -> bool {
+    if left.count != right.count { return false }
+    index: s64 = 0
+    while index < cast(s64)left.count {
+        if LowerASCII(left[index]) != LowerASCII(right[index]) { return false }
+        index += 1
+    }
+    return true
+}
+
+PkgLexLess :: (left: string, right: string) -> bool {
+    index: s64 = 0
+    while index < cast(s64)left.count && index < cast(s64)right.count {
+        if left[index] < right[index] { return true }
+        if left[index] > right[index] { return false }
+        index += 1
+    }
+    return left.count < right.count
+}
+
+PkgEndsWith :: (value: string, suffix: string) -> bool {
+    if suffix.count > value.count { return false }
+    return value[cast(s64)value.count - cast(s64)suffix.count:] == suffix
+}
+
+PkgRun :: (arguments: []string, cwd: string, names: []string,
+    values: []string) -> s32 {
+    empty: [0]u8
+    return PkgHostRun(arguments, cwd, names, values, empty[:])
+}
+
+PkgCaptureRaw :: (arguments: []string, cwd: string) -> PkgProcessResult {
+    result: PkgProcessResult
+    names: [0]string
+    values: [0]string
+    memory: *u8 = PkgMallocRaw(1048576)
+    if memory == null { result.code = -1; return result }
+    output: []u8 = BytesFromPointer(memory, 1048576)
+    result.code = PkgHostRun(arguments, cwd, names[:], values[:], output)
+    result.text = TextFromCString(memory)
+    return result
+}
+
+PkgCapture :: (arguments: []string, cwd: string) -> PkgProcessResult {
+    result: PkgProcessResult = PkgCaptureRaw(arguments, cwd)
+    result.text = PkgTrim(result.text)
+    return result
+}
+
+PkgPrint :: (value: string, error: bool) -> void {
+    if value.count == 0 { return }
+    fd: s32 = 1
+    if error { fd = 2 }
+    bytes: [4096]u8
+    index: s64 = 0
+    while index < cast(s64)value.count {
+        count: s64 = cast(s64)value.count - index
+        if count > 4096 { count = 4096 }
+        part: s64 = 0
+        while part < count {
+            bytes[part] = value[index + part]
+            part += 1
+        }
+        written: s64 = PkgWriteRaw(fd, *bytes[0], cast(u64)count)
+        if written <= 0 { return }
+        index += written
+    }
+}
+
+PkgFail :: (message: string) -> s32 {
+    PkgPrint("ziran: ", true)
+    PkgPrint(message, true)
+    PkgPrint("\n", true)
+    return 2
+}
+
+PkgSourceId :: (url: string, commit: string) -> string {
+    input: string = PkgJoin3(url, "\n", commit)
+    digest: [32]u8
+    memory: *u8 = PkgAlloc(cast(u64)input.count)
+    if input.count == 0 || memory == null { return "" }
+    bytes: []u8 = BytesFromPointer(memory, cast(u64)input.count)
+    if PkgCopy(bytes, 0, input) < 0 || PkgSha256Raw(*bytes[0],
+        cast(u64)input.count, *digest[0]) == null { return "" }
+    alphabet: string = "0123456789abcdef"
+    result: [18]u8
+    result[0] = cast(u8)112
+    index: s32 = 0
+    while index < 8 {
+        result[index * 2 + 1] = alphabet[cast(s32)(digest[index] >> cast(u8)4)]
+        result[index * 2 + 2] = alphabet[cast(s32)(digest[index] & cast(u8)15)]
+        index += 1
+    }
+    return PkgJoin("", TextFromBytes(result[0:17]))
+}

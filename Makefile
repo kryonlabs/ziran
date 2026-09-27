@@ -18,13 +18,16 @@ LIB_OBJECTS := $(patsubst cmd/zir/%.c,$(BUILD_DIR)/obj/%.o,$(LIB_SOURCES))
 
 .PHONY: all check curl-http-test clean install-user
 CHECK_JOBS ?= 4
-all: $(BIN_DIR)/ziran $(BIN_DIR)/ziran-add $(BIN_DIR)/zi-fmt $(BIN_DIR)/zi2zir $(BIN_DIR)/zi-inspect $(BIN_DIR)/zi2c $(BIN_DIR)/zi2go $(BIN_DIR)/zi2cpp $(BIN_DIR)/zi2zib $(BUILD_DIR)/libziran.a
+all: $(BIN_DIR)/ziran $(BIN_DIR)/zi-fmt $(BIN_DIR)/zi2zir $(BIN_DIR)/zi-inspect $(BIN_DIR)/zi2c $(BIN_DIR)/zi2go $(BIN_DIR)/zi2cpp $(BIN_DIR)/zi2zib $(BUILD_DIR)/libziran.a
 
 USER_BIN ?= $(HOME)/.local/bin
 USER_SHARE ?= $(HOME)/.local/share/ziran/bootstrap
 install-user: all
 	mkdir -p $(USER_BIN) $(USER_SHARE)/build/bin
-	cp -a $(BIN_DIR)/. $(USER_SHARE)/build/bin/
+	cp $(BIN_DIR)/ziran $(BIN_DIR)/zi-fmt $(BIN_DIR)/zi2zir \
+	    $(BIN_DIR)/zi-inspect $(BIN_DIR)/zi2c $(BIN_DIR)/zi2go \
+	    $(BIN_DIR)/zi2cpp $(BIN_DIR)/zi2zib $(USER_SHARE)/build/bin/
+	$(RM) $(USER_SHARE)/build/bin/ziran_pkg.py $(USER_SHARE)/build/bin/ziran-add
 	printf '%s\n' '#!/bin/sh' 'set -eu' \
 		'exec "$(USER_SHARE)/build/bin/ziran" "$$@"' > $(USER_BIN)/ziran
 	chmod 755 $(USER_BIN)/ziran
@@ -40,15 +43,16 @@ $(BUILD_DIR)/libziran.a: $(LIB_OBJECTS) Makefile
 $(BIN_DIR):
 	mkdir -p $@
 
-$(BIN_DIR)/ziran: scripts/ziran scripts/ziran_pkg.py | $(BIN_DIR)
-	cp $< $@
-	chmod +x $@
-	cp scripts/ziran_pkg.py $(BIN_DIR)/ziran_pkg.py
-
-$(BIN_DIR)/ziran-add: cmd/package_add.zi cmd/package_add_main.c std/byte_text_linux.zi std/file_linux.zi std/process_capture_linux.zi std/text.zi $(BIN_DIR)/zi2c
-	$(BIN_DIR)/zi2c --no-main --root cmd --module-path std -o $(BUILD_DIR)/package-add-c cmd/package_add.zi
-	$(CC) $(CFLAGS) -I$(BUILD_DIR)/package-add-c -o $@ \
-	    cmd/package_add_main.c $(BUILD_DIR)/package-add-c/*.c -lm
+$(BIN_DIR)/ziran: cmd/package.zi cmd/package_add.zi cmd/package_common.zi \
+    cmd/package_manifest.zi cmd/package_lock.zi cmd/package_map.zi \
+    cmd/package_main.c cmd/package_host.c std/byte_text_linux.zi \
+    std/file_linux.zi std/process_capture_linux.zi std/json_scan.zi \
+    std/text.zi $(BIN_DIR)/zi2c
+	$(BIN_DIR)/zi2c --no-main --root cmd --module-path std \
+	    -o $(BUILD_DIR)/package-c cmd/package.zi
+	$(CC) $(CFLAGS) -I$(BUILD_DIR)/package-c -o $@ \
+	    cmd/package_main.c cmd/package_host.c $(BUILD_DIR)/package-c/*.c \
+	    -lcrypto -lm
 
 $(BIN_DIR)/zi-fmt: scripts/zi-fmt.sh | $(BIN_DIR)
 	cp $< $@
