@@ -1,0 +1,197 @@
+#import "json_scan"
+
+// Release metadata and version decisions are portable. Downloading and
+// installing an artifact remain explicit host operations.
+Artifact :: struct {
+    url: [512]u8
+    sha256: [65]u8
+    size: s64
+    available: bool
+}
+
+Appcast :: struct {
+    version: [32]u8
+    notes_url: [512]u8
+    artifact: Artifact
+    valid: bool
+}
+
+VersionNumbers :: struct {
+    parts: [4]s64
+    valid: bool
+}
+
+ReadVersion :: (version: string) -> VersionNumbers {
+    result: VersionNumbers
+    if version.count == 0 {
+        result.valid = true
+        return result
+    }
+    cursor: s64 = 0
+    if version[0] == cast(u8)118 || version[0] == cast(u8)86 {
+        cursor = 1
+    }
+    part: s64 = 0
+    while part < 4 && cursor < cast(s64)version.count {
+        digits: s64 = 0
+        value: s64 = 0
+        while cursor < cast(s64)version.count && Digit(version[cursor]) {
+            digit := cast(s64)(version[cursor] - cast(u8)48)
+            if value > (9223372036854775807 - digit) / 10 {
+                return result
+            }
+            value = value * 10 + digit
+            digits += 1
+            cursor += 1
+        }
+        if digits == 0 {
+            return result
+        }
+        result.parts[part] = value
+        part += 1
+        if cursor == cast(s64)version.count || version[cursor] == cast(u8)45 {
+            result.valid = true
+            return result
+        }
+        if version[cursor] != cast(u8)46 {
+            return result
+        }
+        cursor += 1
+    }
+    result.valid = part == 4 && cursor > 0 &&
+        version[cursor - 1] != cast(u8)46
+    return result
+}
+
+#program_export
+CompareVersions :: (left: string, right: string) -> s32 {
+    a := ReadVersion(left)
+    b := ReadVersion(right)
+    if !a.valid || !b.valid {
+        return 0
+    }
+    index: s64 = 0
+    while index < 4 {
+        if a.parts[index] < b.parts[index] {
+            return -1
+        }
+        if a.parts[index] > b.parts[index] {
+            return 1
+        }
+        index += 1
+    }
+    return 0
+}
+
+CopyJsonText :: (json: string, at: s32, output: []u8) -> bool {
+    if output.count == 0 {
+        return false
+    }
+    output[0] = cast(u8)0
+    span := ReadString(json, at)
+    if !span.valid || span.end - span.start >= cast(s32)output.count {
+        return false
+    }
+    index: s32 = 0
+    while index < span.end - span.start {
+        byte := json[span.start + index]
+        // Release URLs and version identifiers must be literal ASCII in the
+        // appcast. Refuse escaped or non-ASCII values instead of interpreting
+        // a different URL from the signed metadata.
+        if byte < cast(u8)32 || byte >= cast(u8)127 || byte == cast(u8)92 {
+            output[0] = cast(u8)0
+            return false
+        }
+        output[index] = byte
+        index += 1
+    }
+    output[index] = cast(u8)0
+    return true
+}
+
+ReadSize :: (json: string, at: s32) -> s64 {
+    if at < 0 || at >= cast(s32)json.count {
+        return -1
+    }
+    value: s64 = 0
+    count: s32 = 0
+    cursor: s32 = at
+    while cursor < cast(s32)json.count && Digit(json[cursor]) {
+        digit := cast(s64)(json[cursor] - cast(u8)48)
+        if value > (9223372036854775807 - digit) / 10 {
+            return -1
+        }
+        value = value * 10 + digit
+        count += 1
+        cursor += 1
+    }
+    if count == 0 || (count > 1 && json[at] == cast(u8)48) {
+        return -1
+    }
+    if cursor < cast(s32)json.count &&
+        json[cursor] != cast(u8)44 && json[cursor] != cast(u8)125 &&
+        json[cursor] != cast(u8)32 && json[cursor] != cast(u8)9 &&
+        json[cursor] != cast(u8)10 && json[cursor] != cast(u8)13 {
+        return -1
+    }
+    return value
+}
+
+ValidDigest :: (digest: []u8) -> bool {
+    if digest.count < 65 || digest[64] != cast(u8)0 {
+        return false
+    }
+    index: s64 = 0
+    while index < 64 {
+        byte := digest[index]
+        if !Digit(byte) && !(byte >= cast(u8)97 && byte <= cast(u8)102) {
+            return false
+        }
+        index += 1
+    }
+    return true
+}
+
+// Select one channel from the release manifest. A missing channel still
+// yields a valid appcast: package-managed installs show the release page.
+#program_export
+ParseAppcast :: (json: string, channel: string) -> Appcast {
+    result: Appcast
+    end := ValueEnd(json, 0, 0)
+    if end < 0 || Space(json, end) != cast(s32)json.count {
+        return result
+    }
+    version_at := FieldAt(json, 0, "version")
+    if !CopyJsonText(json, version_at, result.version[:]) ||
+        result.version[0] == cast(u8)0 {
+        return result
+    }
+    notes_at := FieldAt(json, 0, "notes_url")
+    if notes_at >= 0 && !CopyJsonText(json, notes_at, result.notes_url[:]) {
+        return result
+    }
+    channels_at := FieldAt(json, 0, "channels")
+    if channels_at >= 0 {
+        artifact_at := FieldAt(json, channels_at, channel)
+        if artifact_at >= 0 {
+            url_at := FieldAt(json, artifact_at, "url")
+            digest_at := FieldAt(json, artifact_at, "sha256")
+            if !CopyJsonText(json, url_at, result.artifact.url[:]) ||
+                result.artifact.url[0] == cast(u8)0 ||
+                !CopyJsonText(json, digest_at, result.artifact.sha256[:]) ||
+                !ValidDigest(result.artifact.sha256[:]) {
+                return result
+            }
+            size_at := FieldAt(json, artifact_at, "size")
+            if size_at >= 0 {
+                result.artifact.size = ReadSize(json, size_at)
+                if result.artifact.size < 0 {
+                    return result
+                }
+            }
+            result.artifact.available = true
+        }
+    }
+    result.valid = true
+    return result
+}
