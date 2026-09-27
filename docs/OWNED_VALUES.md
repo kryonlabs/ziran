@@ -16,11 +16,12 @@ template from `std/option.zi` to be visible in the using module.
 
 **Current safety limits:** automatic drops are not emitted for a local `Vec`
 at block close or return. Free it explicitly on each path, or use
-`defer { VecFree(v) }` when the vector stays in that scope. The checker also
-accepts copies of records containing a `Vec`, which can double-free if both
-copies are freed. Treat aggregate-owned values as unsupported until recursive
-move and drop checking is implemented. The rest of this page describes the
-intended contract, not a guarantee that every case is enforced today.
+`defer { VecFree(v) }` when the vector stays in that scope. The checker rejects
+initializing, assigning, passing, or returning aggregates containing a `Vec`;
+their fields can still hold vectors and be used in place. Aggregate moves and
+automatic drops require recursive ownership checking. The rest of this page
+describes the intended contract, not a guarantee that every case is enforced
+today.
 
 `BuilderFinish` consumes the builder: the returned `string` keeps the builder's
 bytes without copying them. C99 and C++ detach the buffer instead of freeing

@@ -5313,6 +5313,11 @@ check_function(Checker *c, ZirFunction *fn)
     c->fn = fn;
     if(contains_vec(c->module, fn->return_type, 0) && fn->is_extern)
         error(c, fn->span, "Vec cannot cross an extern signature", fn->name);
+    if(contains_vec(c->module, fn->return_type, 0) &&
+       !VecElementType(c->module, fn->return_type, NULL, 0))
+        error(c, fn->span,
+              "returning an aggregate containing Vec is not supported",
+              fn->name);
     select_lookup_file(c->module, fn->span);
     const ZirType *return_slot = FindType(c->module, c->fn->return_type, NULL);
     if(return_slot != NULL && return_slot->is_record_template) {
@@ -5364,6 +5369,11 @@ restart:
             has_slots |= parameter_type != NULL && parameter_type->is_procedure_type;
             if(contains_vec(c->module, colon, 0) && fn->is_extern)
                 error(c, fn->span, "Vec cannot cross an extern signature", params[a]);
+            if(contains_vec(c->module, colon, 0) &&
+               !VecElementType(c->module, colon, NULL, 0))
+                error(c, fn->span,
+                      "passing an aggregate containing Vec is not supported",
+                      params[a]);
             has_arrays |= ArrayValueType(colon) || SliceElementType(colon, NULL, 0);
             bind(c, params[a], colon, c->fn->span);
             if((!fn->from_ir || fn->is_specialization) &&
@@ -5549,6 +5559,12 @@ restart:
             }
             if(st->expr_root >= 0 &&
                contains_vec(c->module, st->type, 0) &&
+               !VecElementType(c->module, st->type, NULL, 0))
+                error(c, st->span,
+                      "initializing an aggregate containing Vec is not supported",
+                      st->name);
+            if(st->expr_root >= 0 &&
+               contains_vec(c->module, st->type, 0) &&
                c->fn->exprs[st->expr_root].kind != ZIR_EXPR_IDENT &&
                c->fn->exprs[st->expr_root].kind != ZIR_EXPR_CALL)
                 error(c, st->span,
@@ -5587,7 +5603,12 @@ restart:
             c->assign_destination = 1;
             const char *lhs = expression_type(c, st->lhs_root);
             c->assign_destination = 0;
-            if(contains_vec(c->module, lhs, 0)) {
+            if(contains_vec(c->module, lhs, 0) &&
+               !VecElementType(c->module, lhs, NULL, 0))
+                error(c, st->span,
+                      "assigning an aggregate containing Vec is not supported",
+                      st->text);
+            else if(contains_vec(c->module, lhs, 0)) {
                 if(c->fn->exprs[st->lhs_root].kind != ZIR_EXPR_IDENT)
                     error(c, st->span,
                           "Vec assignment requires a simple binding destination",
