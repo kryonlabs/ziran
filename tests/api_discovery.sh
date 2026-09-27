@@ -18,9 +18,15 @@ Visible :: (value: s32 = 42) -> Choice {
 
 #scope_module
 Hidden :: () -> s32 { return 9 }
+HIDDEN_CONSTANT :: 3;
+hidden_global: s32 = 4;
 
 #scope_export
 Again :: () -> s32 { return Hidden() }
+PUBLIC_CONSTANT :: 5;
+public_global: s32 = 6;
+host_api :: #system_library "host_api";
+CallHost :: (value: s32) -> s32 #foreign host_api;
 FEATURE :: #defined(HAS_EXTRA)
 #if FEATURE {
 Extra :: () -> s32 { return 1 }
@@ -61,10 +67,23 @@ for data in (source, saved):
     assert functions['Visible']['return_type'] == 'Choice'
     assert functions['Visible']['effect'] == 'pure'
     assert {item['name'] for item in library['types']} == {'Choice'}
+    assert {item['name'] for item in library['constants']} == {'PUBLIC_CONSTANT'}
+    assert {item['name'] for item in library['globals']} == {'public_global'}
+    assert library['globals'][0]['type'] == 's32'
+    assert {item['kind'] for item in modules['main']['imports']} == {'open'}
+    foreign = library['imports']
+    assert len(foreign) == 1 and foreign[0]['kind'] == 'foreign'
+    assert foreign[0]['name'] == 'CallHost'
+    assert foreign[0]['foreign_target'] == 'host'
+    assert foreign[0]['parameters'] == 'value: s32'
     assert {item['name'] for item in modules['main']['functions']} == {'Answer'}
 text = Path(sys.argv[3]).read_text()
 assert 'Visible :: (value: s32 = 42) -> Choice' in text
 assert 'Hidden' not in text
+assert 'HIDDEN_CONSTANT' not in text
+assert 'hidden_global' not in text
+assert 'PUBLIC_CONSTANT' in text
+assert 'public_global' in text
 defined = json.loads(Path(sys.argv[4]).read_text())
 library = next(module for module in defined['modules'] if module['name'] == 'library')
 assert {fn['name'] for fn in library['functions']} == {'Visible', 'Again', 'Extra'}

@@ -89,9 +89,10 @@ its own reclaimable-string or region policy.
 
 The useful default cycle is query the compiler's guide, capabilities, and
 [checked APIs](API_DISCOVERY.md), edit a small unit, format, check laws, run
-tests, and inspect structured failures. The first API query includes public
-types, signatures, defaults, and effects from source or saved IR. Extend it
-with ownership preconditions, target availability, and tested examples. Add an
+tests, and inspect structured failures. The first API query includes visible
+imports, constants, globals, types, signatures, defaults, and effects from
+source or saved IR. Extend it with ownership preconditions, target
+availability, and tested examples. Add an
 `explain` command for stable diagnostic codes, then editor diagnostics,
 definition, hover, completion, and rename from compiler data. A watch mode
 should reuse checked work safely; live state reload needs an explicit

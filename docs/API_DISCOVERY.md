@@ -11,8 +11,11 @@ locations. A failed load or check exits nonzero and does not print an API
 object.
 
 The JSON object has `schema_version: 1` and a `modules` array. Each module has
-`name`, `source`, `types`, and `functions`. A type includes its name, checked
-body text, type parameters, record-template and enum flags, and source path
+`name`, `source`, `imports`, `constants`, `globals`, `types`, and `functions`.
+Imports include their kind, alias/name, target, foreign target and symbol when
+present, signature, and source location. Constants expose their checked value
+text; globals expose their type and initializer text. A type includes its name,
+checked body text, type parameters, record-template and enum flags, and source path
 and line. A function includes its name, checked parameter signature, return
 type, declaration defaults, inferred effect, `must_use`, template and host-use
 flags, and source path and line. Empty `defaults` and `effect` strings mean the
@@ -28,8 +31,8 @@ it does not flatten import names into the entry module. For example:
 ziran api --json --root std std/json_scan.zi
 ```
 
-This first schema covers procedures and types. It does not yet describe
-constants, globals, foreign imports, per-symbol target availability, ownership
+This first schema covers visible imports, constants, globals, procedures, and
+types. It does not yet describe per-symbol target availability, ownership
 preconditions, or tested examples. Use `ziran capabilities --json` for
 target-wide limits, and compile a small call before relying on a target that
 has not been exercised by your project.
