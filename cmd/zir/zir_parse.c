@@ -5054,8 +5054,17 @@ cond_top_step(char *line, ZirCondFrame *frames, int *count,
               int *deferred)
 {
     char *cnd = NULL;
-    int ck = parse_cond_start(line, &cnd);
+    int at_branch_boundary = *count == 0 ||
+        frames[*count - 1].braces == 1;
+    int ck = 0;
     ZirCondFrame *fr;
+
+    /* A runtime `} else {` inside an unselected top-level #if is part of
+     * the nested function body. Only the region boundary may retarget the
+     * compile-time branch. Do not parse `} else #if` there either: parsing
+     * removes its final brace before the depth tracker sees the line. */
+    if(at_branch_boundary || starts_word(line, "#if"))
+        ck = parse_cond_start(line, &cnd);
 
     if(ck == 1) {
         if(*count >= 8)
@@ -5086,7 +5095,7 @@ cond_top_step(char *line, ZirCondFrame *frames, int *count,
         fr->braces = 1;
         return 1;
     }
-    if(line_is_compile_else(line)) {
+    if(fr->braces == 1 && line_is_compile_else(line)) {
         fr->active = fr->parent_active && !fr->selected;
         fr->selected = 1;
         fr->braces = 1;

@@ -7,6 +7,16 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 cat > "$work/branches.zi" <<'EOF'
 MODE :: 2;
+#if false {
+Hidden :: () -> s32 {
+    if true {
+        return 1
+    } else {
+        return 2
+    }
+}
+StillHidden :: s32;
+}
 #if MODE == 1 {
 Value :: () -> s32 { return MissingValue() }
 Unused :: struct {
@@ -74,7 +84,8 @@ EOF
 
 "$ziran" check --root "$work" "$work/branches.zi"
 "$ziran" ir --root "$work" -o "$work/ir" "$work/branches.zi"
-if grep -aFq 'MissingValue' "$work/ir/branches.zir" ||
+if grep -aFq 'Hidden' "$work/ir/branches.zir" ||
+   grep -aFq 'MissingValue' "$work/ir/branches.zir" ||
    grep -aFq 'MissingType' "$work/ir/branches.zir"; then
     echo 'unselected #if branch was saved in IR' >&2
     exit 1
