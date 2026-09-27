@@ -69,13 +69,17 @@ PkgDispatch :: (command: string, arguments: []string, project: bool,
         while index < cast(s32)arguments.count {
             if arguments[index] == "--target=c" ||
                arguments[index] == "--target=cpp" ||
-               arguments[index] == "--target=go" { target = arguments[index] }
+               arguments[index] == "--target=go" ||
+               arguments[index] == "--target=plan9-c" {
+                target = arguments[index]
+            }
             index += 1
         }
         if target == "--target=c" { executable = "zi2c" }
         else if target == "--target=cpp" { executable = "zi2cpp" }
         else if target == "--target=go" { executable = "zi2go" }
-        else { return PkgFail("build needs --target=c|cpp|go") }
+        else if target == "--target=plan9-c" { executable = "zi2c" }
+        else { return PkgFail("build needs --target=c|cpp|go|plan9-c") }
     }
     if executable.count == 0 { return PkgFail("unknown Ziran command") }
     tool_directory: string = PkgLauncherDirectory(launcher)
@@ -117,8 +121,12 @@ PkgDispatch :: (command: string, arguments: []string, project: bool,
     index: s32 = 0
     while index < cast(s32)arguments.count {
         part: string = arguments[index]
-        if !(build && (part == "--target=c" || part == "--target=cpp" ||
-            part == "--target=go")) {
+        if build && part == "--target=plan9-c" {
+            if count >= 259 { return PkgFail("too many arguments") }
+            child[count] = "--plan9"
+            count += 1
+        } else if !(build && (part == "--target=c" || part == "--target=cpp" ||
+                   part == "--target=go")) {
             if count >= 259 { return PkgFail("too many arguments") }
             child[count] = part
             count += 1

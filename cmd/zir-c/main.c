@@ -22,7 +22,8 @@ static void
 usage(void)
 {
     fprintf(stderr,
-            "usage: zi2c [--no-main] [--plan9] [--entry module:function] [--include-dir DIR] "
+            "usage: zi2c [--no-main] [--plan9|--target=plan9-c] "
+            "[--entry module:function] [--include-dir DIR] "
             "[--diagnostics=text|json] [--module-path DIR] [--define NAME] --root DIR -o DIR file.zi|file.zir ...\n");
 }
 
@@ -100,6 +101,8 @@ main(int argc, char **argv)
         } else if(strcmp(argv[i], "--no-main") == 0) {
             no_main = 1;
         } else if(strcmp(argv[i], "--plan9") == 0) {
+            plan9 = 1;
+        } else if(strcmp(argv[i], "--target=plan9-c") == 0) {
             plan9 = 1;
         } else if(strcmp(argv[i], "--include-dir") == 0 && i + 1 < argc) {
             c_plan9_add_include_dir(argv[++i]);

@@ -13,7 +13,7 @@ import sys
 
 item = json.loads(Path(sys.argv[1]).read_text())
 assert item['schema_version'] == 1
-assert item['targets'] == ['c', 'cpp', 'go', 'zib']
+assert item['targets'] == ['c', 'cpp', 'go', 'zib', 'plan9-c']
 assert item['source_and_saved_ir'] is True
 assert item['automatic_vec_drop'] is True
 assert item['aggregate_vec_transfer'] is False
@@ -22,7 +22,7 @@ assert item['gpu_execution'] == 'cpu_fallback'
 assert item['diagnostics_json'] == 'partial'
 PY
 
-for target in c cpp go zib; do
+for target in c cpp go zib plan9-c; do
     "$ziran" capabilities "--target=$target" --json > "$work/$target.json"
     python3 - "$work/$target.json" "$target" <<'PY'
 import json
@@ -32,10 +32,18 @@ import sys
 item = json.loads(Path(sys.argv[1]).read_text())
 target = sys.argv[2]
 assert item['target'] == target
-assert item['parallel_execution'] == ('threads' if target in ('c', 'cpp') else 'serial')
-assert item['text_view_mutable_bytes'] == ('borrowed' if target in ('c', 'cpp') else 'snapshot')
+threads = target in ('c', 'cpp')
+assert item['parallel_execution'] == ('threads' if threads else 'serial')
+borrowed = target in ('c', 'cpp', 'plan9-c')
+assert item['text_view_mutable_bytes'] == ('borrowed' if borrowed else 'snapshot')
 assert item['source_and_saved_ir'] is True
 assert item['automatic_vec_drop'] is True
+if target == 'plan9-c':
+    assert item['target_contract'] == 'experimental-post-pass'
+    assert item['native_os'] == 'plan9'
+    assert item['native_libc'] == 'plan9'
+    assert item['architecture'] == '386'
+    assert item['dialect'] == 'plan9-c88'
 PY
 done
 

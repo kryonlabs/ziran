@@ -1,11 +1,19 @@
 # Compiler capability output
 
 `ziran capabilities --json` prints one JSON object describing the currently
-supported output targets and shared limits. Use `--target=c`, `cpp`, `go`, or
-`zib` to select one target. The command works without a project or network
+supported output targets and shared limits. Use `--target=c`, `cpp`, `go`,
+`zib`, or `plan9-c` to select one target. The command works without a project or network
 access, so an editor or coding agent can query the installed compiler before
 generating code. `schema_version` starts at 1; consumers should reject schema
 versions they do not understand and ignore unknown fields within a version.
+
+`plan9-c` is the canonical interface for Plan 9 C output. Its current
+implementation is explicitly reported as `experimental-post-pass`: Ziran still
+generates the shared C form and applies a Plan 9-safe rewrite before writing
+files. The initial architecture contract is 386 with Plan 9 libc, serial
+execution, and no graphics dependency. The post-pass must eventually be
+replaced by target-aware lowering and a dedicated Plan 9 runtime before this
+target can be declared first-class.
 
 `source_and_saved_ir` reports that the target accepts checked source and saved
 `.zir` inputs. `parallel_execution` is `threads` for C/C++ forward CPU regions
