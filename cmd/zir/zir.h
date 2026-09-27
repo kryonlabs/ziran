@@ -119,6 +119,7 @@ typedef struct ZirExpr {
     int is_function_value; /* declaration bound to an expected slot signature */
     int is_this; /* #this resolves to the enclosing procedure despite shadowing */
     int is_global_value; /* in-memory only: identifier/call bound to a global */
+    int is_move; /* in-memory only: a checked owned binding is consumed here */
     char slot_type[ZIR_NAME_MAX]; /* lexical callable signature, empty for ordinary calls */
     char text[ZIR_TEXT_MAX];
     char name[ZIR_NAME_MAX];

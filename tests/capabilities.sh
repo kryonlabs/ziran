@@ -34,6 +34,7 @@ assert item['target'] == target
 assert item['parallel_execution'] == ('threads' if target in ('c', 'cpp') else 'serial')
 assert item['text_view_mutable_bytes'] == ('borrowed' if target in ('c', 'cpp') else 'snapshot')
 assert item['source_and_saved_ir'] is True
+assert item['automatic_vec_drop'] is (target != 'zib')
 PY
 done
 

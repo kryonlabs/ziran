@@ -5294,6 +5294,8 @@ mark_expr_moves(Checker *c, int index)
                       "cannot move a Vec with a live borrowed view",
                       binding->name);
             binding->moved = 1;
+            if(!primitive)
+                c->fn->exprs[child].is_move = 1;
         }
         mark_expr_moves(c, child);
     }
@@ -5337,6 +5339,8 @@ check_function(Checker *c, ZirFunction *fn)
         return 0;
     }
 restart:
+    for(int expression = 0; expression < fn->expr_count; expression++)
+        fn->exprs[expression].is_move = 0;
     while(c->restore_count > 0)
         free(c->restores[--c->restore_count].flags);
     c->count = 0; c->depth = 0;
@@ -5499,6 +5503,7 @@ restart:
                           "cannot move a Vec with a live borrowed view",
                           moved_from->name);
                 moved_from->moved = 1;
+                c->fn->exprs[st->expr_root].is_move = 1;
             }
             mark_expr_moves(c, st->expr_root);
             /* An assignment into a moved-from Vec binding re-owns it with

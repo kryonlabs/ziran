@@ -1151,6 +1151,7 @@ EmitNumberSupport(FILE *out, ZirTarget target, const char *p)
 
 typedef struct Local {
     char name[ZIR_NAME_MAX];
+    char drop_alias[ZIR_NAME_MAX];
     int depth;
 } Local;
 typedef struct Emitter {
@@ -1162,6 +1163,10 @@ typedef struct Emitter {
     void *context;
     int indent, serial, depth, local_count;
     Local *locals;
+    int loop_count;
+    int loop_start[128];
+    int loop_id[128];
+    int sequence_terminated;
     char numbers[64];
     /* Expression folding (Go target): "pure" marks the last emitted expression
      * as free of side effects, so it can be inlined into its consumer instead
@@ -1384,6 +1389,52 @@ resolve(Emitter *e, const char *name, char *out, size_t size)
             return;
         }
     e->resolve(e->context, name, out, size);
+}
+
+static void
+track_local(Emitter *e, const char *name, const char *type)
+{
+    Local *local = &e->locals[e->local_count++];
+    copy_text(local->name, sizeof(local->name), name);
+    local->depth = e->depth;
+    if(VecElementType(e->module, type, NULL, 0)) {
+        char pointer_type[ZIR_NAME_MAX * 2];
+        char binding[ZIR_NAME_MAX];
+        char address[ZIR_NAME_MAX + 2];
+        TargetBindingName(e->fn, e->target, name, binding, sizeof(binding));
+        fresh(e, local->drop_alias);
+        format(pointer_type, sizeof(pointer_type), "*%s", type);
+        format(address, sizeof(address), "&%s", binding);
+        declare(e, local->drop_alias, pointer_type, address);
+    }
+}
+
+static void
+drop_locals(Emitter *e, int first)
+{
+    for(int i = e->local_count - 1; i >= first; i--) {
+        const char *alias = e->locals[i].drop_alias;
+        if(!*alias) continue;
+        if(e->target == ZIR_GO) {
+            line(e, "%s.Data = nil", alias);
+            line(e, "%s.Capacity = 0", alias);
+            line(e, "%s.Count = 0", alias);
+        } else {
+            line(e, "free(%s->data);", alias);
+            line(e, "%s->data = NULL;", alias);
+            line(e, "%s->capacity = 0;", alias);
+            line(e, "%s->count = 0;", alias);
+        }
+    }
+}
+
+static int
+has_owned_locals(const Emitter *e)
+{
+    for(int i = 0; i < e->local_count; i++)
+        if(*e->locals[i].drop_alias)
+            return 1;
+    return 0;
 }
 
 static int
@@ -2841,6 +2892,27 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
             break;
         }
         resolve(e, expr->name, result, sizeof(result));
+        if(expr->is_move) {
+            char mapped[ZIR_NAME_MAX * 2];
+            const char *native = TargetType(expr->type, e->target);
+            if(!VecElementType(e->module, expr->type, NULL, 0))
+                fatal(expr, "move requires an owned vector");
+            if(native != NULL)
+                copy_text(mapped, sizeof(mapped), native);
+            else
+                e->resolve(e->context, expr->type, mapped,
+                           sizeof(mapped));
+            fresh(e, temp);
+            declare(e, temp, expr->type, result);
+            if(e->target == ZIR_C)
+                line(e, "%s = (%s){0};", result, mapped);
+            else
+                line(e, "%s = %s{}%s", result, mapped,
+                     e->target == ZIR_CPP ? ";" : "");
+            copy_text(out, size, temp);
+            e->pure = 0;
+            return;
+        }
         pure = 1;
         break;
     case ZIR_EXPR_STRING:
@@ -3509,6 +3581,7 @@ static void
 emit_sequence(Emitter *e,int begin,int end)
 {
     int saved=e->local_count;e->depth++;
+    e->sequence_terminated=0;
     for(int i=begin;i<end;i++) {
         const ZirStmt *st=&e->fn->stmts[i];
         char value[ZIR_TEXT_MAX],lhs[ZIR_TEXT_MAX],result[ZIR_TEXT_MAX];
@@ -3526,7 +3599,7 @@ emit_sequence(Emitter *e,int begin,int end)
                                   sizeof(binding));
                 line(e, "_ = %s", binding);
             }
-            copy_text(e->locals[e->local_count].name,ZIR_NAME_MAX,st->name);e->locals[e->local_count++].depth=e->depth;
+            track_local(e, st->name, st->type);
             break;
         case ZIR_STMT_ASSIGN:
             emit_destination(e, st->lhs_root, lhs, sizeof(lhs));
@@ -3553,16 +3626,28 @@ emit_sequence(Emitter *e,int begin,int end)
                     ArrayAbiName(e->fn, -1, output, sizeof(output));
                     /* value is a captured true array; output is an ABI pointer. */
                     line(e, "memmove(%s, %s, sizeof(%s));", output, value, value);
+                    drop_locals(e, 0);
                     line(e, "return;");
                 } else {
+                    if(has_owned_locals(e)) {
+                        char returned[ZIR_NAME_MAX];
+                        fresh(e, returned);
+                        declare(e, returned, e->fn->return_type, value);
+                        drop_locals(e, 0);
+                        copy_text(value, sizeof(value), returned);
+                    }
                     line(e, "return %s%s", value, e->target == ZIR_GO ? "" : ";");
                 }
             }
-            else line(e,e->target==ZIR_GO?"return":"return;");
-            e->local_count=saved;e->depth--;return;
+            else {
+                drop_locals(e, 0);
+                line(e,e->target==ZIR_GO?"return":"return;");
+            }
+            e->local_count=saved;e->depth--;e->sequence_terminated=1;return;
         case ZIR_STMT_UNREACHABLE:
+            drop_locals(e, 0);
             line(e,e->target==ZIR_GO?"panic(\"unreachable\")":"abort();");
-            e->local_count=saved;e->depth--;return;
+            e->local_count=saved;e->depth--;e->sequence_terminated=1;return;
         case ZIR_STMT_IF:i=emit_if(e,i,end);break;
         case ZIR_STMT_WHILE: {
             int close=block_end(e->fn,i,end);
@@ -3601,7 +3686,15 @@ emit_sequence(Emitter *e,int begin,int end)
             if(labeled && e->target!=ZIR_GO) {
                 line(e,"{");e->indent++;
             }
+            if(e->loop_count >= (int)(sizeof(e->loop_start) / sizeof(e->loop_start[0]))) {
+                Diagnostic(st->span, "emit.loop_nesting",
+                           "too many nested loops during emission");
+                exit(1);
+            }
+            e->loop_start[e->loop_count] = e->local_count;
+            e->loop_id[e->loop_count++] = st->loop_id;
             emit_sequence(e,i+1,close);
+            e->loop_count--;
             if(labeled && e->target!=ZIR_GO) {
                 e->indent--;line(e,"}");
                 line(e,"zir_loop_continue_%d: ;",st->loop_id);
@@ -3615,6 +3708,14 @@ emit_sequence(Emitter *e,int begin,int end)
             int close=block_end(e->fn,i,end);line(e,"{");e->indent++;emit_sequence(e,i+1,close);e->indent--;line(e,"}");i=close;break;
         }
         case ZIR_STMT_BREAK:case ZIR_STMT_CONTINUE:
+            if(e->loop_count > 0) {
+                int target = e->loop_count - 1;
+                if(st->target_id)
+                    while(target >= 0 && e->loop_id[target] != st->target_id)
+                        target--;
+                if(target >= 0)
+                    drop_locals(e, e->loop_start[target]);
+            }
             if(st->target_id) {
                 if(e->target==ZIR_GO)
                     line(e,"%s zir_loop_%d",st->kind==ZIR_STMT_BREAK?"break":"continue",st->target_id);
@@ -3622,7 +3723,7 @@ emit_sequence(Emitter *e,int begin,int end)
                     line(e,"goto zir_loop_%s_%d;",st->kind==ZIR_STMT_BREAK?"break":"continue",st->target_id);
             } else
                 line(e,"%s%s",st->kind==ZIR_STMT_BREAK?"break":"continue",e->target==ZIR_GO?"":";");
-            e->local_count=saved;e->depth--;return;
+            e->local_count=saved;e->depth--;e->sequence_terminated=1;return;
         case ZIR_STMT_EXPR:case ZIR_STMT_UNUSED:
             if(st->expr_root>=0) {
                 emit_expr(e,st->expr_root,e->fn->exprs[st->expr_root].type,value,sizeof(value));
@@ -3631,7 +3732,8 @@ emit_sequence(Emitter *e,int begin,int end)
         default:break;
         }
     }
-    e->local_count=saved;e->depth--;
+    drop_locals(e, saved);
+    e->local_count=saved;e->depth--;e->sequence_terminated=0;
 }
 
 int
@@ -3651,7 +3753,6 @@ EmitBody(FILE *out,const ZirModule *module,const ZirFunction *fn,ZirTarget targe
     count=*skip_ws(fn->args)?split_top_level(fn->args,params[0],64,sizeof(params[0])):0;
     for(int i=0;i<count;i++) {
         char *colon=strchr(params[i],':');*colon++=0;trim_in_place(params[i]);
-        copy_text(e.locals[e.local_count++].name,ZIR_NAME_MAX,params[i]);
         const char *type=canonical(skip_ws(colon));
         if((target == ZIR_C || target == ZIR_CPP) &&
            ArrayValueType(type)) {
@@ -3661,6 +3762,13 @@ EmitBody(FILE *out,const ZirModule *module,const ZirFunction *fn,ZirTarget targe
             TargetBindingName(fn, target, params[i], binding, sizeof(binding));
             declare_array(&e, binding, type, incoming);
         }
+        track_local(&e, params[i], type);
     }
-    emit_sequence(&e,0,fn->stmt_count);free(e.locals);return 1;
+    emit_sequence(&e,0,fn->stmt_count);
+    if(!e.sequence_terminated) {
+        drop_locals(&e, 0);
+        if(strcmp(fn->return_type, "void"))
+            line(&e, target == ZIR_GO ? "panic(\"unreachable\")" : "abort();");
+    }
+    free(e.locals);return 1;
 }
