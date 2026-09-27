@@ -149,15 +149,91 @@ grep -Fq 'ambiguous global name: count' "$work/ambiguous_using.err"
 
 cat > "$work/type_shadow.zi" <<'ZI'
 #import "lib"
+__zi_open_0 :: #import "lib"
 Point :: struct { z: s64; }
-Bad :: () -> s64 { return shared.x }
+#program_export
+Answer :: () -> s64 {
+    using shared;
+    x = 42
+    local: Point
+    local.z = 1
+    return x + shared.x + local.z - 43
+}
 ZI
-if "$ziran" check --root "$work" "$work/type_shadow.zi" \
-    2> "$work/type_shadow.err"; then
-    echo 'shadowed imported global type was silently accepted' >&2
-    exit 1
-fi
-grep -Fq 'imported global type is shadowed: shared' "$work/type_shadow.err"
+"$ziran" ir --root "$work" -o "$work/open-shadow-ir" \
+    "$work/type_shadow.zi"
+for input in source saved; do
+    if test "$input" = source; then
+        root=$work
+        file=$work/type_shadow.zi
+    else
+        root=$work/open-shadow-ir
+        file=$work/open-shadow-ir/type_shadow.zir
+    fi
+    "$ziran" bundle --root "$root" --entry type_shadow:Answer \
+        -o "$work/open-shadow-$input.zib" "$file"
+    test "$("$ziran" run "$work/open-shadow-$input.zib")" = 42
+    for target in c cpp go; do
+        out="$work/open-shadow-$target-$input"
+        "$ziran" build "--target=$target" --root "$root" -o "$out" "$file"
+        if test "$target" = go; then
+            cat > "$out/main_test.go" <<'GO'
+package ziran
+import "testing"
+func TestOpenTypeShadow(t *testing.T) {
+    if TypeShadow_Answer() != 42 { t.Fatal("open imported type owner") }
+}
+GO
+            GO111MODULE=off go test "$out"/*.go
+        elif test "$target" = c; then
+            cat > "$out/main.c" <<'C'
+#include "type_shadow.h"
+int main(void) { return Answer() == 42 ? 0 : 1; }
+C
+            "${CC:-cc}" -std=c11 -Wall -Werror -I"$repo/include" \
+                -I"$out" "$out"/*.c -o "$out/app"
+            "$out/app"
+        else
+            cat > "$out/main.cpp" <<'CPP'
+#include "type_shadow.hpp"
+int main() { return Answer() == 42 ? 0 : 1; }
+CPP
+            "${CXX:-c++}" -std=c++17 -Wall -Werror -I"$repo/include" \
+                -I"$out" "$out"/*.cpp -o "$out/app"
+            "$out/app"
+        fi
+    done
+done
+cmp "$work/open-shadow-source.zib" "$work/open-shadow-saved.zib"
+
+cat > "$work/using_import_type_shadow.zi" <<'ZI'
+using Lib :: #import "lib"
+Point :: struct { z: s64; }
+using shared;
+#program_export
+Answer :: () -> s64 {
+    x = 42
+    local: Point
+    local.z = 1
+    return x + shared.x + local.z - 43
+}
+ZI
+"$ziran" ir --root "$work" -o "$work/using-import-shadow-ir" \
+    "$work/using_import_type_shadow.zi"
+for input in source saved; do
+    if test "$input" = source; then
+        root=$work
+        file=$work/using_import_type_shadow.zi
+    else
+        root=$work/using-import-shadow-ir
+        file=$work/using-import-shadow-ir/using_import_type_shadow.zir
+    fi
+    "$ziran" bundle --root "$root" --entry using_import_type_shadow:Answer \
+        -o "$work/using-import-shadow-$input.zib" "$file"
+    test "$("$ziran" run "$work/using-import-shadow-$input.zib")" = 42
+done
+cmp "$work/using-import-shadow-source.zib" \
+    "$work/using-import-shadow-saved.zib"
 
 cat > "$work/named_type_shadow.zi" <<'ZI'
 Lib :: #import "lib"

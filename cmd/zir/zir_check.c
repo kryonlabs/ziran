@@ -731,6 +731,52 @@ bind_call_arguments(Checker *c, ZirExpr *call,
 static const char *lookup_lexical(Checker *c, const char *name);
 static const ZirGlobal *global_binding(Checker *c, const char *name);
 
+static const char *
+import_type_alias(const ZirModule *module, const ZirModule *owner)
+{
+    for(int i = 0; i < module->import_count; i++) {
+        const ZirImport *import = &module->imports[i];
+        if(import->kind == ZIR_IMPORT_MODULE &&
+           in_lookup_file(module, import->is_file_private, import->span) &&
+           (import->is_using ||
+            strcmp(import->signature, "internal-open") == 0) &&
+           import->resolved_module == owner)
+            return import->name;
+    }
+    return NULL;
+}
+
+static int
+qualified_global_type(const ZirModule *module, const char *name,
+                      const ZirModule *owner, const char *type,
+                      char *output, size_t capacity)
+{
+    const char *base = type;
+    const char *pointer = "";
+    const char *dot = strchr(name, '.');
+    const char *alias = NULL;
+    int alias_length;
+    if(owner == NULL || owner == module)
+        return 0;
+    if(*base == '*') {
+        pointer = "*";
+        base = skip_ws(base + 1);
+    }
+    if(BuiltinType(base) != NULL || FindType(owner, base, NULL) == NULL)
+        return 0;
+    if(dot != NULL) {
+        alias = name;
+        alias_length = (int)(dot - name);
+    } else {
+        alias = import_type_alias(module, owner);
+        if(alias == NULL) return 0;
+        alias_length = (int)strlen(alias);
+    }
+    int length = snprintf(output, capacity, "%s%.*s.%s", pointer,
+                          alias_length, alias, base);
+    return length >= 0 && (size_t)length < capacity ? 1 : -1;
+}
+
 static void
 bind(Checker *c, const char *name, const char *type, ZirSourceSpan span)
 {
@@ -853,7 +899,19 @@ activate_using_filtered(Checker *c, const char *path,
         }
     if(binding_type == NULL) {
         const ZirGlobal *global = global_binding(c, root);
-        if(global != NULL) binding_type = global->type;
+        if(global != NULL) {
+            const ZirModule *owner = NULL;
+            const ZirGlobal *resolved = NULL;
+            ResolveGlobal(c->module, root, &owner, &resolved);
+            binding_type = global->type;
+            int qualified = qualified_global_type(c->module, root, owner,
+                binding_type, qualified_type, sizeof(qualified_type));
+            if(qualified < 0) {
+                error(c, span, "qualified using type is too long", path);
+                return;
+            }
+            if(qualified > 0) binding_type = qualified_type;
+        }
     }
     if(binding_type == NULL && dot != NULL) {
         const char *after_global = strchr(dot + 1, '.');
@@ -869,18 +927,14 @@ activate_using_filtered(Checker *c, const char *path,
                ResolveGlobal(c->module, qualified, &owner, &global) == 1) {
                 copy_text(root, sizeof(root), qualified);
                 binding_type = global->type;
-                const ZirType *declared = FindType(owner, binding_type, NULL);
-                if(declared != NULL &&
-                   FindType(c->module, binding_type, NULL) != declared) {
-                    size_t alias_length = (size_t)(dot - path);
-                    if(snprintf(qualified_type, sizeof(qualified_type),
-                                "%.*s.%s", (int)alias_length, path,
-                                binding_type) >= (int)sizeof(qualified_type)) {
-                        error(c, span, "qualified using type is too long", path);
-                        return;
-                    }
-                    binding_type = qualified_type;
+                int qualified_type_status = qualified_global_type(c->module,
+                    qualified, owner, binding_type, qualified_type,
+                    sizeof(qualified_type));
+                if(qualified_type_status < 0) {
+                    error(c, span, "qualified using type is too long", path);
+                    return;
                 }
+                if(qualified_type_status > 0) binding_type = qualified_type;
                 dot = after_global;
             }
         }
@@ -1541,7 +1595,8 @@ global_binding(Checker *c, const char *name)
         const ZirType *declared = FindType(owner, base, NULL);
         const ZirType *visible = FindType(c->module, base, NULL);
         if(declared != NULL && visible != NULL &&
-           declared != visible && !c->failed) {
+           declared != visible &&
+           import_type_alias(c->module, owner) == NULL && !c->failed) {
             error(c, c->current_stmt != NULL ? c->current_stmt->span :
                   c->fn != NULL ? c->fn->span : c->module->span,
                   "imported global type is shadowed", name);
@@ -3271,30 +3326,18 @@ expression_type(Checker *c, int index)
             e->is_global_value = !*lookup_lexical(c, e->name) &&
                                   global_binding(c, e->name) != NULL;
             if(e->is_global_value) {
-                const char *dot = strchr(e->name, '.');
                 const ZirModule *owner = NULL;
                 const ZirGlobal *global = NULL;
-                if(dot != NULL &&
-                   ResolveGlobal(c->module, e->name,
-                                 &owner, &global) == 1 &&
-                   owner != c->module) {
-                    const char *base = global->type;
-                    const char *pointer = "";
-                    if(base[0] == '*') {
-                        pointer = "*";
-                        base = skip_ws(base + 1);
-                    }
-                    if(BuiltinType(base) == NULL &&
-                       FindType(owner, base, NULL) != NULL) {
-                        int length = snprintf(e->type, sizeof(e->type),
-                            "%s%.*s.%s", pointer, (int)(dot - e->name),
-                            e->name, base);
-                        if(length < 0 || (size_t)length >= sizeof(e->type))
-                            error(c, e->span, "qualified global type is too long",
-                                  e->name);
-                        else
-                            type = e->type;
-                    }
+                if(ResolveGlobal(c->module, e->name,
+                                 &owner, &global) == 1) {
+                    int qualified = qualified_global_type(c->module,
+                        e->name, owner, global->type,
+                        e->type, sizeof(e->type));
+                    if(qualified < 0)
+                        error(c, e->span, "qualified global type is too long",
+                              e->name);
+                    else if(qualified > 0)
+                        type = e->type;
                 }
             }
             for(int i = c->count - 1; i >= 0; i--)
@@ -5785,6 +5828,56 @@ normalize_function_arrays(const ZirModule *module, ZirFunction *fn)
 int
 LinkImports(ZirProgram **programs, int count)
 {
+    /* Open imports have no source alias, but checked types need a stable
+     * qualifier when the consumer declares a type with the same name. */
+    for(int p = 0; p < count; p++) {
+        for(int m = 0; m < programs[p]->module_count; m++) {
+            ZirModule *module = &programs[p]->modules[m];
+            int source_count = module->import_count;
+            for(int i = 0; i < source_count; i++) {
+                if(module->imports[i].kind != ZIR_IMPORT_OPEN)
+                    continue;
+                int existing = 0;
+                for(int j = 0; j < module->import_count; j++)
+                    if(module->imports[j].kind == ZIR_IMPORT_MODULE &&
+                       strcmp(module->imports[j].signature,
+                              "internal-open") == 0 &&
+                       strcmp(module->imports[j].target,
+                              module->imports[i].target) == 0) {
+                        existing = 1;
+                        break;
+                    }
+                if(existing) continue;
+                char target[ZIR_PATH_MAX];
+                copy_text(target, sizeof(target), module->imports[i].target);
+                ZirSourceSpan span = module->imports[i].span;
+                char alias[ZIR_NAME_MAX];
+                for(int suffix = 0;; suffix++) {
+                    int length = snprintf(alias, sizeof(alias),
+                                          "__zi_open_%d", suffix);
+                    if(length < 0 || (size_t)length >= sizeof(alias)) {
+                        Diagnostic(span, "check.import",
+                                   "too many internal open imports");
+                        return 0;
+                    }
+                    int occupied = 0;
+                    for(int j = 0; j < module->import_count; j++)
+                        if(module->imports[j].kind == ZIR_IMPORT_MODULE &&
+                           strcmp(module->imports[j].name, alias) == 0) {
+                            occupied = 1;
+                            break;
+                        }
+                    if(!occupied) break;
+                }
+                if(ModuleAddImport(module, ZIR_IMPORT_MODULE, alias, target,
+                                   "internal-open", 0, span) == NULL) {
+                    Diagnostic(span, "check.import",
+                               "cannot allocate internal open import");
+                    return 0;
+                }
+            }
+        }
+    }
     /* Every source import names a Ziran module in the current build. */
     for(int p = 0; p < count; p++) {
         for(int m = 0; m < programs[p]->module_count; m++) {
