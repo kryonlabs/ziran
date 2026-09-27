@@ -1152,6 +1152,19 @@ verify_expression(const ZirModule *module, const ZirFunction *function,
     if(!portable_type(module, expression->type))
         return 0;
     switch(expression->kind) {
+    case ZIR_EXPR_SIZE_OF: {
+        size_t size, alignment;
+        if(expression->left != -1 || expression->right != -1 ||
+           expression->third != -1 || expression->first_child != -1)
+            return 0;
+        if(!TypeLayout(module, expression->name, &size, &alignment) ||
+           size > INT64_MAX) {
+            Diagnostic(expression->span, "zib.size_of",
+                       "cannot evaluate portable size_of(%s)", expression->name);
+            return 0;
+        }
+        return 1;
+    }
     case ZIR_EXPR_INT: {
         char *end;
         errno = 0;
@@ -2464,6 +2477,16 @@ eval(Frame *frame, int index, int depth)
     }
     expression = &frame->function->exprs[index];
     switch(expression->kind) {
+    case ZIR_EXPR_SIZE_OF: {
+        size_t size, alignment;
+        if(!TypeLayout(frame->module, expression->name, &size, &alignment) ||
+           size > INT64_MAX) {
+            frame->vm->failed = 1;
+            break;
+        }
+        value = int_value((int64_t)size);
+        break;
+    }
     case ZIR_EXPR_INT: {
         char *end;
         errno = 0;

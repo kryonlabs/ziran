@@ -993,7 +993,8 @@ supported_expression(const ZirModule *module, const ZirFunction *fn, int index)
         break;
     case ZIR_EXPR_FIELD_INIT: break;
     case ZIR_EXPR_INT: case ZIR_EXPR_FLOAT: case ZIR_EXPR_IDENT:
-    case ZIR_EXPR_STRING: case ZIR_EXPR_COMPILE_TIME: break;
+    case ZIR_EXPR_STRING: case ZIR_EXPR_COMPILE_TIME:
+    case ZIR_EXPR_SIZE_OF: break;
     case ZIR_EXPR_MEMBER: case ZIR_EXPR_POINTER_MEMBER:
     case ZIR_EXPR_INDEX: case ZIR_EXPR_SLICE: break;
     case ZIR_EXPR_BINARY: case ZIR_EXPR_CONDITIONAL: break;
@@ -2673,6 +2674,47 @@ emit_vec_call(Emitter *e, const ZirExpr *expr, char *out, size_t size)
 }
 
 static void
+native_size_expression(Emitter *e, const char *type, char *out, size_t size)
+{
+    char element[ZIR_NAME_MAX], mapped[ZIR_NAME_MAX * 2];
+    int capacity;
+    if(ArrayElementType(type, element, sizeof(element), &capacity)) {
+        char item_size[ZIR_TEXT_MAX], bound[ZIR_NAME_MAX];
+        native_size_expression(e, element, item_size, sizeof(item_size));
+        if(capacity >= 0) snprintf(bound, sizeof(bound), "%d", capacity);
+        else {
+            const char *close = strchr(type, ']');
+            char source_bound[ZIR_NAME_MAX];
+            format(source_bound, sizeof(source_bound), "%.*s",
+                   (int)(close - type - 1), type + 1);
+            e->resolve(e->context, source_bound, bound, sizeof(bound));
+        }
+        format(out, size, "((%s) * (%s))", bound, item_size);
+        return;
+    }
+    if(!strcmp(ScalarType(type), "void")) {
+        copy_text(out, size, "0");
+        return;
+    }
+    if(type[0] == '*') {
+        copy_text(out, size, e->target == ZIR_GO ?
+                  "unsafe.Sizeof((*byte)(nil))" : "sizeof(void *)");
+        return;
+    }
+    if(e->target == ZIR_GO && SliceElementType(type, NULL, 0)) {
+        copy_text(out, size, "unsafe.Sizeof([]byte(nil))");
+        return;
+    }
+    const char *native = TargetType(type, e->target);
+    if(native != NULL) copy_text(mapped, sizeof(mapped), native);
+    else e->resolve(e->context, type, mapped, sizeof(mapped));
+    if(e->target == ZIR_GO)
+        format(out, size, "unsafe.Sizeof(*new(%s))", mapped);
+    else
+        format(out, size, "sizeof(%s)", mapped);
+}
+
+static void
 emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
 {
     const ZirExpr *expr=&e->fn->exprs[index];
@@ -2689,6 +2731,14 @@ emit_expr(Emitter *e, int index, const char *expected, char *out, size_t size)
     if(!strcmp(expr->type, "null") && strchr(expected, '*') != NULL)
         type = canonical(expected);
     switch(expr->kind) {
+    case ZIR_EXPR_SIZE_OF:
+        native_size_expression(e, expr->name, a, sizeof(a));
+        if(e->target == ZIR_GO)
+            format(result, sizeof(result), "%s(%s)", TargetType(type, e->target), a);
+        else
+            copy_text(result, sizeof(result), a);
+        pure = 1;
+        break;
     case ZIR_EXPR_COMPOUND: {
         if(ArrayElementType(type, NULL, 0, NULL)) {
             fresh(e, temp);

@@ -5,9 +5,14 @@
 // makes the borrowed []u8 view compatible with Ziran's mutable byte slices.
 #scope_file
 libc :: #system_library "libc";
-MapRaw :: (address: *void, length: u64, protection: s32, flags: s32,
-    fd: s32, offset: s64) -> *u8 #foreign libc "mmap";
-UnmapRaw :: (address: *u8, length: u64) -> s32 #foreign libc "munmap";
+#if #defined(ANDROID_BUILD) {
+    MapRaw :: (address: *void, length: usize, protection: s32, flags: s32,
+        fd: s32, offset: s64) -> *u8 #foreign libc "mmap64";
+} else {
+    MapRaw :: (address: *void, length: usize, protection: s32, flags: s32,
+        fd: s32, offset: s64) -> *u8 #foreign libc "mmap";
+}
+UnmapRaw :: (address: *u8, length: usize) -> s32 #foreign libc "munmap";
 
 #scope_export
 MappedFile :: struct {
@@ -22,7 +27,7 @@ MapPrivate :: (path: string) -> MappedFile {
     file: FileHandle = OpenRead(path)
     if !file.valid { return result }
     size: s64 = FileSize(file)
-    if size < 0 {
+    if size < 0 || cast(u64)cast(usize)size != cast(u64)size {
         CloseFile(file)
         return result
     }
@@ -30,13 +35,13 @@ MapPrivate :: (path: string) -> MappedFile {
         result.valid = CloseFile(file)
         return result
     }
-    mapped: *u8 = MapRaw(null, cast(u64)size, 3, 2, file.fd, 0)
+    mapped: *u8 = MapRaw(null, cast(usize)size, 3, 2, file.fd, 0)
     closed: bool = CloseFile(file)
-    if cast(u64)mapped == cast(u64)0xffffffffffffffff {
+    if cast(isize)mapped == cast(isize)-1 {
         return result
     }
     if !closed {
-        UnmapRaw(mapped, cast(u64)size)
+        UnmapRaw(mapped, cast(usize)size)
         return result
     }
     result.data = mapped
@@ -55,5 +60,5 @@ MappedBytes :: (file: MappedFile) -> []u8 {
 UnmapFile :: (file: MappedFile) -> bool {
     if !file.valid { return false }
     if file.length == 0 { return true }
-    return UnmapRaw(file.data, file.length) == 0
+    return UnmapRaw(file.data, cast(usize)file.length) == 0
 }

@@ -452,22 +452,20 @@ layout_type(const ZirModule *module, const char *source, int depth,
         *size = *alignment = 8; return 1;
     }
     if(!strcmp(scalar, "string")) {
-        struct { int64_t count; const char *data; } view;
-        *size = sizeof(view);
-        *alignment = _Alignof(view);
+        *size = 16;
+        *alignment = 8;
         return 1;
     }
     if(SliceElementType(type, element, sizeof(element))) {
         if(local_storage_error(module, type) != NULL)
             return 0;
-        struct { void *data; int64_t count; } view;
-        *size = sizeof(view);
-        *alignment = _Alignof(view);
+        *size = 16;
+        *alignment = 8;
         return 1;
     }
     if(!strcmp(scalar, "isize") || !strcmp(scalar, "usize") ||
        type[0] == '*') {
-        *size = *alignment = sizeof(void *); return 1;
+        *size = *alignment = 8; return 1;
     }
     if(ArrayElementType(type, element, sizeof(element), &capacity)) {
         size_t item_size, item_alignment;
@@ -2684,14 +2682,6 @@ rewrite_checked_text(Checker *c, const ZirExpr *expr, const char *replacement)
 }
 
 static int
-rewrite_checked_size(Checker *c, const ZirExpr *expr, size_t size)
-{
-    char replacement[64];
-    snprintf(replacement, sizeof(replacement), "(%zu)", size);
-    return rewrite_checked_text(c, expr, replacement);
-}
-
-static int
 lower_enum_reference(Checker *c, ZirExpr *expr, const ZirType *enumeration,
                      const char *member)
 {
@@ -3032,13 +3022,16 @@ expression_type(Checker *c, int index)
             error(c, e->span, "size_of requires a known sized type", e->name);
             return "";
         }
-        if(!rewrite_checked_size(c, e, size)) {
+        char replacement[ZIR_TEXT_MAX];
+        snprintf(replacement, sizeof(replacement), "size_of(%s)", sized_type);
+        if(!rewrite_checked_text(c, e, replacement)) {
             error(c, e->span, "cannot lower size_of expression", e->text);
             return "";
         }
-        snprintf(e->text, sizeof(e->text), "%zu", size);
-        e->name[0] = '\0';
-        e->kind = ZIR_EXPR_INT;
+        if(!c->fn->from_ir)
+            copy_text(e->text, sizeof(e->text), replacement);
+        if(sized_type != e->name)
+            copy_text(e->name, sizeof(e->name), sized_type);
         e->left = e->right = e->third = -1;
         copy_text(e->type, sizeof(e->type), "integer");
         return e->type;

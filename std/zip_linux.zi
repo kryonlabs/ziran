@@ -8,18 +8,31 @@ zlib :: #system_library "z";
 ZStream :: struct {
     next_in: *u8
     avail_in: u32
-    total_in: u64
+    #if #defined(_WIN32) {
+        total_in: u32
+    } else {
+        total_in: usize
+    }
     next_out: *u8
     avail_out: u32
-    total_out: u64
+    #if #defined(_WIN32) {
+        total_out: u32
+    } else {
+        total_out: usize
+    }
     msg: *u8
     state: *void
     zalloc: *void
     zfree: *void
     opaque: *void
     data_type: s32
-    adler: u64
-    reserved: u64
+    #if #defined(_WIN32) {
+        adler: u32
+        reserved: u32
+    } else {
+        adler: usize
+        reserved: usize
+    }
 }
 
 ZlibVersion :: () -> *u8 #foreign zlib "zlibVersion";
@@ -53,8 +66,8 @@ ExtractZipEntry :: (archive: []u8, entry: ZipEntry, output: []u8) -> bool {
         return false
     }
     status: s32 = ZlibInflate(*stream, 4)
-    valid: bool = status == 1 && stream.total_in == entry.compressed_size &&
-                  stream.total_out == entry.size
+    valid: bool = status == 1 && cast(u64)stream.total_in == entry.compressed_size &&
+                  cast(u64)stream.total_out == entry.size
     if ZlibInflateEnd(*stream) != 0 { valid = false }
     return valid && ZipCRC32(output) == entry.crc32
 }
@@ -104,15 +117,15 @@ ExtractZipEntryToFile :: (archive: []u8, entry: ZipEntry,
     if ZlibInflateInit(*stream, -15, ZlibVersion(),
                        cast(s32)size_of(ZStream)) != 0 { return false }
 
-    output: [65536]u8
+    output: [16384]u8
     valid: bool = true
     while true {
         before_in := stream.total_in
         before_out := stream.total_out
         stream.next_out = *output[0]
-        stream.avail_out = 65536
+        stream.avail_out = 16384
         status := ZlibInflate(*stream, 0)
-        count: u32 = 65536 - stream.avail_out
+        count: u32 = 16384 - stream.avail_out
         if cast(u64)count > entry.size - written {
             valid = false
             break
@@ -134,7 +147,7 @@ ExtractZipEntryToFile :: (archive: []u8, entry: ZipEntry,
         }
     }
     if ZlibInflateEnd(*stream) != 0 { valid = false }
-    return valid && stream.total_in == entry.compressed_size &&
-           stream.total_out == entry.size && written == entry.size &&
+    return valid && cast(u64)stream.total_in == entry.compressed_size &&
+           cast(u64)stream.total_out == entry.size && written == entry.size &&
            (crc ^ cast(u32)0xffffffff) == entry.crc32
 }

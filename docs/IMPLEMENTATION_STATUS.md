@@ -113,8 +113,11 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   source line; source and saved IR agree in portable, C, C++, and Go execution.
 - Source foreign declarations use Jai's `#system_library` and `#foreign`
   forms. The compiler resolves those library declarations to its existing
-  host, C, or Go import model before saving IR. The old `#extern` source
-  modifier is rejected.
+  host, C, or Go import model before saving IR. A trailing `..any` parameter
+  declares a C variadic foreign procedure: calls must provide its fixed
+  arguments and may provide additional arguments. Source and saved IR lower
+  tested variadic calls to C and C++; Go rejects the declaration. The old
+  `#extern` source modifier is rejected.
 - Source accepts Jai `#scope_file`, `#scope_module`, and `#scope_export` for
   following procedures, globals, types, and constants. Private declarations
   are excluded from imported lookup, native headers hide private types and
@@ -204,7 +207,7 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   `.krb` are rejected by the shared loader. Kryon owns the UI test fixtures;
   Ziran keeps a non-UI array and UTF-8 byte law fixture that runs from source
   and saved IR through native C, C++, and Go.
-- `zi2zir` writes experimental binary `.zir` version 40 after checking all
+- `zi2zir` writes experimental binary `.zir` version 41 after checking all
   input modules together. C, C++, and Go can read saved modules without reparsing
   `.zi`; their imports are relinked from serialized module identities. The
   reader rejects malformed headers, versions, truncated data, invalid
@@ -413,12 +416,14 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   portable, C, C++, and Go agreement. Integer, boolean, floating, and string
   cases accept a final `case;` default. Deferred actions run at case boundaries
   and before `#through;`. Unknown function-body directives are rejected.
-  Jai `size_of(Type)` folds before source or saved IR emission for supported
-  scalars, pointers, `string`, borrowed slices, fixed arrays, records, unions,
-  named concrete generic types, and nested applications such as
-  `Wrapper(Box(s32))`. It works in
-  constants, array bounds, globals, `#run`, `#if`, `#ifx`, and function
-  expressions. The old `sizeof` spelling is rejected in source. Jai `int`
+  `size_of` supports scalars, pointers, `string`, borrowed slices, fixed
+  arrays, records, unions, named concrete generic types, and nested
+  applications such as `Wrapper(Box(s32))`. It folds in constants, array
+  bounds, globals, `#run`, `#if`, and `#ifx`. Function-body expressions stay
+  symbolic through source checking and saved IR, execute in portable bundles,
+  and lower to target-native size operations in C, C++, and Go; tests cover
+  the target-dependent slice layout. The old `sizeof` spelling is rejected in
+  source. Jai `int`
   maps to `s64`. In function bodies, `size_of(type_of(expression))` uses the
   checker's inferred type and does not evaluate its operand. File-scope
   `size_of(type_of(expression))` works for previously declared same-module

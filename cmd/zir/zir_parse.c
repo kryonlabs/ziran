@@ -4879,30 +4879,6 @@ lower_size_of_value(char *value, size_t capacity, const ZirModule *module,
     die_at(span, "too many size_of expressions");
 }
 
-static void
-lower_size_of_function(ZirFunction *fn, const ZirModule *module)
-{
-    for(int pass = 0; pass < 128; pass++) {
-        StructureFunction(fn, module);
-        const ZirExpr *expr = first_size_of(fn, 0);
-        if(expr == NULL)
-            return;
-        int replaced = 0;
-        for(int i = 0; i < fn->stmt_count; i++) {
-            ZirStmt *st = &fn->stmts[i];
-            if(find_unquoted_text(st->text, expr->text) == NULL)
-                continue;
-            replace_size_of(st->text, sizeof(st->text), module,
-                            expr, st->span);
-            replaced = 1;
-            break;
-        }
-        if(!replaced)
-            die_at(fn->span, "cannot locate size_of expression in function");
-    }
-    die_at(fn->span, "too many size_of expressions");
-}
-
 /* Imports are linked after parsing. Finish any #ifx selection that called
  * into another module, then lower size_of only in the selected branch. */
 int
@@ -4970,13 +4946,6 @@ LowerLinkedCompileExpressions(ZirModule *module, int allow_deferred)
         if(function_has_compile_ifx(fn)) {
             if(lower_compile_ifx_function(fn, module, &constants,
                                           allow_deferred)) progress++;
-        }
-        if(!function_has_compile_ifx(fn)) {
-            for(int s = 0; s < fn->stmt_count; s++)
-                if(find_unquoted_word(fn->stmts[s].text, "size_of") != NULL) {
-                    lower_size_of_function(fn, module);
-                    break;
-                }
         }
     }
     copy_text(module->lookup_path, sizeof(module->lookup_path),
@@ -8140,15 +8109,6 @@ parse_source(const char *path, const char *root, const char *source,
                 }
             if(has_compile_ifx)
                 lower_compile_ifx_function(fn, module, &consts, 1);
-            int has_size_of = 0;
-            for(int si = 0; si < fn->stmt_count; si++)
-                if(find_unquoted_word(fn->stmts[si].text, "size_of") != NULL) {
-                    has_size_of = 1;
-                    break;
-                }
-            if(has_size_of &&
-               !function_has_compile_ifx(fn))
-                lower_size_of_function(fn, module);
             if(!NormalizeJaiBodies(fn) || !BindJaiLoopControls(fn) ||
                !LowerCleanup(fn)) {
                 ProgramFree(program);

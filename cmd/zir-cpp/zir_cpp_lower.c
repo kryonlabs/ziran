@@ -735,25 +735,35 @@ emit_extern_prototype(FILE *c, const ZirModule *m, const ZirImport *imp)
         copy_text(ret, sizeof(ret), "void");
     if(c_extern_symbol(imp, symbol, sizeof(symbol))) {
         cname = symbol;
-        fprintf(c, "%s %s(%s);\n", ret[0] ? ret : "void", cname, conv);
-        if(strcmp(symbol, imp->name) != 0) {
-            if(imp->is_varargs) {
-                /* A C variadic argument list cannot be forwarded by a
-                 * regular wrapper. Let the call target the ABI symbol. */
-                fprintf(c, "#define %s %s\n", imp->name, symbol);
-                return;
-            }
-            char call[LOWER_TEXT_MAX];
-
-            extern_call_args(abi_args, call, sizeof(call));
-            fprintf(c, "static %s\n%s(%s)\n{\n",
-                    ret[0] ? ret : "void", imp->name, conv);
-            if(ret[0] != '\0' && strcmp(ret, "void") != 0)
-                fprintf(c, "    return %s(%s);\n", symbol, call);
-            else
-                fprintf(c, "    %s(%s);\n", symbol, call);
-            fprintf(c, "}\n");
+        if(strcmp(symbol, imp->name) == 0) {
+            fprintf(c, "%s %s(%s);\n", ret[0] ? ret : "void", cname, conv);
+            return;
         }
+        /* Use a local C++ name for the declaration. Standard headers may
+         * already declare the ABI symbol with a different pointer spelling
+         * (for example, renameat takes const char* rather than Ziran *u8).
+         * The assembler label preserves the requested symbol at link time. */
+        char foreign_name[LOWER_NAME_MAX * 2];
+
+        snprintf(foreign_name, sizeof(foreign_name), "zir_foreign_%s", imp->name);
+        fprintf(c, "%s %s(%s) __asm__(\"%s\");\n",
+                ret[0] ? ret : "void", foreign_name, conv, symbol);
+        if(imp->is_varargs) {
+            /* A C variadic argument list cannot be forwarded by a
+             * regular wrapper. Let the call target the ABI symbol. */
+            fprintf(c, "#define %s %s\n", imp->name, foreign_name);
+            return;
+        }
+        char call[LOWER_TEXT_MAX];
+
+        extern_call_args(abi_args, call, sizeof(call));
+        fprintf(c, "static %s\n%s(%s)\n{\n",
+                ret[0] ? ret : "void", imp->name, conv);
+        if(ret[0] != '\0' && strcmp(ret, "void") != 0)
+            fprintf(c, "    return %s(%s);\n", foreign_name, call);
+        else
+            fprintf(c, "    %s(%s);\n", foreign_name, call);
+        fprintf(c, "}\n");
     } else {
         fprintf(c, "%s %s(%s);\n", ret[0] ? ret : "void", cname, conv);
     }
@@ -1035,6 +1045,13 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
         convert_args(m, fn, abi_args, cargs, sizeof(cargs));
         strip_alias_type(m, ArrayElementType(fn->return_type, NULL, 0, NULL) ? "void" : fn->return_type,
                          cret, sizeof(cret));
+        if(strcmp(cname, "main") == 0) {
+            /* The C++ runtime expects main with C++ language linkage. */
+            fprintf(h, "}\nextern \"C++\" {\n%s %s(%s);\n"
+                      "}\nextern \"C\" {\n",
+                    cret[0] ? cret : "void", cname, cargs);
+            continue;
+        }
         fprintf(h, "%s %s(%s)", cret[0] ? cret : "void", cname, cargs);
         if(fn->exported) {
             const char *symbol = fn->export_symbol[0] ?
@@ -1186,6 +1203,9 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
                                m, restab, restab_count});
         BodySymbols symbols = {m, restab, restab_count};
         EmitSlotWrappers(c, m, fn, ZIR_CPP, resolve_body_symbol, &symbols);
+        int cpp_main = strcmp(cname, "main") == 0;
+        if(cpp_main)
+            fputs("#ifdef __cplusplus\n}\n#endif\n", c);
         if(fn->is_public)
             fprintf(c, "%s\n%s(%s)\n{\n", cret[0] ? cret : "void",
                     cname, cargs);
@@ -1194,6 +1214,8 @@ lower_module(const ZirModule *m, const ZirCppModuleSyms *restab, int restab_coun
                     cret[0] ? cret : "void", cname, cargs);
         lower_body(c, m, restab, restab_count, fn);
         fprintf(c, "}\n");
+        if(cpp_main)
+            fputs("#ifdef __cplusplus\nextern \"C\" {\n#endif\n", c);
     }
     int startup_count = 0;
     for(i = 0; i < m->function_count; i++)

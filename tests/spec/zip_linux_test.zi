@@ -55,7 +55,9 @@ SelfTest :: () -> s32 {
     file := OpenReplace("zip-linux-entry-output.bin")
     if !file.valid { return 4 }
     streamed := ExtractZipEntryToFile(bytes[:], entry, file)
-    if !CloseFile(file) || !streamed { return 5 }
+    closed := CloseFile(file)
+    if !streamed { return 5 }
+    if !closed { return 10 }
     file = OpenRead("zip-linux-entry-output.bin")
     if !file.valid { return 6 }
     restored: [5]u8

@@ -57,6 +57,9 @@ Touch :: () -> s32 {
     return 0
 }
 #program_export
+NativeSliceSize :: () -> s32 { return size_of([]s32) }
+
+#program_export
 Answer :: () -> s32 {
     inferred := 4294967296
     text: string = "hello"
@@ -70,7 +73,7 @@ Answer :: () -> s32 {
     if size_of(type_of(pair)) != 16 { return 0 }
     if size_of(type_of(text)) != 16 { return 0 }
     if size_of(type_of(number)) != 4 { return 0 }
-    if size_of(type_of(view)) != 16 { return 0 }
+    if size_of(type_of(view)) != size_of([]s32) { return 0 }
     if size_of(type_of(pair.second)) != 8 { return 0 }
     if size_of(type_of(inferred + 1)) != 8 { return 0 }
     if size_of(type_of(inferred)) + size_of(type_of(pair)) != 24 { return 0 }
@@ -84,7 +87,8 @@ Answer :: () -> s32 {
     if size_of([3]s32) != 12 { return 0 }
     if size_of(Pair) != 16 { return 0 }
     if size_of(string) != 16 { return 0 }
-    if size_of([]s32) != 16 || SLICE_SIZE != 16 { return 0 }
+    if (size_of([]s32) != 16 && size_of([]s32) != 24) ||
+        SLICE_SIZE != 16 { return 0 }
     if size_of(Sample) != 24 { return 0 }
     if size_of(Box(s32)) != 4 || BOX_SIZE != 4 { return 0 }
     if size_of(Concrete) != 4 { return 0 }
@@ -103,8 +107,8 @@ EOF
 
 "$ziran" check --root "$work" "$work/sizes.zi"
 "$ziran" ir --root "$work" -o "$work/ir" "$work/sizes.zi"
-if grep -aFq 'size_of' "$work/ir/sizes.zir"; then
-    echo 'size_of was saved without constant evaluation' >&2
+if ! grep -aFq 'size_of' "$work/ir/sizes.zir"; then
+    echo 'runtime size_of was folded before target selection' >&2
     exit 1
 fi
 "$ziran" bundle --root "$work" --entry sizes:Answer \
@@ -129,7 +133,9 @@ func main() {
        unsafe.Sizeof(Concrete{}) != 4 || unsafe.Sizeof(NestedBuffer{}) != 8 {
         panic("size_of disagrees with Go record layout")
     }
-    if Sizes_Answer() != 42 { panic("wrong size_of result") }
+    if Sizes_Answer() != 42 || Sizes_NativeSliceSize() != 24 {
+        panic("wrong native size_of result")
+    }
 }
 EOF
         GO111MODULE=off go run "$out/sizes.go" "$out/main.go"
@@ -145,7 +151,7 @@ _Static_assert(sizeof(Sample) == 24, "size_of disagrees with C string record lay
 _Static_assert(sizeof(ComputedBuffer) == 16, "size_of disagrees with C array layout");
 _Static_assert(sizeof(Concrete) == 4, "size_of disagrees with C generic layout");
 _Static_assert(sizeof(NestedBuffer) == 8, "size_of disagrees with C nested generic layout");
-int main(void) { return Answer() == 42 ? 0 : 1; }
+int main(void) { return Answer() == 42 && NativeSliceSize() == 16 ? 0 : 1; }
 EOF
             ${CC:-cc} -Iinclude -I"$out" "$out/sizes.c" \
                 "$out/main.c" -o "$out/app"
@@ -158,7 +164,7 @@ static_assert(sizeof(Sample) == 24, "size_of disagrees with C++ string record la
 static_assert(sizeof(ComputedBuffer) == 16, "size_of disagrees with C++ array layout");
 static_assert(sizeof(Concrete) == 4, "size_of disagrees with C++ generic layout");
 static_assert(sizeof(NestedBuffer) == 8, "size_of disagrees with C++ nested generic layout");
-int main() { return Answer() == 42 ? 0 : 1; }
+int main() { return Answer() == 42 && NativeSliceSize() == 16 ? 0 : 1; }
 EOF
             ${CXX:-c++} -Iinclude -I"$out" "$out/sizes.cpp" \
                 "$out/main.cpp" -o "$out/app"
@@ -206,7 +212,7 @@ if "$ziran" check --root "$work" "$work/unknown_generic_element.zi" \
     echo 'unknown generic element in size_of was accepted' >&2
     exit 1
 fi
-grep -Fq 'size_of requires a known sized type' \
+grep -Eq 'size_of requires a known sized type|unknown stored type' \
     "$work/unknown_generic_element.err"
 
 cat > "$work/unknown_slice_element.zi" <<'EOF'
@@ -241,7 +247,7 @@ if "$ziran" check --root "$work" "$work/recursive_size.zi" \
     echo 'recursive size_of layout was accepted' >&2
     exit 1
 fi
-grep -Fq 'size_of requires a known sized type' \
+grep -Eq 'size_of requires a known sized type|array capacity is not a valid bounded integer constant' \
     "$work/recursive_size.err"
 
 cat > "$work/literal.zi" <<'EOF'

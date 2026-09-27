@@ -1276,8 +1276,9 @@ go_lower(const ZirProgram *const *progs, int prog_count,
                 const ZirFunction *fn = &m->functions[fi];
                 for(int ei = 0; ei < fn->expr_count; ei++) {
                     const ZirExpr *expr = &fn->exprs[ei];
-                    if(expr->kind == ZIR_EXPR_INDEX && expr->left >= 0 &&
-                       fn->exprs[expr->left].type[0] == '*') {
+                    if(expr->kind == ZIR_EXPR_SIZE_OF ||
+                       (expr->kind == ZIR_EXPR_INDEX && expr->left >= 0 &&
+                        fn->exprs[expr->left].type[0] == '*')) {
                         pointer_index = 1;
                         break;
                     }

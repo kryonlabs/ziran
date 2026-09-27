@@ -4,7 +4,7 @@
 // makes the buffer lifetime and exact archive encoding explicit.
 #scope_file
 libc :: #system_library "libc";
-OpenRaw :: (path: *u8, flags: s32, mode: s32) -> s32 #foreign libc "open";
+OpenRaw :: (path: *u8, flags: s32, mode: ..any) -> s32 #foreign libc "open";
 CloseRaw :: (fd: s32) -> s32 #foreign libc "close";
 #if #defined(ANDROID_BUILD) {
     // Android's 32-bit off_t is narrower than the public file offset. The
@@ -54,11 +54,15 @@ FileHandle :: struct {
 }
 
 #scope_file
+OpenPath :: (path: *u8, flags: s32, mode: s32) -> s32 {
+    return OpenRaw(path, flags, mode)
+}
+
 OpenWithFlags :: (path: string, flags: s32) -> FileHandle {
     result: FileHandle
     name: [4096]u8
     if !CopyCString(path, name[:]) { return result }
-    result.fd = OpenRaw(*name[0], flags, 420)
+    result.fd = OpenPath(*name[0], flags, 420)
     result.valid = result.fd >= 0
     return result
 }
@@ -84,7 +88,7 @@ OpenExclusivePrivate :: (path: string) -> FileHandle {
     result: FileHandle
     name: [4096]u8
     if !CopyCString(path, name[:]) { return result }
-    result.fd = OpenRaw(*name[0], 193, 384)
+    result.fd = OpenPath(*name[0], 193, 384)
     result.valid = result.fd >= 0
     return result
 }
@@ -101,7 +105,7 @@ PathExists :: (path: string) -> bool {
     name: [4096]u8
     if !CopyCString(path, name[:]) { return false }
     // O_PATH follows symlinks and can inspect paths without read permission.
-    fd := OpenRaw(*name[0], 2097152, 0)
+    fd := OpenPath(*name[0], 2097152, 0)
     if fd < 0 { return false }
     return CloseRaw(fd) == 0
 }
@@ -109,7 +113,7 @@ PathExists :: (path: string) -> bool {
 DirectoryExists :: (path: string) -> bool {
     name: [4096]u8
     if !CopyCString(path, name[:]) { return false }
-    fd := OpenRaw(*name[0], 2097152 | 65536, 0)
+    fd := OpenPath(*name[0], 2097152 | 65536, 0)
     if fd < 0 { return false }
     return CloseRaw(fd) == 0
 }

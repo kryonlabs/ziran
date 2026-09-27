@@ -1193,12 +1193,14 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
                                        &owner, &callee) != 1 ||
                        owner == NULL || callee == NULL) {
                         int external = 0;
+                        const ZirImport *external_import = NULL;
                         for(int i = 0; i < module->import_count; i++)
                             if(module->imports[i].kind == ZIR_IMPORT_EXTERN &&
                                strcmp(module->imports[i].name,
                                       expression->name) == 0) {
                                 external = 1;
                                 const ZirImport *import = &module->imports[i];
+                                external_import = import;
                                 if(import->extern_kind == ZIR_EXTERN_HOST &&
                                    strncmp(import->target, "ziran:", 6) == 0) {
                                     int found = 0;
@@ -1247,7 +1249,7 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
                                             &program->modules[candidate].functions[export];
                                         if(implementation->exported &&
                                            strcmp(implementation->name,
-                                                  expression->name) == 0 &&
+                                                  external_import->extern_symbol) == 0 &&
                                            !keep[candidate][export]) {
                                             keep[candidate][export] = 1;
                                             changed = 1;
@@ -1307,7 +1309,8 @@ link_checked_entry(const ZirProgram *program, const char *entry_module,
                                   keep_types, &changed))
                         goto failed;
                     if((expression->kind == ZIR_EXPR_CAST ||
-                        expression->kind == ZIR_EXPR_COMPOUND) &&
+                        expression->kind == ZIR_EXPR_COMPOUND ||
+                        expression->kind == ZIR_EXPR_SIZE_OF) &&
                        !mark_type(program, module, expression->name,
                                   keep_types, &changed))
                         goto failed;

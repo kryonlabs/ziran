@@ -271,10 +271,14 @@ is an alias for `float32`. The old `i8`/`i16`/`i32`/`i64`/`f32`/`f64`/`double`
 spellings are rejected in source.
 `char` is rejected as a type; it can name a local binding, record field,
 global, or constant.
-Jai `int` is an alias for `s64`. `size_of(Type)` is a compile-time integer for
-supported scalars, pointers, `string`, borrowed slices, fixed arrays, records,
-unions, and concrete generic type applications such as `Box(s32)`.
-An untyped integer local inferred with `:=` also has `s64` storage.
+Jai `int` is an alias for `s64`. `size_of(Type)` supports scalars, pointers,
+`string`, borrowed slices, fixed arrays, records, unions, and concrete generic
+type applications such as `Box(s32)`. File-scope constants, global
+initializers, and compile-time directives fold supported layouts during
+translation. Function-body expressions remain symbolic in checked source and
+saved IR, then lower to the selected target's size operation; consequently a
+borrowed slice is 16 bytes in C, C++, and the portable layout but 24 bytes in
+Go. An untyped integer local inferred with `:=` also has `s64` storage.
 The C `sizeof` spelling is rejected. In function bodies,
 `size_of(type_of(expression))` uses the checked expression type without
 evaluating the expression. File-scope queries also infer types from previously
