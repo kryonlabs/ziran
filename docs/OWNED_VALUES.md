@@ -16,9 +16,12 @@ template from `std/option.zi` to be visible in the using module.
 
 **Current safety limits:** C99, C++, Go, and the portable VM drop direct owned
 `Vec` locals and parameters at block close, return, break, and continue. A
-direct move clears its source before the next drop. The checker rejects
-initializing, assigning, passing, or returning aggregates containing a `Vec`;
-their fields can still hold vectors and be used in place. Aggregate moves and
+direct move clears its source before the next drop. A direct or record-held
+`TextView` rejects mutation of its local backing binding until the view leaves
+scope; pointer-derived views, globals, and unmodeled aliases are not covered.
+The checker rejects initializing, assigning, passing, or returning aggregates
+containing a `Vec`; their fields can still hold vectors and be used in place.
+Aggregate moves and
 automatic drops require recursive ownership checking. The rest of this page
 describes the intended contract, not a guarantee that every case is enforced
 today.

@@ -27,7 +27,13 @@ typedef struct BorrowBinding {
     int local;
     int depth;
     int captured;
+    int text_borrow_count;
 } BorrowBinding;
+
+typedef struct ActiveTextBorrow {
+    BorrowBinding *backing;
+    int depth;
+} ActiveTextBorrow;
 
 typedef struct BorrowCheck {
     BorrowFunction *functions;
@@ -35,6 +41,8 @@ typedef struct BorrowCheck {
     BorrowFunction *current;
     BorrowBinding *bindings;
     int binding_count;
+    ActiveTextBorrow *active;
+    int active_count;
     int depth;
     int changed;
     int failed;
@@ -68,6 +76,31 @@ reject(BorrowCheck *check, ZirSourceSpan span, const char *message)
     if(!check->failed)
         Diagnostic(span, "check.slice_lifetime", "%s", message);
     check->failed = 1;
+}
+
+static void
+add_active_text_borrow(BorrowCheck *check, BorrowBinding *backing, int depth)
+{
+    if(backing == NULL)
+        return;
+    check->active[check->active_count].backing = backing;
+    check->active[check->active_count].depth = depth;
+    check->active_count++;
+    backing->text_borrow_count++;
+}
+
+static void
+release_active_text_borrows(BorrowCheck *check, int depth)
+{
+    int kept = 0;
+    for(int i = 0; i < check->active_count; i++) {
+        if(check->active[i].depth == depth) {
+            check->active[i].backing->text_borrow_count--;
+            continue;
+        }
+        check->active[kept++] = check->active[i];
+    }
+    check->active_count = kept;
 }
 
 static BorrowBinding *
@@ -125,6 +158,37 @@ destination_root(const ZirFunction *fn, int index)
 }
 
 static Origin expression_origin(BorrowCheck *check, int index);
+
+static BorrowBinding *
+backing_identifier(BorrowCheck *check, int index)
+{
+    const ZirFunction *fn = check->current->fn;
+    while(index >= 0) {
+        const ZirExpr *expression = &fn->exprs[index];
+        if(expression->kind == ZIR_EXPR_IDENT)
+            return binding(check, expression->name);
+        if(expression->kind != ZIR_EXPR_SLICE &&
+           expression->kind != ZIR_EXPR_MEMBER &&
+           expression->kind != ZIR_EXPR_POINTER_MEMBER &&
+           expression->kind != ZIR_EXPR_INDEX)
+            return NULL;
+        index = expression->left;
+    }
+    return NULL;
+}
+
+static BorrowBinding *
+text_view_backing(BorrowCheck *check, int index)
+{
+    const ZirFunction *fn = check->current->fn;
+    const ZirExpr *expression = index < 0 ? NULL : &fn->exprs[index];
+    if(expression == NULL || expression->kind != ZIR_EXPR_CALL ||
+       strcmp(expression->name, "TextView") != 0 ||
+       expression->first_child < 0 ||
+       fn->exprs[expression->first_child].next_sibling >= 0)
+        return NULL;
+    return backing_identifier(check, expression->first_child);
+}
 
 static Origin
 call_origin(BorrowCheck *check, const ZirExpr *expression)
@@ -274,10 +338,18 @@ check_function(BorrowCheck *check, BorrowFunction *function)
     const ZirFunction *fn = function->fn;
     check->current = function;
     check->binding_count = 0;
+    check->active_count = 0;
     check->depth = 1;
     check->bindings = calloc((size_t)fn->stmt_count + 65, sizeof(*check->bindings));
     if(check->bindings == NULL) {
         reject(check, fn->span, "out of memory checking slice lifetimes");
+        return;
+    }
+    check->active = calloc((size_t)fn->stmt_count + 1, sizeof(*check->active));
+    if(check->active == NULL) {
+        free(check->bindings);
+        check->bindings = NULL;
+        reject(check, fn->span, "out of memory checking text borrows");
         return;
     }
     char parameters[64][ZIR_TEXT_MAX];
@@ -304,6 +376,7 @@ check_function(BorrowCheck *check, BorrowFunction *function)
     for(int i = 0; i < fn->stmt_count && !check->failed; i++) {
         const ZirStmt *statement = &fn->stmts[i];
         if(statement->kind == ZIR_STMT_BLOCK_CLOSE) {
+            release_active_text_borrows(check, check->depth);
             while(check->binding_count && check->bindings[check->binding_count - 1].depth == check->depth)
                 check->binding_count--;
             check->depth--;
@@ -311,6 +384,13 @@ check_function(BorrowCheck *check, BorrowFunction *function)
         }
         check_ranges(check, statement->lhs_root);
         check_ranges(check, statement->expr_root);
+        if(statement->kind == ZIR_STMT_ASSIGN && statement->lhs_root >= 0) {
+            const ZirExpr *root = destination_root(fn, statement->lhs_root);
+            BorrowBinding *backing = root == NULL ? NULL : binding(check, root->name);
+            if(backing != NULL && backing->text_borrow_count != 0)
+                reject(check, statement->span,
+                       "mutating text backing storage while its view is live");
+        }
         if(statement->kind == ZIR_STMT_DECL) {
             if(view_type(check, statement->type)) {
                 Origin source = expression_origin(check, statement->expr_root);
@@ -328,6 +408,10 @@ check_function(BorrowCheck *check, BorrowFunction *function)
             }
             add_binding(check, statement->name, statement->type, (Origin){0}, i,
                         check->depth, 0);
+            if(!strcmp(statement->type, "string"))
+                add_active_text_borrow(check,
+                                       text_view_backing(check, statement->expr_root),
+                                       check->depth);
         } else if(statement->kind == ZIR_STMT_ASSIGN && statement->lhs_root >= 0) {
             const ZirExpr *destination = &fn->exprs[statement->lhs_root];
             if(view_type(check, destination->type)) {
@@ -355,6 +439,10 @@ check_function(BorrowCheck *check, BorrowFunction *function)
                 } else if(target != NULL && target->local >= 0) {
                     accumulate(check, &function->locals[target->local], source);
                 }
+                if(!independent_storage && target != NULL && !target->captured)
+                    add_active_text_borrow(check,
+                                           text_view_backing(check, statement->expr_root),
+                                           target->depth);
             }
         } else if(statement->kind == ZIR_STMT_RETURN &&
                   view_type(check, fn->return_type)) {
@@ -374,6 +462,8 @@ check_function(BorrowCheck *check, BorrowFunction *function)
     }
     free(check->bindings);
     check->bindings = NULL;
+    free(check->active);
+    check->active = NULL;
 }
 
 int

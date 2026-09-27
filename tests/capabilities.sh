@@ -17,6 +17,7 @@ assert item['targets'] == ['c', 'cpp', 'go', 'zib']
 assert item['source_and_saved_ir'] is True
 assert item['automatic_vec_drop'] is True
 assert item['aggregate_vec_transfer'] is False
+assert item['text_view_local_mutation_check'] is True
 assert item['gpu_execution'] == 'cpu_fallback'
 assert item['diagnostics_json'] == 'partial'
 PY
