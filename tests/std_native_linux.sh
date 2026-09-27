@@ -91,6 +91,6 @@ ZI
     --root "$work" --module-path "$root/std" \
     -o "$work/c" "$work/std_native_linux.zi"
 "${CC:-cc}" -std=c99 -pedantic-errors -I"$root/include" -I"$work/c" \
-    "$work/c"/*.c "$root/build/libziran-runtime.a" -lm -o "$work/program"
+    "$work/c"/*.c -lm -o "$work/program"
 (cd "$work" && ./program)
 test "$(stat -c %a "$work/private")" = "700"
