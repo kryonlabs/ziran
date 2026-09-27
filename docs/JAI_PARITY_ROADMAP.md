@@ -1,6 +1,6 @@
 # Jai syntax parity roadmap
 
-Status: 2026-09-26. This is a work plan, not a claim that Ziran already accepts
+Status: 2026-09-27. This is a work plan, not a claim that Ziran already accepts
 every Jai program. [Implementation status](IMPLEMENTATION_STATUS.md) records
 what works today; [Language direction](LANGUAGE_DIRECTION.md) records the broader
 design. The current checked source grammar aims to use Jai syntax. Ziran is
@@ -124,6 +124,12 @@ all four targets. Imported aggregate fields and array elements also work in
 tested `#if` conditions, including a later named import;
 `tests/imported_aggregate_constants.sh` covers this. Broader import forms
 remain open.
+Unconditional procedure headers in the current file or a later `#load`
+now resolve forward `#if size_of(type_of(Call()))` queries without executing
+the call, including multiline parameter lists. `tests/file_type_of.sh` checks
+source and saved IR on C, C++, Go,
+and `.zib`, and keeps inactive and file-private procedures hidden. Forward
+procedure calls as condition values still need separate evaluation rules.
 Token normalization now waits for branch selection, so obsolete
 primitive spellings in inactive top-level, type, and procedure branches are
 ignored while selected `else #if` conditions still use Jai scalar aliases.
@@ -182,7 +188,7 @@ and aggregate forms.
 Forward and imported `size_of(type_of(...))` operands now resolve in tested
 file-scope constants, global initializers, `#run`, and `#ifx`; imported
 operands also work in `#if`. `tests/file_type_of.sh` checks source and saved
-IR on C, C++, Go, and `.zib`. Standalone `type_of`, untested forward `#if`
+IR on C, C++, Go, and `.zib`. Standalone `type_of`, broader forward `#if`
 queries, and foreign-record `size_of` remain open.
 Put each accepted expression through source, saved IR, and all applicable
 targets. Rejection for an unavailable construct must occur in checking, not

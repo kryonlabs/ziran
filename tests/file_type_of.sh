@@ -137,6 +137,12 @@ Value :: struct { number: s64; }
 shared: Value;
 Read :: () -> s32 { return 3 }
 ZI
+cat > "$work/type_loaded.zi" <<'ZI'
+#scope_export
+Loaded :: () -> s64 { return 7 }
+#scope_file
+Secret :: () -> s64 { return 9 }
+ZI
 cat > "$work/deferred_type_of.zi" <<'ZI'
 #import "type_lib"
 Lib :: #import "type_lib"
@@ -152,13 +158,36 @@ SELECTED_IF :: 1;
 } else {
 SELECTED_IF :: 0;
 }
+#if size_of(type_of(Later())) == 8 {
+SELECTED_FORWARD_IF :: 1;
+} else {
+SELECTED_FORWARD_IF :: 0;
+}
+#if size_of(type_of(Loaded())) == 8 {
+SELECTED_LOADED_IF :: 1;
+} else {
+SELECTED_LOADED_IF :: 0;
+}
+#if size_of(type_of(Multiline(1))) == 8 {
+SELECTED_MULTILINE_IF :: 1;
+} else {
+SELECTED_MULTILINE_IF :: 0;
+}
 global_size: s64 = size_of(type_of(Later()));
 #program_export
 Answer :: () -> s64 {
     return FORWARD + IMPORTED + QUALIFIED + FIELD + RUN +
-           RUN_IMPORTED + SELECTED + SELECTED_IF + global_size + 5
+           RUN_IMPORTED + SELECTED + SELECTED_IF +
+           SELECTED_FORWARD_IF + SELECTED_LOADED_IF +
+           SELECTED_MULTILINE_IF + global_size + 5
 }
 Later :: () -> s64 { return 42 }
+Multiline :: (
+    value: s64
+) -> s64 {
+    return value
+}
+#load "type_loaded.zi";
 ZI
 
 "$ziran" ir --root "$work" -o "$work/deferred-ir" \
@@ -173,20 +202,20 @@ for input in source saved; do
     fi
     "$ziran" bundle --root "$root" --entry deferred_type_of:Answer \
         -o "$work/deferred-$input.zib" "$module"
-    test "$("$ziran" run "$work/deferred-$input.zib")" = 51
+    test "$("$ziran" run "$work/deferred-$input.zib")" = 54
     for target in c cpp go; do
         output=$work/deferred-$target-$input
         "$ziran" build "--target=$target" --root "$root" \
             -o "$output" "$module"
         case "$target" in
             c)
-                printf '#include "deferred_type_of.h"\nint main(void) { return Answer() == 51 ? 0 : 1; }\n' > "$work/deferred-main.c"
+                printf '#include "deferred_type_of.h"\nint main(void) { return Answer() == 54 ? 0 : 1; }\n' > "$work/deferred-main.c"
                 "${CC:-cc}" -std=c11 -I"$repo/include" -I"$output" \
                     "$output"/*.c "$work/deferred-main.c" -o "$output/app"
                 "$output/app"
                 ;;
             cpp)
-                printf '#include "deferred_type_of.hpp"\nint main() { return Answer() == 51 ? 0 : 1; }\n' > "$work/deferred-main.cpp"
+                printf '#include "deferred_type_of.hpp"\nint main() { return Answer() == 54 ? 0 : 1; }\n' > "$work/deferred-main.cpp"
                 "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$output" \
                     "$output"/*.cpp "$work/deferred-main.cpp" -o "$output/app"
                 "$output/app"
@@ -196,7 +225,7 @@ for input in source saved; do
 package ziran
 import "testing"
 func TestDeferredTypeOf(t *testing.T) {
-    if DeferredTypeOf_Answer() != 51 { t.Fatal("deferred type_of") }
+    if DeferredTypeOf_Answer() != 54 { t.Fatal("deferred type_of") }
 }
 GO
                 GO111MODULE=off go test "$output"/*.go
@@ -205,3 +234,31 @@ GO
     done
 done
 cmp "$work/deferred-source.zib" "$work/deferred-saved.zib"
+
+cat > "$work/inactive_forward.zi" <<'ZI'
+#if false {
+Hidden :: () -> s64 { return 7 }
+}
+#if size_of(type_of(Hidden())) == 8 {
+SELECTED :: 1;
+}
+ZI
+if "$ziran" check --root "$work" "$work/inactive_forward.zi" \
+    2> "$work/inactive_forward.err"; then
+    echo 'inactive procedure leaked into a forward #if query' >&2
+    exit 1
+fi
+rg -q 'unresolved function|checked expression' "$work/inactive_forward.err"
+
+cat > "$work/private_loaded.zi" <<'ZI'
+#if size_of(type_of(Secret())) == 8 {
+SELECTED :: 1;
+}
+#load "type_loaded.zi";
+ZI
+if "$ziran" check --root "$work" "$work/private_loaded.zi" \
+    2> "$work/private_loaded.err"; then
+    echo 'file-private loaded procedure leaked into a #if query' >&2
+    exit 1
+fi
+rg -q 'unresolved function|checked expression' "$work/private_loaded.err"

@@ -2250,6 +2250,12 @@ typedef struct {
 } ZirTypes;
 
 typedef struct {
+    ZirFunction *items;
+    int count;
+    int capacity;
+} ZirFunctions;
+
+typedef struct {
     char **paths;
     int count;
     int capacity;
@@ -4270,6 +4276,7 @@ typedef struct CompileParseContext {
     const ZirUsings *future_usings;
     const ZirImports *future_imports;
     const ZirTypes *future_types;
+    const ZirFunctions *future_functions;
 } CompileParseContext;
 
 static ZirConsts
@@ -4378,6 +4385,34 @@ add_visible_compile_types(ZirModule *visible, const ZirModule *parsed,
     }
 }
 
+static void
+add_visible_compile_functions(ZirModule *visible, const ZirModule *parsed,
+                              const ZirFunctions *future)
+{
+    int extra = future != NULL ? future->count : 0;
+    visible->functions = calloc((size_t)parsed->function_count +
+                                (size_t)extra + 1,
+                                sizeof(*visible->functions));
+    if(visible->functions == NULL)
+        die("out of memory resolving compile-time procedures");
+    visible->function_count = 0;
+    for(int i = 0; i < parsed->function_count; i++)
+        visible->functions[visible->function_count++] = parsed->functions[i];
+    for(int i = 0; i < extra; i++) {
+        const ZirFunction *candidate = &future->items[i];
+        int present = 0;
+        for(int j = 0; j < parsed->function_count; j++)
+            if(!strcmp(parsed->functions[j].span.path,
+                       candidate->span.path) &&
+               parsed->functions[j].span.line == candidate->span.line) {
+                present = 1;
+                break;
+            }
+        if(!present)
+            visible->functions[visible->function_count++] = *candidate;
+    }
+}
+
 static int
 select_compile_condition(ZirModule *module, const ZirConsts *consts,
                          const char *source, ZirSourceSpan span,
@@ -4396,6 +4431,8 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
         context != NULL ? context->future_imports : NULL);
     add_visible_compile_types(&using_scope, module,
         context != NULL ? context->future_types : NULL);
+    add_visible_compile_functions(&using_scope, module,
+        context != NULL ? context->future_functions : NULL);
     module = &using_scope;
     consts = &visible;
     expand_compile_expr(expanded, sizeof(expanded), consts, source, span.path);
@@ -4455,6 +4492,7 @@ select_compile_condition(ZirModule *module, const ZirConsts *consts,
     free(using_scope.usings);
     free(using_scope.imports);
     free(using_scope.types);
+    free(using_scope.functions);
     free(visible.items);
     return value != 0;
 }
@@ -5297,6 +5335,41 @@ append_type_source(char *target, size_t capacity, const char *line,
     target[length + addition + 1] = '\0';
 }
 
+static void
+discover_function_header(const char *source, const char *path,
+                         const char *rel, int line_no,
+                         int scope_public, int scope_file,
+                         ZirFunctions *future)
+{
+    if(!looks_like_function_header(source) ||
+       (strchr(source, '{') == NULL &&
+        strstr(source, "#foreign") == NULL)) return;
+    char line[ZIR_TEXT_MAX * 2 + SOURCE_LINE_MAX];
+    char name[ZIR_NAME_MAX], args[ZIR_TEXT_MAX], result[ZIR_NAME_MAX];
+    copy_text(line, sizeof(line), source);
+    normalize_jai_source_tokens(line, rel, path, line_no);
+    if(closing_parenthesis(strchr(line, '(')) == NULL) return;
+    parse_function_header(name, sizeof(name), args, sizeof(args),
+                          result, sizeof(result), line);
+    if(!is_identifier_text(name) || result[0] == '\0') return;
+    if(future->count == future->capacity) {
+        int capacity = future->capacity > 0 ? future->capacity * 2 : 8;
+        ZirFunction *items = realloc(future->items,
+                                     (size_t)capacity * sizeof(*items));
+        if(items == NULL) die("out of memory discovering procedures");
+        future->items = items;
+        future->capacity = capacity;
+    }
+    ZirFunction *function = &future->items[future->count++];
+    memset(function, 0, sizeof(*function));
+    copy_text(function->name, sizeof(function->name), name);
+    copy_text(function->args, sizeof(function->args), args);
+    copy_text(function->return_type, sizeof(function->return_type), result);
+    function->span = Span(rel, line_no, 1);
+    function->is_public = scope_public;
+    function->is_file_private = scope_file;
+}
+
 static char *read_lowered_source(const char *path);
 
 static int
@@ -5333,19 +5406,31 @@ free_discovered_files(ZirDiscoveredFiles *files)
     free(files->paths);
 }
 
-/* Discover only unconditional, single-line file constants, using and import
- * declarations. Conditional bodies, type bodies, and procedures are opaque:
- * branch selection must never gain names from a discarded branch. */
+static int
+possible_function_header(const char *line)
+{
+    if(looks_like_function_header(line)) return 1;
+    const char *colons = strstr(line, "::");
+    if(colons == NULL) return 0;
+    const char *body = skip_ws(colons + 2);
+    return *body == '(' && strchr(body, ';') == NULL;
+}
+
+/* Discover only unconditional file-scope declarations. Conditional bodies,
+ * type bodies, and procedure bodies are opaque: branch selection must never
+ * gain names from a discarded branch. */
 static void
 discover_file_scope(const char *source, const char *path, const char *rel,
                     const char *root,
                     ZirConsts *future_constants, ZirUsings *future_usings,
                     ZirImports *future_imports, ZirTypes *future_types,
+                    ZirFunctions *future_functions,
                     ZirDiscoveredFiles *files, int depth)
 {
     if(depth >= 32 || !remember_discovered_file(files, path)) return;
     char line[SOURCE_LINE_MAX];
     char type_source[ZIR_TEXT_MAX * 2 + SOURCE_LINE_MAX] = "";
+    char function_source[ZIR_TEXT_MAX * 2 + SOURCE_LINE_MAX] = "";
     int line_no = 0;
     int comment_depth = 0;
     int brace_depth = 0;
@@ -5356,6 +5441,11 @@ discover_file_scope(const char *source, const char *path, const char *rel,
     int type_start_line = 0;
     int type_scope_file = 0;
     int type_scope_public = 1;
+    int collecting_function = 0;
+    int function_overflow = 0;
+    int function_start_line = 0;
+    int function_scope_file = 0;
+    int function_scope_public = 1;
 
     while(read_source_line(line, sizeof(line), &source, path, line_no) != NULL) {
         line_no++;
@@ -5382,6 +5472,34 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                                         type_scope_public, type_scope_file,
                                         future_types);
                 collecting_type = 0;
+            }
+        } else if(collecting_function ||
+                  (brace_depth == 0 && possible_function_header(t))) {
+            if(!collecting_function) {
+                collecting_function = 1;
+                function_overflow = 0;
+                function_source[0] = '\0';
+                function_start_line = line_no;
+                function_scope_file = scope_file;
+                function_scope_public = scope_public;
+            }
+            append_type_source(function_source, sizeof(function_source), t,
+                               &function_overflow);
+            const char *closing = function_overflow ? NULL :
+                closing_parenthesis(strchr(function_source, '('));
+            if(closing != NULL &&
+               (strchr(closing + 1, '{') != NULL ||
+                strstr(closing + 1, "#foreign") != NULL)) {
+                discover_function_header(function_source, path, rel,
+                                         function_start_line,
+                                         function_scope_public,
+                                         function_scope_file,
+                                         future_functions);
+                collecting_function = 0;
+            } else if((closing != NULL &&
+                       strchr(closing + 1, ';') != NULL) ||
+                      (function_overflow && strchr(t, '{') != NULL)) {
+                collecting_function = 0;
             }
         } else if(brace_depth == 0) {
             if(!strcmp(t, "#scope_file")) {
@@ -5424,7 +5542,8 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                                     discover_file_scope(loaded, loaded_path,
                                         loaded_rel, root, future_constants,
                                         future_usings, future_imports,
-                                        future_types, files, depth + 1);
+                                        future_types, future_functions,
+                                        files, depth + 1);
                                     free(loaded);
                                     free(loaded_path);
                                 }
@@ -5973,6 +6092,7 @@ parse_source(const char *path, const char *root, const char *source,
     ZirUsings future_usings = {0};
     ZirImports future_imports = {0};
     ZirTypes future_types = {0};
+    ZirFunctions future_functions = {0};
     ZirDiscoveredFiles discovered_files = {0};
     int body_mdepth[8];
     int body_mselected[8];
@@ -6034,6 +6154,7 @@ parse_source(const char *path, const char *root, const char *source,
     compile_context.future_usings = &future_usings;
     compile_context.future_imports = &future_imports;
     compile_context.future_types = &future_types;
+    compile_context.future_functions = &future_functions;
 
     module = ProgramAddModule(program, module_name, rel, Span(rel, 1, 1));
     if(module == NULL)
@@ -6046,6 +6167,7 @@ parse_source(const char *path, const char *root, const char *source,
     }
     discover_file_scope(source, path, rel, root, &future_constants,
                         &future_usings, &future_imports, &future_types,
+                        &future_functions,
                         &discovered_files, 0);
 
     for(;;) {
@@ -6693,6 +6815,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_usings.items);
                 free(future_imports.items);
                 free(future_types.items);
+                free(future_functions.items);
                 free_discovered_files(&discovered_files);
                 free(canonical);
                 return NULL;
@@ -7572,6 +7695,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_usings.items);
                 free(future_imports.items);
                 free(future_types.items);
+                free(future_functions.items);
                 free_discovered_files(&discovered_files);
                 free(canonical);
                 return NULL;
@@ -7583,6 +7707,7 @@ parse_source(const char *path, const char *root, const char *source,
                 free(future_usings.items);
                 free(future_imports.items);
                 free(future_types.items);
+                free(future_functions.items);
                 free_discovered_files(&discovered_files);
                 free(canonical);
                 return NULL;
@@ -7596,6 +7721,7 @@ parse_source(const char *path, const char *root, const char *source,
     free(future_usings.items);
     free(future_imports.items);
     free(future_types.items);
+    free(future_functions.items);
     free_discovered_files(&discovered_files);
     free(canonical);
     return program;
