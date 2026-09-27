@@ -6653,6 +6653,7 @@ instantiate_specializations(Checker *checker)
         }
         const char *parameter = original.template_param;
         const char *concrete = request->type;
+        /* A second check of saved IR must see the same array signature. */
         if(!substitute_field(instance->args, sizeof(instance->args),
                              parameter, concrete) ||
            !substitute_field(instance->default_args,
@@ -6660,7 +6661,8 @@ instantiate_specializations(Checker *checker)
                              parameter, concrete) ||
            !substitute_field(instance->return_type,
                              sizeof(instance->return_type),
-                             parameter, concrete)) return 0;
+                             parameter, concrete) ||
+           !normalize_function_arrays(owner, instance)) return 0;
         for(int s = 0; s < instance->stmt_count; s++)
             if(!substitute_field(instance->stmts[s].type,
                                  sizeof(instance->stmts[s].type),

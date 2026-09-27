@@ -618,13 +618,17 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   nested arrays and records, arguments, returns, and invalid indexing from
   source and saved IR on C, C++, Go, and `.zib`, including open and named
   imported array aliases in globals, records, signatures, nested arrays, and
-  `size_of`. One public `using` import re-export also resolves a fixed-array
+  `size_of`. A chain of two public `using` import re-exports also resolves a fixed-array
   alias in declarations and `size_of` across source and saved IR on every
   target. Private and ambiguous imported or re-exported aliases are rejected,
   while a local record type keeps precedence over an open-imported alias. C/C++ use a
   GNU-compatible zero-array extension for zero-byte storage. Native C/C++
   foreign array returns use a hidden result parameter; exact Jai ABI
   conformance and nonempty `.data` behavior remain open.
+  Generic records store zero-capacity arrays, and generic procedures can
+  return them, on source and saved IR across C, C++, Go, and `.zib`.
+  Specialized array signatures are normalized before serialization so saved
+  IR checks without changing their spelling on a second pass.
   Jai `#this` resolves the enclosing procedure for calls and
   typed procedure values across native and portable targets, and resolves the
   enclosing type in plain and polymorphic struct fields. Saved IR preserves

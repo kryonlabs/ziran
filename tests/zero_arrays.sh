@@ -48,6 +48,7 @@ global_named: Defs.ImportedAlias;
 #assert EMPTY.count == 0
 
 Count :: (values: [0]s32) -> s64 { return values.count }
+Identity :: (value: $T) -> T { return value }
 ReturnEmpty :: () -> [0]s32 { return s32.[] }
 AliasCount :: (values: EmptyAlias) -> s64 { return values.count }
 AliasReturn :: () -> EmptyAlias { return s32.[] }
@@ -64,6 +65,7 @@ Answer :: () -> s32 {
     typed := s32.[]
     contextual: [0]s32 = .[]
     returned: [0]s32 = ReturnEmpty()
+    generic: [0]s32 = Identity(typed)
     view: []s32 = typed[:]
     aliased: EmptyAlias = s32.[]
     alias_returned: EmptyAlias = AliasReturn()
@@ -77,7 +79,7 @@ Answer :: () -> s32 {
     nested: Nested
     nested.value = box.value
     if typed.count != 0 || contextual.count != 0 ||
-       returned.count != 0 || view.count != 0 || global_empty.count != 0 ||
+       returned.count != 0 || generic.count != 0 || view.count != 0 || global_empty.count != 0 ||
        global_literal.count != 0 || global_imported.count != 0 ||
        global_named.count != 0 ||
        aliased.count != 0 || alias_returned.count != 0 ||
@@ -90,7 +92,7 @@ Answer :: () -> s32 {
        nested.empty.empty.count != 0 || Count(typed) != 0 ||
        AliasCount(aliased) != 0 || AliasDefault() != 0 ||
        typed.data != null || contextual.data != null ||
-       returned.data != null || global_empty.data != null ||
+       returned.data != null || generic.data != null || global_empty.data != null ||
        global_literal.data != null || global_imported.data != null ||
        global_named.data != null ||
        record_empty.data != null ||
@@ -193,15 +195,18 @@ cmp "$work/source.zib" "$work/saved.zib"
 cat > "$work/bridge.zi" <<'ZI'
 using Defs :: #import "defs";
 ZI
+cat > "$work/bridge2.zi" <<'ZI'
+using Bridge :: #import "bridge";
+ZI
 cat > "$work/relay.zi" <<'ZI'
-#import "bridge"
-Bridge :: #import "bridge";
+#import "bridge2"
+Bridge2 :: #import "bridge2";
 #assert size_of(ImportedAlias) == 0
-#assert size_of(Bridge.ImportedAlias) == 0
+#assert size_of(Bridge2.ImportedAlias) == 0
 #program_export
 Answer :: () -> s32 {
     value: ImportedAlias = s32.[]
-    named: Bridge.ImportedAlias = s32.[]
+    named: Bridge2.ImportedAlias = s32.[]
     if value.count != 0 || value.data != null ||
        named.count != 0 || named.data != null { return 0 }
     return 42

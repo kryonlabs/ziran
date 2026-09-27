@@ -31,6 +31,9 @@ Answer :: () -> s32 {
     record: Record = Record.{value = 2}
     local: Local = Local.{value = 8}
     fraction: float32 = 1.5
+    empty := s32.[]
+    returned: [0]s32 = Identity(empty)
+    if returned.count != 0 || returned.data != null { return 0 }
     if Identity(fraction) != 1.5 { return 0 }
     if Field(record) != 2 { return 0 }
     if LocalField(local) != 8 { return 0 }

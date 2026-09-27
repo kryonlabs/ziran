@@ -17,6 +17,8 @@ Number :: Option(s32)
 Outcome :: Result(s32, string)
 Holder :: struct($T: Type) { item: T; }
 Nested :: Holder(Number)
+EmptyHolder :: Holder([0]s32)
+#assert size_of(EmptyHolder) == 0
 
 ReadNumber :: (number: Number) -> s32 {
     if number.has_value { return number.value }
@@ -31,8 +33,10 @@ MakeOutcome :: () -> Outcome {
 Answer :: () -> s32 {
     number: Number = Number.{has_value = true, value = 2}
     nested: Nested = Nested.{item = number}
+    empty: EmptyHolder
     outcome: Outcome = MakeOutcome()
-    if !outcome.is_ok || outcome.error.count != 0 { return 0 }
+    if !outcome.is_ok || outcome.error.count != 0 ||
+       empty.item.count != 0 || empty.item.data != null { return 0 }
     return ReadNumber(nested.item) + outcome.value
 }
 ZI
