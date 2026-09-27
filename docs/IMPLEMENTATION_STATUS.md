@@ -461,41 +461,9 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   use outside a procedure is rejected.
   Untyped integer locals inferred with `:=` now use `s64` storage, including
   when their values exceed 32 bits, across saved IR and all supported targets.
-  Source, saved IR, native targets, and `.zib` agree on both success and error
-  paths. Kryon's complete
-  geometry, layout, and group calculation test also runs in `.zib`
-  from source and saved `.zir`. Kryon's accessibility, drag and drop, theme,
-  popup, transition fade, numeric input, text row, and drag policies also build
-  and run as `.zib` bundles
-  from both inputs, independently of the UI runtime. The popup ownership test
-  includes frame IDs above `INT64_MAX`. Swipe direction, drag, cancellation,
-  and release policy also runs from source and saved `.zir` across native
-  targets and `.zib` through ordinary module imports. Image fit, placeholder,
-  and clipped-strip geometry have the same source and saved-IR target coverage.
-  Kryon's `ImageProps` record now uses portable strings for asset paths and
-  alt text. Its fit, source selection, draw eligibility, and default tint
-  decisions are tested with that record across C, C++, Go, and `.zib`. The
-  checked `Image(ImageProps)` widget now resolves class styles, selects asset
-  dimensions or a supplied texture handle, and queues a portable clipped image
-  draw or missing-asset label. Source and saved `.zib` tests exercise the host
-  dimension and raster contracts; C, C++, and Go run the texture-backed path.
-  Concrete desktop and browser image hosts remain unfinished.
-  Kryon's shared style values and fill-state records now support Separator and
-  Progress paint decisions as ordinary imported modules in those targets.
-  Kryon's Progress composition now selects fonts and computes layout in checked
-  `.zi`, using generic host glyph measurement and raster capabilities. Source
-  and saved `.zir`, `.zib`, C, C++, and Go tests cover that path. Kryon now
-  resolves Progress's track, fill, and label roles from a portable owned
-  320-rule table through its checked style cascade. Kryon's one-argument
-  `Progress` painter now reads an installed rule table from an ordinary Ziran
-  global and uses Ziran-defined default faces. KSS text can populate that
-  table through a checked parser bridge. Kryon's checked retained tree now
-  keeps node identity across persistent bundle runs. Progress and Separator
-  submit generic paint commands that are rasterized after a successful tree
-  commit. Retained layout, input routing, other widgets, and the pointer-backed
-  native style loader remain unfinished.
-  Window placement and drag policy now runs from source and saved IR in native
-  targets and `.zib`, with window flags imported from a normal Ziran module.
+  Source, saved IR, native targets, and `.zib` agree on tested success and error
+  paths. Kryon's headless suite exercises these paths through ordinary imports;
+  widget and platform coverage is tracked in the Kryon repository.
 - Reachable `#foreign host_api` calls now appear as module/function
   capabilities in `.zib`. The loader verifies the capability list against the
   linked IR. `build/libziran.a` and `include/ziran_host.h` expose an opaque
@@ -796,9 +764,5 @@ This page reports the local repository as it exists now. [Architecture](ARCHITEC
   rules; with no GPU device capability in this repository every GPU region
   runs on the CPU worker path with an emitted downgrade marker. Actual
   device offload to a GPU API remains future work.
-- Complete Kryon's moved `.zi` widget modules with platform access through
-  declared interfaces. The checked Kryon archive builds all 191 maintained UI
-  modules; native host integration, full renderer behavior, and downstream
-  cutover remain incomplete.
 - Pass the full supported target and downstream application gates, then make
   the planned single breaking cutover. See [Migration](MIGRATION.md).
