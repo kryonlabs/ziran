@@ -43,7 +43,7 @@ $(BUILD_DIR)/libziran.a: $(LIB_OBJECTS) Makefile
 $(BIN_DIR):
 	mkdir -p $@
 
-$(BIN_DIR)/ziran: cmd/package.zi cmd/package_add.zi cmd/package_common.zi \
+$(BIN_DIR)/ziran: cmd/package.zi cmd/package_add.zi cmd/package_guide.zi cmd/package_common.zi \
     cmd/package_manifest.zi cmd/package_lock.zi cmd/package_map.zi \
     cmd/package_main.c cmd/package_host.c std/byte_text_linux.zi \
     std/file_linux.zi std/process_capture_linux.zi std/json_scan.zi \

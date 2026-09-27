@@ -63,10 +63,13 @@ span. The contract has four parts.
    repeated runs, which the test matrix enforces the same way it enforces
    `.zib` byte equality.
 
-Diagnostics identify the violated law and the smallest relevant source span.
-Today's compiler implements only the generic post-check IR invariant without
-names or tables; the syntax above is the contract to implement, not current
-behavior.
+The compiler now implements named `type`, `effect`, `bounds`, `size`, `abi`,
+and `custom` laws, writes law tables to checked `.zir` and linked `.zib`, and
+reports results as JSON. This remains narrower than the intended proof
+contract: `custom` evaluates closed compile-time expressions, `abi` checks
+the supported signature shape rather than proving foreign behavior, and law
+identity and waiver validation still need tightening. The contract above
+describes the intended guarantees where it exceeds this implementation.
 
 ## Parallel computation
 
@@ -191,8 +194,9 @@ checked values in `.zir`. A `#scope_file` using stays in its source file across
 members require a type qualifier or an expected enum type for `.Member`.
 Data-scope `using` for records and unions, and `#if` before a later `using`
 declaration, remain unsupported.
-Import re-exports, `#as`, and `using` modifiers remain
-language gaps.
+Public `using` import re-exports, checked `#as` conversions, and supported
+`using` modifiers now work in the tested subset. Broader data-scope using and
+forward discovery remain language gaps.
 A procedure type can be named with `Child :: #type (s32) -> ();` or
 `Compute :: #type (s32) -> s32;` and passed a named
 function value. Capture-free procedure values can be stored in records, fixed

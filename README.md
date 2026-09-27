@@ -34,8 +34,11 @@ backend, and portable bundle tests. `make check` runs independent test scripts
 with four workers by default; set `CHECK_JOBS=1` to run them serially or choose
 another positive worker count. The compiler commands are `zi2zir` (including
 `--check-only`), `zi2c`, `zi2cpp`, `zi2go`, and `zi2zib`.
-`zi-fmt` formats source. `ziran check|ir|inspect|build|bundle|run|fmt` remains a
-convenience dispatcher for the same tools.
+`zi-fmt` formats source. `ziran guide` prints a short reference from the
+installed compiler, including current safety and target limits.
+`ziran check|ir|inspect|build|bundle|run|fmt` remains a convenience dispatcher
+for the same tools. [Cross-target benchmarks](bench/README.md) measure the
+compiler, downstream toolchains, and validated runtime cases separately.
 Use `ziran build --target=c` for C99 output.
 Pass `--entry module:function` to a C99 build to retain functions, types,
 globals, and constants reachable from that entry. A native host implementation
