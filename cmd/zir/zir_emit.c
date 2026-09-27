@@ -1134,6 +1134,10 @@ EmitNumberSupport(FILE *out, ZirTarget target, const char *p)
         fprintf(out,
             "func %s_signed_bits(x int64) uint64 { return uint64(x) }\n", p);
         fprintf(out,
+            "func %s_add(a, b uint64) uint64 { return a+b }\n"
+            "func %s_sub(a, b uint64) uint64 { return a-b }\n"
+            "func %s_mul(a, b uint64) uint64 { return a*b }\n", p, p, p);
+        fprintf(out,
             "func %s_float(x float64, w uint, sign bool) uint64 {\n"
             "    bits := w; if sign { bits-- }; bound := float64(1); for i := uint(0); i < bits; i++ { bound *= 2 }; lower := float64(0); if sign { lower = -bound }\n"
             "    if !(x >= lower && x < bound) { panic(\"float conversion out of range\") }; if sign { return uint64(int64(x)) }; return uint64(x)\n}\n", p);
@@ -1497,7 +1501,16 @@ number(Emitter *e, const char *type, const char *a, const char *b, int op, char 
         char left[ZIR_TEXT_MAX], right[ZIR_TEXT_MAX];
         go_bits_operand(a, sign, e->numbers, left, sizeof(left));
         go_bits_operand(b, sign, e->numbers, right, sizeof(right));
-        format(bits,sizeof(bits),"%s_bits(%s,%s,%d,%s,%d)",e->numbers,left,right,w,sign?"true":"false",op);
+        if(op >= 1 && op <= 3) {
+            const char *name = op == 1 ? "add" : op == 2 ? "sub" : "mul";
+            /* Narrowing the uint64 result below keeps the low w bits. This
+             * matches the checked wrapping rule while giving Go a small
+             * inlinable operation instead of the general switch helper. */
+            format(bits, sizeof(bits), "%s_%s(%s,%s)", e->numbers,
+                   name, left, right);
+        } else {
+            format(bits,sizeof(bits),"%s_bits(%s,%s,%d,%s,%d)",e->numbers,left,right,w,sign?"true":"false",op);
+        }
         format(out,size,"%s(%s)",TargetType(type,e->target),bits);
     } else {
         format(bits,sizeof(bits),"%s_bits((uint64_t)(%s),(uint64_t)(%s),%d,%d,%d)",e->numbers,a,b,w,sign,op);

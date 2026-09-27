@@ -126,10 +126,12 @@ by a scan, with process startup in runtime timings. They separate Ziran
 emission from host compiler work and mark Go build times as cache-warm.
 Generated C/C++ were close to handwritten equivalents on these kernels.
 Generated Go took about 2.6 times handwritten Go on the integer kernel and
-about 2.8 times on the large vector-growth case. The integer loop calls
-general numeric helpers five times per iteration; vector lowering needs its
-own profile before assigning its overhead to a specific cause. These
-observations need focused before/after measurements.
+about 2.8 times on the original large vector-growth baseline. The integer
+loop calls general numeric helpers five times per iteration. A
+[paired vector-growth comparison](../bench/results/2026-09-27-vector-growth-go-fastpath/README.md)
+found that inlinable wrapping add/multiply helpers halved generated Go's
+elapsed time for that workload. The remaining vector-lowering gap needs a
+profile before assigning its cause. These observations are workload-specific.
 
 Add validated workloads for arrays, records/calls, generic specialization,
 text/UTF-8/JSON scanning, sorting/maps when available, local

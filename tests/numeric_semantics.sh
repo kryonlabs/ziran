@@ -28,6 +28,16 @@ Answer :: () -> s32 {
     small_zero: float32 = 0.0
     small_infinity: float32 = small_one / small_zero
     if small_infinity <= small_one { return 4 }
+    signed_byte: s8 = cast(s8)127
+    unsigned_byte: u8 = cast(u8)255
+    signed_word: s32 = cast(s32)2147483647
+    if signed_byte + cast(s8)1 != cast(s8)(-128) ||
+       unsigned_byte + cast(u8)1 != cast(u8)0 ||
+       cast(u8)0 - cast(u8)1 != unsigned_byte ||
+       cast(s8)100 * cast(s8)3 != cast(s8)44 ||
+       signed_word + cast(s32)1 != cast(s32)(-2147483647 - 1) {
+        return 5
+    }
     return 42
 }
 

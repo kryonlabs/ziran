@@ -57,3 +57,9 @@ case on one machine. The generated C and C++ runs were close to their
 handwritten comparisons for the large input; generated Go took about 22 ms
 versus 8 ms for handwritten Go. This identifies a workload for investigating
 vector lowering, not a general performance ranking.
+
+For a focused before/after comparison of two validated Go binaries, run
+`bench/vector_growth_ab.py --before PATH --after PATH --out NEW.json`. It
+shuffles execution order, checks every checksum, and records raw samples and
+binary hashes. A [paired fast-path result](results/2026-09-27-vector-growth-go-fastpath/README.md)
+shows how the general arithmetic helper affected the vector workload.
