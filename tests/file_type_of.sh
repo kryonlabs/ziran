@@ -142,6 +142,11 @@ cat > "$work/type_loaded.zi" <<'ZI'
 Loaded :: () -> s64 { return 7 }
 LoadedValue :: (value: s64) -> s64 { return value + 1 }
 LoadedPrivateValue :: () -> s64 { return LoadedPrivateConstant }
+LoadedSteps :: () -> s64 {
+    local := LoadedPrivateConstant
+    local += 1
+    return local
+}
 LoadedGlobal: s32;
 #scope_file
 LoadedPrivateConstant :: 9;
@@ -228,6 +233,16 @@ SELECTED_PRIVATE_CONSTANT_CALL_IF :: 1;
 } else {
 SELECTED_PRIVATE_CONSTANT_CALL_IF :: 0;
 }
+#if LaterSteps(2) == 8 {
+SELECTED_STEPS_CALL_IF :: 1;
+} else {
+SELECTED_STEPS_CALL_IF :: 0;
+}
+#if LoadedSteps() == 10 {
+SELECTED_LOADED_STEPS_CALL_IF :: 1;
+} else {
+SELECTED_LOADED_STEPS_CALL_IF :: 0;
+}
 #if #defined(LATER_CONSTANT) {
 SELECTED_DEFINED_CONSTANT_IF :: 1;
 } else {
@@ -238,6 +253,7 @@ SELECTED_HIDDEN_CONSTANT_IF :: 0;
 } else {
 SELECTED_HIDDEN_CONSTANT_IF :: 1;
 }
+RUN_STEPS :: #run LaterSteps(2);
 global_size: s64 = size_of(type_of(Later()));
 #program_export
 Answer :: () -> s64 {
@@ -250,8 +266,9 @@ Answer :: () -> s64 {
            SELECTED_MULTILINE_CALL_IF + SELECTED_DEFAULT_CALL_IF +
            SELECTED_NAMED_CALL_IF + SELECTED_CONSTANT_CALL_IF +
            SELECTED_PRIVATE_CONSTANT_CALL_IF +
+           SELECTED_STEPS_CALL_IF + SELECTED_LOADED_STEPS_CALL_IF +
            SELECTED_DEFINED_CONSTANT_IF + SELECTED_HIDDEN_CONSTANT_IF +
-           global_size + 5
+           RUN_STEPS + global_size + 5
 }
 Later :: () -> s64 { return 42 }
 LaterDefault :: (value: s64 = 42) -> s64 { return value }
@@ -260,6 +277,12 @@ LATER_CONSTANT :: 5;
 LaterValue :: (value: s64) -> s64 {
     return value + 40
 }
+LaterSteps :: (value: s64) -> s64 {
+    first: s64 = LaterIncrement(value)
+    second := first * 2; second += 2
+    return second
+}
+LaterIncrement :: (value: s64) -> s64 { return value + 1 }
 LaterGlobal: s64;
 LaterRecord: Payload;
 Payload :: struct { value: s32; }
@@ -283,20 +306,20 @@ for input in source saved; do
     fi
     "$ziran" bundle --root "$root" --entry deferred_type_of:Answer \
         -o "$work/deferred-$input.zib" "$module"
-    test "$("$ziran" run "$work/deferred-$input.zib")" = 66
+    test "$("$ziran" run "$work/deferred-$input.zib")" = 76
     for target in c cpp go; do
         output=$work/deferred-$target-$input
         "$ziran" build "--target=$target" --root "$root" \
             -o "$output" "$module"
         case "$target" in
             c)
-                printf '#include "deferred_type_of.h"\nint main(void) { return Answer() == 66 ? 0 : 1; }\n' > "$work/deferred-main.c"
+                printf '#include "deferred_type_of.h"\nint main(void) { return Answer() == 76 ? 0 : 1; }\n' > "$work/deferred-main.c"
                 "${CC:-cc}" -std=c11 -I"$repo/include" -I"$output" \
                     "$output"/*.c "$work/deferred-main.c" -o "$output/app"
                 "$output/app"
                 ;;
             cpp)
-                printf '#include "deferred_type_of.hpp"\nint main() { return Answer() == 66 ? 0 : 1; }\n' > "$work/deferred-main.cpp"
+                printf '#include "deferred_type_of.hpp"\nint main() { return Answer() == 76 ? 0 : 1; }\n' > "$work/deferred-main.cpp"
                 "${CXX:-c++}" -std=c++17 -I"$repo/include" -I"$output" \
                     "$output"/*.cpp "$work/deferred-main.cpp" -o "$output/app"
                 "$output/app"
@@ -306,7 +329,7 @@ for input in source saved; do
 package ziran
 import "testing"
 func TestDeferredTypeOf(t *testing.T) {
-    if DeferredTypeOf_Answer() != 66 { t.Fatal("deferred type_of") }
+    if DeferredTypeOf_Answer() != 76 { t.Fatal("deferred type_of") }
 }
 GO
                 GO111MODULE=off go test "$output"/*.go

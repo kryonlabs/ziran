@@ -5447,35 +5447,68 @@ discover_function_header(const char *source, const char *path,
     function->is_file_private = scope_file;
 }
 
-/* Keep a single return expression for forward compile-time calls. The typed
- * evaluator still decides whether that expression is pure and bounded. */
+/* Retain straight-line procedure bodies for forward compile-time calls. An
+ * unsupported statement leaves only the discovered signature; the typed
+ * evaluator still decides whether the body is pure and bounded. */
 static void
-discover_simple_return(ZirFunction *function, const char *body)
+discover_straight_body(ZirFunction *function, const char *body,
+                       int start_line)
 {
-    char text[ZIR_TEXT_MAX];
-    if(strlen(body) >= sizeof(text)) return;
-    copy_text(text, sizeof(text), body);
+    char *text = strdup(body);
+    if(text == NULL) die("out of memory discovering procedure body");
     char *close = strrchr(text, '}');
-    if(close == NULL || *skip_ws(close + 1) != '\0') return;
+    if(close == NULL || *skip_ws(close + 1) != '\0') goto unsupported;
     *close = '\0';
-    trim_in_place(text);
-    if(!starts_word(text, "return")) return;
-    char *value = (char *)skip_ws(text + strlen("return"));
-    if(*value == '\0' || strchr(value, '\n') != NULL ||
-       strchr(value, '\r') != NULL) return;
-    char *semicolon = find_unquoted_text(value, ";");
-    if(semicolon != NULL) {
-        if(*skip_ws(semicolon + 1) != '\0') return;
-        *semicolon = '\0';
-        trim_in_place(value);
+    int line = start_line, statement_line = start_line;
+    int nesting = 0, quote = 0, saw_return = 0;
+    char *statement = text;
+    for(char *cursor = text; ; cursor++) {
+        char byte = *cursor;
+        if(quote) {
+            if(byte == '\\' && cursor[1] != '\0') { cursor++; continue; }
+            if(byte == quote) quote = 0;
+        } else if(byte == '"' || byte == '\'') {
+            quote = byte;
+        } else if(byte == '/' && cursor[1] == '/') {
+            while(*cursor != '\0' && *cursor != '\n')
+                *cursor++ = ' ';
+            byte = *cursor;
+        } else if(byte == '(' || byte == '[' || byte == '{') {
+            nesting++;
+        } else if(byte == ')' || byte == ']' || byte == '}') {
+            if(--nesting < 0) goto unsupported;
+        }
+        if(byte == '\0' || ((byte == ';' || byte == '\n') &&
+                            quote == 0 && nesting == 0)) {
+            *cursor = '\0';
+            char *part = trim(statement);
+            if(*part != '\0') {
+                ZirStmtKind kind = classify_stmt(part);
+                if(kind != ZIR_STMT_DECL && kind != ZIR_STMT_ASSIGN &&
+                   kind != ZIR_STMT_EXPR && kind != ZIR_STMT_RETURN)
+                    goto unsupported;
+                if(strlen(part) >= ZIR_TEXT_MAX) goto unsupported;
+                if(FunctionAddStmt(function, kind, part,
+                                   Span(function->span.path,
+                                        statement_line, 1)) == NULL)
+                    die("out of memory discovering procedure body");
+                if(kind == ZIR_STMT_RETURN) saw_return = 1;
+            }
+            statement = cursor + 1;
+            statement_line = line + (byte == '\n');
+        }
+        if(byte == '\n') line++;
+        if(byte == '\0') break;
     }
-    if(*value == '\0') return;
-    char statement[ZIR_TEXT_MAX];
-    int written = snprintf(statement, sizeof(statement), "return %s", value);
-    if(written < 0 || (size_t)written >= sizeof(statement)) return;
-    if(FunctionAddStmt(function, ZIR_STMT_RETURN, statement,
-                       function->span) == NULL)
-        die("out of memory discovering procedure body");
+    if(quote || nesting != 0 || !saw_return) goto unsupported;
+    free(text);
+    return;
+unsupported:
+    free(function->stmts);
+    function->stmts = NULL;
+    function->stmt_count = 0;
+    function->stmt_cap = 0;
+    free(text);
 }
 
 static void
@@ -5568,8 +5601,8 @@ possible_function_header(const char *line)
 }
 
 /* Discover only unconditional file-scope declarations. Conditional and type
- * bodies stay opaque; only a one-expression return is retained from a
- * procedure body for bounded compile-time evaluation. */
+ * bodies stay opaque; supported straight-line procedure bodies are retained
+ * for bounded compile-time evaluation. */
 static void
 discover_file_scope(const char *source, const char *path, const char *rel,
                     const char *root,
@@ -5601,6 +5634,7 @@ discover_file_scope(const char *source, const char *path, const char *rel,
     int function_scope_public = 1;
     int simple_body_index = -1;
     int simple_body_overflow = 0;
+    int simple_body_start_line = 0;
 
     while(read_source_line(line, sizeof(line), &source, path, line_no) != NULL) {
         line_no++;
@@ -5612,9 +5646,9 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                                &simple_body_overflow);
             if(brace_depth + brace_delta == 0) {
                 if(!simple_body_overflow)
-                    discover_simple_return(
+                    discover_straight_body(
                         &future_functions->items[simple_body_index],
-                        simple_body);
+                        simple_body, simple_body_start_line);
                 simple_body_index = -1;
             }
         } else if(collecting_type ||
@@ -5665,14 +5699,15 @@ discover_file_scope(const char *source, const char *path, const char *rel,
                 if(open != NULL && future_functions->count > previous) {
                     simple_body_index = previous;
                     simple_body_overflow = 0;
+                    simple_body_start_line = line_no;
                     simple_body[0] = '\0';
                     append_type_source(simple_body, sizeof(simple_body),
                                        open + 1, &simple_body_overflow);
                     if(brace_depth + brace_delta == 0) {
                         if(!simple_body_overflow)
-                            discover_simple_return(
+                            discover_straight_body(
                                 &future_functions->items[simple_body_index],
-                                simple_body);
+                                simple_body, simple_body_start_line);
                         simple_body_index = -1;
                     }
                 }

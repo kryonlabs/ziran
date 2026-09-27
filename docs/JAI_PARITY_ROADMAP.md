@@ -130,12 +130,13 @@ queries without evaluating the operand. Procedure parameter lists may span
 lines; global member queries can use a later record type. `tests/file_type_of.sh`
 checks source and saved IR on C, C++, Go, and `.zib`, and keeps inactive and
 file-private names hidden. Branch conditions can also call an unconditional
-pure procedure declared later when its body is one return expression, including
-a procedure in a later `#load` or with a multiline header. Defaults, named
-arguments, and later constants use the same bounded evaluator, including a
-loaded procedure's file-private constant; recursion remains limited. Other
-forward procedure bodies still require full checked-body discovery; effectful
-calls remain rejected.
+pure procedure declared later when its body has a straight-line sequence of
+local declarations, assignments, and a return, including a procedure in a
+later `#load` or with a multiline header. The body can call another later
+procedure, and `#run` accepts the same subset. Defaults, named arguments, and
+later constants use the bounded evaluator, including a loaded procedure's
+file-private constant; recursion remains limited. Forward branches and loops
+still require full checked-body discovery; effectful calls remain rejected.
 Token normalization now waits for branch selection, so obsolete
 primitive spellings in inactive top-level, type, and procedure branches are
 ignored while selected `else #if` conditions still use Jai scalar aliases.
