@@ -36,6 +36,8 @@ another positive worker count. The compiler commands are `zi2zir` (including
 `--check-only`), `zi2c`, `zi2cpp`, `zi2go`, and `zi2zib`.
 `zi-fmt` formats source. `ziran guide` prints a short reference from the
 installed compiler, including current safety and target limits.
+`ziran capabilities --target=go --json` reports a versioned machine-readable
+target summary; see the [capability schema](docs/CAPABILITIES.md).
 `ziran check|ir|inspect|build|bundle|run|fmt` remains a convenience dispatcher
 for the same tools. [Cross-target benchmarks](bench/README.md) measure the
 compiler, downstream toolchains, and validated runtime cases separately.

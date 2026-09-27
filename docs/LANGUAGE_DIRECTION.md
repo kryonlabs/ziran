@@ -39,7 +39,7 @@ span. The contract has four parts.
 
 1. **Declaration.** `#law NAME kind payload;` binds the stable identifier
    `NAME` to one obligation at file scope. `kind` selects the checker:
-   `type`, `effect`, `bounds`, `abi`, or `custom`. `payload` is kind-specific
+   `type`, `effect`, `bounds`, `size`, `abi`, or `custom`. `payload` is kind-specific
    checked source — a boolean procedure for `custom`, a shape description
    for the built-in kinds. A law with no checker for its kind is an error,
    never a pass.

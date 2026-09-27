@@ -1,0 +1,45 @@
+#import "package_common"
+
+Capabilities :: (arguments: []string) -> s32 {
+    target: string = ""
+    index: s32 = 0
+    while index < cast(s32)arguments.count {
+        part: string = arguments[index]
+        if part == "--json" {
+            index += 1
+            continue
+        }
+        if target.count > 0 {
+            return PkgFail("capabilities accepts one target")
+        }
+        if part == "--target=c" { target = "c" }
+        else if part == "--target=cpp" { target = "cpp" }
+        else if part == "--target=go" { target = "go" }
+        else if part == "--target=zib" { target = "zib" }
+        else { return PkgFail("usage: ziran capabilities [--target=c|cpp|go|zib] [--json]") }
+        index += 1
+    }
+    PkgPrint("{\"schema_version\":1,", false)
+    if target.count == 0 {
+        PkgPrint("\"targets\":[\"c\",\"cpp\",\"go\",\"zib\"],", false)
+        PkgPrint("\"parallel_execution\":{\"c\":\"threads\",\"cpp\":\"threads\",\"go\":\"serial\",\"zib\":\"serial\"},", false)
+        PkgPrint("\"text_view_mutable_bytes\":{\"c\":\"borrowed\",\"cpp\":\"borrowed\",\"go\":\"snapshot\",\"zib\":\"snapshot\"},", false)
+    } else {
+        PkgPrint("\"target\":\"", false)
+        PkgPrint(target, false)
+        PkgPrint("\",", false)
+        if target == "c" || target == "cpp" {
+            PkgPrint("\"parallel_execution\":\"threads\",", false)
+            PkgPrint("\"text_view_mutable_bytes\":\"borrowed\",", false)
+        } else {
+            PkgPrint("\"parallel_execution\":\"serial\",", false)
+            PkgPrint("\"text_view_mutable_bytes\":\"snapshot\",", false)
+        }
+    }
+    PkgPrint("\"source_and_saved_ir\":true,", false)
+    PkgPrint("\"gpu_execution\":\"cpu_fallback\",", false)
+    PkgPrint("\"automatic_vec_drop\":false,", false)
+    PkgPrint("\"aggregate_vec_transfer\":false,", false)
+    PkgPrint("\"diagnostics_json\":\"partial\"}\n", false)
+    return 0
+}
